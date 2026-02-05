@@ -13,11 +13,12 @@ Goal: Establish a functional "Creative Mode" foundation.
 - [ ] **Block Placement:** Ability to add blocks to the grid in real-time.
 - [ ] **Block Destruction:** Ability to remove blocks from the grid.
 
+## 🛠️ Tech Stack
+
 <p align="center">
   <img src="images/README/jira.png" alt="<Jira" width="600">
 </p>
 
-## 🛠️ Tech Stack
 * **Language:** C17
 * **Graphics API:** [Raylib 5.5](https://www.raylib.com/)
 * **Build System:** CMake (with FetchContent for zero-install dependency management).
