@@ -1,0 +1,7 @@
+build/
+CMakeFiles/
+.cache/
+compile_commands.json
+CMakeCache.txt
+cmake_install.cmake
+MineGame
