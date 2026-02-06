@@ -1,28 +1,37 @@
 #include "raylib.h"
+#include "camera.h"
+
+#define INITIAL_WIDTH 1028
+#define INITIAL_HEIGHT 720
+
+#define TARGET_FPS 60
 
 int main(void){
-  InitWindow(800, 400, "MineGame");
-  Camera3D camera = { 0 };
-  camera.position = (Vector3){10.0f, 10.0f, 10.0f};
-  camera.target = (Vector3){0.0f, 0.0f, 0.0f};
-  camera.up = (Vector3){0.0f, 1.0f, 0.0f};
-  camera.fovy = 45.0f;
-  camera.projection = CAMERA_PERSPECTIVE;
+  InitWindow(INITIAL_WIDTH, INITIAL_HEIGHT, "MineGame Beta1");
 
-  SetTargetFPS(60);
+  Camera3D camera = CreateGameCamera();
+
+  DisableCursor();
+
+  SetTargetFPS(TARGET_FPS);
 
   while (!WindowShouldClose()) {
+    UpdateGameCamera(&camera);
+
     BeginDrawing();
     ClearBackground(SKYBLUE);
     BeginMode3D(camera);
 
-    DrawCube((Vector3){0,0,0}, 2.0f, 2.0f, 2.0f, RED);
-    DrawGrid(100, 1.0f);
+    DrawGrid(20, 1.0F);
+    DrawCube((Vector3){ 0.0F, 0.0F, 0.0F }, 10.0F, 10.0F, 10.0F, RED);
 
     EndMode3D();
-    DrawText("3D ambient", 10, 40, 20, DARKGRAY);
+
+    DrawFPS(10, 10);
+
     EndDrawing();
   }
 
   CloseWindow();
+  return 0;
 }
