@@ -1,0 +1,4 @@
+Diagnostics:
+  ClangTidy:
+    Add: [performance-*, bugprone-*, readability-*]
+    Remove: [altera-*, opencl-*]

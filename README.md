@@ -1,7 +1,7 @@
 # MineGame: Voxel Engine Experiment
 
 <p align="center">
-  <img src="images/README/raylib.png" alt="<MineGame Logo" width="600">
+  <img src="images/README/raylib.png" alt="MineGame Logo" width="600">
 </p>
 
 A minimalist Minecraft-inspired voxel engine built from scratch in **C17** using the **Raylib** library. This project focuses on learning game engine fundamentals, memory management, and clean code practices.
@@ -16,7 +16,7 @@ Goal: Establish a functional "Creative Mode" foundation.
 ## 🛠️ Tech Stack
 
 <p align="center">
-  <img src="images/README/jira.png" alt="<Jira" width="600">
+  <img src="images/README/jira.png" alt="Jira" width="600">
 </p>
 
 * **Language:** C17
@@ -28,10 +28,39 @@ Goal: Establish a functional "Creative Mode" foundation.
 ## 🔧 Getting Started
 
 ### Prerequisites
-You only need a C compiler (like **Clang** or **GCC**) and **CMake** installed. The build system will automatically download and compile Raylib for you.
 
-### Build
-```bash
+### 🐧 Linux
+  - GCC or Clang 
+  - CMake 
+  - X11/OpenGL development headers.
+
+#### 🪟 Windows (Native PowerShell)
+  - [Scoop](https://scoop.sh/) (Recommended) to install: `gcc`, `cmake`, `ninja`.
+
+---
+
+### Build & Run
+
+#### 🪟 Windows (Native PowerShell)
+The easiest way is using the provided automation script which handles the Ninja generator and GCC paths:
+
+```powershell
+./BuildAndRun.ps1
+```
+
+Or you can build it manually
+
+```powershell
+cmake -S . -B build -G "Ninja" -DCMAKE_C_COMPILER=gcc
+cmake --build build
+./build/MineGame.exe
+```
+
+### 🐧 Linux
+
+```powershell
 mkdir build && cd build
 cmake ..
 make
+./MineGame
+```

@@ -6,22 +6,18 @@ Checks: >
   clang-analyzer-*,
   performance-*,
   readability-*,
-  -readability-identifier-length
+  -readability-identifier-length,
+  -altera-*
 
 CheckOptions:
-  # Funções com letra inicial MAIÚSCULA (PascalCase)
   - key:             readability-identifier-naming.FunctionCase
-    value:           PascalCase
-  # Variáveis com letra inicial MINÚSCULA (camelCase)
+    value:           CamelCase
   - key:             readability-identifier-naming.VariableCase
     value:           camelCase
-  # Parâmetros de função também em camelCase
   - key:             readability-identifier-naming.ParameterCase
-    value:           camelCase
-  # Constantes permanecem em caixa alta
+    value:           CamelCase
   - key:             readability-identifier-naming.ConstantCase
     value:           UPPER_CASE
-  # Mantendo a permissão para nomes curtos (x, y, i, j)
   - key:             readability-identifier-naming.VariableMinLength
     value:           1
 ---
