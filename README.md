@@ -9,7 +9,7 @@ A minimalist Minecraft-inspired voxel engine built from scratch in **C17** using
 ## 🚀 Roadmap to Beta 1
 Goal: Establish a functional "Creative Mode" foundation.
 - [ ] **Static World:** Render a fixed world composed of a single block type.
-- [ ] **Spectator Movement:** Implementation of a 6-DOF camera to fly through the world.
+- [X] **Spectator Movement:** Implementation of a 6-DOF camera to fly through the world.
 - [ ] **Block Placement:** Ability to add blocks to the grid in real-time.
 - [ ] **Block Destruction:** Ability to remove blocks from the grid.
 
