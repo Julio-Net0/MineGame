@@ -64,3 +64,6 @@ cmake ..
 make
 ./MineGame
 ```
+
+### ❗Known Issues/Limitations
+* **WSL Compatibility:** The cursor might not be disabled as expected when running this project on Windows Subsystem for Linux (WSL).
