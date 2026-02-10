@@ -1,4 +1,6 @@
-Diagnostics:
-  ClangTidy:
-    Add: [performance-*, bugprone-*, readability-*]
-    Remove: [altera-*, opencl-*]
+CompileFlags:
+  Add: [
+    "-I", "C:/msys64/ucrt64/include",
+    "-I", "C:/msys64/ucrt64/lib/gcc/x86_64-w64-mingw32/13.2.0/include",
+    "--target=x86_64-w64-windows-gnu"
+  ]
