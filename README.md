@@ -67,3 +67,14 @@ make
 
 ### ❗Known Issues/Limitations
 * **WSL Compatibility:** The cursor might not be disabled as expected when running this project on Windows Subsystem for Linux (WSL).
+
+## 🤝 Credits & Acknowledgments
+
+This project is made possible thanks to these amazing open-source libraries:
+
+* **[raylib](https://github.com/raysan5/raylib)** - A simple and easy-to-use library to enjoy videogames programming.
+    * *License:* [zlib/libpng](https://github.com/raysan5/raylib/blob/master/LICENSE)
+* **[cJSON](https://github.com/DaveGamble/cJSON)** - Ultralightweight JSON parser in ANSI C.
+    * *License:* [MIT](https://github.com/DaveGamble/cJSON/blob/master/LICENSE)
+
+Special thanks to **Ramon Santamaria (@raysan5)** for creating Raylib and the community for the continuous support.
