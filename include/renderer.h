@@ -17,4 +17,6 @@ void DrawBlockFace(Vector3 pos, Color color, BlockFace face);
 
 void DrawCubeCulled(Chunk *chunk, int x, int y, int z, Color color);
 
+void DrawBlockHighlight(Vector3 pos);
+
 #endif

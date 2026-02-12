@@ -1,5 +1,6 @@
 #include "renderer.h"
 #include "block_system.h"
+#include "raylib.h"
 #include "rlgl.h"
 #include "world.h"
 
@@ -74,4 +75,6 @@ void DrawCubeCulled(Chunk *chunk, int x, int y, int z, Color color){
   if (IsNeighbourTransparent(chunk, x, y, z - 1)){ DrawBlockFace(pos, color, FACE_BACK);}
 }
 
-
+void DrawBlockHighlight(Vector3 pos){
+  DrawCubeWires(pos, 1.01F, 1.01F, 1.01F, BLACK);
+}
