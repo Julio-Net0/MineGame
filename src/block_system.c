@@ -2,6 +2,7 @@
 #include "cJSON.h"
 #include "raylib.h"
 #include <string.h>
+#include <stdlib.h>
 
 BlockType blockRegistry[BLOCK_REGISTRY_SIZE];
 
@@ -23,13 +24,6 @@ BlockType* GetBlockDef(int id){
   }
 
   return &blockRegistry[id];
-}
-
-Color GetColorFromName(const char* name){ //REALLY TEMPORARY!!! Until I make blocks use textures
-  if(strcmp(name, "GREEN") == 0) {return GREEN;} 
-  if(strcmp(name, "GRAY") == 0) {return GRAY;} 
-
-  return MAGENTA;
 }
 
 void ParseBlockFile(const char *filePath){
@@ -72,8 +66,19 @@ void ParseBlockFile(const char *filePath){
   }
 
   cJSON* color = cJSON_GetObjectItemCaseSensitive(json, "color");
-  if(cJSON_IsString(color)){
-    block->color = GetColorFromName(color->valuestring);
+  if(cJSON_IsString(color) && color->valuestring != NULL){
+    const char* hexStr = color->valuestring;
+
+    if(hexStr[0] == '0' && hexStr[1] == 'x' || hexStr[1] == 'X'){
+      hexStr += 2;
+    }
+    
+    unsigned int hexValue = (unsigned int)strtoul(hexStr, NULL, 16);
+    block->color = GetColor(hexValue);
+
+
+  }else{
+    block->color = MAGENTA;
   }
 
   TraceLog(LOG_INFO, "BLOCK_SYSTEM: Loaded [%d] %s", id, block->name);

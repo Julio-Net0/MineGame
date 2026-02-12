@@ -17,7 +17,6 @@ extern BlockType blockRegistry[BLOCK_REGISTRY_SIZE];
 
 void InitBlockRegisry(void);
 void LoadAllBlockDefinitions(const char* directoryPath);
-Color GetColorFromName(const char* name);
 
 void ParseBlockFile(const char* filePath);
 bool IsValidBlockFile(const char* fileName);
