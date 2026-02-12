@@ -15,7 +15,7 @@ set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 
 FetchContent_MakeAvailable(raylib)
 
-add_executable(${PROJECT_NAME} src/main.c src/camera.c src/block_system.c src/cJSON.c src/world.c)
+add_executable(${PROJECT_NAME} src/main.c src/camera.c src/block_system.c src/cJSON.c src/world.c src/renderer.c)
 
 target_link_libraries(${PROJECT_NAME} raylib)
 

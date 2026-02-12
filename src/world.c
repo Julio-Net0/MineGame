@@ -1,6 +1,6 @@
 #include "world.h"
 #include "block_system.h"
-#include "raylib.h"
+#include "renderer.h"
 
 void GenerateFlatChunk(Chunk *chunk){
   for(int x = 0; x < CHUNK_SIZE; x++){
@@ -20,22 +20,17 @@ void GenerateFlatChunk(Chunk *chunk){
 
 void DrawChunk(Chunk *chunk){
   for(int x = 0; x < CHUNK_SIZE; x++){
-    for(int z = 0; z < CHUNK_SIZE; z++){
-      for(int y = 0; y < CHUNK_SIZE; y++){
+    for(int y = 0; y < CHUNK_SIZE; y++){
+      for(int z = 0; z < CHUNK_SIZE; z++){
+
         unsigned char id = chunk->data[x][y][z];
 
         if(id == 0){continue;}
         
         BlockType* def = GetBlockDef(id);
 
-        Vector3 blockPos = {
-          chunk->position.x + x,
-          chunk->position.y + y,
-          chunk->position.z + z
-        };
+        DrawCubeCulled(chunk, x, y, z, def->color);
 
-        DrawCube(blockPos, 1.0F, 1.0F, 1.0F, def->color);
-        DrawCubeWires(blockPos, 1.0F, 1.0F, 1.0F, BLACK);
       }
     }
   }
