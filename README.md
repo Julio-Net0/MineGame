@@ -21,6 +21,7 @@ Goal: Establish a functional "Creative Mode" foundation.
 
 * **Language:** C17
 * **Graphics API:** [Raylib 5.5](https://www.raylib.com/)
+* **cJSON:** [cJSON 1.7.19](https://github.com/DaveGamble/cJSON)
 * **Build System:** CMake (with FetchContent for zero-install dependency management).
 * **Static Analysis:** Clang-Tidy.
 * **Project Management:** Jira (Agile/Kanban).
