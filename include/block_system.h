@@ -11,6 +11,7 @@ typedef struct {
   int id;
   char name[MAX_BLOCK_NAME_SIZE];
   Color color;
+  bool isTransparent;
 } BlockType;
 
 extern BlockType blockRegistry[BLOCK_REGISTRY_SIZE];

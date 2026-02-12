@@ -11,6 +11,7 @@ void InitBlockRegisry(void){
     blockRegistry[i].id = -1;
     strcpy(blockRegistry[i].name, "");
     blockRegistry[i].color = (Color){0,0,0,0};
+    blockRegistry[i].isTransparent = true;
   }
 }
 
@@ -50,8 +51,8 @@ void ParseBlockFile(const char *filePath){
   }
 
   int id = idItem->valueint;
-  if(id <= 0 || id >= BLOCK_REGISTRY_SIZE){
-    TraceLog(LOG_WARNING, "BLOCK_SYSTEM: id %d from file %s is out of the allowed range (1-%d)", id, filePath, BLOCK_REGISTRY_SIZE - 1);
+  if(id < 0 || id >= BLOCK_REGISTRY_SIZE){
+    TraceLog(LOG_WARNING, "BLOCK_SYSTEM: id %d from file %s is out of the allowed range (0-%d)", id, filePath, BLOCK_REGISTRY_SIZE - 1);
     cJSON_Delete(json);
     UnloadFileText(fileContent);
     return;
@@ -75,10 +76,15 @@ void ParseBlockFile(const char *filePath){
     
     unsigned int hexValue = (unsigned int)strtoul(hexStr, NULL, 16);
     block->color = GetColor(hexValue);
-
-
   }else{
     block->color = MAGENTA;
+  }
+
+  cJSON* isBlockTransparent = cJSON_GetObjectItemCaseSensitive(json, "isTransparent");
+  if(cJSON_IsBool(isBlockTransparent)){
+    block->isTransparent = cJSON_IsTrue(isBlockTransparent);
+  }else{
+    block->isTransparent = false;
   }
 
   TraceLog(LOG_INFO, "BLOCK_SYSTEM: Loaded [%d] %s", id, block->name);

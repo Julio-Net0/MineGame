@@ -1,5 +1,6 @@
 {
   "id": 2,
   "name": "Stone",
-  "color": "0x828282ff"
+  "color": "0x828282ff",
+  "isTransparent": false
 }
