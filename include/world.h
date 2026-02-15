@@ -13,8 +13,6 @@ typedef struct {
 void GenerateFlatChunk(Chunk *chunk);
 void DrawChunk(Chunk *chunk);
 
-
-
 typedef struct {
   bool hit;
   Vector3 blockPos;
@@ -22,5 +20,7 @@ typedef struct {
 } RaycastResult;
 
 RaycastResult RayCastToBlock(Chunk *chunk, Vector3 rayOrigin, Vector3 rayDir, float maxDistance);
+
+void SetBlock(Chunk* chunk, Vector3 pos, unsigned char blockID);
 
 #endif

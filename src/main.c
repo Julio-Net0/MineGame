@@ -35,6 +35,11 @@ int main(void){
     Vector3 rayDir = Vector3Normalize(Vector3Subtract(camera.target, camera.position));
     RaycastResult hit = RayCastToBlock(&chunk, camera.position, rayDir, 10.0F);
 
+    if(hit.hit){
+      if(IsMouseButtonPressed(MOUSE_LEFT_BUTTON)){
+        SetBlock(&chunk, hit.blockPos, 0);
+      }
+    }
 
     BeginDrawing();
     ClearBackground(SKYBLUE);

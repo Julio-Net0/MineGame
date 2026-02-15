@@ -68,3 +68,13 @@ RaycastResult RayCastToBlock(Chunk *chunk, Vector3 rayOrigin, Vector3 rayDir, fl
 
   return result;
 }
+
+void SetBlock(Chunk* chunk, Vector3 pos, unsigned char blockID) {
+  int x = (int)pos.x;
+  int y = (int)pos.y;
+  int z = (int)pos.z;
+
+  if (x >= 0 && x < CHUNK_SIZE && y >= 0 && y < CHUNK_SIZE && z >= 0 && z < CHUNK_SIZE) {
+    chunk->data[x][y][z] = blockID;
+  }
+}
