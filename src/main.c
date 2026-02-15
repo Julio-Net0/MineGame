@@ -39,6 +39,12 @@ int main(void){
       if(IsMouseButtonPressed(MOUSE_LEFT_BUTTON)){
         SetBlock(&chunk, hit.blockPos, 0);
       }
+
+      if(IsMouseButtonPressed(MOUSE_RIGHT_BUTTON)){
+        Vector3 placePos = Vector3Add(hit.blockPos, hit.normal);
+
+        SetBlock(&chunk, placePos, 1);
+      }
     }
 
     BeginDrawing();

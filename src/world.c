@@ -1,6 +1,7 @@
 #include "world.h"
 #include "block_system.h"
 #include "raylib.h"
+#include "raymath.h"
 #include "renderer.h"
 #include <math.h>
 
@@ -61,6 +62,18 @@ RaycastResult RayCastToBlock(Chunk *chunk, Vector3 rayOrigin, Vector3 rayDir, fl
         result.hit = true;
         result.blockPos = (Vector3){ (float)x, (float)y, (float)z };
         result.blockID = id;
+
+        Vector3 diff = Vector3Subtract(currentPos, result.blockPos);
+        Vector3 absDiff = { fabsf(diff.x), fabsf(diff.y), fabsf(diff.z)};
+
+        if(absDiff.x > absDiff.y && absDiff.x > absDiff.z){
+          result.normal = (Vector3){(diff.x > 0 ? 1: -1), 0, 0};
+        }else if(absDiff.y > absDiff.x && absDiff.y > absDiff.z){
+          result.normal = (Vector3){0, (diff.y > 0 ? 1: -1), 0};
+        }else{
+          result.normal = (Vector3){0, 0, (diff.z > 0 ? 1: -1)};
+        }
+
         return result;
       }
     }

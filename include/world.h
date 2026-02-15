@@ -16,6 +16,7 @@ void DrawChunk(Chunk *chunk);
 typedef struct {
   bool hit;
   Vector3 blockPos;
+  Vector3 normal;
   int blockID;
 } RaycastResult;
 

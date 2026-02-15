@@ -6,14 +6,14 @@
 
 A minimalist Minecraft-inspired voxel engine built from scratch in **C17** using the **Raylib** library. This project focuses on learning game engine fundamentals, memory management, and clean code practices.
 
-## 🚀 Roadmap to Beta 1
+## 🚀 Roadmap to Beta 1 ✅
 Goal: Establish a functional "Creative Mode" foundation.
-- [ ] **Static World:** Render a fixed world composed of a single block type.
+- [X] **Static World:** Render a fixed world.
 - [X] **Spectator Movement:** Implementation of a 6-DOF camera to fly through the world.
-- [ ] **Block Placement:** Ability to add blocks to the grid in real-time.
+- [X] **Block Placement:** Ability to add blocks to the grid in real-time.
 - [X] **Block Destruction:** Ability to remove blocks from the grid.
 
-## 🛠️ Tech Stack
+## 🛠️ Tech Stac
 
 <p align="center">
   <img src="images/README/jira.png" alt="Jira" width="600">
