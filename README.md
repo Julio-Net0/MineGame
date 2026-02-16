@@ -1,19 +1,27 @@
 # MineGame: Voxel Engine Experiment
 
 <p align="center">
-  <img src="images/README/raylib.png" alt="MineGame Logo" width="600">
+  <img src="images/README/game.gif" alt="MineGame Logo" width="600">
 </p>
 
 A minimalist Minecraft-inspired voxel engine built from scratch in **C17** using the **Raylib** library. This project focuses on learning game engine fundamentals, memory management, and clean code practices.
 
-## 🚀 Roadmap to Beta 1 ✅
+## 🚀 Roadmap to Beta 2
+Goal: Transform the engine from a free-roaming spectator into a physically-grounded game world.
+- [ ] **Physical Embodiment:** Replace the flying camera with a physics-aware Player entity using AABB (Axis-Aligned Bounding Box) collision detection.
+- [ ] **Dynamic World Management:** Implement a World Handler to manage, render, and "stitch" together multiple chunks (Mesh-culling across chunk borders).
+- [ ] **Player Mechanics:** Implementation of gravity, jumping, and ground-level movement (step-up/step-down logic).
+- [ ] **Gameplay Loop:** Basic inventory system with a HUD Hotbar and block selection (1-9 keys) to choose materials for building.
+- [ ] **Performance Pass:** Transition from Immediate Mode rendering to Vertex Buffer Objects (VBOs) to support larger view distances.
+
+## Beta 1 ✅
 Goal: Establish a functional "Creative Mode" foundation.
 - [X] **Static World:** Render a fixed world.
 - [X] **Spectator Movement:** Implementation of a 6-DOF camera to fly through the world.
 - [X] **Block Placement:** Ability to add blocks to the grid in real-time.
 - [X] **Block Destruction:** Ability to remove blocks from the grid.
 
-## 🛠️ Tech Stac
+## 🛠️ Tech Stck
 
 <p align="center">
   <img src="images/README/jira.png" alt="Jira" width="600">

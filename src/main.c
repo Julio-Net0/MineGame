@@ -5,10 +5,8 @@
 #include "world.h"
 #include "raymath.h"
 
-#define INITIAL_WIDTH 1028
-#define INITIAL_HEIGHT 720
-
-#define TARGET_FPS 60
+#define INITIAL_WIDTH GetScreenWidth()
+#define INITIAL_HEIGHT GetScreenHeight()
 
 int main(void){
   ChangeDirectory(GetApplicationDirectory());
@@ -22,7 +20,6 @@ int main(void){
 
   DisableCursor();
 
-  SetTargetFPS(TARGET_FPS);
 
   Chunk chunk = {0};
   chunk.position = (Vector3){0,0,0};
