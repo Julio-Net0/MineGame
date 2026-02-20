@@ -4,6 +4,7 @@
 #include "renderer.h"
 #include "world.h"
 #include "raymath.h"
+#include "chat.h"
 
 #define INITIAL_WIDTH GetScreenWidth()
 #define INITIAL_HEIGHT GetScreenHeight()
@@ -24,23 +25,36 @@ int main(void){
   Chunk chunk = {0};
   chunk.position = (Vector3){0,0,0};
   GenerateFlatChunk(&chunk);
-  
+
+  ChatState chat;
+  InitChat(&chat);
+
+  ToggleBorderlessWindowed();
 
   while (!WindowShouldClose()) {
-    UpdateGameCamera(&camera);
+
+    if(IsKeyPressed(KEY_F11)){
+      ToggleBorderlessWindowed();
+    }
+
+    UpdateChat(&chat);
 
     Vector3 rayDir = Vector3Normalize(Vector3Subtract(camera.target, camera.position));
     RaycastResult hit = RayCastToBlock(&chunk, camera.position, rayDir, 10.0F);
 
-    if(hit.hit){
-      if(IsMouseButtonPressed(MOUSE_LEFT_BUTTON)){
-        SetBlock(&chunk, hit.blockPos, 0);
-      }
+    if(!chat.isActive){
 
-      if(IsMouseButtonPressed(MOUSE_RIGHT_BUTTON)){
-        Vector3 placePos = Vector3Add(hit.blockPos, hit.normal);
+      UpdateGameCamera(&camera);
+      if(hit.hit){
+        if(IsMouseButtonPressed(MOUSE_LEFT_BUTTON)){
+          SetBlock(&chunk, hit.blockPos, 0);
+        }
 
-        SetBlock(&chunk, placePos, 1);
+        if(IsMouseButtonPressed(MOUSE_RIGHT_BUTTON)){
+          Vector3 placePos = Vector3Add(hit.blockPos, hit.normal);
+
+          SetBlock(&chunk, placePos, 1);
+        }
       }
     }
 
@@ -56,6 +70,8 @@ int main(void){
     }
 
     EndMode3D();
+
+    DrawChat(&chat);
 
     DrawCircle(GetScreenWidth() / 2, GetScreenHeight() / 2, 2, WHITE);
 
