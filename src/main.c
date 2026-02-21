@@ -37,7 +37,7 @@ int main(void){
       ToggleBorderlessWindowed();
     }
 
-    UpdateChat(&chat);
+    UpdateChat(&chat, &camera);
 
     Vector3 rayDir = Vector3Normalize(Vector3Subtract(camera.target, camera.position));
     RaycastResult hit = RayCastToBlock(&chunk, camera.position, rayDir, 10.0F);

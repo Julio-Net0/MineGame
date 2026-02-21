@@ -1,5 +1,7 @@
 #include <stdbool.h>
+#include <stdio.h>
 #include <string.h>
+#include <stdarg.h>
 #include "raylib.h"
 #include "chat.h"
 #include "commands.h"
@@ -12,7 +14,16 @@ void InitChat(ChatState *chat){
   chat->scrollOffset = 0;
 }
 
-void AddChatHistory(ChatState *chat, const char *message){
+void AddChatHistory(ChatState *chat, const char *format, ...){
+  
+  char message[CHAT_MAX_INPUT_CHARS];
+
+  va_list args;
+  va_start(args, format);
+
+  vsnprintf(message, CHAT_MAX_INPUT_CHARS, format, args);
+  va_end(args);
+
   if(chat->historyCount < CHAT_MAX_HISTORY){
     strncpy(chat->history[chat->historyCount]->text, message, CHAT_MAX_INPUT_CHARS - 1);
     chat->history[chat->historyCount]->text[CHAT_MAX_INPUT_CHARS - 1] = '\0';
@@ -65,7 +76,7 @@ static void UpdateChatInput(ChatState *chat){
   }
 }
 
-static void HandleChatActions(ChatState *chat){
+static void HandleChatActions(ChatState *chat, Camera3D *camera){
   if (IsKeyPressed(KEY_DELETE)) {
     chat->scrollOffset = 0;
     chat->isActive = false;
@@ -75,11 +86,11 @@ static void HandleChatActions(ChatState *chat){
   if(IsKeyPressed(KEY_ENTER)) {
 
     if(chat->inputText[0] == '/'){
-      CommandHandler(chat->inputText);
+      CommandHandler(chat->inputText, chat, camera);
+    }else{
+      TraceLog(LOG_NONE, chat->inputText);
+      AddChatHistory(chat, chat->inputText);
     }
-
-    TraceLog(LOG_NONE, chat->inputText);
-    AddChatHistory(chat, chat->inputText);
 
     chat->letterCount = 0;
     chat->inputText[0] = '\0';
@@ -89,7 +100,7 @@ static void HandleChatActions(ChatState *chat){
   }
 }
 
-void UpdateChat(ChatState *chat) {
+void UpdateChat(ChatState *chat, Camera3D *camera) {
   if (!chat->isActive) {
     if (IsKeyPressed(KEY_T)) {
       chat->isActive = true;
@@ -101,7 +112,7 @@ void UpdateChat(ChatState *chat) {
 
   UpdateChatScroll(chat);
   UpdateChatInput(chat);
-  HandleChatActions(chat);
+  HandleChatActions(chat, camera);
 }
 
 void DrawChat(ChatState *chat) {

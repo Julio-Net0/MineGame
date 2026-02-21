@@ -1,6 +1,9 @@
 #ifndef COMMANDS_H
 #define COMMANDS_H
 
-void CommandHandler(char *command);
+#include "chat.h"
+#include "raylib.h"
+
+void CommandHandler(char *command, ChatState *chat, Camera3D *camera);
 
 #endif
