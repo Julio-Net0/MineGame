@@ -1,12 +1,38 @@
 #include "commands.h"
 #include "raylib.h"
 #include "chat.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
+
+CommandInfo availableCommands[] = {
+  {"/tp", "Use: /tp <x> <Y> <z>", "Teleports to coordinates x y z"},
+};
+
+void ReturnCommand(ChatState *chat, int logLevel, const char *format, ...){
+
+  char message[CHAT_MAX_INPUT_CHARS];
+
+  va_list args;
+  va_start(args, format);
+
+  vsnprintf(message, CHAT_MAX_INPUT_CHARS, format, args);
+  va_end(args);
+
+  AddChatHistory(chat, "%s", message);
+  TraceLog(logLevel, "%s", message);
+}
+
+void CommandHelp(ChatState *chat){
+  for(int i = 0; i < sizeof(availableCommands) / sizeof(CommandInfo); i++){
+    AddChatHistory(chat, "%s | %s | %s", availableCommands[i].name, availableCommands[i].use, availableCommands[i].description);
+  }
+}
 
 void CommandTP(char *args, ChatState *chat, Camera3D *camera){
   if(args == NULL){
-    TraceLog(LOG_WARNING, "Incorrect Format. try: /tp <x> <y> <z>");
+    ReturnCommand(chat, LOG_ERROR, "Incorrect Format. try: /tp <x> <y> <z>");
     return;
   }
 
@@ -21,15 +47,15 @@ void CommandTP(char *args, ChatState *chat, Camera3D *camera){
 
     camera->position = (Vector3){x, y, z};
     camera->target = (Vector3){x, y, z + 1.0F};
-
-    AddChatHistory(chat, "Tp complete - Mov to X:%.1f Y:%.1f Z:%.1f", x, y, z);
-    TraceLog(LOG_INFO, "Tp complete - Mov to X:%.1f Y:%.1f Z:%.1f", x, y, z);
+    
+    ReturnCommand(chat, LOG_INFO, "Tp to X:%.1f Y:%.1f Z:%.1f", x, y, z);
 
   }else{
-    AddChatHistory(chat, "Incorrect Format. try: /tp <x> <y> <z>");
-    TraceLog(LOG_WARNING, "Incorrect Format. try: /tp <x> <y> <z>");
+    ReturnCommand(chat, LOG_ERROR, "Incorrect Format. try: /tp <x> <y> <z>");
   }
 }
+
+
 
 void CommandHandler(char *command, ChatState *chat, Camera3D *camera){
   char buffer[CHAT_MAX_INPUT_CHARS];
@@ -40,18 +66,17 @@ void CommandHandler(char *command, ChatState *chat, Camera3D *camera){
   char *commandName = strtok(buffer, " ");
 
   if(commandName == NULL){ 
-    TraceLog(LOG_ERROR, "No command found");
-    AddChatHistory(chat, "No command found");
+    ReturnCommand(chat, LOG_WARNING, "No command found");
     return;
   }
 
   char *args = strtok(NULL, "");
 
-  if(strcmp(commandName, "/tp") == 0){
+  if(strcmp(commandName, "/help") == 0){
+    CommandHelp(chat);
+  }else if(strcmp(commandName, "/tp") == 0){
     CommandTP(args, chat, camera);
   }else{
-    TraceLog(LOG_ERROR, "No command found");
-    AddChatHistory(chat, "No command found");
-    return;
+    ReturnCommand(chat, LOG_WARNING, "No command found");
   }
 }
