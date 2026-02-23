@@ -6,9 +6,15 @@
 #include <string.h>
 #include <stdarg.h>
 
+void CommandHelp(char *args, CommandContext *ctx);
+void CommandTP(char *args, CommandContext *ctx);
+
 CommandInfo availableCommands[] = {
-  {"/tp", "Use: /tp <x> <Y> <z>", "Teleports to coordinates x y z"},
+  {"/help", "Use: /help", "List all the commands available and how to use them", CommandHelp},
+  {"/tp", "Use: /tp <x> <Y> <z>", "Teleports to coordinates x y z", CommandTP},
 };
+
+const int AVAILABLECOMMANDSCOUNT = sizeof(availableCommands) / sizeof(availableCommands[0]);
 
 void ReturnCommand(ChatState *chat, int logLevel, const char *format, ...){
 
@@ -24,15 +30,9 @@ void ReturnCommand(ChatState *chat, int logLevel, const char *format, ...){
   TraceLog(logLevel, "%s", message);
 }
 
-void CommandHelp(ChatState *chat){
-  for(int i = 0; i < sizeof(availableCommands) / sizeof(CommandInfo); i++){
-    AddChatHistory(chat, "%s | %s | %s", availableCommands[i].name, availableCommands[i].use, availableCommands[i].description);
-  }
-}
-
-void CommandTP(char *args, ChatState *chat, Camera3D *camera){
+void CommandTP(char *args, CommandContext *ctx){
   if(args == NULL){
-    ReturnCommand(chat, LOG_ERROR, "Incorrect Format. try: /tp <x> <y> <z>");
+    ReturnCommand(ctx->chat, LOG_ERROR, "Incorrect Format. try: /tp <x> <y> <z>");
     return;
   }
 
@@ -45,38 +45,45 @@ void CommandTP(char *args, ChatState *chat, Camera3D *camera){
     float y = atof(y_str);
     float z = atof(z_str);
 
-    camera->position = (Vector3){x, y, z};
-    camera->target = (Vector3){x, y, z + 1.0F};
+    ctx->camera->position = (Vector3){x, y, z};
+    ctx->camera->target = (Vector3){x, y, z + 1.0F};
     
-    ReturnCommand(chat, LOG_INFO, "Tp to X:%.1f Y:%.1f Z:%.1f", x, y, z);
+    ReturnCommand(ctx->chat, LOG_INFO, "Tp to X:%.1f Y:%.1f Z:%.1f", x, y, z);
 
   }else{
-    ReturnCommand(chat, LOG_ERROR, "Incorrect Format. try: /tp <x> <y> <z>");
+    ReturnCommand(ctx->chat, LOG_ERROR, "Incorrect Format. try: /tp <x> <y> <z>");
   }
 }
 
-
+void CommandHelp(char *args, CommandContext *ctx){
+  for(int i = 0; i < sizeof(availableCommands) / sizeof(CommandInfo); i++){
+    AddChatHistory(ctx->chat, "%s | %s | %s", availableCommands[i].name, availableCommands[i].use, availableCommands[i].description);
+  }
+}
 
 void CommandHandler(char *command, ChatState *chat, Camera3D *camera){
+
+  CommandContext ctx = {
+    .chat = chat,
+    .camera = camera,
+  };
+
   char buffer[CHAT_MAX_INPUT_CHARS];
 
-  strcpy(buffer, command);
-  buffer[CHAT_MAX_INPUT_CHARS-1] = '\0';
+  strncpy(buffer, command, CHAT_MAX_INPUT_CHARS - 1);
+  buffer[CHAT_MAX_INPUT_CHARS - 1]= '\0';
 
   char *commandName = strtok(buffer, " ");
 
-  if(commandName == NULL){ 
-    ReturnCommand(chat, LOG_WARNING, "No command found");
-    return;
-  }
+  if(commandName == NULL){ return; }
 
   char *args = strtok(NULL, "");
 
-  if(strcmp(commandName, "/help") == 0){
-    CommandHelp(chat);
-  }else if(strcmp(commandName, "/tp") == 0){
-    CommandTP(args, chat, camera);
-  }else{
-    ReturnCommand(chat, LOG_WARNING, "No command found");
+  for(int i = 0; i < AVAILABLECOMMANDSCOUNT; i++){
+    if(strcmp(commandName, availableCommands[i].name) == 0){
+      availableCommands[i].function(args, &ctx);
+      return;
+    }
   }
+  ReturnCommand(chat, LOG_WARNING, "Unknown command: %s. Type /help", commandName);
 }
