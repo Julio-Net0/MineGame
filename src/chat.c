@@ -25,21 +25,21 @@ void AddChatHistory(ChatState *chat, const char *format, ...){
   va_end(args);
 
   if(chat->historyCount < CHAT_MAX_HISTORY){
-    strncpy(chat->history[chat->historyCount]->text, message, CHAT_MAX_INPUT_CHARS - 1);
-    chat->history[chat->historyCount]->text[CHAT_MAX_INPUT_CHARS - 1] = '\0';
-    chat->history[chat->historyCount]->timeCreated = GetTime();
+    strncpy(chat->history[chat->historyCount].text, message, CHAT_MAX_INPUT_CHARS - 1);
+    chat->history[chat->historyCount].text[CHAT_MAX_INPUT_CHARS - 1] = '\0';
+      chat->history[chat->historyCount].timeCreated = GetTime();
     chat->historyCount++;
   }else{
     for(int i = 0; i < CHAT_MAX_HISTORY - 1; i++){
-      strcpy(chat->history[i]->text, chat->history[i + 1]->text);
+      strcpy(chat->history[i].text, chat->history[i + 1].text);
 
-      chat->history[i]->timeCreated = chat->history[i + 1]->timeCreated;
+      chat->history[i].timeCreated = chat->history[i + 1].timeCreated;
     }
 
-    strncpy(chat->history[CHAT_MAX_HISTORY - 1]->text, message, CHAT_MAX_INPUT_CHARS - 1);
-    chat->history[CHAT_MAX_HISTORY - 1]->text[CHAT_MAX_INPUT_CHARS - 1] = '\0';
+    strncpy(chat->history[CHAT_MAX_HISTORY - 1].text, message, CHAT_MAX_INPUT_CHARS - 1);
+    chat->history[CHAT_MAX_HISTORY - 1].text[CHAT_MAX_INPUT_CHARS - 1] = '\0';
 
-    chat->history[CHAT_MAX_HISTORY - 1]->timeCreated = GetTime();
+    chat->history[CHAT_MAX_HISTORY - 1].timeCreated = GetTime();
   }
 }
 
@@ -128,7 +128,7 @@ void DrawChat(ChatState *chat) {
       continue;
     }
 
-    float age = (float)(currentTime - chat->history[i]->timeCreated);
+    float age = (float)(currentTime - chat->history[i].timeCreated);
     float alpha = 1.0F;
 
     if(!chat->isActive){
@@ -143,7 +143,7 @@ void DrawChat(ChatState *chat) {
 
     if(alpha > 0.0F){
       DrawRectangle(CHAT_POSITION_X, msgY, CHAT_HISTORY_WIDTH, CHAT_FONT_SIZE, Fade(BLACK, CHAT_HISTORY_BG_ALPHA * alpha));
-      DrawText(chat->history[i]->text, CHAT_POSITION_X + CHAT_TEXT_PADDING, msgY, CHAT_FONT_SIZE, Fade(WHITE, alpha));
+      DrawText(chat->history[i].text, CHAT_POSITION_X + CHAT_TEXT_PADDING, msgY, CHAT_FONT_SIZE, Fade(WHITE, alpha));
     }
   }
 

@@ -10,7 +10,7 @@
 #define CHAT_Y_MARGIN (GetScreenWidth() / 200)
 #define CHAT_POSITION_X CHAT_X_MARGIN
 #define CHAT_POSITION_Y (GetScreenHeight() - CHAT_HEIGHT - CHAT_Y_MARGIN)
-#define CHAT_MAX_INPUT_CHARS 80
+#define CHAT_MAX_INPUT_CHARS 256 // Recommended limit is 256 to prevent Stack Overflow on Windows (1MB stack)
 #define CHAT_MAX_HISTORY 256
 #define CHAT_DISPLAY_TIME 3.0F
 #define CHAT_FADE_TIME 1.0F
@@ -32,7 +32,7 @@ typedef struct{
   int letterCount;
   bool isActive;
 
-  ChatMessage history[CHAT_MAX_HISTORY][CHAT_MAX_INPUT_CHARS];
+  ChatMessage history[CHAT_MAX_HISTORY];
   int historyCount;
 
   int scrollOffset;
