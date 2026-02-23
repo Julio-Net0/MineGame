@@ -8,7 +8,7 @@ A minimalist Minecraft-inspired voxel engine built from scratch in **C17** using
 
 ## 🚀 Roadmap to Beta 2
 Goal: Transform the engine from a free-roaming spectator into a physically-grounded game world.
-- [ ] **Debug Console & Command System:** Implement an in-game text terminal to execute logic functions, list loaded assets from cJSON, toggle debug overlays, etc.
+- [X] **Debug Console & Command System:** Implement an in-game text terminal to execute logic functions, list loaded assets from cJSON, toggle debug overlays, etc.
 - [ ] **Physical Embodiment:** Replace the flying camera with a physics-aware Player entity using AABB (Axis-Aligned Bounding Box) collision detection.
 - [ ] **Dynamic World Management:** Implement a World Handler to manage, render, and "stitch" together multiple chunks (Mesh-culling across chunk borders).
 - [ ] **Player Mechanics:** Implementation of gravity, jumping, and ground-level movement (step-up/step-down logic).

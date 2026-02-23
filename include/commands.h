@@ -1,12 +1,15 @@
 #ifndef COMMANDS_H
 #define COMMANDS_H
 
+#include "block_system.h"
 #include "chat.h"
 #include "raylib.h"
 
 typedef struct{
   ChatState *chat;
   Camera3D *camera;
+  BlockType *blockRegistry;
+  int blockCount;
 } CommandContext;
 
 typedef void (*CommandFunc)(char *args, CommandContext *ctx);

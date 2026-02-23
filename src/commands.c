@@ -1,4 +1,5 @@
 #include "commands.h"
+#include "block_system.h"
 #include "raylib.h"
 #include "chat.h"
 #include <stdio.h>
@@ -9,11 +10,13 @@
 void CommandHelp(char *args, CommandContext *ctx);
 void CommandTP(char *args, CommandContext *ctx);
 void CommandPos(char *args, CommandContext *ctx);
+void CommandList(char *args, CommandContext *ctx);
 
 CommandInfo availableCommands[] = {
   {"/help", "Use: /help", "List all the commands available and how to use them", CommandHelp},
   {"/tp", "Use: /tp <x> <Y> <z>", "Teleports to coordinates x y z", CommandTP},
   {"/pos", "Use: /pos", "Returns your current position", CommandPos},
+  {"/list", "Use: /list", "Returns all loaded block assets", CommandList},
 };
 
 const int AVAILABLECOMMANDSCOUNT = sizeof(availableCommands) / sizeof(availableCommands[0]);
@@ -72,11 +75,28 @@ void CommandPos(char *args, CommandContext *ctx){
   ReturnCommand(ctx->chat, LOG_INFO, "X:%.1f Y:%.1f Z:%.1f", posX, posY, posZ );
 }
 
+void CommandList(char *args, CommandContext *ctx){
+  (void)args;
+
+  if(ctx->blockRegistry == NULL || ctx->blockCount == 0){
+    ReturnCommand(ctx->chat, LOG_WARNING, "No block asset loaded");
+    return;
+  }
+
+  for(int i = 0; i < ctx->blockCount; i++){
+    AddChatHistory(ctx->chat, "[ID: %d] %s",
+        ctx->blockRegistry[i].id,
+        ctx->blockRegistry[i].name);
+  }
+}
+
 void CommandHandler(char *command, ChatState *chat, Camera3D *camera){
 
   CommandContext ctx = {
     .chat = chat,
     .camera = camera,
+    .blockRegistry = blockRegistry,
+    .blockCount = GetLoadedBlocksCount(),
   };
 
   char buffer[CHAT_MAX_INPUT_CHARS];

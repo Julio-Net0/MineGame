@@ -5,6 +5,7 @@
 #include <stdlib.h>
 
 BlockType blockRegistry[BLOCK_REGISTRY_SIZE];
+static int loadedBlocksCount = 0;
 
 void InitBlockRegisry(void){
   for(int i = 0; i < BLOCK_REGISTRY_SIZE; i++){
@@ -117,6 +118,8 @@ void LoadAllBlockDefinitions(const char *directoryPath){
     }
   }
 
+  loadedBlocksCount = loadedCount;
+
   UnloadDirectoryFiles(files);
 
   if(loadedCount == 0){
@@ -124,4 +127,8 @@ void LoadAllBlockDefinitions(const char *directoryPath){
   }else{
     TraceLog(LOG_INFO, "BLOCK_SYSTEM: Loaded %d block definitions", loadedCount);
   }
+}
+
+int GetLoadedBlocksCount(void){
+  return loadedBlocksCount;
 }

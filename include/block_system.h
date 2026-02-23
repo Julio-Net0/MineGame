@@ -25,4 +25,6 @@ bool IsValidBlockFile(const char* fileName);
 BlockType* GetBlockDef(int id);
 int GetBlockIDByName(const char* name);
 
+int GetLoadedBlocksCount(void);
+
 #endif
