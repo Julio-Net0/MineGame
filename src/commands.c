@@ -8,10 +8,12 @@
 
 void CommandHelp(char *args, CommandContext *ctx);
 void CommandTP(char *args, CommandContext *ctx);
+void CommandPos(char *args, CommandContext *ctx);
 
 CommandInfo availableCommands[] = {
   {"/help", "Use: /help", "List all the commands available and how to use them", CommandHelp},
   {"/tp", "Use: /tp <x> <Y> <z>", "Teleports to coordinates x y z", CommandTP},
+  {"/pos", "Use: /pos", "Returns your current position", CommandPos},
 };
 
 const int AVAILABLECOMMANDSCOUNT = sizeof(availableCommands) / sizeof(availableCommands[0]);
@@ -59,6 +61,15 @@ void CommandHelp(char *args, CommandContext *ctx){
   for(int i = 0; i < sizeof(availableCommands) / sizeof(CommandInfo); i++){
     AddChatHistory(ctx->chat, "%s | %s | %s", availableCommands[i].name, availableCommands[i].use, availableCommands[i].description);
   }
+}
+
+void CommandPos(char *args, CommandContext *ctx){
+
+  float posX = ctx->camera->position.x;
+  float posY = ctx->camera->position.y;
+  float posZ = ctx->camera->position.z;
+
+  ReturnCommand(ctx->chat, LOG_INFO, "X:%.1f Y:%.1f Z:%.1f", posX, posY, posZ );
 }
 
 void CommandHandler(char *command, ChatState *chat, Camera3D *camera){
