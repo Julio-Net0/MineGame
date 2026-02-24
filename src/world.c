@@ -91,3 +91,16 @@ void SetBlock(Chunk* chunk, Vector3 pos, unsigned char blockID) {
     chunk->data[x][y][z] = blockID;
   }
 }
+
+int GetBlockIDInChunk(Chunk *chunk, Vector3 pos){
+
+  int x = (int)floorf(pos.x);
+  int y = (int)floorf(pos.y);
+  int z = (int)floorf(pos.z);
+
+  if(x < 0 || x >= CHUNK_SIZE || y < 0 || y >= CHUNK_SIZE || z < 0 || z >= CHUNK_SIZE){
+    return 0;
+  }
+
+  return (int)chunk->data[x][y][z];
+}

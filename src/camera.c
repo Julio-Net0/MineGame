@@ -10,6 +10,10 @@
 
 #define INITIAL_FOV 90.0F
 
+#define CAMERA_PITCH_LIMIT 89.0F
+
+#define MOUSE_SENSITIVITY 0.05F
+
 Camera3D CreateGameCamera(void){
   Camera3D camera = { 0 };
   camera.position = CAMERA_POSITION;
@@ -20,7 +24,22 @@ Camera3D CreateGameCamera(void){
   return camera;
 }
 
+static float cameraPitch = 0.0F;
+static float cameraYaw = 0.0F;
 
-void UpdateGameCamera(Camera3D *camera){
-  UpdateCamera(camera, CAMERA_FREE);
-} 
+void UpdateGameCamera(Camera3D *camera) {
+    Vector2 mouseDelta = GetMouseDelta();
+    float sensitivity = MOUSE_SENSITIVITY;
+
+    cameraYaw -= (mouseDelta.x * sensitivity);
+    cameraPitch -= (mouseDelta.y * sensitivity);
+
+    if (cameraPitch > CAMERA_PITCH_LIMIT) { cameraPitch = CAMERA_PITCH_LIMIT; }
+    if (cameraPitch < -CAMERA_PITCH_LIMIT) { cameraPitch = -CAMERA_PITCH_LIMIT; }
+
+    UpdateCameraPro(camera, 
+        (Vector3){ 0, 0, 0 }, 
+        (Vector3){ mouseDelta.x * sensitivity, mouseDelta.y * sensitivity, 0 }, 
+        0.0F
+    );
+}

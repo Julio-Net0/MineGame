@@ -5,6 +5,7 @@
 #include "world.h"
 #include "raymath.h"
 #include "chat.h"
+#include "player.h"
 
 #define INITIAL_WIDTH GetScreenWidth()
 #define INITIAL_HEIGHT GetScreenHeight()
@@ -29,15 +30,19 @@ int main(void){
   ChatState chat;
   InitChat(&chat);
 
+  Player player = InitPlayer((Vector3){0, 17, 0});
+
   ToggleBorderlessWindowed();
 
   while (!WindowShouldClose()) {
+
+    float dt = GetFrameTime();
 
     if(IsKeyPressed(KEY_F11)){
       ToggleBorderlessWindowed();
     }
 
-    UpdateChat(&chat, &camera);
+    UpdateChat(&chat, &camera, &player);
 
     Vector3 rayDir = Vector3Normalize(Vector3Subtract(camera.target, camera.position));
     RaycastResult hit = RayCastToBlock(&chunk, camera.position, rayDir, 10.0F);
@@ -45,6 +50,8 @@ int main(void){
     if(!chat.isActive){
 
       UpdateGameCamera(&camera);
+      UpdatePlayer(&player, &camera, &chunk,dt);
+
       if(hit.hit){
         if(IsMouseButtonPressed(MOUSE_LEFT_BUTTON)){
           SetBlock(&chunk, hit.blockPos, 0);
@@ -68,6 +75,8 @@ int main(void){
     if(hit.hit){
       DrawBlockHighlight(hit.blockPos);
     }
+
+    DrawPlayerDebug(&chunk, &player);
 
     EndMode3D();
 

@@ -3,6 +3,7 @@
 #include "raylib.h"
 #include "rlgl.h"
 #include "world.h"
+#include "player.h"
 
 void DrawBlockFace(Vector3 pos, Color color, BlockFace face){
   float x = pos.x; float y = pos.y; float z = pos.z;

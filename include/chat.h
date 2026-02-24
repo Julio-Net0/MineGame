@@ -2,6 +2,7 @@
 #define CHAT_H
 
 #include "raylib.h"
+#include "player.h"
 #include <stdbool.h>
 
 #define CHAT_WIDTH (GetScreenWidth() - (CHAT_Y_MARGIN * 2))
@@ -39,7 +40,7 @@ typedef struct{
 } ChatState;
 
 void InitChat(ChatState *chat);
-void UpdateChat(ChatState *chat, Camera3D *camera);
+void UpdateChat(ChatState *chat, Camera3D *camera, Player *player);
 void DrawChat(ChatState *chat);
 
 void AddChatHistory(ChatState *chat, const char *format, ...);

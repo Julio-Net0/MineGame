@@ -5,6 +5,7 @@
 #include "raylib.h"
 #include "chat.h"
 #include "commands.h"
+#include "player.h"
 
 void InitChat(ChatState *chat){
   chat->inputText[0] = '\0';
@@ -76,7 +77,7 @@ static void UpdateChatInput(ChatState *chat){
   }
 }
 
-static void HandleChatActions(ChatState *chat, Camera3D *camera){
+static void HandleChatActions(ChatState *chat, Camera3D *camera, Player *player){
   if (IsKeyPressed(KEY_DELETE)) {
     chat->scrollOffset = 0;
     chat->isActive = false;
@@ -86,7 +87,7 @@ static void HandleChatActions(ChatState *chat, Camera3D *camera){
   if(IsKeyPressed(KEY_ENTER)) {
 
     if(chat->inputText[0] == '/'){
-      CommandHandler(chat->inputText, chat, camera);
+      CommandHandler(chat->inputText, chat, camera, player);
     }else{
       TraceLog(LOG_NONE, chat->inputText);
       AddChatHistory(chat, chat->inputText);
@@ -100,7 +101,7 @@ static void HandleChatActions(ChatState *chat, Camera3D *camera){
   }
 }
 
-void UpdateChat(ChatState *chat, Camera3D *camera) {
+void UpdateChat(ChatState *chat, Camera3D *camera, Player *player) {
   if (!chat->isActive) {
     if (IsKeyPressed(KEY_T)) {
       chat->isActive = true;
@@ -112,7 +113,7 @@ void UpdateChat(ChatState *chat, Camera3D *camera) {
 
   UpdateChatScroll(chat);
   UpdateChatInput(chat);
-  HandleChatActions(chat, camera);
+  HandleChatActions(chat, camera, player);
 }
 
 void DrawChat(ChatState *chat) {
