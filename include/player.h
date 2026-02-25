@@ -12,7 +12,7 @@
 #define PLAYER_SPEED 5.0F
 #define PLAYER_HEAD_OFFSET 1.6F
 #define PLAYER_DEBUG_AABB_SQUARES_SIZE 0.05F
-#define PLAYER_DEBUG_AABB_WIRES_SIZE PLAYER_DEBUG_AABB_SQUARES_SIZE * 1.5F;
+#define PLAYER_DEBUG_AABB_WIRES_SIZE PLAYER_DEBUG_AABB_SQUARES_SIZE * 1.5F
 
 typedef struct {
   int id;
@@ -34,8 +34,7 @@ typedef struct {
 
 Player InitPlayer(Vector3 spawnPos);
 
-void UpdatePlayer(Player *player, Camera3D *camera, Chunk *chunk, float dt);
-
-void DrawPlayerDebug(Chunk *chunk, Player *player);
+void UpdatePlayer(Player *player, Camera3D *camera, World *world, float dt, bool hasControl);
+void DrawPlayerDebug(World *world, Player *player);
 
 #endif

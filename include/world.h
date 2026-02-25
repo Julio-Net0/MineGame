@@ -2,19 +2,21 @@
 #define WORLD_H
 
 #include "raylib.h"
-
-#define CHUNK_SIZE 16
+#include "chunk.h"
 
 #define BLOCK_SIZE 1.0F
 #define BLOCK_HALF_SIZE (BLOCK_SIZE / 2.0F)
 
-typedef struct {
-  unsigned char data[CHUNK_SIZE][CHUNK_SIZE][CHUNK_SIZE];
-  Vector3 position;
-} Chunk;
+#define MAX_ACTIVE_CHUNKS 9
 
-void GenerateFlatChunk(Chunk *chunk);
-void DrawChunk(Chunk *chunk);
+typedef struct World {
+  Chunk chunks[MAX_ACTIVE_CHUNKS];
+  int chunkCount;
+} World ;
+
+void InitWorld(World *world);
+void UpdateWorld(World *world, Vector3 worldPos);
+void DrawWorld(World *world);
 
 typedef struct {
   bool hit;
@@ -23,9 +25,8 @@ typedef struct {
   int blockID;
 } RaycastResult;
 
-RaycastResult RayCastToBlock(Chunk *chunk, Vector3 rayOrigin, Vector3 rayDir, float maxDistance);
+int GetBlockIDFromWorld(World *world, Vector3 globalPos);
+void SetBlockInWorld(World *world, Vector3 globalPos, unsigned char blockID);
+RaycastResult RayCastToWorld(World *world, Vector3 rayOrigin, Vector3 rayDir, float maxDistance);
 
-void SetBlock(Chunk* chunk, Vector3 pos, unsigned char blockID);
-
-int GetBlockIDInChunk(Chunk *chunk, Vector3 pos);
 #endif

@@ -40,7 +40,7 @@ typedef struct{
 } ChatState;
 
 void InitChat(ChatState *chat);
-void UpdateChat(ChatState *chat, Camera3D *camera, Player *player);
+void UpdateChat(ChatState *chat, Camera3D *camera, Player *player, World* world);
 void DrawChat(ChatState *chat);
 
 void AddChatHistory(ChatState *chat, const char *format, ...);

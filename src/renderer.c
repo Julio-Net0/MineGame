@@ -1,9 +1,8 @@
 #include "renderer.h"
 #include "block_system.h"
+#include "chunk.h"
 #include "raylib.h"
 #include "rlgl.h"
-#include "world.h"
-#include "player.h"
 
 void DrawBlockFace(Vector3 pos, Color color, BlockFace face){
   float x = pos.x; float y = pos.y; float z = pos.z;
@@ -52,28 +51,35 @@ void DrawBlockFace(Vector3 pos, Color color, BlockFace face){
   rlEnd();
 }
 
-bool IsNeighbourTransparent(Chunk *chunk, int x, int y, int z){
-  if (x < 0 || x >= CHUNK_SIZE || y < 0 || y >= CHUNK_SIZE || z < 0 || z >= CHUNK_SIZE) {
-    return true; 
+bool IsNeighbourTransparent(World *world, Chunk *chunk, int localX, int localY, int localZ){
+  if(localX >= 0 && localX < CHUNK_SIZE && localY >= 0 && localY < CHUNK_SIZE && localZ >= 0 && localZ < CHUNK_SIZE){
+      unsigned char id = chunk->data[localX][localY][localZ];
+      if(id == 0) return true;
+      return GetBlockDef(id)->isTransparent;
   }
 
-  int blockID = chunk->data[x][y][z];
-  return GetBlockDef(blockID)->isTransparent;
+  int globalX = (chunk->chunkX * CHUNK_SIZE) + localX;
+  int globalZ = (chunk->chunkZ * CHUNK_SIZE) + localZ;
+  
+  int id = GetBlockIDFromWorld(world, (Vector3){(float)globalX, (float)localY, (float)globalZ});
+  if(id == 0) return true;
+  return GetBlockDef(id)->isTransparent;
 }
 
-void DrawCubeCulled(Chunk *chunk, int x, int y, int z, Color color){
-  Vector3 pos = {
-    chunk->position.x + x,
-    chunk->position.y + y,
-    chunk->position.z + z
-  };  
+void DrawCubeCulled(World *world, Chunk *chunk, int localX, int localY, int localZ, Color color){
+  
+  int globalX = (chunk->chunkX * CHUNK_SIZE) + localX;
+  int globalY = localY;
+  int globalZ = (chunk->chunkZ * CHUNK_SIZE) + localZ;
 
-  if (IsNeighbourTransparent(chunk, x, y + 1, z)){ DrawBlockFace(pos, color, FACE_TOP);}
-  if (IsNeighbourTransparent(chunk, x, y - 1, z)){ DrawBlockFace(pos, color, FACE_BOTTOM);}
-  if (IsNeighbourTransparent(chunk, x + 1, y, z)){ DrawBlockFace(pos, color, FACE_RIGHT);}
-  if (IsNeighbourTransparent(chunk, x - 1, y, z)){ DrawBlockFace(pos, color, FACE_LEFT);}
-  if (IsNeighbourTransparent(chunk, x, y, z + 1)){ DrawBlockFace(pos, color, FACE_FRONT);}
-  if (IsNeighbourTransparent(chunk, x, y, z - 1)){ DrawBlockFace(pos, color, FACE_BACK);}
+  Vector3 pos = { (float)globalX, (float)globalY, (float)globalZ };  
+
+  if (IsNeighbourTransparent(world, chunk, localX, localY + 1, localZ)) DrawBlockFace(pos, color, FACE_TOP);
+  if (IsNeighbourTransparent(world, chunk, localX, localY - 1, localZ)) DrawBlockFace(pos, color, FACE_BOTTOM);
+  if (IsNeighbourTransparent(world, chunk, localX + 1, localY, localZ)) DrawBlockFace(pos, color, FACE_RIGHT);
+  if (IsNeighbourTransparent(world, chunk, localX - 1, localY, localZ)) DrawBlockFace(pos, color, FACE_LEFT);
+  if (IsNeighbourTransparent(world, chunk, localX, localY, localZ + 1)) DrawBlockFace(pos, color, FACE_FRONT);
+  if (IsNeighbourTransparent(world, chunk, localX, localY, localZ - 1)) DrawBlockFace(pos, color, FACE_BACK);
 }
 
 void DrawBlockHighlight(Vector3 pos){

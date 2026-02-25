@@ -1,6 +1,8 @@
 #include "camera.h"
 #include "raylib.h"
+#include "raymath.h"
 #include "rcamera.h"
+#include <math.h>
 
 #define WORLD_UP_VECTOR (Vector3){0.0F, 1.0F, 0.0F}
 #define WORLD_ORIGIN (Vector3){0.0F, 0.0F, 0.0F}
@@ -37,9 +39,14 @@ void UpdateGameCamera(Camera3D *camera) {
     if (cameraPitch > CAMERA_PITCH_LIMIT) { cameraPitch = CAMERA_PITCH_LIMIT; }
     if (cameraPitch < -CAMERA_PITCH_LIMIT) { cameraPitch = -CAMERA_PITCH_LIMIT; }
 
-    UpdateCameraPro(camera, 
-        (Vector3){ 0, 0, 0 }, 
-        (Vector3){ mouseDelta.x * sensitivity, mouseDelta.y * sensitivity, 0 }, 
-        0.0F
-    );
+    float pitchRad = cameraPitch * DEG2RAD;
+    float yawRad = cameraYaw * DEG2RAD;
+
+    Vector3 viewVector;
+
+    viewVector.x = cosf(pitchRad) * sinf(yawRad);
+    viewVector.y = sinf(pitchRad);
+    viewVector.z = cosf(pitchRad) * cosf(yawRad);
+
+    camera->target = Vector3Add(camera->position, viewVector);
 }

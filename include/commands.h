@@ -5,6 +5,7 @@
 #include "chat.h"
 #include "raylib.h"
 #include "player.h"
+#include "world.h"
 
 typedef struct{
   ChatState *chat;
@@ -12,6 +13,7 @@ typedef struct{
   BlockType *blockRegistry;
   int blockCount;
   Player *player;
+  World *world;
 } CommandContext;
 
 typedef void (*CommandFunc)(char *args, CommandContext *ctx);
@@ -24,6 +26,6 @@ typedef struct{
 } CommandInfo;
 
 
-void CommandHandler(char *command, ChatState *chat, Camera3D *camera, Player *player);
+void CommandHandler(char *command, ChatState *chat, Camera3D *camera, Player *player, World *world);
 
 #endif

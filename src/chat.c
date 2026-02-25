@@ -77,7 +77,7 @@ static void UpdateChatInput(ChatState *chat){
   }
 }
 
-static void HandleChatActions(ChatState *chat, Camera3D *camera, Player *player){
+static void HandleChatActions(ChatState *chat, Camera3D *camera, Player *player, World *world){
   if (IsKeyPressed(KEY_DELETE)) {
     chat->scrollOffset = 0;
     chat->isActive = false;
@@ -87,7 +87,7 @@ static void HandleChatActions(ChatState *chat, Camera3D *camera, Player *player)
   if(IsKeyPressed(KEY_ENTER)) {
 
     if(chat->inputText[0] == '/'){
-      CommandHandler(chat->inputText, chat, camera, player);
+      CommandHandler(chat->inputText, chat, camera, player, world);
     }else{
       TraceLog(LOG_NONE, chat->inputText);
       AddChatHistory(chat, chat->inputText);
@@ -101,7 +101,7 @@ static void HandleChatActions(ChatState *chat, Camera3D *camera, Player *player)
   }
 }
 
-void UpdateChat(ChatState *chat, Camera3D *camera, Player *player) {
+void UpdateChat(ChatState *chat, Camera3D *camera, Player *player, World *world) {
   if (!chat->isActive) {
     if (IsKeyPressed(KEY_T)) {
       chat->isActive = true;
@@ -113,7 +113,7 @@ void UpdateChat(ChatState *chat, Camera3D *camera, Player *player) {
 
   UpdateChatScroll(chat);
   UpdateChatInput(chat);
-  HandleChatActions(chat, camera, player);
+  HandleChatActions(chat, camera, player, world);
 }
 
 void DrawChat(ChatState *chat) {

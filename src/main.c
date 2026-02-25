@@ -22,10 +22,8 @@ int main(void){
 
   DisableCursor();
 
-
-  Chunk chunk = {0};
-  chunk.position = (Vector3){0,0,0};
-  GenerateFlatChunk(&chunk);
+  World world = {0};
+  InitWorld(&world);
 
   ChatState chat;
   InitChat(&chat);
@@ -42,41 +40,40 @@ int main(void){
       ToggleBorderlessWindowed();
     }
 
-    UpdateChat(&chat, &camera, &player);
+    UpdateWorld(&world, player.position);
+    UpdateChat(&chat, &camera, &player, &world);
+    UpdatePlayer(&player, &camera, &world, dt, !chat.isActive);
 
     Vector3 rayDir = Vector3Normalize(Vector3Subtract(camera.target, camera.position));
-    RaycastResult hit = RayCastToBlock(&chunk, camera.position, rayDir, 10.0F);
+    RaycastResult hit = RayCastToWorld(&world, camera.position, rayDir, 10.0F);
 
     if(!chat.isActive){
 
       UpdateGameCamera(&camera);
-      UpdatePlayer(&player, &camera, &chunk,dt);
 
       if(hit.hit){
         if(IsMouseButtonPressed(MOUSE_LEFT_BUTTON)){
-          SetBlock(&chunk, hit.blockPos, 0);
+          SetBlockInWorld(&world, hit.blockPos, 0);
         }
 
         if(IsMouseButtonPressed(MOUSE_RIGHT_BUTTON)){
           Vector3 placePos = Vector3Add(hit.blockPos, hit.normal);
-
-          SetBlock(&chunk, placePos, 1);
+          SetBlockInWorld(&world, placePos, 1);
         }
       }
     }
 
     BeginDrawing();
     ClearBackground(SKYBLUE);
-
     BeginMode3D(camera);
 
-    DrawChunk(&chunk);
+    DrawWorld(&world);
 
     if(hit.hit){
       DrawBlockHighlight(hit.blockPos);
     }
 
-    DrawPlayerDebug(&chunk, &player);
+    DrawPlayerDebug(&world, &player);
 
     EndMode3D();
 

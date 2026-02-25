@@ -65,7 +65,7 @@ void CommandTP(char *args, CommandContext *ctx){
 }
 
 void CommandHelp(char *args, CommandContext *ctx){
-  for(int i = 0; i < sizeof(availableCommands) / sizeof(CommandInfo); i++){
+  for(int i = 0; i < AVAILABLECOMMANDSCOUNT; i++){
     AddChatHistory(ctx->chat, "%s | %s | %s", availableCommands[i].name, availableCommands[i].use, availableCommands[i].description);
   }
 }
@@ -139,7 +139,7 @@ void CommandDebugAABB(char *args, CommandContext *ctx){
   }
 }
 
-void CommandHandler(char *command, ChatState *chat, Camera3D *camera, Player *player){
+void CommandHandler(char *command, ChatState *chat, Camera3D *camera, Player *player, World *world){
 
   CommandContext ctx = {
     .chat = chat,
@@ -147,6 +147,7 @@ void CommandHandler(char *command, ChatState *chat, Camera3D *camera, Player *pl
     .blockRegistry = blockRegistry,
     .blockCount = GetLoadedBlocksCount(),
     .player = player,
+    .world = world,
   };
 
   char buffer[CHAT_MAX_INPUT_CHARS];
