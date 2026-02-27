@@ -1,8 +1,8 @@
 #include "chunk.h"
+#include "renderer.h"
 #include "world.h"
 #include "block_system.h"
 #include "raylib.h"
-#include "renderer.h"
 
 void GenerateFlatChunk(Chunk *chunk){
   for(int x = 0; x < CHUNK_SIZE; x++){
@@ -18,24 +18,17 @@ void GenerateFlatChunk(Chunk *chunk){
       }
     }
   }
+  chunk->isDirty = true;
+  chunk->hasMesh = false;
 }
 
 void DrawChunk(World *world, Chunk *chunk){
-  for(int x = 0; x < CHUNK_SIZE; x++){
-    for(int y = 0; y < CHUNK_SIZE; y++){
-      for(int z = 0; z < CHUNK_SIZE; z++){
-
-        unsigned char id = chunk->data[x][y][z];
-
-        if(id == 0){continue;}
-        
-        BlockType* def = GetBlockDef(id);
-
-        DrawCubeCulled(world, chunk, x, y, z, def->color);
-
-      }
-    }
+  
+  if(chunk->isDirty){
+    BuildChunkMesh(world, chunk);
   }
+
+  RenderChunkMesh(chunk);
 }
 
 int GetBlockIDInChunk(Chunk *chunk, Vector3 localPos){
@@ -57,5 +50,6 @@ void SetBlockInChunk(Chunk *chunk, Vector3 localPos, unsigned char blockID){
 
   if(x >= 0 && x < CHUNK_SIZE && y >= 0 && y < CHUNK_SIZE && z >= 0 && z < CHUNK_SIZE){
     chunk->data[x][y][z] = blockID;
+    chunk->isDirty = true;
   }
 }

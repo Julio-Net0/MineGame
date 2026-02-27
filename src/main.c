@@ -14,7 +14,9 @@
 int main(void){
   ChangeDirectory(GetApplicationDirectory());
 
-  InitWindow(INITIAL_WIDTH, INITIAL_HEIGHT, "MineGame Beta1");
+  InitWindow(INITIAL_WIDTH, INITIAL_HEIGHT, "MineGame Beta 2");
+
+  InitRenderer();
 
   Camera3D camera = CreateGameCamera();
 
@@ -66,7 +68,6 @@ int main(void){
     EndMode3D();
 
     DrawHUD(&player, &world, true);
-
     DrawChat(&chat);
 
     DrawFPS(10, 10);

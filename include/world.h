@@ -7,7 +7,7 @@
 #define BLOCK_SIZE 1.0F
 #define BLOCK_HALF_SIZE (BLOCK_SIZE / 2.0F)
 
-#define MAX_ACTIVE_CHUNKS 9
+#define MAX_ACTIVE_CHUNKS 441
 
 typedef struct World {
   Chunk chunks[MAX_ACTIVE_CHUNKS];
@@ -28,5 +28,7 @@ typedef struct {
 int GetBlockIDFromWorld(World *world, Vector3 globalPos);
 void SetBlockInWorld(World *world, Vector3 globalPos, unsigned char blockID);
 RaycastResult RayCastToWorld(World *world, Vector3 rayOrigin, Vector3 rayDir, float maxDistance);
+Chunk* GetChunkFromWorld(World *world, int chunkX, int chunkZ);
+Chunk* GetChunkAtPos(World *world, Vector3 pos);
 
 #endif

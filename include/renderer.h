@@ -13,10 +13,10 @@ typedef enum {
   FACE_BACK
 } BlockFace;
 
-void DrawBlockFace(Vector3 pos, Color color, BlockFace face);
-
-void DrawCubeCulled(World *world, Chunk *chunk, int x, int y, int z, Color color);
-
+void InitRenderer(void);
+void BuildChunkMesh(World *world, Chunk *chunk);
+void RenderChunkMesh(Chunk *chunk);
+void UnloadChunkMesh(Chunk *chunk);
 void DrawBlockHighlight(Vector3 pos);
 
 #endif

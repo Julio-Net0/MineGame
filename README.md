@@ -12,8 +12,8 @@ Goal: Transform the engine from a free-roaming spectator into a physically-groun
 - [X] **Physical Embodiment:** Replace the flying camera with a physics-aware Player entity using AABB (Axis-Aligned Bounding Box) collision detection.
 - [X] **Dynamic World Management:** Implement a World Handler to manage, render, and "stitch" together multiple chunks (Mesh-culling across chunk borders).
 - [X] **Player Mechanics:** Implementation of gravity, jumping, and ground-level movement (step-up/step-down logic).
-- [ ] **Gameplay Loop:** Basic inventory system with a HUD Hotbar and block selection (1-9 keys) to choose materials for building.
-- [ ] **Performance Pass:** Transition from Immediate Mode rendering to Vertex Buffer Objects (VBOs) to support larger view distances.
+- [X] **Gameplay Loop:** Basic inventory system with a HUD Hotbar and block selection (1-9 keys) to choose materials for building.
+- [X] **Performance Pass:** Transition from Immediate Mode rendering to Vertex Buffer Objects (VBOs) to support larger view distances.
 
 ## Beta 1 ✅
 Goal: Establish a functional "Creative Mode" foundation.
@@ -22,7 +22,7 @@ Goal: Establish a functional "Creative Mode" foundation.
 - [X] **Block Placement:** Ability to add blocks to the grid in real-time.
 - [X] **Block Destruction:** Ability to remove blocks from the grid.
 
-## 🛠️Tech stack
+## 🤓 Tech Stack
 
 <p align="center">
   <img src="images/README/jira.png" alt="Jira" width="600">
