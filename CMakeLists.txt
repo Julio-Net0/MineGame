@@ -26,6 +26,7 @@ add_executable(${PROJECT_NAME}
   src/commands.c 
   src/player.c
   src/chunk.c
+  src/hud.c
 )
 
 target_link_libraries(${PROJECT_NAME} raylib)

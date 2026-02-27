@@ -10,6 +10,7 @@
 #define PLAYER_SIZE (Vector3){0.6F, 1.8F, 0.6F}
 #define PLAYER_RADIUS PLAYER_SIZE.x / 2.0F
 #define PLAYER_SPEED 5.0F
+#define HOTBAR_SIZE 9
 #define PLAYER_HEAD_OFFSET 1.6F
 #define PLAYER_DEBUG_AABB_SQUARES_SIZE 0.05F
 #define PLAYER_DEBUG_AABB_WIRES_SIZE PLAYER_DEBUG_AABB_SQUARES_SIZE * 1.5F
@@ -20,6 +21,10 @@ typedef struct {
   Vector3 position;
   Vector3 velocity;
   Vector3 size;
+  unsigned char hotbar[HOTBAR_SIZE];
+  int selectedHotbarSlot;
+  float reachDistance;
+  RaycastResult targetBlock;
 
   float radius;
   float speed;
@@ -36,5 +41,7 @@ Player InitPlayer(Vector3 spawnPos);
 
 void UpdatePlayer(Player *player, Camera3D *camera, World *world, float dt, bool hasControl);
 void DrawPlayerDebug(World *world, Player *player);
+
+void HandlePlayerInteraction(Player *player, Camera3D *camera, World *world, bool hasControl);
 
 #endif

@@ -1,4 +1,5 @@
 #include "block_system.h"
+#include "hud.h"
 #include "raylib.h"
 #include "camera.h"
 #include "renderer.h"
@@ -44,24 +45,11 @@ int main(void){
     UpdateChat(&chat, &camera, &player, &world);
     UpdatePlayer(&player, &camera, &world, dt, !chat.isActive);
 
-    Vector3 rayDir = Vector3Normalize(Vector3Subtract(camera.target, camera.position));
-    RaycastResult hit = RayCastToWorld(&world, camera.position, rayDir, 10.0F);
-
     if(!chat.isActive){
-
       UpdateGameCamera(&camera);
-
-      if(hit.hit){
-        if(IsMouseButtonPressed(MOUSE_LEFT_BUTTON)){
-          SetBlockInWorld(&world, hit.blockPos, 0);
-        }
-
-        if(IsMouseButtonPressed(MOUSE_RIGHT_BUTTON)){
-          Vector3 placePos = Vector3Add(hit.blockPos, hit.normal);
-          SetBlockInWorld(&world, placePos, 1);
-        }
-      }
     }
+
+    HandlePlayerInteraction(&player, &camera, &world, !chat.isActive);
 
     BeginDrawing();
     ClearBackground(SKYBLUE);
@@ -69,17 +57,17 @@ int main(void){
 
     DrawWorld(&world);
 
-    if(hit.hit){
-      DrawBlockHighlight(hit.blockPos);
+    if(player.targetBlock.hit){
+      DrawBlockHighlight(player.targetBlock.blockPos);
     }
 
     DrawPlayerDebug(&world, &player);
 
     EndMode3D();
 
-    DrawChat(&chat);
+    DrawHUD(&player, &world, true);
 
-    DrawCircle(GetScreenWidth() / 2, GetScreenHeight() / 2, 2, WHITE);
+    DrawChat(&chat);
 
     DrawFPS(10, 10);
 

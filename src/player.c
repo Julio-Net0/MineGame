@@ -22,10 +22,24 @@ Player InitPlayer(Vector3 spawnPos){
   p.size = PLAYER_SIZE;
   p.radius = PLAYER_RADIUS;
   p.speed = PLAYER_SPEED;
+  p.selectedHotbarSlot = 0;
+
+  for(int i = 0; i < HOTBAR_SIZE; i++){
+    p.hotbar[i] = 0;
+  }
+
+  p.hotbar[0] = 1;
+  p.hotbar[1] = 2;
+  p.hotbar[2] = 3;
+  p.hotbar[3] = 4;
+  p.hotbar[4] = 5;
+
+  p.reachDistance = 10.0F;
   p.headOffset = PLAYER_HEAD_OFFSET;
   p.isGrounded = false;
   p.noclip = false;
   p.debug_aabb = false;
+
   return p;
 }
 
@@ -309,6 +323,42 @@ void DrawPlayerDebug(World *world, Player *player){
       DrawCubeWires(facePoints[i], wz, wz, wz, PURPLE);
     }else{
       DrawCubeWires(facePoints[i], wz, wz, wz, ORANGE);
+    }
+  }
+}
+
+void HandlePlayerInteraction(Player *player, Camera3D *camera, World *world, bool hasControl){
+
+  Vector3 rayDir = Vector3Normalize(Vector3Subtract(camera->target, camera->position));
+  player->targetBlock = RayCastToWorld(world, camera->position, rayDir, player->reachDistance);
+
+  if(!hasControl) { return; }
+
+  for(int i = 0; i < HOTBAR_SIZE; i++){
+    if(IsKeyPressed(KEY_ONE + i)){
+      player->selectedHotbarSlot = i;
+    }
+  }
+
+  float wheel = GetMouseWheelMove();
+  if(wheel != 0.0F){
+    player->selectedHotbarSlot -= (int)wheel;
+    if(player->selectedHotbarSlot < 0) { player->selectedHotbarSlot = HOTBAR_SIZE - 1; }
+    if(player->selectedHotbarSlot > HOTBAR_SIZE - 1) { player->selectedHotbarSlot = 0; }
+  }
+
+  if(player->targetBlock.hit){
+
+    if(IsMouseButtonPressed(MOUSE_LEFT_BUTTON)){
+      SetBlockInWorld(world, player->targetBlock.blockPos, 0);
+    }
+
+    if(IsMouseButtonPressed(MOUSE_RIGHT_BUTTON)){
+
+      unsigned char blockInHandID = player->hotbar[player->selectedHotbarSlot];
+
+      Vector3 placePos = Vector3Add(player->targetBlock.blockPos, player->targetBlock.normal);
+      SetBlockInWorld(world, placePos, blockInHandID);
     }
   }
 }
