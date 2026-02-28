@@ -2,6 +2,7 @@
 #define RENDERER_H
 
 #include "raylib.h"
+#include "player.h"
 #include "world.h"
 
 typedef enum {
@@ -17,6 +18,8 @@ void InitRenderer(void);
 void BuildChunkMesh(World *world, Chunk *chunk);
 void RenderChunkMesh(Chunk *chunk);
 void UnloadChunkMesh(Chunk *chunk);
+void DrawWorld(World *world);
 void DrawBlockHighlight(Vector3 pos);
+void DrawPlayerDebug(World *world, Player *player);
 
 #endif

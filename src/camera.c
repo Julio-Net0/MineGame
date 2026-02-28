@@ -1,7 +1,6 @@
 #include "camera.h"
 #include "raylib.h"
 #include "raymath.h"
-#include "rcamera.h"
 #include <math.h>
 
 #define WORLD_UP_VECTOR (Vector3){0.0F, 1.0F, 0.0F}
@@ -16,6 +15,9 @@
 
 #define MOUSE_SENSITIVITY 0.05F
 
+static float cameraPitch = 0.0F;
+static float cameraYaw = 0.0F;
+
 Camera3D CreateGameCamera(void){
   Camera3D camera = { 0 };
   camera.position = CAMERA_POSITION;
@@ -26,15 +28,11 @@ Camera3D CreateGameCamera(void){
   return camera;
 }
 
-static float cameraPitch = 0.0F;
-static float cameraYaw = 0.0F;
-
-void UpdateGameCamera(Camera3D *camera) {
-    Vector2 mouseDelta = GetMouseDelta();
+void UpdateGameCamera(Camera3D *camera, Vector2 lookDelta){
     float sensitivity = MOUSE_SENSITIVITY;
 
-    cameraYaw -= (mouseDelta.x * sensitivity);
-    cameraPitch -= (mouseDelta.y * sensitivity);
+    cameraYaw -= (lookDelta.x * sensitivity);
+    cameraPitch -= (lookDelta.y * sensitivity);
 
     if (cameraPitch > CAMERA_PITCH_LIMIT) { cameraPitch = CAMERA_PITCH_LIMIT; }
     if (cameraPitch < -CAMERA_PITCH_LIMIT) { cameraPitch = -CAMERA_PITCH_LIMIT; }

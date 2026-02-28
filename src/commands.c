@@ -14,7 +14,7 @@ void CommandList(char *args, CommandContext *ctx);
 void CommandNoclip(char *args, CommandContext *ctx);
 void CommandDebugAABB(char *args, CommandContext *ctx);
 
-CommandInfo availableCommands[] = {
+static CommandInfo availableCommands[] = {
   {"/help", "Use: /help", "List all the commands available and how to use them", CommandHelp},
   {"/tp", "Use: /tp <x> <Y> <z>", "Teleports to coordinates x y z", CommandTP},
   {"/pos", "Use: /pos", "Returns your current position", CommandPos},
@@ -23,7 +23,7 @@ CommandInfo availableCommands[] = {
   {"/debug_aabb", "Use: /debug_aabb <1/0>", "Activate or deactivate AABB debug overlay", CommandDebugAABB},
 };
 
-const int AVAILABLECOMMANDSCOUNT = sizeof(availableCommands) / sizeof(availableCommands[0]);
+static const int AVAILABLECOMMANDSCOUNT = sizeof(availableCommands) / sizeof(availableCommands[0]);
 
 void ReturnCommand(ChatState *chat, int logLevel, const char *format, ...){
 
@@ -50,9 +50,9 @@ void CommandTP(char *args, CommandContext *ctx){
   char *z_str = strtok(NULL, " ");
 
   if(x_str && y_str && z_str){
-    float x = atof(x_str);
-    float y = atof(y_str);
-    float z = atof(z_str);
+    float x = (float)atof(x_str);
+    float y = (float)atof(y_str);
+    float z = (float)atof(z_str);
 
     ctx->player->position = (Vector3){x, y, z};
     ctx->player->velocity = (Vector3){0,0,0};
@@ -65,12 +65,15 @@ void CommandTP(char *args, CommandContext *ctx){
 }
 
 void CommandHelp(char *args, CommandContext *ctx){
+  (void)args;
+
   for(int i = 0; i < AVAILABLECOMMANDSCOUNT; i++){
     AddChatHistory(ctx->chat, "%s | %s | %s", availableCommands[i].name, availableCommands[i].use, availableCommands[i].description);
   }
 }
 
 void CommandPos(char *args, CommandContext *ctx){
+  (void)args;
 
   float posX = ctx->player->position.x;
   float posY = ctx->player->position.y;
@@ -87,11 +90,14 @@ void CommandList(char *args, CommandContext *ctx){
     return;
   }
 
-  for(int i = 0; i < ctx->blockCount; i++){
-    AddChatHistory(ctx->chat, "[ID: %d] %s",
-        ctx->blockRegistry[i].id,
-        ctx->blockRegistry[i].name);
+  int printed = 0;
+  for(int i = 0; i < BLOCK_REGISTRY_SIZE; i++){
+    if(ctx->blockRegistry[i].id != -1){
+      AddChatHistory(ctx->chat, "[ID: %d] %s", ctx->blockRegistry[i].id, ctx->blockRegistry[i].name);
+      printed++;
+    }
   }
+  ReturnCommand(ctx->chat, LOG_INFO, "Listed %d blocks", printed);
 }
 
 void CommandNoclip(char *args, CommandContext *ctx){

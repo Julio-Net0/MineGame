@@ -28,18 +28,12 @@ void AddChatHistory(ChatState *chat, const char *format, ...){
   if(chat->historyCount < CHAT_MAX_HISTORY){
     strncpy(chat->history[chat->historyCount].text, message, CHAT_MAX_INPUT_CHARS - 1);
     chat->history[chat->historyCount].text[CHAT_MAX_INPUT_CHARS - 1] = '\0';
-      chat->history[chat->historyCount].timeCreated = GetTime();
+    chat->history[chat->historyCount].timeCreated = GetTime();
     chat->historyCount++;
   }else{
-    for(int i = 0; i < CHAT_MAX_HISTORY - 1; i++){
-      strcpy(chat->history[i].text, chat->history[i + 1].text);
-
-      chat->history[i].timeCreated = chat->history[i + 1].timeCreated;
-    }
-
+    memmove(&chat->history[0], &chat->history[1], (CHAT_MAX_HISTORY - 1) * sizeof(ChatMessage));
     strncpy(chat->history[CHAT_MAX_HISTORY - 1].text, message, CHAT_MAX_INPUT_CHARS - 1);
     chat->history[CHAT_MAX_HISTORY - 1].text[CHAT_MAX_INPUT_CHARS - 1] = '\0';
-
     chat->history[CHAT_MAX_HISTORY - 1].timeCreated = GetTime();
   }
 }
@@ -90,7 +84,7 @@ static void HandleChatActions(ChatState *chat, Camera3D *camera, Player *player,
       CommandHandler(chat->inputText, chat, camera, player, world);
     }else{
       TraceLog(LOG_NONE, chat->inputText);
-      AddChatHistory(chat, chat->inputText);
+      AddChatHistory(chat, "%s", chat->inputText);
     }
 
     chat->letterCount = 0;

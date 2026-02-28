@@ -1,21 +1,24 @@
 #include "world.h"
 #include "chunk.h"
 #include "raylib.h"
-#include "raymath.h"
+#include "renderer.h"
 #include <math.h>
 #include <stddef.h>
 
+#define DDA_MAX_CROSSED_AXES 3.0F
+
+typedef struct {
+  float tMaxX, tMaxY, tMaxZ;
+  float tDeltaX, tDeltaY, tDeltaZ;
+  float distanceTravelled;
+
+  int voxelX, voxelY, voxelZ;
+  int stepX, stepY, stepZ;
+  int lastStep;
+} DDAState;
+
 void InitWorld(World *world){
   world->chunkCount = 0;
-}
-
-static int GetChunkIndex(World *world, int chunkX, int chunkZ){
-  for(int i = 0; i < world->chunkCount; i++){
-    if(world->chunks[i].chunkX == chunkX && world->chunks[i].chunkZ == chunkZ){
-      return i;
-    }
-  }
-  return -1;
 }
 
 Chunk* GetChunkFromWorld(World *world, int chunkX, int chunkZ){
@@ -28,7 +31,6 @@ Chunk* GetChunkFromWorld(World *world, int chunkX, int chunkZ){
 }
 
 Chunk* GetChunkAtPos(World *world, Vector3 pos){
-
   int chunkX = (int)floorf(pos.x / CHUNK_SIZE);
   int chunkZ = (int)floorf(pos.z / CHUNK_SIZE);
 
@@ -51,6 +53,11 @@ static void MarkUsefulChunks(World *world, int pChunkX, int pChunkZ, int renderD
 static void CreateOrRecycleChunk(World *world, int chunkX, int chunkZ, bool *keepChunk){
   for(int i = 0; i < MAX_ACTIVE_CHUNKS; i++){
     if(i >= world->chunkCount || !keepChunk[i]){
+
+      if(world->chunks[i].hasMesh){
+        UnloadChunkMesh(&world->chunks[i]);
+      }
+
       world->chunks[i].chunkX = chunkX;
       world->chunks[i].chunkZ = chunkZ;
       GenerateFlatChunk(&world->chunks[i]);
@@ -63,33 +70,30 @@ static void CreateOrRecycleChunk(World *world, int chunkX, int chunkZ, bool *kee
   }
 }
 
-void UpdateWorld(World *world, Vector3 playerPos){
+void UpdateWorld(World *world, Vector3 playerPos, int renderDist){
+  int requiredChunks = (2 * renderDist + 1) * (2 * renderDist + 1);
+  if(requiredChunks > MAX_ACTIVE_CHUNKS){
+    renderDist = MAX_RENDER_DISTANCE;
+  }
+
   int pChunkX = (int)floorf(playerPos.x / CHUNK_SIZE);
   int pChunkZ = (int)floorf(playerPos.z / CHUNK_SIZE);
 
-  int renderDist = 10;
-
-  bool keepChunk[MAX_ACTIVE_CHUNKS] = {false};
+  bool keepChunk[MAX_ACTIVE_CHUNKS] = { false };
 
   MarkUsefulChunks(world, pChunkX, pChunkZ, renderDist, keepChunk);
 
   for(int x = pChunkX - renderDist; x <= pChunkX + renderDist; x++){
     for(int z = pChunkZ - renderDist; z <= pChunkZ + renderDist; z++){
 
-      if(GetChunkIndex(world, x, z) == -1){
+      if(GetChunkFromWorld(world, x, z) == NULL){
         CreateOrRecycleChunk(world, x, z, keepChunk);
       }
     }
   }
 }
 
-void DrawWorld(World *world){
-  for(int i = 0; i < world->chunkCount; i++){
-    DrawChunk(world, &world->chunks[i]);
-  }
-}
-
-Chunk* GetLocalCoords(World *world, Vector3 globalPos, int *localX, int *localY, int *localZ){
+static Chunk* GetLocalCoords(World *world, Vector3 globalPos, int *localX, int *localY, int *localZ){
   *localY = (int)floorf(globalPos.y);
 
   if(*localY < 0 || *localY >= CHUNK_SIZE) { return NULL; }
@@ -100,30 +104,10 @@ Chunk* GetLocalCoords(World *world, Vector3 globalPos, int *localX, int *localY,
   *localX = (int)floorf(globalPos.x) - (chunkX * CHUNK_SIZE);
   *localZ = (int)floorf(globalPos.z) - (chunkZ * CHUNK_SIZE);
 
-  for(int i = 0; i < world->chunkCount; i++){
-    if(world->chunks[i].chunkX == chunkX && world->chunks[i].chunkZ == chunkZ){
-      return &world->chunks[i];
-    }
-  }
-  return NULL;
-}
-
-int GetBlockIDFromWorld(World *world, Vector3 globalPos){
-  int lx; 
-  int ly; 
-  int lz;
-
-  Chunk *c = GetLocalCoords(world, globalPos, &lx, &ly, &lz);
-
-  if(c != NULL){
-    return GetBlockIDInChunk(c, (Vector3){(float)lx, (float)ly, (float)lz});
-  }
-
-  return 0;
+  return GetChunkFromWorld(world, chunkX, chunkZ);
 }
 
 void SetBlockInWorld(World *world, Vector3 pos, unsigned char blockID){
-
   Chunk *chunk = GetChunkAtPos(world, pos);
     if (chunk == NULL) { return; }
 
@@ -157,37 +141,83 @@ void SetBlockInWorld(World *world, Vector3 pos, unsigned char blockID){
     }
 }
 
+int GetBlockIDFromWorld(World *world, Vector3 globalPos){
+  int lx; 
+  int ly; 
+  int lz;
+
+  Chunk *c = GetLocalCoords(world, globalPos, &lx, &ly, &lz);
+
+  if(c != NULL){
+    return GetBlockIDInChunk(c, (Vector3){(float)lx, (float)ly, (float)lz});
+  }
+
+  return 0;
+}
+
+static DDAState InitDDAState(Vector3 rayOrigin, Vector3 rayDir){
+  DDAState state = {0};
+
+  float startX = rayOrigin.x + BLOCK_HALF_SIZE;
+  float startY = rayOrigin.y + BLOCK_HALF_SIZE;
+  float startZ = rayOrigin.z + BLOCK_HALF_SIZE;
+
+  state.voxelX = (int)floorf(startX);
+  state.voxelY = (int)floorf(startY);
+  state.voxelZ = (int)floorf(startZ);
+
+  state.stepX = (rayDir.x > 0) - (rayDir.x < 0);
+  state.stepY = (rayDir.y > 0) - (rayDir.y < 0);
+  state.stepZ = (rayDir.z > 0) - (rayDir.z < 0);
+
+  state.tDeltaX = (rayDir.x != 0) ? fabsf(BLOCK_SIZE / rayDir.x) : INFINITY;
+  state.tDeltaY = (rayDir.y != 0) ? fabsf(BLOCK_SIZE / rayDir.y) : INFINITY;
+  state.tDeltaZ = (rayDir.z != 0) ? fabsf(BLOCK_SIZE / rayDir.z) : INFINITY;
+
+  state.tMaxX = (state.stepX > 0) ? (floorf(startX) + BLOCK_SIZE - startX) * state.tDeltaX : (startX - floorf(startX)) * state.tDeltaX;
+  state.tMaxY = (state.stepY > 0) ? (floorf(startY) + BLOCK_SIZE - startY) * state.tDeltaY : (startY - floorf(startY)) * state.tDeltaY;
+  state.tMaxZ = (state.stepZ > 0) ? (floorf(startZ) + BLOCK_SIZE - startZ) * state.tDeltaZ : (startZ - floorf(startZ)) * state.tDeltaZ;
+
+  return state;
+}
+
+static void StepDDA(DDAState *state){
+  if(state->tMaxX < state->tMaxY){
+    if(state->tMaxX < state->tMaxZ){
+      state->voxelX += state->stepX;
+      state->distanceTravelled = state->tMaxX;
+      state->tMaxX += state->tDeltaX;
+      state->lastStep = 0;
+    } else {
+      state->voxelZ += state->stepZ;
+      state->distanceTravelled = state->tMaxZ;
+      state->tMaxZ += state->tDeltaZ;
+      state->lastStep = 2;
+    }
+  } else {
+    if(state->tMaxY < state->tMaxZ){
+      state->voxelY += state->stepY;
+      state->distanceTravelled = state->tMaxY;
+      state->tMaxY += state->tDeltaY;
+      state->lastStep = 1;
+    } else {
+      state->voxelZ += state->stepZ;
+      state->distanceTravelled = state->tMaxZ;
+      state->tMaxZ += state->tDeltaZ;
+      state->lastStep = 2;
+    }
+  }
+}
+
 RaycastResult RayCastToWorld(World *world, Vector3 rayOrigin, Vector3 rayDir, float maxDistance){
   RaycastResult result = { .hit = false, .blockPos ={0}, .blockID = 0, .normal = {0} };
 
-  float startX = rayOrigin.x + 0.5f;
-  float startY = rayOrigin.y + 0.5f;
-  float startZ = rayOrigin.z + 0.5f;
+  DDAState dda = InitDDAState(rayOrigin, rayDir);
 
-  int voxelX = (int)floorf(startX);
-  int voxelY = (int)floorf(startY);
-  int voxelZ = (int)floorf(startZ);
-
-  int stepX = (rayDir.x > 0) ? 1 : ((rayDir.x < 0) ? -1 : 0);
-  int stepY = (rayDir.y > 0) ? 1 : ((rayDir.y < 0) ? -1 : 0);
-  int stepZ = (rayDir.z > 0) ? 1 : ((rayDir.z < 0) ? -1 : 0);
-
-  float tDeltaX = (rayDir.x != 0) ? fabsf(1.0f / rayDir.x) : 999999.0f;
-  float tDeltaY = (rayDir.y != 0) ? fabsf(1.0f / rayDir.y) : 999999.0f;
-  float tDeltaZ = (rayDir.z != 0) ? fabsf(1.0f / rayDir.z) : 999999.0f;
-
-  float tMaxX = (stepX > 0) ? (floorf(startX) + 1.0f - startX) * tDeltaX : (startX - floorf(startX)) * tDeltaX;
-  float tMaxY = (stepY > 0) ? (floorf(startY) + 1.0f - startY) * tDeltaY : (startY - floorf(startY)) * tDeltaY;
-  float tMaxZ = (stepZ > 0) ? (floorf(startZ) + 1.0f - startZ) * tDeltaZ : (startZ - floorf(startZ)) * tDeltaZ;
-
-  int lastStep = 0;
-  float distanceTravelled = 0.0f;
-
-  int maxIter = (int)(maxDistance * 3.0f) + 1; 
+  int maxIter = (int)(maxDistance * DDA_MAX_CROSSED_AXES) + 1; 
 
   for(int i = 0; i < maxIter; i++){
-
-    Vector3 checkPos = { (float)voxelX, (float)voxelY, (float)voxelZ };
+    Vector3 checkPos = { (float)dda.voxelX, (float)dda.voxelY, (float)dda.voxelZ };
     int id = GetBlockIDFromWorld(world, checkPos);
 
     if(id != 0){
@@ -195,40 +225,16 @@ RaycastResult RayCastToWorld(World *world, Vector3 rayOrigin, Vector3 rayDir, fl
       result.blockPos = checkPos;
       result.blockID = id;
 
-      if(lastStep == 0) result.normal = (Vector3){ (float)-stepX, 0, 0 };
-      else if(lastStep == 1) result.normal = (Vector3){ 0, (float)-stepY, 0 };
-      else if(lastStep == 2) result.normal = (Vector3){ 0, 0, (float)-stepZ };
+      if(dda.lastStep == 0) { result.normal = (Vector3){ (float)-dda.stepX, 0, 0 }; }
+      else if(dda.lastStep == 1) { result.normal = (Vector3){ 0, (float)-dda.stepY, 0 }; }
+      else if(dda.lastStep == 2) { result.normal = (Vector3){ 0, 0, (float)-dda.stepZ }; }
 
       return result;
     }
 
-    if(tMaxX < tMaxY){
-      if(tMaxX < tMaxZ){
-        voxelX += stepX;
-        distanceTravelled = tMaxX;
-        tMaxX += tDeltaX;
-        lastStep = 0;
-      } else {
-        voxelZ += stepZ;
-        distanceTravelled = tMaxZ;
-        tMaxZ += tDeltaZ;
-        lastStep = 2;
-      }
-    } else {
-      if(tMaxY < tMaxZ){
-        voxelY += stepY;
-        distanceTravelled = tMaxY;
-        tMaxY += tDeltaY;
-        lastStep = 1;
-      } else {
-        voxelZ += stepZ;
-        distanceTravelled = tMaxZ;
-        tMaxZ += tDeltaZ;
-        lastStep = 2;
-      }
-    }
+    StepDDA(&dda);
 
-    if(distanceTravelled > maxDistance) break;
+    if(dda.distanceTravelled > maxDistance) { break; }
   }
 
   return result;

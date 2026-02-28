@@ -7,11 +7,11 @@
 BlockType blockRegistry[BLOCK_REGISTRY_SIZE];
 static int loadedBlocksCount = 0;
 
-void InitBlockRegisry(void){
+void InitBlockRegistry(void){
   for(int i = 0; i < BLOCK_REGISTRY_SIZE; i++){
     blockRegistry[i].id = -1;
     strcpy(blockRegistry[i].name, "");
-    blockRegistry[i].color = (Color){0,0,0,0};
+    blockRegistry[i].color = BLANK;
     blockRegistry[i].isTransparent = true;
   }
 }
@@ -69,14 +69,10 @@ void ParseBlockFile(const char *filePath){
 
   cJSON* color = cJSON_GetObjectItemCaseSensitive(json, "color");
   if(cJSON_IsString(color) && color->valuestring != NULL){
-    const char* hexStr = color->valuestring;
 
-    if(hexStr[0] == '0' && hexStr[1] == 'x' || hexStr[1] == 'X'){
-      hexStr += 2;
-    }
-    
-    unsigned int hexValue = (unsigned int)strtoul(hexStr, NULL, 16);
+    unsigned int hexValue = (unsigned int)strtoul(color->valuestring, NULL, 0);
     block->color = GetColor(hexValue);
+
   }else{
     block->color = MAGENTA;
   }

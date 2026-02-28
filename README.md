@@ -6,7 +6,18 @@
 
 A minimalist Minecraft-inspired voxel engine built from scratch in **C17** using the **Raylib** library. This project focuses on learning game engine fundamentals, memory management, and clean code practices.
 
-## 🚀 Roadmap to Beta 2
+## 🚀 Roadmap to Beta 3
+Goal: Transform the optimized rendering engine into a dynamic, infinite, visually polished, and persistent voxel game world.
+- [ ] Data Architecture Upgrade: Replace the linear chunk array with an O(1) Hash Map or 2D Spatial Grid to eliminate CPU bottlenecks during chunk lookups and recover maximum FPS.
+- [ ] Texture Atlas & UV Mapping: Transition from solid vertex colors to actual block graphics by mapping a single global texture image onto the VBOs.
+- [ ] Procedural Terrain Generation: Integrate Perlin or Simplex noise algorithms to generate organic landscapes, mountains, valleys, and underground caves instead of flat planes.
+- [ ] Multithreaded Chunk Processing: Implement background Worker Threads to handle chunk generation and meshing in parallel, eliminating all gameplay stutters when crossing chunk borders.
+- [ ] World Persistence (Save/Load): Develop a binary serialization system with RLE (Run-Length Encoding) compression to save modified chunks to disk and load them seamlessly, preserving player creations.
+- [ ] Frustum Culling: Add camera-aware mathematics to completely ignore and skip rendering chunks that are behind the player or outside the field of view, maximizing GPU efficiency.
+- [ ] Voxel Ambient Occlusion (AO): Calculate smooth, localized shadows on block vertices based on neighboring geometry to add visual depth and that classic "voxel lighting" feel to the world.
+- [ ] Translucency & Render Passes: Split chunk meshes into "Opaque" and "Transparent" passes to correctly render glass, water, and foliage without OpenGL depth-sorting bugs.
+
+## Beta 2 ✅
 Goal: Transform the engine from a free-roaming spectator into a physically-grounded game world.
 - [X] **Debug Console & Command System:** Implement an in-game text terminal to execute logic functions, list loaded assets from cJSON, toggle debug overlays, etc.
 - [X] **Physical Embodiment:** Replace the flying camera with a physics-aware Player entity using AABB (Axis-Aligned Bounding Box) collision detection.

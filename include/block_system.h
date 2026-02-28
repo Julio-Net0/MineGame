@@ -8,23 +8,20 @@
 #define MAX_BLOCK_NAME_SIZE 32
 
 typedef struct {
-  int id;
-  char name[MAX_BLOCK_NAME_SIZE];
   Color color;
+  int id;
+
+  char name[MAX_BLOCK_NAME_SIZE];
+
   bool isTransparent;
 } BlockType;
 
 extern BlockType blockRegistry[BLOCK_REGISTRY_SIZE];
 
-void InitBlockRegisry(void);
+void InitBlockRegistry(void);
 void LoadAllBlockDefinitions(const char* directoryPath);
-
 void ParseBlockFile(const char* filePath);
-bool IsValidBlockFile(const char* fileName);
-
 BlockType* GetBlockDef(int id);
-int GetBlockIDByName(const char* name);
-
 int GetLoadedBlocksCount(void);
 
 #endif

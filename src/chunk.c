@@ -1,13 +1,12 @@
 #include "chunk.h"
 #include "renderer.h"
 #include "world.h"
-#include "block_system.h"
 #include "raylib.h"
 
 void GenerateFlatChunk(Chunk *chunk){
   for(int x = 0; x < CHUNK_SIZE; x++){
-    for(int z = 0; z < CHUNK_SIZE; z++){
-      for(int y = 0; y < CHUNK_SIZE; y++){
+    for(int y = 0; y < CHUNK_SIZE; y++){
+      for(int z = 0; z < CHUNK_SIZE; z++){
         if(y < 4){
           chunk->data[x][y][z] = 2;
         }else if(y < 10){

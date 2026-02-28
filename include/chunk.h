@@ -11,13 +11,17 @@ typedef struct World World;
 #define BLOCK_HALF_SIZE (BLOCK_SIZE / 2.0F)
 
 typedef struct {
+  Mesh mesh;
+
+  unsigned char data[CHUNK_SIZE][CHUNK_SIZE][CHUNK_SIZE];
+
+  Vector3 worldPosition;
+
   int chunkX;
   int chunkZ;
-  unsigned char data[CHUNK_SIZE][CHUNK_SIZE][CHUNK_SIZE];
-  Mesh mesh;
+
   bool isDirty;
   bool hasMesh;
-  Vector3 worldPosition;
 } Chunk;
 
 void GenerateFlatChunk(Chunk *chunk);

@@ -4,14 +4,6 @@
 #include "world.h"
 #include <math.h>
 
-#define COLLISION_POINTS 5
-
-static const float COLLISION_EPSILON = 0.01F;
-static const float AABB_OFFSET_MARGIN = 0.001F;
-
-static const float VERTICAL_RADIUS_SHRINK = 0.05F;
-static const float LATERAL_Y_MARGIN = 0.1F;
-
 Player InitPlayer(Vector3 spawnPos){
   
   Player p = {0};
@@ -23,24 +15,25 @@ Player InitPlayer(Vector3 spawnPos){
   p.radius = PLAYER_RADIUS;
   p.speed = PLAYER_SPEED;
   p.selectedHotbarSlot = 0;
-
-  for(int i = 0; i < HOTBAR_SIZE; i++){
-    p.hotbar[i] = 0;
-  }
-
-  p.hotbar[0] = 1;
-  p.hotbar[1] = 2;
-  p.hotbar[2] = 3;
-  p.hotbar[3] = 4;
-  p.hotbar[4] = 5;
-
-  p.reachDistance = 10.0F;
+  p.reachDistance = PLAYER_REACH_DISTANCE;
   p.headOffset = PLAYER_HEAD_OFFSET;
   p.isGrounded = false;
   p.noclip = false;
   p.debug_aabb = false;
 
+  SetHotbarSlot(&p, 0, 1);
+  SetHotbarSlot(&p, 1, 2);
+  SetHotbarSlot(&p, 2, 3);
+  SetHotbarSlot(&p, 3, 4);
+  SetHotbarSlot(&p, 4, 5);
+
   return p;
+}
+
+void SetHotbarSlot(Player *player, int slot, unsigned char blockID){
+  if(slot >= 0 && slot < HOTBAR_SIZE){
+    player->hotbar[slot] = blockID;
+  }
 }
 
 bool IsPointSolid(World *world, Vector3 pos){
@@ -51,31 +44,31 @@ bool IsPointSolid(World *world, Vector3 pos){
   return (blockID != 0);
 }
 
-void GetPlayerPoints(Player *player, float r, float yOffset, float epsilon, Vector3 outPoints[COLLISION_POINTS]){
-  float checkY = player->position.y + yOffset + epsilon;
+void GetPlayerPoints(Player *player, PointConfig config, Vector3 outPoints[COLLISION_POINTS]){
+  float checkY = player->position.y + config.yOffset + config.epsilon;
 
   outPoints[0] = (Vector3){ player->position.x,     checkY, player->position.z };
-  outPoints[1] = (Vector3){ player->position.x - r, checkY, player->position.z - r };
-  outPoints[2] = (Vector3){ player->position.x + r, checkY, player->position.z - r };
-  outPoints[3] = (Vector3){ player->position.x - r, checkY, player->position.z + r };
-  outPoints[4] = (Vector3){ player->position.x + r, checkY, player->position.z + r };
+  outPoints[1] = (Vector3){ player->position.x - config.radius, checkY, player->position.z - config.radius };
+  outPoints[2] = (Vector3){ player->position.x + config.radius, checkY, player->position.z - config.radius };
+  outPoints[3] = (Vector3){ player->position.x - config.radius, checkY, player->position.z + config.radius };
+  outPoints[4] = (Vector3){ player->position.x + config.radius, checkY, player->position.z + config.radius };
 }
 
-bool IsAnyPointSolid(World *world, Vector3 points[], int pointsLen){
+static bool IsAnyPointSolid(World *world, Vector3 points[], int pointsLen){
   for(int i = 0; i < pointsLen; i++){
     if(IsPointSolid(world, points[i])) { return true; }
   }
   return false;
 }
 
-bool IsPlayerOnGround(World *world, Player *player){
+static bool IsPlayerOnGround(World *world, Player *player){
   Vector3 bottomPoints[COLLISION_POINTS];
-  GetPlayerPoints(player, player->radius - VERTICAL_RADIUS_SHRINK, 0.0F, -COLLISION_EPSILON, bottomPoints);
+  GetPlayerPoints(player, (PointConfig){ .radius = player->radius - VERTICAL_RADIUS_SHRINK, .yOffset = 0.0F, .epsilon = -COLLISION_EPSILON }, bottomPoints);
 
   return IsAnyPointSolid(world, bottomPoints, COLLISION_POINTS);
 }
 
-bool VerifyBottomCollision(Player *player, World *world, float nextY){
+static bool VerifyBottomCollision(Player *player, World *world, float nextY){
 
   float currentY = player->position.y;
   player->position.y = nextY;
@@ -98,21 +91,21 @@ bool VerifyBottomCollision(Player *player, World *world, float nextY){
   return false;
 }
 
-bool IsPlayerOnTop(World *world, Player *player, float nextY){
+static bool IsPlayerOnTop(World *world, Player *player, float nextY){
 
   float currentY = player->position.y;
 
   player->position.y = nextY;
 
   Vector3 topPoints[COLLISION_POINTS];
-  GetPlayerPoints(player, player->radius - VERTICAL_RADIUS_SHRINK, player->size.y, COLLISION_EPSILON, topPoints);
+  GetPlayerPoints(player, (PointConfig){ .radius = player->radius - VERTICAL_RADIUS_SHRINK, .yOffset = player->size.y, .epsilon = COLLISION_EPSILON }, topPoints);
 
   player->position.y = currentY;
 
   return IsAnyPointSolid(world, topPoints, COLLISION_POINTS);
 }
 
-bool VerifyTopCollision(Player *player, World *world, float nextY){
+static bool VerifyTopCollision(Player *player, World *world, float nextY){
 
   if(player->velocity.y > 0 && IsPlayerOnTop(world, player, nextY)){
     player->velocity.y = 0;
@@ -127,12 +120,12 @@ bool VerifyTopCollision(Player *player, World *world, float nextY){
   return false;
 }
 
-bool IsPlayerCollidingLateral(World *world, Player *player){
+static bool IsPlayerCollidingLateral(World *world, Player *player){
   Vector3 shinPoints[COLLISION_POINTS];
   Vector3 facePoints[COLLISION_POINTS];
 
-  GetPlayerPoints(player, player->radius, LATERAL_Y_MARGIN, 0.0F, shinPoints);
-  GetPlayerPoints(player, player->radius, player->size.y - LATERAL_Y_MARGIN, 0.0F, facePoints);
+  GetPlayerPoints(player, (PointConfig){ .radius = player->radius, .yOffset = LATERAL_Y_MARGIN, .epsilon = 0.0F }, shinPoints);
+  GetPlayerPoints(player, (PointConfig){ .radius = player->radius, .yOffset = player->size.y - LATERAL_Y_MARGIN, .epsilon = 0.0F }, facePoints);
 
   if(IsAnyPointSolid(world, shinPoints, COLLISION_POINTS)) { return true; }
   if(IsAnyPointSolid(world, facePoints, COLLISION_POINTS)) {return true; }
@@ -140,7 +133,7 @@ bool IsPlayerCollidingLateral(World *world, Player *player){
   return false;
 }
 
-bool VerifyXCollision(Player *player, World *world, float nextX){
+static bool VerifyXCollision(Player *player, World *world, float nextX){
 
   if(player->velocity.x == 0) { return false; }
 
@@ -167,7 +160,7 @@ bool VerifyXCollision(Player *player, World *world, float nextX){
   return false;
 }
 
-bool VerifyZCollision(Player *player, World *world, float nextZ){
+static bool VerifyZCollision(Player *player, World *world, float nextZ){
   if(player->velocity.z == 0) { return false; }
 
   float currentZ = player->position.z;
@@ -193,7 +186,7 @@ bool VerifyZCollision(Player *player, World *world, float nextZ){
   return false;
 }
 
-void PhisicalMov(Player *player, World *world,float dt, bool hasControl){
+static void PhysicalMov(Player *player, World *world,float dt, bool hasControl){
 
   if(player->isGrounded && IsKeyPressed(KEY_SPACE) && hasControl){
     player->velocity.y = PLAYER_JUMP_FORCE;
@@ -216,7 +209,7 @@ void PhisicalMov(Player *player, World *world,float dt, bool hasControl){
   if(!VerifyZCollision(player, world, nextZ)) { player->position.z = nextZ; }
 }
 
-void NoClipMov(Player *player, float dt){
+static void NoClipMov(Player *player, float dt){
   player->velocity.y = 0;
   if(IsKeyDown(KEY_SPACE)) { player->position.y += player->speed *dt; }
   if(IsKeyDown(KEY_LEFT_CONTROL)) { player->position.y -= player->speed *dt; }
@@ -225,7 +218,7 @@ void NoClipMov(Player *player, float dt){
   player->position.z += player->velocity.z * dt;
 }
 
-Vector3 HandleInput(bool hasControl){
+static Vector3 HandleInput(bool hasControl){
   Vector3 input = { 0 };
 
   if(!hasControl) { return input; }
@@ -238,14 +231,14 @@ Vector3 HandleInput(bool hasControl){
   return input;
 }
 
-Vector3 CalculateMoveDir(Camera3D *camera, Vector3 input){
+static Vector3 CalculateMoveDir(Camera3D *camera, Vector3 input){
   Vector3 viewVector = Vector3Subtract(camera->target, camera->position);
-  Vector3 foward = Vector3Normalize((Vector3){ viewVector.x, 0, viewVector.z});
-  Vector3 right = Vector3Normalize(Vector3CrossProduct(foward, (Vector3){ 0, 1, 0}));
+  Vector3 forward = Vector3Normalize((Vector3){ viewVector.x, 0, viewVector.z});
+  Vector3 right = Vector3Normalize(Vector3CrossProduct(forward, (Vector3){ 0, 1, 0}));
 
   Vector3 moveDir = { 0 };
 
-  moveDir = Vector3Add(moveDir, Vector3Scale(foward, input.z));
+  moveDir = Vector3Add(moveDir, Vector3Scale(forward, input.z));
   moveDir = Vector3Add(moveDir, Vector3Scale(right, input.x));
 
   if(Vector3Length(moveDir) > 0){
@@ -255,7 +248,7 @@ Vector3 CalculateMoveDir(Camera3D *camera, Vector3 input){
   return moveDir;
 }
 
-void UpdateCameraFollow(Player *player, Camera3D *camera){
+static void UpdateCameraFollow(Player *player, Camera3D *camera){
   Vector3 viewVector = Vector3Subtract(camera->target, camera->position);
 
   camera->position.x = player->position.x;
@@ -275,56 +268,20 @@ void UpdatePlayer(Player *player, Camera3D *camera, World *world, float dt, bool
   player->velocity.z = moveDir.z * player->speed;
 
   if(!player->noclip){
-    PhisicalMov(player, world, dt, hasControl);
+    PhysicalMov(player, world, dt, hasControl);
   }else{
     NoClipMov(player, dt);
   }
 
   UpdateCameraFollow(player, camera);
 }
-void DrawPlayerDebug(World *world, Player *player){
-  if(!player->debug_aabb) { return; }
 
-  Vector3 bottomPoints[COLLISION_POINTS];
-  Vector3 topPoints[COLLISION_POINTS];
-  Vector3 shinPoints[COLLISION_POINTS];
-  Vector3 facePoints[COLLISION_POINTS];
+static void RequestBlockBreak(World *world, Vector3 pos){
+  SetBlockInWorld(world, pos, 0);
+}
 
-  GetPlayerPoints(player, player->radius - VERTICAL_RADIUS_SHRINK, 0.0F, -COLLISION_EPSILON, bottomPoints);
-  GetPlayerPoints(player, player->radius - VERTICAL_RADIUS_SHRINK, player->size.y, COLLISION_EPSILON, topPoints);
-
-  const float LATERALDEBUGRADIUS = player->radius + 0.01F;
-  GetPlayerPoints(player, LATERALDEBUGRADIUS, LATERAL_Y_MARGIN, 0.0F, shinPoints);
-  GetPlayerPoints(player, LATERALDEBUGRADIUS, player->size.y - LATERAL_Y_MARGIN, 0.0F, facePoints);
-
-  float sz = PLAYER_DEBUG_AABB_SQUARES_SIZE;
-  float wz = PLAYER_DEBUG_AABB_WIRES_SIZE;
-
-  for(int i = 0; i < COLLISION_POINTS; i++){
-    if(IsPointSolid(world, bottomPoints[i])){
-      DrawCube(bottomPoints[i], sz, sz, sz, BLUE);
-    }else{
-      DrawCube(bottomPoints[i], sz, sz, sz, RED);
-    }
-    
-    if(IsPointSolid(world, topPoints[i])){
-      DrawCube(topPoints[i], sz, sz, sz, BLUE);
-    }else{
-      DrawCube(topPoints[i], sz, sz, sz, RED);
-    }
-
-    if(IsPointSolid(world, shinPoints[i])){
-      DrawCubeWires(shinPoints[i], wz, wz, wz, PURPLE);
-    }else{
-      DrawCubeWires(shinPoints[i], wz, wz, wz, ORANGE);
-    }
-
-    if(IsPointSolid(world, facePoints[i])){
-      DrawCubeWires(facePoints[i], wz, wz, wz, PURPLE);
-    }else{
-      DrawCubeWires(facePoints[i], wz, wz, wz, ORANGE);
-    }
-  }
+static void RequestBlockPlace(World *world, Vector3 pos, unsigned char blockID){
+  SetBlockInWorld(world, pos, blockID);
 }
 
 void HandlePlayerInteraction(Player *player, Camera3D *camera, World *world, bool hasControl){
@@ -350,7 +307,7 @@ void HandlePlayerInteraction(Player *player, Camera3D *camera, World *world, boo
   if(player->targetBlock.hit){
 
     if(IsMouseButtonPressed(MOUSE_LEFT_BUTTON)){
-      SetBlockInWorld(world, player->targetBlock.blockPos, 0);
+      RequestBlockBreak(world, player->targetBlock.blockPos);
     }
 
     if(IsMouseButtonPressed(MOUSE_RIGHT_BUTTON)){
@@ -358,7 +315,7 @@ void HandlePlayerInteraction(Player *player, Camera3D *camera, World *world, boo
       unsigned char blockInHandID = player->hotbar[player->selectedHotbarSlot];
 
       Vector3 placePos = Vector3Add(player->targetBlock.blockPos, player->targetBlock.normal);
-      SetBlockInWorld(world, placePos, blockInHandID);
+      RequestBlockPlace(world, placePos, blockInHandID);
     }
   }
 }

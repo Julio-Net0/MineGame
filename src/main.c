@@ -4,36 +4,36 @@
 #include "camera.h"
 #include "renderer.h"
 #include "world.h"
-#include "raymath.h"
 #include "chat.h"
 #include "player.h"
 
-#define INITIAL_WIDTH GetScreenWidth()
-#define INITIAL_HEIGHT GetScreenHeight()
+#define INITIAL_WIDTH 1280
+#define INITIAL_HEIGHT 720
 
 int main(void){
+
+  SetTraceLogLevel(LOG_WARNING);
   ChangeDirectory(GetApplicationDirectory());
+  //SetTargetFPS(60); 
+  //SetConfigFlags(FLAG_VSYNC_HINT);
 
   InitWindow(INITIAL_WIDTH, INITIAL_HEIGHT, "MineGame Beta 2");
+  ToggleBorderlessWindowed();
+  DisableCursor();
 
   InitRenderer();
 
-  Camera3D camera = CreateGameCamera();
-
-  InitBlockRegisry();
+  InitBlockRegistry();
   LoadAllBlockDefinitions("assets/blocks");
 
-  DisableCursor();
+  World *world = (World*)MemAlloc(sizeof(World));
+  InitWorld(world);
 
-  World world = {0};
-  InitWorld(&world);
+  Player player = InitPlayer((Vector3){0, 17, 0});
+  Camera3D camera = CreateGameCamera();
 
   ChatState chat;
   InitChat(&chat);
-
-  Player player = InitPlayer((Vector3){0, 17, 0});
-
-  ToggleBorderlessWindowed();
 
   while (!WindowShouldClose()) {
 
@@ -43,37 +43,41 @@ int main(void){
       ToggleBorderlessWindowed();
     }
 
-    UpdateWorld(&world, player.position);
-    UpdateChat(&chat, &camera, &player, &world);
-    UpdatePlayer(&player, &camera, &world, dt, !chat.isActive);
+    UpdateWorld(world, player.position, MAX_RENDER_DISTANCE);
+    UpdateChat(&chat, &camera, &player, world);
 
-    if(!chat.isActive){
-      UpdateGameCamera(&camera);
+    bool hasControl = !chat.isActive;
+    UpdatePlayer(&player, &camera, world, dt, hasControl);
+    HandlePlayerInteraction(&player, &camera, world, hasControl);
+
+    if(hasControl){
+      UpdateGameCamera(&camera, GetMouseDelta());
     }
 
-    HandlePlayerInteraction(&player, &camera, &world, !chat.isActive);
 
-    BeginDrawing();
-    ClearBackground(SKYBLUE);
-    BeginMode3D(camera);
+    BeginDrawing();{
 
-    DrawWorld(&world);
+      ClearBackground(SKYBLUE);
 
-    if(player.targetBlock.hit){
-      DrawBlockHighlight(player.targetBlock.blockPos);
-    }
+      BeginMode3D(camera);{
 
-    DrawPlayerDebug(&world, &player);
+        DrawWorld(world);
 
-    EndMode3D();
+        if(player.targetBlock.hit){
+          DrawBlockHighlight(player.targetBlock.blockPos);
+        }
 
-    DrawHUD(&player, &world, true);
-    DrawChat(&chat);
+        DrawPlayerDebug(world, &player);
 
-    DrawFPS(10, 10);
+      }EndMode3D();
 
-    EndDrawing();
+      DrawHUD(&player, world, true);
+      DrawChat(&chat);
+
+    }EndDrawing();
   }
+
+  MemFree(world);
 
   CloseWindow();
   return 0;

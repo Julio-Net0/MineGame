@@ -2,13 +2,21 @@
 #include "block_system.h"
 #include "raylib.h"
 #include "raymath.h"
+#include "player.h"
+#include <stddef.h>
 #include <string.h>
 
-#define MAX_FACES (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE * 6)
+#define VERTICES_PER_FACE 4
+#define FLOATS_PER_VERTEX 3
+#define COLOR_CHANNELS 4
+#define INDICES_PER_FACES 6
+#define MAX_FACES (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE * INDICES_PER_FACES)
 
-static float tempVertices[MAX_FACES * 4 * 3];
-static unsigned char tempColors[MAX_FACES * 4 * 4];
-static unsigned short tempIndices[MAX_FACES * 6];
+#define BLOCK_HIGHLIGHT_SCALE (BLOCK_SIZE + 0.01F)
+
+static float tempVertices[MAX_FACES * VERTICES_PER_FACE * FLOATS_PER_VERTEX];
+static unsigned char tempColors[MAX_FACES * VERTICES_PER_FACE * COLOR_CHANNELS];
+static unsigned short tempIndices[MAX_FACES * INDICES_PER_FACES];
 
 static int vCount = 0;
 static int iCount = 0;
@@ -19,7 +27,7 @@ void InitRenderer(void){
   chunkMaterial = LoadMaterialDefault();
 }
 
-bool IsNeighbourTransparent(World *world, Chunk *chunk, int localX, int localY, int localZ){
+static bool IsNeighbourTransparent(World *world, Chunk *chunk, int localX, int localY, int localZ){
   if(localX >= 0 && localX < CHUNK_SIZE && localY >= 0 && localY < CHUNK_SIZE && localZ >= 0 && localZ < CHUNK_SIZE){
       unsigned char id = chunk->data[localX][localY][localZ];
       if(id == 0) { return true; }
@@ -58,47 +66,47 @@ static void AddFaceToMeshBuilder(Vector3 pos, Color color, BlockFace face){
 
   switch (face) {
     case FACE_TOP:
-      tempVertices[vIdx++] = x - 0.5f; tempVertices[vIdx++] = y + 0.5f; tempVertices[vIdx++] = z - 0.5f;
-      tempVertices[vIdx++] = x - 0.5f; tempVertices[vIdx++] = y + 0.5f; tempVertices[vIdx++] = z + 0.5f;
-      tempVertices[vIdx++] = x + 0.5f; tempVertices[vIdx++] = y + 0.5f; tempVertices[vIdx++] = z + 0.5f;
-      tempVertices[vIdx++] = x + 0.5f; tempVertices[vIdx++] = y + 0.5f; tempVertices[vIdx++] = z - 0.5f;
+      tempVertices[vIdx++] = x - BLOCK_HALF_SIZE; tempVertices[vIdx++] = y + BLOCK_HALF_SIZE; tempVertices[vIdx++] = z - BLOCK_HALF_SIZE;
+      tempVertices[vIdx++] = x - BLOCK_HALF_SIZE; tempVertices[vIdx++] = y + BLOCK_HALF_SIZE; tempVertices[vIdx++] = z + BLOCK_HALF_SIZE;
+      tempVertices[vIdx++] = x + BLOCK_HALF_SIZE; tempVertices[vIdx++] = y + BLOCK_HALF_SIZE; tempVertices[vIdx++] = z + BLOCK_HALF_SIZE;
+      tempVertices[vIdx++] = x + BLOCK_HALF_SIZE; tempVertices[vIdx++] = y + BLOCK_HALF_SIZE; tempVertices[vIdx++] = z - BLOCK_HALF_SIZE;
       break;
     case FACE_BOTTOM:
-      tempVertices[vIdx++] = x - 0.5f; tempVertices[vIdx++] = y - 0.5f; tempVertices[vIdx++] = z - 0.5f;
-      tempVertices[vIdx++] = x + 0.5f; tempVertices[vIdx++] = y - 0.5f; tempVertices[vIdx++] = z - 0.5f;
-      tempVertices[vIdx++] = x + 0.5f; tempVertices[vIdx++] = y - 0.5f; tempVertices[vIdx++] = z + 0.5f;
-      tempVertices[vIdx++] = x - 0.5f; tempVertices[vIdx++] = y - 0.5f; tempVertices[vIdx++] = z + 0.5f;
+      tempVertices[vIdx++] = x - BLOCK_HALF_SIZE; tempVertices[vIdx++] = y - BLOCK_HALF_SIZE; tempVertices[vIdx++] = z - BLOCK_HALF_SIZE;
+      tempVertices[vIdx++] = x + BLOCK_HALF_SIZE; tempVertices[vIdx++] = y - BLOCK_HALF_SIZE; tempVertices[vIdx++] = z - BLOCK_HALF_SIZE;
+      tempVertices[vIdx++] = x + BLOCK_HALF_SIZE; tempVertices[vIdx++] = y - BLOCK_HALF_SIZE; tempVertices[vIdx++] = z + BLOCK_HALF_SIZE;
+      tempVertices[vIdx++] = x - BLOCK_HALF_SIZE; tempVertices[vIdx++] = y - BLOCK_HALF_SIZE; tempVertices[vIdx++] = z + BLOCK_HALF_SIZE;
       break;
     case FACE_FRONT: 
-      tempVertices[vIdx++] = x - 0.5f; tempVertices[vIdx++] = y - 0.5f; tempVertices[vIdx++] = z + 0.5f;
-      tempVertices[vIdx++] = x + 0.5f; tempVertices[vIdx++] = y - 0.5f; tempVertices[vIdx++] = z + 0.5f;
-      tempVertices[vIdx++] = x + 0.5f; tempVertices[vIdx++] = y + 0.5f; tempVertices[vIdx++] = z + 0.5f;
-      tempVertices[vIdx++] = x - 0.5f; tempVertices[vIdx++] = y + 0.5f; tempVertices[vIdx++] = z + 0.5f;
+      tempVertices[vIdx++] = x - BLOCK_HALF_SIZE; tempVertices[vIdx++] = y - BLOCK_HALF_SIZE; tempVertices[vIdx++] = z + BLOCK_HALF_SIZE;
+      tempVertices[vIdx++] = x + BLOCK_HALF_SIZE; tempVertices[vIdx++] = y - BLOCK_HALF_SIZE; tempVertices[vIdx++] = z + BLOCK_HALF_SIZE;
+      tempVertices[vIdx++] = x + BLOCK_HALF_SIZE; tempVertices[vIdx++] = y + BLOCK_HALF_SIZE; tempVertices[vIdx++] = z + BLOCK_HALF_SIZE;
+      tempVertices[vIdx++] = x - BLOCK_HALF_SIZE; tempVertices[vIdx++] = y + BLOCK_HALF_SIZE; tempVertices[vIdx++] = z + BLOCK_HALF_SIZE;
       break;
     case FACE_BACK:
-      tempVertices[vIdx++] = x - 0.5f; tempVertices[vIdx++] = y - 0.5f; tempVertices[vIdx++] = z - 0.5f;
-      tempVertices[vIdx++] = x - 0.5f; tempVertices[vIdx++] = y + 0.5f; tempVertices[vIdx++] = z - 0.5f;
-      tempVertices[vIdx++] = x + 0.5f; tempVertices[vIdx++] = y + 0.5f; tempVertices[vIdx++] = z - 0.5f;
-      tempVertices[vIdx++] = x + 0.5f; tempVertices[vIdx++] = y - 0.5f; tempVertices[vIdx++] = z - 0.5f;
+      tempVertices[vIdx++] = x - BLOCK_HALF_SIZE; tempVertices[vIdx++] = y - BLOCK_HALF_SIZE; tempVertices[vIdx++] = z - BLOCK_HALF_SIZE;
+      tempVertices[vIdx++] = x - BLOCK_HALF_SIZE; tempVertices[vIdx++] = y + BLOCK_HALF_SIZE; tempVertices[vIdx++] = z - BLOCK_HALF_SIZE;
+      tempVertices[vIdx++] = x + BLOCK_HALF_SIZE; tempVertices[vIdx++] = y + BLOCK_HALF_SIZE; tempVertices[vIdx++] = z - BLOCK_HALF_SIZE;
+      tempVertices[vIdx++] = x + BLOCK_HALF_SIZE; tempVertices[vIdx++] = y - BLOCK_HALF_SIZE; tempVertices[vIdx++] = z - BLOCK_HALF_SIZE;
       break;
     case FACE_LEFT:
-      tempVertices[vIdx++] = x - 0.5f; tempVertices[vIdx++] = y - 0.5f; tempVertices[vIdx++] = z - 0.5f;
-      tempVertices[vIdx++] = x - 0.5f; tempVertices[vIdx++] = y - 0.5f; tempVertices[vIdx++] = z + 0.5f;
-      tempVertices[vIdx++] = x - 0.5f; tempVertices[vIdx++] = y + 0.5f; tempVertices[vIdx++] = z + 0.5f;
-      tempVertices[vIdx++] = x - 0.5f; tempVertices[vIdx++] = y + 0.5f; tempVertices[vIdx++] = z - 0.5f;
+      tempVertices[vIdx++] = x - BLOCK_HALF_SIZE; tempVertices[vIdx++] = y - BLOCK_HALF_SIZE; tempVertices[vIdx++] = z - BLOCK_HALF_SIZE;
+      tempVertices[vIdx++] = x - BLOCK_HALF_SIZE; tempVertices[vIdx++] = y - BLOCK_HALF_SIZE; tempVertices[vIdx++] = z + BLOCK_HALF_SIZE;
+      tempVertices[vIdx++] = x - BLOCK_HALF_SIZE; tempVertices[vIdx++] = y + BLOCK_HALF_SIZE; tempVertices[vIdx++] = z + BLOCK_HALF_SIZE;
+      tempVertices[vIdx++] = x - BLOCK_HALF_SIZE; tempVertices[vIdx++] = y + BLOCK_HALF_SIZE; tempVertices[vIdx++] = z - BLOCK_HALF_SIZE;
       break;
     case FACE_RIGHT:
-      tempVertices[vIdx++] = x + 0.5f; tempVertices[vIdx++] = y - 0.5f; tempVertices[vIdx++] = z - 0.5f;
-      tempVertices[vIdx++] = x + 0.5f; tempVertices[vIdx++] = y + 0.5f; tempVertices[vIdx++] = z - 0.5f;
-      tempVertices[vIdx++] = x + 0.5f; tempVertices[vIdx++] = y + 0.5f; tempVertices[vIdx++] = z + 0.5f;
-      tempVertices[vIdx++] = x + 0.5f; tempVertices[vIdx++] = y - 0.5f; tempVertices[vIdx++] = z + 0.5f;
+      tempVertices[vIdx++] = x + BLOCK_HALF_SIZE; tempVertices[vIdx++] = y - BLOCK_HALF_SIZE; tempVertices[vIdx++] = z - BLOCK_HALF_SIZE;
+      tempVertices[vIdx++] = x + BLOCK_HALF_SIZE; tempVertices[vIdx++] = y + BLOCK_HALF_SIZE; tempVertices[vIdx++] = z - BLOCK_HALF_SIZE;
+      tempVertices[vIdx++] = x + BLOCK_HALF_SIZE; tempVertices[vIdx++] = y + BLOCK_HALF_SIZE; tempVertices[vIdx++] = z + BLOCK_HALF_SIZE;
+      tempVertices[vIdx++] = x + BLOCK_HALF_SIZE; tempVertices[vIdx++] = y - BLOCK_HALF_SIZE; tempVertices[vIdx++] = z + BLOCK_HALF_SIZE;
       break;
   }
   vCount += 4;
 }
 
 
-void AddCubeToMeshBuilder(World *world, Chunk *chunk, int localX, int localY, int localZ, Color color){
+static void AddCubeToMeshBuilder(World *world, Chunk *chunk, int localX, int localY, int localZ, Color color){
 
   int globalX = (chunk->chunkX * CHUNK_SIZE) + localX;
   int globalZ = (chunk->chunkZ * CHUNK_SIZE) + localZ;
@@ -129,25 +137,30 @@ void BuildChunkMesh(World *world, Chunk *chunk){
 
   UnloadChunkMesh(chunk);
 
-  if(vCount == 0) { return; }
+  chunk->isDirty = false;
+
+  if(vCount == 0){ 
+    chunk->hasMesh = false;
+    return;
+  }
 
   chunk->mesh = (Mesh){0};
+  chunk->mesh.vaoId = 0;
   chunk->mesh.vertexCount = vCount;
   chunk->mesh.triangleCount = iCount / 3;
 
-  chunk->mesh.vertices = (float *)MemAlloc(vCount * 3 * sizeof(float));
-  memcpy(chunk->mesh.vertices, tempVertices, vCount * 3 * sizeof(float));
+  chunk->mesh.vertices = (float *)MemAlloc((size_t)vCount * FLOATS_PER_VERTEX * sizeof(float));
+  memcpy(chunk->mesh.vertices, tempVertices, (size_t)vCount * FLOATS_PER_VERTEX * sizeof(float));
 
-  chunk->mesh.indices = (unsigned short *)MemAlloc(iCount * sizeof(unsigned short));
-  memcpy(chunk->mesh.indices, tempIndices, iCount * sizeof(unsigned short));
+  chunk->mesh.indices = (unsigned short *)MemAlloc((size_t)iCount * sizeof(unsigned short));
+  memcpy(chunk->mesh.indices, tempIndices, (size_t)iCount * sizeof(unsigned short));
 
-  chunk->mesh.colors = (unsigned char *)MemAlloc(vCount * 4 * sizeof(unsigned char));
-  memcpy(chunk->mesh.colors, tempColors, vCount * 4 * sizeof(unsigned char));
+  chunk->mesh.colors = (unsigned char *)MemAlloc((size_t)vCount * COLOR_CHANNELS * sizeof(unsigned char));
+  memcpy(chunk->mesh.colors, tempColors, (size_t)vCount * COLOR_CHANNELS * sizeof(unsigned char));
 
   UploadMesh(&chunk->mesh, false);
 
   chunk->hasMesh = true;
-  chunk->isDirty = false;
 }
 
 void RenderChunkMesh(Chunk *chunk){
@@ -163,6 +176,58 @@ void UnloadChunkMesh(Chunk *chunk){
   }
 }
 
-void DrawBlockHighlight(Vector3 pos){
-  DrawCubeWires(pos, 1.01F, 1.01F, 1.01F, BLACK);
+void DrawWorld(World *world){
+  for(int i = 0; i < world->chunkCount; i++){
+    DrawChunk(world, &world->chunks[i]);
+  }
 }
+
+void DrawBlockHighlight(Vector3 pos){
+  DrawCubeWires(pos, BLOCK_HIGHLIGHT_SCALE, BLOCK_HIGHLIGHT_SCALE, BLOCK_HIGHLIGHT_SCALE, BLACK);
+}
+
+void DrawPlayerDebug(World *world, Player *player){
+  if(!player->debug_aabb) { return; }
+
+  Vector3 bottomPoints[COLLISION_POINTS];
+  Vector3 topPoints[COLLISION_POINTS];
+  Vector3 shinPoints[COLLISION_POINTS];
+  Vector3 facePoints[COLLISION_POINTS];
+
+  GetPlayerPoints(player, (PointConfig){ .radius = player->radius - VERTICAL_RADIUS_SHRINK, .yOffset = 0.0F, .epsilon = -COLLISION_EPSILON }, bottomPoints);
+  GetPlayerPoints(player, (PointConfig){ .radius = player->radius - VERTICAL_RADIUS_SHRINK, .yOffset = player->size.y, .epsilon = COLLISION_EPSILON }, topPoints);
+
+  const float LATERALDEBUGRADIUS = player->radius + 0.01F;
+  GetPlayerPoints(player, (PointConfig){ .radius = LATERALDEBUGRADIUS, .yOffset = LATERAL_Y_MARGIN, .epsilon = 0.0F }, shinPoints);
+  GetPlayerPoints(player, (PointConfig){ .radius = LATERALDEBUGRADIUS, .yOffset = player->size.y, .epsilon = 0.0F }, facePoints);
+
+  float sz = PLAYER_DEBUG_AABB_SQUARES_SIZE;
+  float wz = PLAYER_DEBUG_AABB_WIRES_SIZE;
+
+  for(int i = 0; i < COLLISION_POINTS; i++){
+    if(IsPointSolid(world, bottomPoints[i])){
+      DrawCube(bottomPoints[i], sz, sz, sz, BLUE);
+    }else{
+      DrawCube(bottomPoints[i], sz, sz, sz, RED);
+    }
+    
+    if(IsPointSolid(world, topPoints[i])){
+      DrawCube(topPoints[i], sz, sz, sz, BLUE);
+    }else{
+      DrawCube(topPoints[i], sz, sz, sz, RED);
+    }
+
+    if(IsPointSolid(world, shinPoints[i])){
+      DrawCubeWires(shinPoints[i], wz, wz, wz, PURPLE);
+    }else{
+      DrawCubeWires(shinPoints[i], wz, wz, wz, ORANGE);
+    }
+
+    if(IsPointSolid(world, facePoints[i])){
+      DrawCubeWires(facePoints[i], wz, wz, wz, PURPLE);
+    }else{
+      DrawCubeWires(facePoints[i], wz, wz, wz, ORANGE);
+    }
+  }
+}
+
