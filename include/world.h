@@ -4,11 +4,13 @@
 #include "raylib.h"
 #include "chunk.h"
 
-#define MAX_ACTIVE_CHUNKS 1024
-#define MAX_RENDER_DISTANCE 12
+#define MAX_RENDER_DISTANCE 5
+#define MAX_ACTIVE_CHUNKS 1331 //Recommended size: (2 * MAX_RENDER_DISTANCE + 1)^3
+#define CHUNK_MAP_SIZE 5324
 
 typedef struct World {
   Chunk chunks[MAX_ACTIVE_CHUNKS];
+  int chunkHashMap[CHUNK_MAP_SIZE];
   int chunkCount;
 } World ;
 

@@ -7,6 +7,9 @@
 
 #define DDA_MAX_CROSSED_AXES 3.0F
 
+#define HASH_EMPTY -1
+#define HASH_DELETED -2
+
 typedef struct {
   float tMaxX, tMaxY, tMaxZ;
   float tDeltaX, tDeltaY, tDeltaZ;
@@ -17,15 +20,57 @@ typedef struct {
   int lastStep;
 } DDAState;
 
+static int HashChunkPos(int x, int y, int z){
+  unsigned int h = (unsigned int)((x * 73856093) ^ (y * 19349663) ^ (z * 83492791));
+  return h % CHUNK_MAP_SIZE;
+}
+
 void InitWorld(World *world){
   world->chunkCount = 0;
+
+  for(int i = 0; i < CHUNK_MAP_SIZE; i++){
+    world->chunkHashMap[i] = HASH_EMPTY;
+  }
+}
+
+static void InsertChunkIntoMap(World *world, int chunkIndex) {
+  int x = world->chunks[chunkIndex].chunkX;
+  int y = world->chunks[chunkIndex].chunkY;
+  int z = world->chunks[chunkIndex].chunkZ;
+  int hash = HashChunkPos(x, y, z);
+
+  while(world->chunkHashMap[hash] >= 0){
+    hash = (hash + 1) % CHUNK_MAP_SIZE;
+  }
+  world->chunkHashMap[hash] = chunkIndex;
+}
+
+static void RemoveChunkFromMap(World *world, int chunkX, int chunkY, int chunkZ) {
+  int hash = HashChunkPos(chunkX, chunkY, chunkZ);
+  int initialHash = hash;
+
+  while(world->chunkHashMap[hash] != HASH_EMPTY) {
+    int idx = world->chunkHashMap[hash];
+    if(idx >= 0 && world->chunks[idx].chunkX == chunkX && world->chunks[idx].chunkY == chunkY && world->chunks[idx].chunkZ == chunkZ) {
+      world->chunkHashMap[hash] = HASH_DELETED;
+      return;
+    }
+    hash = (hash + 1) % CHUNK_MAP_SIZE;
+    if(hash == initialHash) { break; }
+  }
 }
 
 Chunk* GetChunkFromWorld(World *world, int chunkX, int chunkY, int chunkZ){
-  for(int i = 0; i < world->chunkCount; i++){
-    if(world->chunks[i].chunkX == chunkX && world->chunks[i].chunkY == chunkY && world->chunks[i].chunkZ == chunkZ){
-      return &world->chunks[i];
+  int hash = HashChunkPos(chunkX, chunkY, chunkZ);
+  int initialHash = hash;
+
+  while(world->chunkHashMap[hash] != HASH_EMPTY) {
+    int idx = world->chunkHashMap[hash];
+    if(idx >= 0 && world->chunks[idx].chunkX == chunkX && world->chunks[idx].chunkY == chunkY && world->chunks[idx].chunkZ == chunkZ) {
+      return &world->chunks[idx];
     }
+    hash = (hash + 1) % CHUNK_MAP_SIZE;
+    if(hash == initialHash) { break; }
   }
   return NULL;
 }
@@ -42,11 +87,11 @@ static void MarkUsefulChunks(World *world, int pChunkX, int pChunkY, int pChunkZ
   for(int x = pChunkX - renderDist; x <= pChunkX + renderDist; x++){
     for(int y = pChunkY - renderDist; y <= pChunkY + renderDist; y++){
       for(int z = pChunkZ - renderDist; z <= pChunkZ + renderDist; z++){
-        for(int i = 0; i < world->chunkCount; i++){
-          if(world->chunks[i].chunkX == x && world->chunks[i].chunkY == y  && world->chunks[i].chunkZ == z){
-            keepChunk[i] = true; 
-            break;
-          }
+
+        Chunk* c = GetChunkFromWorld(world, x, y, z);
+        if(c != NULL){
+          int idx = (int)(c - world->chunks);
+          keepChunk[idx] = true;
         }
       }
     }
@@ -57,6 +102,10 @@ static void CreateOrRecycleChunk(World *world, int chunkX, int chunkY, int chunk
   for(int i = 0; i < MAX_ACTIVE_CHUNKS; i++){
     if(i >= world->chunkCount || !keepChunk[i]){
 
+      if(i < world->chunkCount) { 
+        RemoveChunkFromMap(world, world->chunks[i].chunkX, world->chunks[i].chunkY, world->chunks[i].chunkZ);
+      }
+
       if(world->chunks[i].hasMesh){
         UnloadChunkMesh(&world->chunks[i]);
       }
@@ -66,6 +115,9 @@ static void CreateOrRecycleChunk(World *world, int chunkX, int chunkY, int chunk
       world->chunks[i].chunkZ = chunkZ;
       GenerateFlatChunk(&world->chunks[i]);
       keepChunk[i] = true;
+      
+      InsertChunkIntoMap(world, i);
+
       if(i >= world->chunkCount){
         world->chunkCount++;
       }
