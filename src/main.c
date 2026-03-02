@@ -43,7 +43,7 @@ int main(void){
       ToggleBorderlessWindowed();
     }
 
-    UpdateWorld(world, player.position, MAX_RENDER_DISTANCE);
+    UpdateWorld(world, player.position, 2);
     UpdateChat(&chat, &camera, &player, world);
 
     bool hasControl = !chat.isActive;

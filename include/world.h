@@ -24,7 +24,7 @@ void UpdateWorld(World *world, Vector3 playerPos, int renderDist);
 int GetBlockIDFromWorld(World *world, Vector3 globalPos);
 void SetBlockInWorld(World *world, Vector3 globalPos, unsigned char blockID);
 RaycastResult RayCastToWorld(World *world, Vector3 rayOrigin, Vector3 rayDir, float maxDistance);
-Chunk* GetChunkFromWorld(World *world, int chunkX, int chunkZ);
+Chunk* GetChunkFromWorld(World *world, int chunkX, int chunkY, int chunkZ);
 Chunk* GetChunkAtPos(World *world, Vector3 pos);
 
 #endif

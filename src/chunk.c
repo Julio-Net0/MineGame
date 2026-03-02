@@ -7,9 +7,12 @@ void GenerateFlatChunk(Chunk *chunk){
   for(int x = 0; x < CHUNK_SIZE; x++){
     for(int y = 0; y < CHUNK_SIZE; y++){
       for(int z = 0; z < CHUNK_SIZE; z++){
-        if(y < 4){
+
+        int globalY = (chunk->chunkY * CHUNK_SIZE) + y;
+
+        if(globalY < 4){
           chunk->data[x][y][z] = 2;
-        }else if(y < 10){
+        }else if(globalY < 10){
           chunk->data[x][y][z] = 1;
         }else{
           chunk->data[x][y][z] = 0;

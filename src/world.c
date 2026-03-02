@@ -21,9 +21,9 @@ void InitWorld(World *world){
   world->chunkCount = 0;
 }
 
-Chunk* GetChunkFromWorld(World *world, int chunkX, int chunkZ){
+Chunk* GetChunkFromWorld(World *world, int chunkX, int chunkY, int chunkZ){
   for(int i = 0; i < world->chunkCount; i++){
-    if(world->chunks[i].chunkX == chunkX && world->chunks[i].chunkZ == chunkZ){
+    if(world->chunks[i].chunkX == chunkX && world->chunks[i].chunkY == chunkY && world->chunks[i].chunkZ == chunkZ){
       return &world->chunks[i];
     }
   }
@@ -32,25 +32,28 @@ Chunk* GetChunkFromWorld(World *world, int chunkX, int chunkZ){
 
 Chunk* GetChunkAtPos(World *world, Vector3 pos){
   int chunkX = (int)floorf(pos.x / CHUNK_SIZE);
+  int chunkY = (int)floorf(pos.y / CHUNK_SIZE);
   int chunkZ = (int)floorf(pos.z / CHUNK_SIZE);
 
-  return GetChunkFromWorld(world, chunkX, chunkZ);
+  return GetChunkFromWorld(world, chunkX, chunkY, chunkZ);
 }
 
-static void MarkUsefulChunks(World *world, int pChunkX, int pChunkZ, int renderDist, bool *keepChunk){
+static void MarkUsefulChunks(World *world, int pChunkX, int pChunkY, int pChunkZ, int renderDist, bool *keepChunk){
   for(int x = pChunkX - renderDist; x <= pChunkX + renderDist; x++){
-    for(int z = pChunkZ - renderDist; z <= pChunkZ + renderDist; z++){
-      for(int i = 0; i < world->chunkCount; i++){
-        if(world->chunks[i].chunkX == x && world->chunks[i].chunkZ == z){
-          keepChunk[i] = true; 
-          break;
+    for(int y = pChunkY - renderDist; y <= pChunkY + renderDist; y++){
+      for(int z = pChunkZ - renderDist; z <= pChunkZ + renderDist; z++){
+        for(int i = 0; i < world->chunkCount; i++){
+          if(world->chunks[i].chunkX == x && world->chunks[i].chunkY == y  && world->chunks[i].chunkZ == z){
+            keepChunk[i] = true; 
+            break;
+          }
         }
       }
     }
   }
 }
 
-static void CreateOrRecycleChunk(World *world, int chunkX, int chunkZ, bool *keepChunk){
+static void CreateOrRecycleChunk(World *world, int chunkX, int chunkY, int chunkZ, bool *keepChunk){
   for(int i = 0; i < MAX_ACTIVE_CHUNKS; i++){
     if(i >= world->chunkCount || !keepChunk[i]){
 
@@ -59,6 +62,7 @@ static void CreateOrRecycleChunk(World *world, int chunkX, int chunkZ, bool *kee
       }
 
       world->chunks[i].chunkX = chunkX;
+      world->chunks[i].chunkY = chunkY;
       world->chunks[i].chunkZ = chunkZ;
       GenerateFlatChunk(&world->chunks[i]);
       keepChunk[i] = true;
@@ -77,68 +81,79 @@ void UpdateWorld(World *world, Vector3 playerPos, int renderDist){
   }
 
   int pChunkX = (int)floorf(playerPos.x / CHUNK_SIZE);
+  int pChunkY = (int)floorf(playerPos.y / CHUNK_SIZE);
   int pChunkZ = (int)floorf(playerPos.z / CHUNK_SIZE);
 
   bool keepChunk[MAX_ACTIVE_CHUNKS] = { false };
 
-  MarkUsefulChunks(world, pChunkX, pChunkZ, renderDist, keepChunk);
+  MarkUsefulChunks(world, pChunkX, pChunkY, pChunkZ, renderDist, keepChunk);
 
   for(int x = pChunkX - renderDist; x <= pChunkX + renderDist; x++){
-    for(int z = pChunkZ - renderDist; z <= pChunkZ + renderDist; z++){
+    for(int y = pChunkY - renderDist; y <= pChunkY + renderDist; y++){
+      for(int z = pChunkZ - renderDist; z <= pChunkZ + renderDist; z++){
 
-      if(GetChunkFromWorld(world, x, z) == NULL){
-        CreateOrRecycleChunk(world, x, z, keepChunk);
+        if(GetChunkFromWorld(world, x, y, z) == NULL){
+          CreateOrRecycleChunk(world, x, y, z, keepChunk);
+        }
       }
     }
   }
 }
 
 static Chunk* GetLocalCoords(World *world, Vector3 globalPos, int *localX, int *localY, int *localZ){
-  *localY = (int)floorf(globalPos.y);
-
-  if(*localY < 0 || *localY >= CHUNK_SIZE) { return NULL; }
 
   int chunkX = (int)floorf(globalPos.x / CHUNK_SIZE);
+  int chunkY = (int)floorf(globalPos.y / CHUNK_SIZE);
   int chunkZ = (int)floorf(globalPos.z / CHUNK_SIZE);
 
   *localX = (int)floorf(globalPos.x) - (chunkX * CHUNK_SIZE);
+  *localY = (int)floorf(globalPos.y) - (chunkY * CHUNK_SIZE);
   *localZ = (int)floorf(globalPos.z) - (chunkZ * CHUNK_SIZE);
 
-  return GetChunkFromWorld(world, chunkX, chunkZ);
+  return GetChunkFromWorld(world, chunkX, chunkY, chunkZ);
 }
 
 void SetBlockInWorld(World *world, Vector3 pos, unsigned char blockID){
   Chunk *chunk = GetChunkAtPos(world, pos);
-    if (chunk == NULL) { return; }
+  if (chunk == NULL) { return; }
 
-    int localX = ((int)floorf(pos.x)) % CHUNK_SIZE;
-    int localY = ((int)floorf(pos.y)) % CHUNK_SIZE;
-    int localZ = ((int)floorf(pos.z)) % CHUNK_SIZE;
+  int localX = ((int)floorf(pos.x)) % CHUNK_SIZE;
+  int localY = ((int)floorf(pos.y)) % CHUNK_SIZE;
+  int localZ = ((int)floorf(pos.z)) % CHUNK_SIZE;
 
-    if (localX < 0) { localX += CHUNK_SIZE; }
-    if (localY < 0) { localY += CHUNK_SIZE; }
-    if (localZ < 0) { localZ += CHUNK_SIZE; }
+  if (localX < 0) { localX += CHUNK_SIZE; }
+  if (localY < 0) { localY += CHUNK_SIZE; }
+  if (localZ < 0) { localZ += CHUNK_SIZE; }
 
-    SetBlockInChunk(chunk, (Vector3){(float)localX, (float)localY, (float)localZ}, blockID);
-    chunk->isDirty = true;
+  SetBlockInChunk(chunk, (Vector3){(float)localX, (float)localY, (float)localZ}, blockID);
+  chunk->isDirty = true;
 
-    if (localX == 0) {
-        Chunk *neighbor = GetChunkFromWorld(world, chunk->chunkX - 1, chunk->chunkZ);
-        if (neighbor) { neighbor->isDirty = true; }
-    } 
-    else if (localX == CHUNK_SIZE - 1) {
-        Chunk *neighbor = GetChunkFromWorld(world, chunk->chunkX + 1, chunk->chunkZ);
-        if (neighbor) { neighbor->isDirty = true; }
-    }
+  if (localX == 0) {
+    Chunk *neighbor = GetChunkFromWorld(world, chunk->chunkX - 1, chunk->chunkY,chunk->chunkZ);
+    if (neighbor) { neighbor->isDirty = true; }
+  } 
+  else if (localX == CHUNK_SIZE - 1) {
+    Chunk *neighbor = GetChunkFromWorld(world, chunk->chunkX + 1, chunk->chunkY,chunk->chunkZ);
+    if (neighbor) { neighbor->isDirty = true; }
+  }
 
-    if (localZ == 0) {
-        Chunk *neighbor = GetChunkFromWorld(world, chunk->chunkX, chunk->chunkZ - 1);
-        if (neighbor) { neighbor->isDirty = true; }
-    } 
-    else if (localZ == CHUNK_SIZE - 1) {
-        Chunk *neighbor = GetChunkFromWorld(world, chunk->chunkX, chunk->chunkZ + 1);
-        if (neighbor) { neighbor->isDirty = true; }
-    }
+  if (localY == 0) {
+    Chunk *neighbor = GetChunkFromWorld(world, chunk->chunkX, chunk->chunkY - 1,chunk->chunkZ);
+    if (neighbor) { neighbor->isDirty = true; }
+  } 
+  else if (localY == CHUNK_SIZE - 1) {
+    Chunk *neighbor = GetChunkFromWorld(world, chunk->chunkX, chunk->chunkY + 1,chunk->chunkZ);
+    if (neighbor) { neighbor->isDirty = true; }
+  }
+
+  if (localZ == 0) {
+    Chunk *neighbor = GetChunkFromWorld(world, chunk->chunkX, chunk->chunkY,chunk->chunkZ - 1);
+    if (neighbor) { neighbor->isDirty = true; }
+  } 
+  else if (localZ == CHUNK_SIZE - 1) {
+    Chunk *neighbor = GetChunkFromWorld(world, chunk->chunkX, chunk->chunkY,chunk->chunkZ + 1);
+    if (neighbor) { neighbor->isDirty = true; }
+  }
 }
 
 int GetBlockIDFromWorld(World *world, Vector3 globalPos){

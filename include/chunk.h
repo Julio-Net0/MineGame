@@ -18,6 +18,7 @@ typedef struct {
   Vector3 worldPosition;
 
   int chunkX;
+  int chunkY;
   int chunkZ;
 
   bool isDirty;

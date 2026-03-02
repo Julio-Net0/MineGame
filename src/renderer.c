@@ -35,9 +35,10 @@ static bool IsNeighbourTransparent(World *world, Chunk *chunk, int localX, int l
   }
 
   int globalX = (chunk->chunkX * CHUNK_SIZE) + localX;
+  int globalY = (chunk->chunkY * CHUNK_SIZE) + localY;
   int globalZ = (chunk->chunkZ * CHUNK_SIZE) + localZ;
-  
-  int id = GetBlockIDFromWorld(world, (Vector3){(float)globalX, (float)localY, (float)globalZ});
+
+  int id = GetBlockIDFromWorld(world, (Vector3){(float)globalX, (float)globalY, (float)globalZ});
   if(id == 0) { return true; }
   return GetBlockDef(id)->isTransparent;
 }
@@ -109,8 +110,9 @@ static void AddFaceToMeshBuilder(Vector3 pos, Color color, BlockFace face){
 static void AddCubeToMeshBuilder(World *world, Chunk *chunk, int localX, int localY, int localZ, Color color){
 
   int globalX = (chunk->chunkX * CHUNK_SIZE) + localX;
+  int globalY = (chunk->chunkY * CHUNK_SIZE) + localY;
   int globalZ = (chunk->chunkZ * CHUNK_SIZE) + localZ;
-  Vector3 pos = { (float)globalX, (float)localY, (float)globalZ };  
+  Vector3 pos = { (float)globalX, (float)globalY, (float)globalZ };  
 
   if (IsNeighbourTransparent(world, chunk, localX, localY + 1, localZ)) { AddFaceToMeshBuilder(pos, color, FACE_TOP); }
   if (IsNeighbourTransparent(world, chunk, localX, localY - 1, localZ)) { AddFaceToMeshBuilder(pos, color, FACE_BOTTOM); }
@@ -210,7 +212,7 @@ void DrawPlayerDebug(World *world, Player *player){
     }else{
       DrawCube(bottomPoints[i], sz, sz, sz, RED);
     }
-    
+
     if(IsPointSolid(world, topPoints[i])){
       DrawCube(topPoints[i], sz, sz, sz, BLUE);
     }else{
