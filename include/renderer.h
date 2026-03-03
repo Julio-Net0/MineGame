@@ -18,7 +18,7 @@ void InitRenderer(void);
 void BuildChunkMesh(World *world, Chunk *chunk);
 void RenderChunkMesh(Chunk *chunk);
 void UnloadChunkMesh(Chunk *chunk);
-void DrawWorld(World *world);
+void DrawWorld(World *world, Camera3D camera);
 void DrawBlockHighlight(Vector3 pos);
 void DrawPlayerDebug(World *world, Player *player);
 

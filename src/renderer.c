@@ -1,5 +1,6 @@
 #include "renderer.h"
 #include "block_system.h"
+#include "chunk.h"
 #include "raylib.h"
 #include "raymath.h"
 #include "player.h"
@@ -13,6 +14,8 @@
 #define MAX_FACES (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE * INDICES_PER_FACES)
 
 #define BLOCK_HIGHLIGHT_SCALE (BLOCK_SIZE + 0.01F)
+
+#define CHUNK_SPHERE_RADIUS 14.0F
 
 static float tempVertices[MAX_FACES * VERTICES_PER_FACE * FLOATS_PER_VERTEX];
 static unsigned char tempColors[MAX_FACES * VERTICES_PER_FACE * COLOR_CHANNELS];
@@ -185,8 +188,36 @@ void UnloadChunkMesh(Chunk *chunk){
   }
 }
 
-void DrawWorld(World *world){
+static bool IsChunkInFrustum(Camera3D camera, Chunk *chunk){
+  
+  float const HALFCHUNKSIZE = CHUNK_SIZE / 2.0F;
+
+  Vector3 chunkCenter = {
+    (float)(chunk->chunkX * CHUNK_SIZE) + HALFCHUNKSIZE,
+    (float)(chunk->chunkY * CHUNK_SIZE) + HALFCHUNKSIZE,
+    (float)(chunk->chunkZ * CHUNK_SIZE) + HALFCHUNKSIZE,
+  };
+
+  Vector3 vecToChunk = Vector3Subtract(chunkCenter, camera.position);
+  float distance = Vector3Length(vecToChunk);
+
+  if(distance < CHUNK_SPHERE_RADIUS * 2.0F) { return true; }
+  Vector3 dirToChunk = Vector3Scale(vecToChunk, 1.0F / distance);
+  Vector3 camForward = Vector3Normalize(Vector3Subtract(camera.target, camera.position));
+  float dotProduct = Vector3DotProduct(camForward, dirToChunk);
+  float safeMargin = CHUNK_SPHERE_RADIUS / distance;
+  float limit = 0.4f - safeMargin;
+
+  return dotProduct >= limit;
+}
+
+void DrawWorld(World *world, Camera3D camera){
   for(int i = 0; i < world->chunkCount; i++){
+
+    if(!IsChunkInFrustum(camera, &world->chunks[i])){
+      continue;
+    }
+
     DrawChunk(world, &world->chunks[i]);
   }
 }

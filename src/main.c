@@ -61,7 +61,7 @@ int main(void){
 
       BeginMode3D(camera);{
 
-        DrawWorld(world);
+        DrawWorld(world, camera);
 
         if(player.targetBlock.hit){
           DrawBlockHighlight(player.targetBlock.blockPos);
