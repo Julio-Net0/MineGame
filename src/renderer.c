@@ -124,6 +124,13 @@ static void AddCubeToMeshBuilder(World *world, Chunk *chunk, int localX, int loc
 
 void BuildChunkMesh(World *world, Chunk *chunk){
 
+  if(chunk->solidBlockCount == 0){
+    UnloadChunkMesh(chunk);
+    chunk->isDirty = false;
+    chunk->hasMesh = false;
+    return;
+  }
+
   vCount = 0;
   iCount = 0;
 

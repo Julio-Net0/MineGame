@@ -4,6 +4,9 @@
 #include "raylib.h"
 
 void GenerateFlatChunk(Chunk *chunk){
+
+  chunk->solidBlockCount = 0;
+
   for(int x = 0; x < CHUNK_SIZE; x++){
     for(int y = 0; y < CHUNK_SIZE; y++){
       for(int z = 0; z < CHUNK_SIZE; z++){
@@ -12,8 +15,10 @@ void GenerateFlatChunk(Chunk *chunk){
 
         if(globalY < 4){
           chunk->data[x][y][z] = 2;
+          chunk->solidBlockCount++;
         }else if(globalY < 10){
           chunk->data[x][y][z] = 1;
+          chunk->solidBlockCount++;
         }else{
           chunk->data[x][y][z] = 0;
         }
@@ -51,6 +56,11 @@ void SetBlockInChunk(Chunk *chunk, Vector3 localPos, unsigned char blockID){
   int z = (int)localPos.z;
 
   if(x >= 0 && x < CHUNK_SIZE && y >= 0 && y < CHUNK_SIZE && z >= 0 && z < CHUNK_SIZE){
+    unsigned char oldID = chunk->data[x][y][z];
+
+    if(oldID == 0 && blockID != 0) { chunk->solidBlockCount++; }
+    else if(oldID != 0 && blockID == 0) { chunk->solidBlockCount--; }
+
     chunk->data[x][y][z] = blockID;
     chunk->isDirty = true;
   }

@@ -10,6 +10,10 @@
 #define HASH_EMPTY -1
 #define HASH_DELETED -2
 
+#define SPATIAL_PRIME_X 73856093
+#define SPATIAL_PRIME_Y 19349663
+#define SPATIAL_PRIME_Z 83492791 
+ 
 typedef struct {
   float tMaxX, tMaxY, tMaxZ;
   float tDeltaX, tDeltaY, tDeltaZ;
@@ -21,7 +25,7 @@ typedef struct {
 } DDAState;
 
 static int HashChunkPos(int x, int y, int z){
-  unsigned int h = (unsigned int)((x * 73856093) ^ (y * 19349663) ^ (z * 83492791));
+  unsigned int h = (unsigned int)((x * SPATIAL_PRIME_X) ^ (y * SPATIAL_PRIME_Y) ^ (z * SPATIAL_PRIME_Z));
   return h % CHUNK_MAP_SIZE;
 }
 
@@ -98,12 +102,28 @@ static void MarkUsefulChunks(World *world, int pChunkX, int pChunkY, int pChunkZ
   }
 }
 
+static void UpdateNeighborsDirtyFlag(World *world, int cx, int cy, int cz){
+  Chunk *neighbor;
+  neighbor = GetChunkFromWorld(world, cx - 1, cy, cz); if (neighbor) { neighbor->isDirty = true; }
+  neighbor = GetChunkFromWorld(world, cx + 1, cy, cz); if (neighbor) { neighbor->isDirty = true; }
+  neighbor = GetChunkFromWorld(world, cx, cy - 1, cz); if (neighbor) { neighbor->isDirty = true; }
+  neighbor = GetChunkFromWorld(world, cx, cy + 1, cz); if (neighbor) { neighbor->isDirty = true; }
+  neighbor = GetChunkFromWorld(world, cx, cy, cz - 1); if (neighbor) { neighbor->isDirty = true; }
+  neighbor = GetChunkFromWorld(world, cx, cy, cz + 1); if (neighbor) { neighbor->isDirty = true; }
+}
+
 static void CreateOrRecycleChunk(World *world, int chunkX, int chunkY, int chunkZ, bool *keepChunk){
   for(int i = 0; i < MAX_ACTIVE_CHUNKS; i++){
     if(i >= world->chunkCount || !keepChunk[i]){
 
       if(i < world->chunkCount) { 
-        RemoveChunkFromMap(world, world->chunks[i].chunkX, world->chunks[i].chunkY, world->chunks[i].chunkZ);
+        int oldX = world->chunks[i].chunkX;
+        int oldY = world->chunks[i].chunkY;
+        int oldZ = world->chunks[i].chunkZ;
+
+        RemoveChunkFromMap(world, oldX, oldY, oldZ);
+
+        UpdateNeighborsDirtyFlag(world, oldX, oldY, oldZ);
       }
 
       if(world->chunks[i].hasMesh){
@@ -117,6 +137,8 @@ static void CreateOrRecycleChunk(World *world, int chunkX, int chunkY, int chunk
       keepChunk[i] = true;
       
       InsertChunkIntoMap(world, i);
+
+      UpdateNeighborsDirtyFlag(world, chunkX, chunkY, chunkZ);
 
       if(i >= world->chunkCount){
         world->chunkCount++;

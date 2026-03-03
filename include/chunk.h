@@ -20,6 +20,7 @@ typedef struct {
   int chunkX;
   int chunkY;
   int chunkZ;
+  int solidBlockCount;
 
   bool isDirty;
   bool hasMesh;

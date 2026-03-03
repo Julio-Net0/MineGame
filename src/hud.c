@@ -23,6 +23,8 @@
 #define DEBUG_COORDS_Y 30
 #define DEBUG_ACTIVE_CHUNKS_X 10
 #define DEBUG_ACTIVE_CHUNKS_Y 50
+#define DEBUG_RENDERED_CHUNKS_X 10
+#define DEBUG_RENDERED_CHUNKS_Y 70
 
 
 static void DrawHotbar(Player *player){
@@ -65,7 +67,17 @@ static void DrawDebugScreen(Player *player, World *world){
   DrawFPS(DEBUG_FPS_X, DEBUG_FPS_Y);
 
   DrawText(TextFormat("XYZ: %.3f / %.5f / %.3f", player->position.x, player->position.y, player->position.z), DEBUG_COORDS_X, DEBUG_COORDS_Y, DEBUG_FONT_SIZE, RAYWHITE);
+
   DrawText(TextFormat("Active Chunks: %d / %d", world->chunkCount, MAX_ACTIVE_CHUNKS), DEBUG_ACTIVE_CHUNKS_X, DEBUG_ACTIVE_CHUNKS_Y, DEBUG_FONT_SIZE, RAYWHITE);
+
+  int renderedChunks = 0;
+  for(int i = 0; i < world->chunkCount; i++){
+    if(world->chunks[i].hasMesh){
+      renderedChunks++;
+    }
+  }
+  DrawText(TextFormat("Rendered Chunks: %d / %d", renderedChunks, MAX_ACTIVE_CHUNKS), DEBUG_RENDERED_CHUNKS_X, DEBUG_RENDERED_CHUNKS_Y, DEBUG_FONT_SIZE, RAYWHITE);
+
 }
 
 void DrawHUD(Player *player, World *world, bool showDebugF3){
