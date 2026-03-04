@@ -1,6 +1,8 @@
 {
   "id": 5,
   "name": "Water",
-  "color": "0x0000ffff",
+  "texTop": 205,
+  "texBottom": 205,
+  "texSide": 205,
   "isTransparent": false
 }

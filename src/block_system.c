@@ -11,7 +11,9 @@ void InitBlockRegistry(void){
   for(int i = 0; i < BLOCK_REGISTRY_SIZE; i++){
     blockRegistry[i].id = -1;
     strcpy(blockRegistry[i].name, "");
-    blockRegistry[i].color = BLANK;
+    blockRegistry[i].texTop = 0;
+    blockRegistry[i].texSide = 0;
+    blockRegistry[i].texBottom = 0;
     blockRegistry[i].isTransparent = true;
   }
 }
@@ -67,14 +69,26 @@ void ParseBlockFile(const char *filePath){
     TextCopy(block->name, nameItem->valuestring);
   }
 
-  cJSON* color = cJSON_GetObjectItemCaseSensitive(json, "color");
-  if(cJSON_IsString(color) && color->valuestring != NULL){
-
-    unsigned int hexValue = (unsigned int)strtoul(color->valuestring, NULL, 0);
-    block->color = GetColor(hexValue);
-
+  cJSON* texTopItem = cJSON_GetObjectItemCaseSensitive(json, "texTop");
+  if(cJSON_IsNumber(texTopItem)){
+    block->texTop = texTopItem->valueint;
   }else{
-    block->color = MAGENTA;
+    block->texTop = 0;
+  }
+
+  cJSON* texBottomItem = cJSON_GetObjectItemCaseSensitive(json, "texBottom");
+  if(cJSON_IsNumber(texBottomItem)){
+    block->texBottom = texBottomItem->valueint;
+  }else{
+    block->texBottom = 0;
+  }
+
+
+  cJSON* texSideItem = cJSON_GetObjectItemCaseSensitive(json, "texSide");
+  if(cJSON_IsNumber(texSideItem)){
+    block->texSide = texSideItem->valueint;
+  }else{
+    block->texSide = 0;
   }
 
   cJSON* isBlockTransparent = cJSON_GetObjectItemCaseSensitive(json, "isTransparent");

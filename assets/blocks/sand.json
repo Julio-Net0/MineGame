@@ -1,6 +1,8 @@
 {
   "id": 4,
   "name": "Sand",
-  "color": "0xffff00ff",
+  "texTop": 18,
+  "texBottom": 18,
+  "texSide": 18,
   "isTransparent": false
 }

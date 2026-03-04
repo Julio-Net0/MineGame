@@ -1,6 +1,8 @@
 {
   "id": 2,
   "name": "Stone",
-  "color": "0x828282ff",
+  "texTop": 1,
+  "texBottom": 1,
+  "texSide": 1,
   "isTransparent": false
 }

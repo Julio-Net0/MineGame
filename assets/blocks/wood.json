@@ -1,6 +1,8 @@
 {
   "id": 3,
   "name": "Wood",
-  "color": "0x964b00ff",
+  "texTop": 4,
+  "texBottom": 4,
+  "texSide": 4,
   "isTransparent": false
 }

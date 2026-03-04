@@ -2,6 +2,7 @@
 #include "block_system.h"
 #include "player.h"
 #include "raylib.h"
+#include "renderer.h"
 
 #define HOTBAR_SLOT_SIZE 50
 #define HOTBAR_PADDING 5
@@ -41,7 +42,7 @@ static void DrawHotbar(Player *player){
     unsigned char blockID = player->hotbar[i];
     if(blockID != 0){
       BlockType *def = GetBlockDef(blockID);
-      DrawRectangle(x + HOTBAR_INNER_PADDING, startY + HOTBAR_INNER_PADDING, HOTBAR_ICON_SIZE, HOTBAR_ICON_SIZE, def->color);
+      DrawBlockIcon(blockID, HOTBAR_INNER_PADDING + x, HOTBAR_INNER_PADDING + startY, HOTBAR_ICON_SIZE);
     }
 
     if(i == player->selectedHotbarSlot){

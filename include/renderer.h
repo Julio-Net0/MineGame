@@ -21,5 +21,6 @@ void UnloadChunkMesh(Chunk *chunk);
 void DrawWorld(World *world, Camera3D camera);
 void DrawBlockHighlight(Vector3 pos);
 void DrawPlayerDebug(World *world, Player *player);
+void DrawBlockIcon(int blockID, int x, int y, int size);
 
 #endif

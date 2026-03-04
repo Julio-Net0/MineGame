@@ -8,7 +8,9 @@
 #define MAX_BLOCK_NAME_SIZE 32
 
 typedef struct {
-  Color color;
+  int texTop;
+  int texSide;
+  int texBottom;
   int id;
 
   char name[MAX_BLOCK_NAME_SIZE];
