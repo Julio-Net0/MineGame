@@ -34,6 +34,8 @@ static int iCount = 0;
 
 static Material chunkMaterial;
 
+bool debugWireFrame = false;
+
 void InitRenderer(void){
   chunkMaterial = LoadMaterialDefault();
 
@@ -252,6 +254,11 @@ static bool IsChunkInFrustum(Camera3D camera, Chunk *chunk){
 }
 
 void DrawWorld(World *world, Camera3D camera){
+
+  if(debugWireFrame){
+    rlEnableWireMode();
+  }
+
   for(int i = 0; i < world->chunkCount; i++){
 
     if(!IsChunkInFrustum(camera, &world->chunks[i])){
@@ -260,13 +267,17 @@ void DrawWorld(World *world, Camera3D camera){
 
     DrawChunk(world, &world->chunks[i]);
   }
+
+  if(debugWireFrame){
+    rlDisableWireMode();
+  }
 }
 
 void DrawBlockHighlight(Vector3 pos){
   DrawCubeWires(pos, BLOCK_HIGHLIGHT_SCALE, BLOCK_HIGHLIGHT_SCALE, BLOCK_HIGHLIGHT_SCALE, BLACK);
 }
 
-void DrawPlayerDebug(World *world, Player *player){
+void DrawAABBDebug(World *world, Player *player){
   if(!player->debug_aabb) { return; }
 
   Vector3 bottomPoints[COLLISION_POINTS];

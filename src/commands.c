@@ -2,6 +2,7 @@
 #include "block_system.h"
 #include "raylib.h"
 #include "chat.h"
+#include "renderer.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,18 +13,28 @@ void CommandTP(char *args, CommandContext *ctx);
 void CommandPos(char *args, CommandContext *ctx);
 void CommandList(char *args, CommandContext *ctx);
 void CommandNoclip(char *args, CommandContext *ctx);
-void CommandDebugAABB(char *args, CommandContext *ctx);
+void CommandDebug(char *args, CommandContext *ctx);
 
-static CommandInfo availableCommands[] = {
+static CommandInfo AVAILABLECOMMANDS[] = {
   {"/help", "Use: /help", "List all the commands available and how to use them", CommandHelp},
   {"/tp", "Use: /tp <x> <Y> <z>", "Teleports to coordinates x y z", CommandTP},
   {"/pos", "Use: /pos", "Returns your current position", CommandPos},
   {"/list", "Use: /list", "Returns all loaded block assets", CommandList},
   {"/noclip", "Use: /noclip <1/0>", "Activate or deactivate noclip flight", CommandNoclip},
-  {"/debug_aabb", "Use: /debug_aabb <1/0>", "Activate or deactivate AABB debug overlay", CommandDebugAABB},
+  {"/debug", "Use: /debug <debug/help> <1/0>", "Activate or deactivate debugs overlay", CommandDebug},
 };
 
-static const int AVAILABLECOMMANDSCOUNT = sizeof(availableCommands) / sizeof(availableCommands[0]);
+static const int AVAILABLECOMMANDSCOUNT = sizeof(AVAILABLECOMMANDS) / sizeof(AVAILABLECOMMANDS[0]);
+
+void DebugAABB(CommandContext *ctx, bool state);
+void DebugWireframe(CommandContext *ctx, bool state);
+
+static DebugToggle AVAILABLEDEBUGS[] = {
+  {"aabb", "Show collision boxes", DebugAABB},
+  {"wireframe", "Show lines view", DebugWireframe},
+};
+
+static const int AVAILABLEDEBUGSCOUNT = sizeof(AVAILABLEDEBUGS) / sizeof(AVAILABLEDEBUGS[0]);
 
 void ReturnCommand(ChatState *chat, int logLevel, const char *format, ...){
 
@@ -68,7 +79,7 @@ void CommandHelp(char *args, CommandContext *ctx){
   (void)args;
 
   for(int i = 0; i < AVAILABLECOMMANDSCOUNT; i++){
-    AddChatHistory(ctx->chat, "%s | %s | %s", availableCommands[i].name, availableCommands[i].use, availableCommands[i].description);
+    AddChatHistory(ctx->chat, "%s | %s | %s", AVAILABLECOMMANDS[i].name, AVAILABLECOMMANDS[i].use, AVAILABLECOMMANDS[i].description);
   }
 }
 
@@ -123,26 +134,57 @@ void CommandNoclip(char *args, CommandContext *ctx){
   }
 }
 
-void CommandDebugAABB(char *args, CommandContext *ctx){
+void DebugAABB(CommandContext *ctx, bool state){
+  ctx->player->debug_aabb = state;
+}
+
+void DebugWireframe(CommandContext *ctx, bool state){
+  debugWireFrame = state;
+}
+
+void CommandDebug(char *args, CommandContext *ctx){
   if(args == NULL){
-    ReturnCommand(ctx->chat, LOG_ERROR, "Incorrect Format. try: /debug_aabb <1/0>");
+    ReturnCommand(ctx->chat, LOG_ERROR, "Incorrect Format. try: /debug <command> <1/0> or /debug help");
     return;
   }
 
-  char *opt_str = strtok(args, " ");
+  char *debug_str = strtok(args, " ");
+  char *opt_str = strtok(NULL, " ");
 
-  if(opt_str){
-    int opt = atoi(opt_str);
-    if(opt == 1){
-      ctx->player->debug_aabb = true;
-      ReturnCommand(ctx->chat, LOG_INFO, "debug_aabb activated");
-    }else{
-      ctx->player->debug_aabb = false;
-      ReturnCommand(ctx->chat, LOG_INFO, "debug_aabb deactivated");
-    }
-  }else{
-    ReturnCommand(ctx->chat, LOG_ERROR, "Incorrect Format. try: /debug_aabb <1/0>");
+  if(debug_str == NULL){
+    ReturnCommand(ctx->chat, LOG_ERROR, "Incorrect Format. try: /debug <command> <1/0> or /debug help");
+    return;
   }
+
+  if(strcmp(debug_str, "help") == 0){
+    ReturnCommand(ctx->chat, LOG_INFO, "===DEBUG COMMANDS===");
+    for(int i = 0; i < AVAILABLEDEBUGSCOUNT; i++){
+      char helpLine[128];
+      snprintf(helpLine, sizeof(helpLine), "/debug %s %s", AVAILABLEDEBUGS[i].name, AVAILABLEDEBUGS[i].description);
+      ReturnCommand(ctx->chat, LOG_INFO, helpLine);
+    }
+    return;
+  }
+
+  if(opt_str == NULL){
+    ReturnCommand(ctx->chat, LOG_ERROR, "Missing state (1 or 0). Ex: /debug wireframe 1");
+    return;
+  }
+
+  bool state = (atoi(opt_str) == 1);
+
+  for(int i = 0; i < AVAILABLEDEBUGSCOUNT; i++){
+    if(strcmp(debug_str, AVAILABLEDEBUGS[i].name) == 0){
+
+      AVAILABLEDEBUGS[i].func(ctx, state);
+
+      char msg[64];
+      snprintf(msg, sizeof(msg), "Debug %s %s", debug_str, state ? "activated" : "deactivated");
+      return;
+    }
+  }
+
+  ReturnCommand(ctx->chat, LOG_ERROR, "Incorrect Format. try: /debug <command> <1/0> or /debug help");
 }
 
 void CommandHandler(char *command, ChatState *chat, Camera3D *camera, Player *player, World *world){
@@ -168,8 +210,8 @@ void CommandHandler(char *command, ChatState *chat, Camera3D *camera, Player *pl
   char *args = strtok(NULL, "");
 
   for(int i = 0; i < AVAILABLECOMMANDSCOUNT; i++){
-    if(strcmp(commandName, availableCommands[i].name) == 0){
-      availableCommands[i].function(args, &ctx);
+    if(strcmp(commandName, AVAILABLECOMMANDS[i].name) == 0){
+      AVAILABLECOMMANDS[i].function(args, &ctx);
       return;
     }
   }

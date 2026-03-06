@@ -1,7 +1,6 @@
 #ifndef BLOCK_SYSTEM_H
 #define BLOCK_SYSTEM_H
 
-#include "raylib.h"
 #include <stdbool.h>
 
 #define BLOCK_REGISTRY_SIZE 256

@@ -25,6 +25,13 @@ typedef struct{
   CommandFunc function;
 } CommandInfo;
 
+typedef void (*DebugFunc)(CommandContext *ctx, bool state);
+
+typedef struct {
+  const char *name;
+  const char *description;
+  DebugFunc func;
+} DebugToggle;
 
 void CommandHandler(char *command, ChatState *chat, Camera3D *camera, Player *player, World *world);
 

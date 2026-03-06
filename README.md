@@ -9,7 +9,7 @@ A minimalist Minecraft-inspired voxel engine built from scratch in **C17** using
 ## 🚀 Roadmap to Beta 3
 Goal: Transform the optimized rendering engine into a dynamic, infinite, visually polished, and persistent voxel game world.
 - [X] Data Architecture Upgrade: Replace the linear chunk array with an O(1) Hash Map or 2D Spatial Grid to eliminate CPU bottlenecks during chunk lookups and recover maximum FPS.
-- [ ] Texture Atlas & UV Mapping: Transition from solid vertex colors to actual block graphics by mapping a single global texture image onto the VBOs.
+- [X] Texture Atlas & UV Mapping: Transition from solid vertex colors to actual block graphics by mapping a single global texture image onto the VBOs.
 - [ ] Procedural Terrain Generation: Integrate Perlin or Simplex noise algorithms to generate organic landscapes, mountains, valleys, and underground caves instead of flat planes.
 - [ ] Multithreaded Chunk Processing: Implement background Worker Threads to handle chunk generation and meshing in parallel, eliminating all gameplay stutters when crossing chunk borders.
 - [ ] World Persistence (Save/Load): Develop a binary serialization system with RLE (Run-Length Encoding) compression to save modified chunks to disk and load them seamlessly, preserving player creations.

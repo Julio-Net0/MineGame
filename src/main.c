@@ -6,6 +6,7 @@
 #include "world.h"
 #include "chat.h"
 #include "player.h"
+#include "rlgl.h"
 
 #define INITIAL_WIDTH 1280
 #define INITIAL_HEIGHT 720
@@ -67,7 +68,7 @@ int main(void){
           DrawBlockHighlight(player.targetBlock.blockPos);
         }
 
-        DrawPlayerDebug(world, &player);
+        DrawAABBDebug(world, &player);
 
       }EndMode3D();
 
