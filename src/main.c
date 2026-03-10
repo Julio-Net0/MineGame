@@ -15,8 +15,6 @@ int main(void){
 
   SetTraceLogLevel(LOG_WARNING);
   ChangeDirectory(GetApplicationDirectory());
-  //SetTargetFPS(60); 
-  //SetConfigFlags(FLAG_VSYNC_HINT);
 
   InitWindow(INITIAL_WIDTH, INITIAL_HEIGHT, "MineGame Beta 2");
   ToggleBorderlessWindowed();
@@ -31,7 +29,10 @@ int main(void){
   InitWorld(world);
 
   Player player = InitPlayer((Vector3){0, 17, 0});
-  Camera3D camera = CreateGameCamera();
+  
+  Camera3D playerCamera = CreateGameCamera();
+  Camera3D freeCamera = CreateGameCamera();
+  bool wasFreecam = false;
 
   ChatState chat;
   InitChat(&chat);
@@ -45,24 +46,35 @@ int main(void){
     }
 
     UpdateWorld(world, player.position, MAX_RENDER_DISTANCE);
-    UpdateChat(&chat, &camera, &player, world);
-
+    
     bool hasControl = !chat.isActive;
-    UpdatePlayer(&player, &camera, world, dt, hasControl);
-    HandlePlayerInteraction(&player, &camera, world, hasControl);
+    UpdatePlayer(&player, &playerCamera, world, dt, hasControl);
+    
+    Camera3D *activeCamera = &playerCamera;
 
-    if(hasControl){
-      UpdateGameCamera(&camera, GetMouseDelta());
+    if(player.debug_freecam){
+      if (!wasFreecam) {
+          freeCamera = playerCamera;
+      }
+      UpdateCamera(&freeCamera, CAMERA_FREE);
+      activeCamera = &freeCamera;
+    } else if(hasControl){
+      UpdateGameCamera(&playerCamera, GetMouseDelta());
     }
+    
+    wasFreecam = player.debug_freecam;
+
+    UpdateChat(&chat, activeCamera, &player, world);
+    HandlePlayerInteraction(&player, activeCamera, world, hasControl);
 
 
     BeginDrawing();{
 
       ClearBackground(SKYBLUE);
 
-      BeginMode3D(camera);{
+      BeginMode3D(*activeCamera);{
 
-        DrawWorld(world, camera);
+        DrawWorld(world, playerCamera);
 
         if(player.targetBlock.hit){
           DrawBlockHighlight(player.targetBlock.blockPos);
@@ -79,7 +91,6 @@ int main(void){
   }
 
   MemFree(world);
-
   CloseWindow();
   return 0;
 }

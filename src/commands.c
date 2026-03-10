@@ -28,10 +28,14 @@ static const int AVAILABLECOMMANDSCOUNT = sizeof(AVAILABLECOMMANDS) / sizeof(AVA
 
 void DebugAABB(CommandContext *ctx, bool state);
 void DebugWireframe(CommandContext *ctx, bool state);
+void DebugChunkBorders(CommandContext *ctx, bool state);
+void DebugFreeCam(CommandContext *ctx, bool state);
 
 static DebugToggle AVAILABLEDEBUGS[] = {
   {"aabb", "Show collision boxes", DebugAABB},
   {"wireframe", "Show lines view", DebugWireframe},
+  {"chunkborders", "Show chunk borders", DebugChunkBorders},
+  {"freecam", "Enable freecam", DebugFreeCam},
 };
 
 static const int AVAILABLEDEBUGSCOUNT = sizeof(AVAILABLEDEBUGS) / sizeof(AVAILABLEDEBUGS[0]);
@@ -140,6 +144,14 @@ void DebugAABB(CommandContext *ctx, bool state){
 
 void DebugWireframe(CommandContext *ctx, bool state){
   debugWireFrame = state;
+}
+
+void DebugChunkBorders(CommandContext *ctx, bool state){
+  debugChunkBorders = state;
+}
+
+void DebugFreeCam(CommandContext *ctx, bool state){
+  ctx->player->debug_freecam = state;
 }
 
 void CommandDebug(char *args, CommandContext *ctx){

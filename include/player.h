@@ -40,6 +40,7 @@ typedef struct {
   bool isGrounded;
   bool noclip;
   bool debug_aabb;
+  bool debug_freecam;
 } Player ;
 
 typedef struct {

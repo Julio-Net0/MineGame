@@ -35,6 +35,7 @@ static int iCount = 0;
 static Material chunkMaterial;
 
 bool debugWireFrame = false;
+bool debugChunkBorders = false;
 
 void InitRenderer(void){
   chunkMaterial = LoadMaterialDefault();
@@ -266,6 +267,16 @@ void DrawWorld(World *world, Camera3D camera){
     }
 
     DrawChunk(world, &world->chunks[i]);
+
+    if(debugChunkBorders){
+      Vector3 center = {
+        (float)(world->chunks[i].chunkX * CHUNK_SIZE) + CHUNK_HALF_SIZE,
+        (float)(world->chunks[i].chunkY * CHUNK_SIZE) + CHUNK_HALF_SIZE,
+        (float)(world->chunks[i].chunkZ * CHUNK_SIZE) + CHUNK_HALF_SIZE,
+      };
+
+      DrawCubeWires(center, CHUNK_SIZE, CHUNK_SIZE, CHUNK_SIZE, YELLOW);
+    }
   }
 
   if(debugWireFrame){

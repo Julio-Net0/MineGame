@@ -260,6 +260,10 @@ static void UpdateCameraFollow(Player *player, Camera3D *camera){
 
 void UpdatePlayer(Player *player, Camera3D *camera, World *world, float dt, bool hasControl){
 
+  if(player->debug_freecam){
+    return;
+  }
+
   Vector3 input = HandleInput(hasControl);
 
   Vector3 moveDir = CalculateMoveDir(camera, input);
