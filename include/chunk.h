@@ -27,6 +27,7 @@ typedef struct {
   bool hasMesh;
 } Chunk;
 
+void GenerateChunkTerrain(Chunk *chunk);
 void GenerateFlatChunk(Chunk *chunk);
 void DrawChunk(World *world, Chunk *chunk);
 

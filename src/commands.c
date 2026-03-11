@@ -1,8 +1,8 @@
 #include "commands.h"
 #include "block_system.h"
+#include "debug.h"
 #include "raylib.h"
 #include "chat.h"
-#include "renderer.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -139,19 +139,19 @@ void CommandNoclip(char *args, CommandContext *ctx){
 }
 
 void DebugAABB(CommandContext *ctx, bool state){
-  ctx->player->debug_aabb = state;
+  g_debug.AABB = state;
 }
 
 void DebugWireframe(CommandContext *ctx, bool state){
-  debugWireFrame = state;
+  g_debug.wireframe = state;
 }
 
 void DebugChunkBorders(CommandContext *ctx, bool state){
-  debugChunkBorders = state;
+  g_debug.chunkBorders = state;
 }
 
 void DebugFreeCam(CommandContext *ctx, bool state){
-  ctx->player->debug_freecam = state;
+  g_debug.freecam = state;
 }
 
 void CommandDebug(char *args, CommandContext *ctx){

@@ -24,7 +24,4 @@ void DrawBlockHighlight(Vector3 pos);
 void DrawAABBDebug(World *world, Player *player);
 void DrawBlockIcon(int blockID, int x, int y, int size);
 
-extern bool debugWireFrame;
-extern bool debugChunkBorders;
-
 #endif

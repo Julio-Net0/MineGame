@@ -1,3 +1,4 @@
+#include "debug.h"
 #include "raylib.h"
 #include "player.h"
 #include "raymath.h"
@@ -19,7 +20,6 @@ Player InitPlayer(Vector3 spawnPos){
   p.headOffset = PLAYER_HEAD_OFFSET;
   p.isGrounded = false;
   p.noclip = false;
-  p.debug_aabb = false;
 
   SetHotbarSlot(&p, 0, 1);
   SetHotbarSlot(&p, 1, 2);
@@ -260,7 +260,7 @@ static void UpdateCameraFollow(Player *player, Camera3D *camera){
 
 void UpdatePlayer(Player *player, Camera3D *camera, World *world, float dt, bool hasControl){
 
-  if(player->debug_freecam){
+  if(g_debug.freecam){
     return;
   }
 

@@ -1,4 +1,5 @@
 #include "block_system.h"
+#include "debug.h"
 #include "hud.h"
 #include "raylib.h"
 #include "camera.h"
@@ -52,7 +53,7 @@ int main(void){
     
     Camera3D *activeCamera = &playerCamera;
 
-    if(player.debug_freecam){
+    if(g_debug.freecam){
       if (!wasFreecam) {
           freeCamera = playerCamera;
       }
@@ -62,7 +63,7 @@ int main(void){
       UpdateGameCamera(&playerCamera, GetMouseDelta());
     }
     
-    wasFreecam = player.debug_freecam;
+    wasFreecam = g_debug.freecam;
 
     UpdateChat(&chat, activeCamera, &player, world);
     HandlePlayerInteraction(&player, activeCamera, world, hasControl);

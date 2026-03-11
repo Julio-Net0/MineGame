@@ -1,6 +1,7 @@
 #include "renderer.h"
 #include "block_system.h"
 #include "chunk.h"
+#include "debug.h"
 #include "raylib.h"
 #include "raymath.h"
 #include "player.h"
@@ -33,9 +34,6 @@ static int vCount = 0;
 static int iCount = 0;
 
 static Material chunkMaterial;
-
-bool debugWireFrame = false;
-bool debugChunkBorders = false;
 
 void InitRenderer(void){
   chunkMaterial = LoadMaterialDefault();
@@ -256,7 +254,7 @@ static bool IsChunkInFrustum(Camera3D camera, Chunk *chunk){
 
 void DrawWorld(World *world, Camera3D camera){
 
-  if(debugWireFrame){
+  if(g_debug.wireframe){
     rlEnableWireMode();
   }
 
@@ -268,7 +266,7 @@ void DrawWorld(World *world, Camera3D camera){
 
     DrawChunk(world, &world->chunks[i]);
 
-    if(debugChunkBorders){
+    if(g_debug.chunkBorders){
       Vector3 center = {
         (float)(world->chunks[i].chunkX * CHUNK_SIZE) + CHUNK_HALF_SIZE,
         (float)(world->chunks[i].chunkY * CHUNK_SIZE) + CHUNK_HALF_SIZE,
@@ -279,7 +277,7 @@ void DrawWorld(World *world, Camera3D camera){
     }
   }
 
-  if(debugWireFrame){
+  if(g_debug.wireframe){
     rlDisableWireMode();
   }
 }
@@ -289,7 +287,7 @@ void DrawBlockHighlight(Vector3 pos){
 }
 
 void DrawAABBDebug(World *world, Player *player){
-  if(!player->debug_aabb) { return; }
+  if(!g_debug.AABB) { return; }
 
   Vector3 bottomPoints[COLLISION_POINTS];
   Vector3 topPoints[COLLISION_POINTS];

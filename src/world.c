@@ -133,7 +133,8 @@ static void CreateOrRecycleChunk(World *world, int chunkX, int chunkY, int chunk
       world->chunks[i].chunkX = chunkX;
       world->chunks[i].chunkY = chunkY;
       world->chunks[i].chunkZ = chunkZ;
-      GenerateFlatChunk(&world->chunks[i]);
+      //GenerateFlatChunk(&world->chunks[i]);
+      GenerateChunkTerrain(&world->chunks[i]);
       keepChunk[i] = true;
       
       InsertChunkIntoMap(world, i);
