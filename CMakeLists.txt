@@ -28,6 +28,7 @@ add_executable(${PROJECT_NAME}
   src/chunk.c
   src/hud.c
   src/debug.c
+  src/chunk_worker.c
 )
 
 target_link_libraries(${PROJECT_NAME} raylib)

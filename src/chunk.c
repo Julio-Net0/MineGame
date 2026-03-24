@@ -97,11 +97,6 @@ void GenerateFlatChunk(Chunk *chunk){
 }
 
 void DrawChunk(World *world, Chunk *chunk){
-
-  if(chunk->isDirty){
-    BuildChunkMesh(world, chunk);
-  }
-
   RenderChunkMesh(chunk);
 }
 

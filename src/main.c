@@ -1,6 +1,9 @@
 #include "block_system.h"
+#include "chunk.h"
+#include "chunk_worker.h"
 #include "debug.h"
 #include "hud.h"
+#include "pthread.h"
 #include "raylib.h"
 #include "camera.h"
 #include "renderer.h"
@@ -28,8 +31,10 @@ int main(void){
 
   World *world = (World*)MemAlloc(sizeof(World));
   InitWorld(world);
+  TraceLog(LOG_INFO, "MAIN THREAD ID: %p", (void*)pthread_self());
+  InitChunkWorker();
 
-  Player player = InitPlayer((Vector3){0, 17, 0});
+  Player player = InitPlayer((Vector3){0, 25, 0});
   
   Camera3D playerCamera = CreateGameCamera();
   Camera3D freeCamera = CreateGameCamera();
@@ -68,6 +73,29 @@ int main(void){
     UpdateChat(&chat, activeCamera, &player, world);
     HandlePlayerInteraction(&player, activeCamera, world, hasControl);
 
+    for(int i = 0; i < world->chunkCount; i++){
+      Chunk *c = &world->chunks[i];
+      if(c->isGenerated && c->terrainJustGenerated){
+        UpdateNeighborsDirtyFlag(world, c->chunkX, c->chunkY, c->chunkZ);
+        c->terrainJustGenerated = false; // Desliga para não dar o loop infinito!
+      }
+    }
+
+    int meshesBuiltThisFrame = 0;
+    int maxMeshesPerFrame = 2;
+
+    for(int i = 0; i < world->chunkCount; i++){
+      Chunk *c = &world->chunks[i];
+
+      if(c->isGenerated && c->isDirty && !c->isGenerating){
+        BuildChunkMesh(world, c);
+        meshesBuiltThisFrame++;
+
+        if(meshesBuiltThisFrame >= maxMeshesPerFrame) {
+          break;
+        }
+      }
+    }
 
     BeginDrawing();{
 
@@ -82,15 +110,14 @@ int main(void){
         }
 
         DrawAABBDebug(world, &player);
-
       }EndMode3D();
 
       DrawHUD(&player, world, true);
       DrawChat(&chat);
-
     }EndDrawing();
   }
 
+  CloseChunkWorker();
   MemFree(world);
   CloseWindow();
   return 0;

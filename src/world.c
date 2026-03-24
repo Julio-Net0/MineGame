@@ -2,6 +2,7 @@
 #include "chunk.h"
 #include "raylib.h"
 #include "renderer.h"
+#include "chunk_worker.h"
 #include <math.h>
 #include <stddef.h>
 
@@ -102,7 +103,7 @@ static void MarkUsefulChunks(World *world, int pChunkX, int pChunkY, int pChunkZ
   }
 }
 
-static void UpdateNeighborsDirtyFlag(World *world, int cx, int cy, int cz){
+void UpdateNeighborsDirtyFlag(World *world, int cx, int cy, int cz){
   Chunk *neighbor;
   neighbor = GetChunkFromWorld(world, cx - 1, cy, cz); if (neighbor) { neighbor->isDirty = true; }
   neighbor = GetChunkFromWorld(world, cx + 1, cy, cz); if (neighbor) { neighbor->isDirty = true; }
@@ -114,6 +115,11 @@ static void UpdateNeighborsDirtyFlag(World *world, int cx, int cy, int cz){
 
 static void CreateOrRecycleChunk(World *world, int chunkX, int chunkY, int chunkZ, bool *keepChunk){
   for(int i = 0; i < MAX_ACTIVE_CHUNKS; i++){
+
+    if(world->chunks[i].isGenerating){
+      continue;
+    }
+
     if(i >= world->chunkCount || !keepChunk[i]){
 
       if(i < world->chunkCount) { 
@@ -133,13 +139,11 @@ static void CreateOrRecycleChunk(World *world, int chunkX, int chunkY, int chunk
       world->chunks[i].chunkX = chunkX;
       world->chunks[i].chunkY = chunkY;
       world->chunks[i].chunkZ = chunkZ;
-      //GenerateFlatChunk(&world->chunks[i]);
-      GenerateChunkTerrain(&world->chunks[i]);
-      keepChunk[i] = true;
-      
-      InsertChunkIntoMap(world, i);
 
-      UpdateNeighborsDirtyFlag(world, chunkX, chunkY, chunkZ);
+      EnqueueChunkGeneration(&world->chunks[i]);
+
+      keepChunk[i] = true;
+      InsertChunkIntoMap(world, i);
 
       if(i >= world->chunkCount){
         world->chunkCount++;
