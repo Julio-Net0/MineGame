@@ -154,7 +154,7 @@ static void CreateOrRecycleChunk(World *world, int chunkX, int chunkY, int chunk
 }
 
 void UpdateWorld(World *world, Vector3 playerPos, int renderDist){
-  int requiredChunks = (2 * renderDist + 1) * (2 * renderDist + 1);
+  int requiredChunks = (2 * renderDist + 1) * (2 * renderDist + 1) * (2 * renderDist + 1);
   if(requiredChunks > MAX_ACTIVE_CHUNKS){
     renderDist = MAX_RENDER_DISTANCE;
   }

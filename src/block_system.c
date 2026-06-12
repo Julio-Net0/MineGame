@@ -66,7 +66,8 @@ void ParseBlockFile(const char *filePath){
 
   cJSON* nameItem = cJSON_GetObjectItemCaseSensitive(json, "name");
   if(cJSON_IsString(nameItem)){
-    TextCopy(block->name, nameItem->valuestring);
+    strncpy(block->name, nameItem->valuestring, MAX_BLOCK_NAME_SIZE - 1);
+    block->name[MAX_BLOCK_NAME_SIZE - 1] = '\0';
   }
 
   cJSON* texTopItem = cJSON_GetObjectItemCaseSensitive(json, "texTop");

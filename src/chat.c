@@ -83,7 +83,7 @@ static void HandleChatActions(ChatState *chat, Camera3D *camera, Player *player,
     if(chat->inputText[0] == '/'){
       CommandHandler(chat->inputText, chat, camera, player, world);
     }else{
-      TraceLog(LOG_NONE, chat->inputText);
+      TraceLog(LOG_NONE, "%s", chat->inputText);
       AddChatHistory(chat, "%s", chat->inputText);
     }
 

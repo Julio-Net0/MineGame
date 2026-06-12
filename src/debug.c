@@ -6,5 +6,3 @@ DebugState g_debug = {
   .AABB = false,
   .freecam = false,
 };
-
-extern DebugState g_debug;

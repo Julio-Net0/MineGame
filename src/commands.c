@@ -173,7 +173,7 @@ void CommandDebug(char *args, CommandContext *ctx){
     for(int i = 0; i < AVAILABLEDEBUGSCOUNT; i++){
       char helpLine[128];
       snprintf(helpLine, sizeof(helpLine), "/debug %s %s", AVAILABLEDEBUGS[i].name, AVAILABLEDEBUGS[i].description);
-      ReturnCommand(ctx->chat, LOG_INFO, helpLine);
+      ReturnCommand(ctx->chat, LOG_INFO, "%s", helpLine);
     }
     return;
   }
@@ -192,6 +192,7 @@ void CommandDebug(char *args, CommandContext *ctx){
 
       char msg[64];
       snprintf(msg, sizeof(msg), "Debug %s %s", debug_str, state ? "activated" : "deactivated");
+      ReturnCommand(ctx->chat, LOG_INFO, "%s", msg);
       return;
     }
   }

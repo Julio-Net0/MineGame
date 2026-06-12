@@ -41,7 +41,6 @@ static void DrawHotbar(Player *player){
 
     unsigned char blockID = player->hotbar[i];
     if(blockID != 0){
-      BlockType *def = GetBlockDef(blockID);
       DrawBlockIcon(blockID, HOTBAR_INNER_PADDING + x, HOTBAR_INNER_PADDING + startY, HOTBAR_ICON_SIZE);
     }
 

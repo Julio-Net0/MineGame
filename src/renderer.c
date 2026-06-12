@@ -27,7 +27,6 @@ static Texture2D blockAtlas;
 static float tempTexCoords[MAX_FACES * VERTICES_PER_FACE * 2];
 
 static float tempVertices[MAX_FACES * VERTICES_PER_FACE * FLOATS_PER_VERTEX];
-static unsigned char tempColors[MAX_FACES * VERTICES_PER_FACE * COLOR_CHANNELS];
 static unsigned short tempIndices[MAX_FACES * INDICES_PER_FACES];
 
 static int vCount = 0;
@@ -38,7 +37,7 @@ static Material chunkMaterial;
 void InitRenderer(void){
   chunkMaterial = LoadMaterialDefault();
 
-  blockAtlas = LoadTexture("../assets/atlas/terrain.png");
+  blockAtlas = LoadTexture("assets/atlas/terrain.png");
   SetTextureFilter(blockAtlas, TEXTURE_FILTER_POINT);
   chunkMaterial.maps[MATERIAL_MAP_DIFFUSE].texture = blockAtlas;
 }
