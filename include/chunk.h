@@ -11,6 +11,8 @@ typedef struct World World;
 #define BLOCK_SIZE 1.0F
 #define BLOCK_HALF_SIZE (BLOCK_SIZE / 2.0F)
 
+#include <stdatomic.h>
+
 typedef struct {
   Mesh mesh;
 
@@ -26,9 +28,9 @@ typedef struct {
   bool isDirty;
   bool hasMesh;
 
-  volatile bool isGenerating;
-  volatile bool isGenerated;
-  volatile bool terrainJustGenerated;
+  atomic_bool isGenerating;
+  atomic_bool isGenerated;
+  atomic_bool terrainJustGenerated;
 } Chunk;
 
 void GenerateChunkTerrain(Chunk *chunk);

@@ -19,3 +19,12 @@ MineGame.exe
 .idea/
 
 *.log
+
+node_modules/
+package-lock.json
+package.json
+
+.agent/
+.claude/
+openspec/
+CLAUDE.md

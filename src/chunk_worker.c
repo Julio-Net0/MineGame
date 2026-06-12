@@ -1,6 +1,7 @@
 #include "chunk_worker.h"
 #include <pthread.h>
 #include <raylib.h>
+#include <stdatomic.h>
 
 //Needs to be bigger than MAX_ACTIVE_CHUNKS
 #define QUEUE_SIZE 2048
@@ -11,7 +12,7 @@ static int queueTail = 0;
 
 static pthread_t workerThread;
 static pthread_mutex_t queueMutex;
-static bool workerRunning = false;
+static atomic_bool workerRunning = false;
 
 static void* WorkerLoop(void* arg) {
   TraceLog(LOG_INFO, "WORKER THREAD ID: %p", (void*)pthread_self());
@@ -28,9 +29,9 @@ static void* WorkerLoop(void* arg) {
     if (target != NULL) {
       GenerateChunkTerrain(target);
 
-      target->isGenerating = false;
       target->terrainJustGenerated = true;
-      target->isGenerated = true; 
+      target->isGenerated = true;
+      target->isGenerating = false;
 
     } else {
       WaitTime(0.001); 
@@ -52,16 +53,20 @@ void CloseChunkWorker(void) {
 }
 
 void EnqueueChunkGeneration(Chunk *chunk) {
-    pthread_mutex_unlock(&queueMutex);
+    pthread_mutex_lock(&queueMutex);
 
     int nextTail = (queueTail + 1) % QUEUE_SIZE;
 
     if (nextTail != queueHead) {
       chunk->isGenerating = true;
-      chunk->isGenerating = false;
+      chunk->isGenerated = false;
 
       generationQueue[queueTail] = chunk;
       queueTail = nextTail;
+    } else {
+      TraceLog(LOG_WARNING, "Chunk generation queue full! Chunk rejected at: %d, %d, %d", chunk->chunkX, chunk->chunkY, chunk->chunkZ);
+      chunk->isGenerating = false;
+      chunk->isGenerated = false;
     }
 
     pthread_mutex_unlock(&queueMutex);
