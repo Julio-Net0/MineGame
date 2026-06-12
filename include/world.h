@@ -28,5 +28,6 @@ void SetBlockInWorld(World *world, Vector3 globalPos, unsigned char blockID);
 RaycastResult RayCastToWorld(World *world, Vector3 rayOrigin, Vector3 rayDir, float maxDistance);
 Chunk* GetChunkFromWorld(World *world, int chunkX, int chunkY, int chunkZ);
 Chunk* GetChunkAtPos(World *world, Vector3 pos);
+bool AreNeighborsGenerated(World *world, Chunk *chunk);
 
 #endif

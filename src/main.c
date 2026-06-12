@@ -87,7 +87,7 @@ int main(void){
     for(int i = 0; i < world->chunkCount; i++){
       Chunk *c = &world->chunks[i];
 
-      if(c->isGenerated && c->isDirty && !c->isGenerating){
+      if(c->isGenerated && c->isDirty && !c->isGenerating && AreNeighborsGenerated(world, c)){
         BuildChunkMesh(world, c);
         meshesBuiltThisFrame++;
 

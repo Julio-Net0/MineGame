@@ -333,3 +333,29 @@ RaycastResult RayCastToWorld(World *world, Vector3 rayOrigin, Vector3 rayDir, fl
 
   return result;
 }
+
+bool AreNeighborsGenerated(World *world, Chunk *chunk) {
+  int cx = chunk->chunkX;
+  int cy = chunk->chunkY;
+  int cz = chunk->chunkZ;
+
+  int neighborCoords[6][3] = {
+    {cx - 1, cy, cz},
+    {cx + 1, cy, cz},
+    {cx, cy - 1, cz},
+    {cx, cy + 1, cz},
+    {cx, cy, cz - 1},
+    {cx, cy, cz + 1}
+  };
+
+  for (int i = 0; i < 6; i++) {
+    Chunk *neighbor = GetChunkFromWorld(world, neighborCoords[i][0], neighborCoords[i][1], neighborCoords[i][2]);
+    if (neighbor != NULL) {
+      if (!neighbor->isGenerated || neighbor->isGenerating) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
