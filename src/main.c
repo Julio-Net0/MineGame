@@ -11,6 +11,7 @@
 #include "chat.h"
 #include "player.h"
 #include "rlgl.h"
+#include "world_save.h"
 
 #define INITIAL_WIDTH 1280
 #define INITIAL_HEIGHT 720
@@ -30,6 +31,7 @@ int main(void){
   LoadAllBlockDefinitions("assets/blocks");
 
   World *world = (World*)MemAlloc(sizeof(World));
+  InitWorldSave();
   InitWorld(world);
   TraceLog(LOG_INFO, "MAIN THREAD ID: %p", (void*)pthread_self());
   InitChunkWorker();
@@ -118,6 +120,7 @@ int main(void){
   }
 
   CloseChunkWorker();
+  CloseWorldSave();
   MemFree(world);
   CloseWindow();
   return 0;

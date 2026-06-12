@@ -3,6 +3,7 @@
 #include "debug.h"
 #include "raylib.h"
 #include "chat.h"
+#include "world_save.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,6 +15,7 @@ void CommandPos(char *args, CommandContext *ctx);
 void CommandList(char *args, CommandContext *ctx);
 void CommandNoclip(char *args, CommandContext *ctx);
 void CommandDebug(char *args, CommandContext *ctx);
+void CommandSeed(char *args, CommandContext *ctx);
 
 static CommandInfo AVAILABLECOMMANDS[] = {
   {"/help", "Use: /help", "List all the commands available and how to use them", CommandHelp},
@@ -22,6 +24,7 @@ static CommandInfo AVAILABLECOMMANDS[] = {
   {"/list", "Use: /list", "Returns all loaded block assets", CommandList},
   {"/noclip", "Use: /noclip <1/0>", "Activate or deactivate noclip flight", CommandNoclip},
   {"/debug", "Use: /debug <debug/help> <1/0>", "Activate or deactivate debugs overlay", CommandDebug},
+  {"/seed", "Use: /seed", "Returns the world seed", CommandSeed},
 };
 
 static const int AVAILABLECOMMANDSCOUNT = sizeof(AVAILABLECOMMANDS) / sizeof(AVAILABLECOMMANDS[0]);
@@ -95,6 +98,11 @@ void CommandPos(char *args, CommandContext *ctx){
   float posZ = ctx->player->position.z;
 
   ReturnCommand(ctx->chat, LOG_INFO, "X:%.1f Y:%.1f Z:%.1f", posX, posY, posZ );
+}
+
+void CommandSeed(char *args, CommandContext *ctx){
+  (void)args;
+  ReturnCommand(ctx->chat, LOG_INFO, "World Seed: %llu", (unsigned long long)GetWorldSeed());
 }
 
 void CommandList(char *args, CommandContext *ctx){
