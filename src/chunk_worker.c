@@ -1,4 +1,5 @@
 #include "chunk_worker.h"
+#include "world_save.h"
 #include <pthread.h>
 #include <raylib.h>
 #include <stdatomic.h>
@@ -27,7 +28,9 @@ static void* WorkerLoop(void* arg) {
     pthread_mutex_unlock(&queueMutex);
 
     if (target != NULL) {
-      GenerateChunkTerrain(target);
+      if (!LoadChunkFromDisk(target)) {
+        GenerateChunkTerrain(target);
+      }
 
       target->terrainJustGenerated = true;
       target->isGenerated = true;

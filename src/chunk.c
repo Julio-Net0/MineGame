@@ -8,6 +8,7 @@
 #include "stb_perling.h"
 
 void GenerateChunkTerrain(Chunk *chunk) {
+  chunk->isModified = false;
   int solidCount = 0;
 
   uint64_t seed = GetWorldSeed();
@@ -75,6 +76,7 @@ void GenerateChunkTerrain(Chunk *chunk) {
 }
 
 void GenerateFlatChunk(Chunk *chunk){
+  chunk->isModified = false;
 
   chunk->solidBlockCount = 0;
 
@@ -124,10 +126,13 @@ void SetBlockInChunk(Chunk *chunk, Vector3 localPos, unsigned char blockID){
   if(x >= 0 && x < CHUNK_SIZE && y >= 0 && y < CHUNK_SIZE && z >= 0 && z < CHUNK_SIZE){
     unsigned char oldID = chunk->data[x][y][z];
 
-    if(oldID == 0 && blockID != 0) { chunk->solidBlockCount++; }
-    else if(oldID != 0 && blockID == 0) { chunk->solidBlockCount--; }
+    if (oldID != blockID) {
+      if(oldID == 0 && blockID != 0) { chunk->solidBlockCount++; }
+      else if(oldID != 0 && blockID == 0) { chunk->solidBlockCount--; }
 
-    chunk->data[x][y][z] = blockID;
-    chunk->isDirty = true;
+      chunk->data[x][y][z] = blockID;
+      chunk->isDirty = true;
+      chunk->isModified = true;
+    }
   }
 }

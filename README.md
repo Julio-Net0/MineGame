@@ -12,7 +12,7 @@ Goal: Transform the optimized rendering engine into a dynamic, infinite, visuall
 - [X] Texture Atlas & UV Mapping: Transition from solid vertex colors to actual block graphics by mapping a single global texture image onto the VBOs.
 - [X] Procedural Terrain Generation: Integrate Perlin or Simplex noise algorithms to generate organic landscapes, mountains, valleys, and underground caves instead of flat planes.
 - [X] Multithreaded Chunk Processing: Implement background Worker Threads to handle chunk generation and meshing in parallel, eliminating all gameplay stutters when crossing chunk borders.
-- [ ] World Persistence (Save/Load): Develop a binary serialization system with RLE (Run-Length Encoding) compression to save modified chunks to disk and load them seamlessly, preserving player creations.
+- [X] World Persistence (Save/Load): Develop a binary serialization system with RLE (Run-Length Encoding) compression to save modified chunks to disk and load them seamlessly, preserving player creations.
 - [X] View Frustum Culling: Add camera-aware mathematics (Dot Product / Plane Extraction) to completely ignore and skip rendering chunks that are behind the player or outside the field of view, maximizing GPU efficiency.
 - [X] Meshing Amortization(Chunk Queue): Implement a time-sliced building queue that limits the number of meshes generated per frame. This eliminates CPU lag spikes and guarantees buttery-smooth framerates when crossing chunk boundaries at high speeds.
 - [ ] Greedy Meshing: Upgrade the Face Culling algorithm to merge adjacent block faces of the same type into massive, single quads. This slashes the total vertex count by up to 80%, drastically reducing VRAM usage and GPU memory bandwidth.

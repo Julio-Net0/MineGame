@@ -2,9 +2,15 @@
 #define WORLD_SAVE_H
 
 #include <stdint.h>
+#include <stdbool.h>
+
+typedef struct Chunk Chunk;
 
 void InitWorldSave(void);
 void CloseWorldSave(void);
 uint64_t GetWorldSeed(void);
+
+void SaveChunkToDisk(Chunk *chunk);
+bool LoadChunkFromDisk(Chunk *chunk);
 
 #endif // WORLD_SAVE_H

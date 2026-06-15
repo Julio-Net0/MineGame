@@ -4,6 +4,7 @@
 #include "raylib.h"
 #include "chat.h"
 #include "world_save.h"
+#include "chunk_serial.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -16,6 +17,7 @@ void CommandList(char *args, CommandContext *ctx);
 void CommandNoclip(char *args, CommandContext *ctx);
 void CommandDebug(char *args, CommandContext *ctx);
 void CommandSeed(char *args, CommandContext *ctx);
+void CommandSave(char *args, CommandContext *ctx);
 
 static CommandInfo AVAILABLECOMMANDS[] = {
   {"/help", "Use: /help", "List all the commands available and how to use them", CommandHelp},
@@ -25,6 +27,7 @@ static CommandInfo AVAILABLECOMMANDS[] = {
   {"/noclip", "Use: /noclip <1/0>", "Activate or deactivate noclip flight", CommandNoclip},
   {"/debug", "Use: /debug <debug/help> <1/0>", "Activate or deactivate debugs overlay", CommandDebug},
   {"/seed", "Use: /seed", "Returns the world seed", CommandSeed},
+  {"/save", "Use: /save", "Saves all modified chunks to disk", CommandSave},
 };
 
 static const int AVAILABLECOMMANDSCOUNT = sizeof(AVAILABLECOMMANDS) / sizeof(AVAILABLECOMMANDS[0]);
@@ -103,6 +106,19 @@ void CommandPos(char *args, CommandContext *ctx){
 void CommandSeed(char *args, CommandContext *ctx){
   (void)args;
   ReturnCommand(ctx->chat, LOG_INFO, "World Seed: %llu", (unsigned long long)GetWorldSeed());
+}
+
+void CommandSave(char *args, CommandContext *ctx) {
+  (void)args;
+  int savedCount = 0;
+  for (int i = 0; i < ctx->world->chunkCount; i++) {
+    Chunk *c = &ctx->world->chunks[i];
+    if (c->isModified) {
+      SaveChunkToDisk(c);
+      savedCount++;
+    }
+  }
+  ReturnCommand(ctx->chat, LOG_INFO, "World saved successfully! (%d chunks saved)", savedCount);
 }
 
 void CommandList(char *args, CommandContext *ctx){

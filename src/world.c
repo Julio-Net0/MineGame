@@ -3,6 +3,7 @@
 #include "raylib.h"
 #include "renderer.h"
 #include "chunk_worker.h"
+#include "world_save.h"
 #include <math.h>
 #include <stddef.h>
 
@@ -126,6 +127,10 @@ static void CreateOrRecycleChunk(World *world, int chunkX, int chunkY, int chunk
         int oldX = world->chunks[i].chunkX;
         int oldY = world->chunks[i].chunkY;
         int oldZ = world->chunks[i].chunkZ;
+
+        if (world->chunks[i].isModified) {
+          SaveChunkToDisk(&world->chunks[i]);
+        }
 
         RemoveChunkFromMap(world, oldX, oldY, oldZ);
 

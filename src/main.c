@@ -120,6 +120,14 @@ int main(void){
   }
 
   CloseChunkWorker();
+
+  // Sweep and save all modified chunks
+  for (int i = 0; i < world->chunkCount; i++) {
+    if (world->chunks[i].isModified) {
+      SaveChunkToDisk(&world->chunks[i]);
+    }
+  }
+
   CloseWorldSave();
   MemFree(world);
   CloseWindow();

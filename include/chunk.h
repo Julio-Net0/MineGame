@@ -13,7 +13,7 @@ typedef struct World World;
 
 #include <stdatomic.h>
 
-typedef struct {
+typedef struct Chunk {
   Mesh mesh;
 
   unsigned char data[CHUNK_SIZE][CHUNK_SIZE][CHUNK_SIZE];
@@ -27,6 +27,7 @@ typedef struct {
 
   bool isDirty;
   bool hasMesh;
+  bool isModified;
 
   atomic_bool isGenerating;
   atomic_bool isGenerated;
