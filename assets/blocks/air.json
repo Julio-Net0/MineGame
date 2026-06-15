@@ -1,5 +1,6 @@
 {
   "id": 0,
   "name": "Air",
-  "isTransparent": true
+  "isTransparent": true,
+  "isSolid": false
 }

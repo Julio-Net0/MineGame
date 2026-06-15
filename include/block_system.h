@@ -15,6 +15,7 @@ typedef struct {
   char name[MAX_BLOCK_NAME_SIZE];
 
   bool isTransparent;
+  bool isSolid;
 } BlockType;
 
 extern BlockType blockRegistry[BLOCK_REGISTRY_SIZE];

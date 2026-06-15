@@ -6,6 +6,7 @@
 #include "raymath.h"
 #include "player.h"
 #include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
 #include <rlgl.h>
 
@@ -307,6 +308,17 @@ static bool IsChunkInFrustum(Camera3D camera, Chunk *chunk){
   return dotProduct >= limit;
 }
 
+typedef struct {
+  int index;
+  float distanceSq;
+} ChunkDistance;
+
+static int CompareChunkDistance(const void *a, const void *b) {
+  float distA = ((ChunkDistance *)a)->distanceSq;
+  float distB = ((ChunkDistance *)b)->distanceSq;
+  return (distB > distA) - (distB < distA);
+}
+
 void DrawWorld(World *world, Camera3D camera){
 
   if(g_debug.wireframe){
@@ -338,12 +350,37 @@ void DrawWorld(World *world, Camera3D camera){
   rlDisableDepthMask();
   rlEnableColorBlend();
 
+  static ChunkDistance visibleChunks[MAX_ACTIVE_CHUNKS];
+  int visibleCount = 0;
+
   for(int i = 0; i < world->chunkCount; i++){
-    if(!IsChunkInFrustum(camera, &world->chunks[i])){
+    Chunk *c = &world->chunks[i];
+    if(!c->hasTranslucentMesh){
+      continue;
+    }
+    if(!IsChunkInFrustum(camera, c)){
       continue;
     }
 
-    RenderChunkTranslucentMesh(&world->chunks[i]);
+    float const HALFCHUNKSIZE = CHUNK_SIZE / 2.0F;
+    Vector3 chunkCenter = {
+      (float)(c->chunkX * CHUNK_SIZE) + HALFCHUNKSIZE,
+      (float)(c->chunkY * CHUNK_SIZE) + HALFCHUNKSIZE,
+      (float)(c->chunkZ * CHUNK_SIZE) + HALFCHUNKSIZE,
+    };
+
+    Vector3 vecToChunk = Vector3Subtract(chunkCenter, camera.position);
+    float distSq = vecToChunk.x * vecToChunk.x + vecToChunk.y * vecToChunk.y + vecToChunk.z * vecToChunk.z;
+
+    visibleChunks[visibleCount].index = i;
+    visibleChunks[visibleCount].distanceSq = distSq;
+    visibleCount++;
+  }
+
+  qsort(visibleChunks, visibleCount, sizeof(ChunkDistance), CompareChunkDistance);
+
+  for(int i = 0; i < visibleCount; i++){
+    RenderChunkTranslucentMesh(&world->chunks[visibleChunks[i].index]);
   }
 
   rlDrawRenderBatchActive();

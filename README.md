@@ -17,7 +17,7 @@ Goal: Transform the optimized rendering engine into a dynamic, infinite, visuall
 - [X] Meshing Amortization(Chunk Queue): Implement a time-sliced building queue that limits the number of meshes generated per frame. This eliminates CPU lag spikes and guarantees buttery-smooth framerates when crossing chunk boundaries at high speeds.
 - [ ] Greedy Meshing: Upgrade the Face Culling algorithm to merge adjacent block faces of the same type into massive, single quads. This slashes the total vertex count by up to 80%, drastically reducing VRAM usage and GPU memory bandwidth.
 - [ ] Voxel Ambient Occlusion (AO): Calculate smooth, localized shadows on block vertices based on neighboring geometry to add visual depth and that classic "voxel lighting" feel to the world.
-- [ ] Translucency & Render Passes: Split chunk meshes into "Opaque" and "Transparent" passes to correctly render glass, water, and foliage without OpenGL depth-sorting bugs.
+- [X] Translucency & Render Passes: Split chunk meshes into "Opaque" and "Transparent" passes to correctly render glass, water, and foliage without OpenGL depth-sorting bugs.
 
 ## Beta 2 ✅
 Goal: Transform the engine from a free-roaming spectator into a physically-grounded game world.

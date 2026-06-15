@@ -15,6 +15,7 @@ void InitBlockRegistry(void){
     blockRegistry[i].texSide = 0;
     blockRegistry[i].texBottom = 0;
     blockRegistry[i].isTransparent = true;
+    blockRegistry[i].isSolid = true;
   }
 }
 
@@ -97,6 +98,13 @@ void ParseBlockFile(const char *filePath){
     block->isTransparent = cJSON_IsTrue(isBlockTransparent);
   }else{
     block->isTransparent = false;
+  }
+
+  cJSON* isBlockSolid = cJSON_GetObjectItemCaseSensitive(json, "isSolid");
+  if(cJSON_IsBool(isBlockSolid)){
+    block->isSolid = cJSON_IsTrue(isBlockSolid);
+  }else{
+    block->isSolid = true;
   }
 
   TraceLog(LOG_INFO, "BLOCK_SYSTEM: Loaded [%d] %s", id, block->name);
