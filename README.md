@@ -16,7 +16,7 @@ Goal: Transform the optimized rendering engine into a dynamic, infinite, visuall
 - [X] View Frustum Culling: Add camera-aware mathematics (Dot Product / Plane Extraction) to completely ignore and skip rendering chunks that are behind the player or outside the field of view, maximizing GPU efficiency.
 - [X] Meshing Amortization(Chunk Queue): Implement a time-sliced building queue that limits the number of meshes generated per frame. This eliminates CPU lag spikes and guarantees buttery-smooth framerates when crossing chunk boundaries at high speeds.
 - [ ] Greedy Meshing: Upgrade the Face Culling algorithm to merge adjacent block faces of the same type into massive, single quads. This slashes the total vertex count by up to 80%, drastically reducing VRAM usage and GPU memory bandwidth.
-- [ ] Voxel Ambient Occlusion (AO): Calculate smooth, localized shadows on block vertices based on neighboring geometry to add visual depth and that classic "voxel lighting" feel to the world.
+- [X] Voxel Ambient Occlusion (AO): Calculate smooth, localized shadows on block vertices based on neighboring geometry to add visual depth and that classic "voxel lighting" feel to the world.
 - [X] Translucency & Render Passes: Split chunk meshes into "Opaque" and "Transparent" passes to correctly render glass, water, and foliage without OpenGL depth-sorting bugs.
 
 ## Beta 2 ✅

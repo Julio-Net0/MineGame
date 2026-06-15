@@ -39,6 +39,9 @@ static unsigned short transIndices[MAX_FACES * INDICES_PER_FACES];
 static int transVCount = 0;
 static int transICount = 0;
 
+static unsigned char tempColors[MAX_FACES * VERTICES_PER_FACE * COLOR_CHANNELS];
+static unsigned char transColors[MAX_FACES * VERTICES_PER_FACE * COLOR_CHANNELS];
+
 static Material chunkMaterial;
 
 void InitRenderer(void){
@@ -80,21 +83,153 @@ static bool IsNeighbourTransparent(World *world, Chunk *chunk, int localX, int l
   return GetBlockDef(id)->isTransparent;
 }
 
-static void AddFaceIndices(bool isTrans){
-  if (isTrans) {
-    transIndices[transICount++] = transVCount + 0;
-    transIndices[transICount++] = transVCount + 1;
-    transIndices[transICount++] = transVCount + 2;
-    transIndices[transICount++] = transVCount + 0;
-    transIndices[transICount++] = transVCount + 2;
-    transIndices[transICount++] = transVCount + 3;
+static bool IsSolidForAO(World *world, Chunk *chunk, int localX, int localY, int localZ){
+  unsigned char id = 0;
+  if(localX >= 0 && localX < CHUNK_SIZE && localY >= 0 && localY < CHUNK_SIZE && localZ >= 0 && localZ < CHUNK_SIZE){
+      id = chunk->data[localX][localY][localZ];
   } else {
-    tempIndices[iCount++] = vCount + 0;
-    tempIndices[iCount++] = vCount + 1;
-    tempIndices[iCount++] = vCount + 2;
-    tempIndices[iCount++] = vCount + 0;
-    tempIndices[iCount++] = vCount + 2;
-    tempIndices[iCount++] = vCount + 3;
+      int globalX = (chunk->chunkX * CHUNK_SIZE) + localX;
+      int globalY = (chunk->chunkY * CHUNK_SIZE) + localY;
+      int globalZ = (chunk->chunkZ * CHUNK_SIZE) + localZ;
+      id = GetBlockIDFromWorld(world, (Vector3){(float)globalX, (float)globalY, (float)globalZ});
+  }
+
+  if(id == 0) { return false; }
+  return GetBlockDef(id)->isSolid;
+}
+
+static const int AO_OFFSETS[6][4][3][3] = {
+  // FACE_TOP (dy = 1)
+  {
+    // Vertex 0: (-0.5, 0.5, 0.5) -> left, front -> dx=-1, dz=1
+    { {-1, 1, 0}, {0, 1, 1}, {-1, 1, 1} },
+    // Vertex 1: (0.5, 0.5, 0.5) -> right, front -> dx=1, dz=1
+    { {1, 1, 0}, {0, 1, 1}, {1, 1, 1} },
+    // Vertex 2: (0.5, 0.5, -0.5) -> right, back -> dx=1, dz=-1
+    { {1, 1, 0}, {0, 1, -1}, {1, 1, -1} },
+    // Vertex 3: (-0.5, 0.5, -0.5) -> left, back -> dx=-1, dz=-1
+    { {-1, 1, 0}, {0, 1, -1}, {-1, 1, -1} }
+  },
+  // FACE_BOTTOM (dy = -1)
+  {
+    // Vertex 0: (-0.5, -0.5, -0.5) -> left, back -> dx=-1, dz=-1
+    { {-1, -1, 0}, {0, -1, -1}, {-1, -1, -1} },
+    // Vertex 1: (0.5, -0.5, -0.5) -> right, back -> dx=1, dz=-1
+    { {1, -1, 0}, {0, -1, -1}, {1, -1, -1} },
+    // Vertex 2: (0.5, -0.5, 0.5) -> right, front -> dx=1, dz=1
+    { {1, -1, 0}, {0, -1, 1}, {1, -1, 1} },
+    // Vertex 3: (-0.5, -0.5, 0.5) -> left, front -> dx=-1, dz=1
+    { {-1, -1, 0}, {0, -1, 1}, {-1, -1, 1} }
+  },
+  // FACE_LEFT (dx = -1)
+  {
+    // Vertex 0: (-0.5, -0.5, -0.5) -> bottom, back -> dy=-1, dz=-1
+    { {-1, -1, 0}, {-1, 0, -1}, {-1, -1, -1} },
+    // Vertex 1: (-0.5, -0.5, 0.5) -> bottom, front -> dy=-1, dz=1
+    { {-1, -1, 0}, {-1, 0, 1}, {-1, -1, 1} },
+    // Vertex 2: (-0.5, 0.5, 0.5) -> top, front -> dy=1, dz=1
+    { {-1, 1, 0}, {-1, 0, 1}, {-1, 1, 1} },
+    // Vertex 3: (-0.5, 0.5, -0.5) -> top, back -> dy=1, dz=-1
+    { {-1, 1, 0}, {-1, 0, -1}, {-1, 1, -1} }
+  },
+  // FACE_RIGHT (dx = 1)
+  {
+    // Vertex 0: (0.5, -0.5, 0.5) -> bottom, front -> dy=-1, dz=1
+    { {1, -1, 0}, {1, 0, 1}, {1, -1, 1} },
+    // Vertex 1: (0.5, -0.5, -0.5) -> bottom, back -> dy=-1, dz=-1
+    { {1, -1, 0}, {1, 0, -1}, {1, -1, -1} },
+    // Vertex 2: (0.5, 0.5, -0.5) -> top, back -> dy=1, dz=-1
+    { {1, 1, 0}, {1, 0, -1}, {1, 1, -1} },
+    // Vertex 3: (0.5, 0.5, 0.5) -> top, front -> dy=1, dz=1
+    { {1, 1, 0}, {1, 0, 1}, {1, 1, 1} }
+  },
+  // FACE_FRONT (dz = 1)
+  {
+    // Vertex 0: (-0.5, -0.5, 0.5) -> left, bottom -> dx=-1, dy=-1
+    { {-1, 0, 1}, {0, -1, 1}, {-1, -1, 1} },
+    // Vertex 1: (0.5, -0.5, 0.5) -> right, bottom -> dx=1, dy=-1
+    { {1, 0, 1}, {0, -1, 1}, {1, -1, 1} },
+    // Vertex 2: (0.5, 0.5, 0.5) -> right, top -> dx=1, dy=1
+    { {1, 0, 1}, {0, 1, 1}, {1, 1, 1} },
+    // Vertex 3: (-0.5, 0.5, 0.5) -> left, top -> dx=-1, dy=1
+    { {-1, 0, 1}, {0, 1, 1}, {-1, 1, 1} }
+  },
+  // FACE_BACK (dz = -1)
+  {
+    // Vertex 0: (0.5, -0.5, -0.5) -> right, bottom -> dx=1, dy=-1
+    { {1, 0, -1}, {0, -1, -1}, {1, -1, -1} },
+    // Vertex 1: (-0.5, -0.5, -0.5) -> left, bottom -> dx=-1, dy=-1
+    { {-1, 0, -1}, {0, -1, -1}, {-1, -1, -1} },
+    // Vertex 2: (-0.5, 0.5, -0.5) -> left, top -> dx=-1, dy=1
+    { {-1, 0, -1}, {0, 1, -1}, {-1, 1, -1} },
+    // Vertex 3: (0.5, 0.5, -0.5) -> right, top -> dx=1, dy=1
+    { {1, 0, -1}, {0, 1, -1}, {1, 1, -1} }
+  }
+};
+
+static const unsigned char AO_BRIGHTNESS[4] = {255, 210, 165, 120};
+
+static bool ComputeFaceAO(World *world, Chunk *chunk, int lx, int ly, int lz, BlockFace face, int ao[4]) {
+  for (int v = 0; v < 4; v++) {
+    int s1_x = lx + AO_OFFSETS[face][v][0][0];
+    int s1_y = ly + AO_OFFSETS[face][v][0][1];
+    int s1_z = lz + AO_OFFSETS[face][v][0][2];
+
+    int s2_x = lx + AO_OFFSETS[face][v][1][0];
+    int s2_y = ly + AO_OFFSETS[face][v][1][1];
+    int s2_z = lz + AO_OFFSETS[face][v][1][2];
+
+    int c_x = lx + AO_OFFSETS[face][v][2][0];
+    int c_y = ly + AO_OFFSETS[face][v][2][1];
+    int c_z = lz + AO_OFFSETS[face][v][2][2];
+
+    bool s1 = IsSolidForAO(world, chunk, s1_x, s1_y, s1_z);
+    bool s2 = IsSolidForAO(world, chunk, s2_x, s2_y, s2_z);
+    bool corner = IsSolidForAO(world, chunk, c_x, c_y, c_z);
+
+    if (s1 && s2) {
+      ao[v] = 3;
+    } else {
+      ao[v] = (s1 ? 1 : 0) + (s2 ? 1 : 0) + (corner ? 1 : 0);
+    }
+  }
+
+  return (ao[0] + ao[2] > ao[1] + ao[3]);
+}
+
+static void AddFaceIndices(bool isTrans, bool flipQuad){
+  if (isTrans) {
+    if (flipQuad) {
+      transIndices[transICount++] = transVCount + 0;
+      transIndices[transICount++] = transVCount + 1;
+      transIndices[transICount++] = transVCount + 3;
+      transIndices[transICount++] = transVCount + 1;
+      transIndices[transICount++] = transVCount + 2;
+      transIndices[transICount++] = transVCount + 3;
+    } else {
+      transIndices[transICount++] = transVCount + 0;
+      transIndices[transICount++] = transVCount + 1;
+      transIndices[transICount++] = transVCount + 2;
+      transIndices[transICount++] = transVCount + 0;
+      transIndices[transICount++] = transVCount + 2;
+      transIndices[transICount++] = transVCount + 3;
+    }
+  } else {
+    if (flipQuad) {
+      tempIndices[iCount++] = vCount + 0;
+      tempIndices[iCount++] = vCount + 1;
+      tempIndices[iCount++] = vCount + 3;
+      tempIndices[iCount++] = vCount + 1;
+      tempIndices[iCount++] = vCount + 2;
+      tempIndices[iCount++] = vCount + 3;
+    } else {
+      tempIndices[iCount++] = vCount + 0;
+      tempIndices[iCount++] = vCount + 1;
+      tempIndices[iCount++] = vCount + 2;
+      tempIndices[iCount++] = vCount + 0;
+      tempIndices[iCount++] = vCount + 2;
+      tempIndices[iCount++] = vCount + 3;
+    }
   }
 }
 
@@ -110,6 +245,19 @@ static void AddFaceTexCoords(int textureIndex, bool isTrans){
   uvArray[uvIdx++] = uvMax.x; uvArray[uvIdx++] = uvMax.y;
   uvArray[uvIdx++] = uvMax.x; uvArray[uvIdx++] = uvMin.y;
   uvArray[uvIdx++] = uvMin.x; uvArray[uvIdx++] = uvMin.y;
+}
+
+static void AddFaceColors(const int ao[4], bool isTrans) {
+  int colIdx = (isTrans ? transVCount : vCount) * COLOR_CHANNELS;
+  unsigned char *colorsArray = isTrans ? transColors : tempColors;
+
+  for (int i = 0; i < 4; i++) {
+    unsigned char brightness = AO_BRIGHTNESS[ao[i]];
+    colorsArray[colIdx++] = brightness; // R
+    colorsArray[colIdx++] = brightness; // G
+    colorsArray[colIdx++] = brightness; // B
+    colorsArray[colIdx++] = 255;        // A
+  }
 }
 
 static void AddFaceVerticies(Vector3 pos, BlockFace face, bool isTrans){
@@ -160,9 +308,10 @@ static void AddFaceVerticies(Vector3 pos, BlockFace face, bool isTrans){
   }
 }
 
-static void AddFaceToMeshBuilder(Vector3 pos, int textureIndex, BlockFace face, bool isTrans){
-  AddFaceIndices(isTrans);
+static void AddFaceToMeshBuilder(Vector3 pos, int textureIndex, BlockFace face, bool isTrans, const int ao[4], bool flipQuad){
+  AddFaceIndices(isTrans, flipQuad);
   AddFaceTexCoords(textureIndex, isTrans);
+  AddFaceColors(ao, isTrans);
   AddFaceVerticies(pos, face, isTrans);
 
   if (isTrans) {
@@ -179,14 +328,34 @@ static void AddCubeToMeshBuilder(World *world, Chunk *chunk, int localX, int loc
   Vector3 pos = { (float)globalX, (float)globalY, (float)globalZ };  
 
   bool isTrans = block->isTransparent;
+  int ao[4];
+  bool flipQuad;
 
-  if (IsNeighbourTransparent(world, chunk, localX, localY + 1, localZ, block->id)) { AddFaceToMeshBuilder(pos, block->texTop, FACE_TOP, isTrans); }
-  if (IsNeighbourTransparent(world, chunk, localX, localY - 1, localZ, block->id)) { AddFaceToMeshBuilder(pos, block->texBottom, FACE_BOTTOM, isTrans); }
+  if (IsNeighbourTransparent(world, chunk, localX, localY + 1, localZ, block->id)) {
+    flipQuad = ComputeFaceAO(world, chunk, localX, localY, localZ, FACE_TOP, ao);
+    AddFaceToMeshBuilder(pos, block->texTop, FACE_TOP, isTrans, ao, flipQuad);
+  }
+  if (IsNeighbourTransparent(world, chunk, localX, localY - 1, localZ, block->id)) {
+    flipQuad = ComputeFaceAO(world, chunk, localX, localY, localZ, FACE_BOTTOM, ao);
+    AddFaceToMeshBuilder(pos, block->texBottom, FACE_BOTTOM, isTrans, ao, flipQuad);
+  }
 
-  if (IsNeighbourTransparent(world, chunk, localX + 1, localY, localZ, block->id)) { AddFaceToMeshBuilder(pos, block->texSide, FACE_RIGHT, isTrans); }
-  if (IsNeighbourTransparent(world, chunk, localX - 1, localY, localZ, block->id)) { AddFaceToMeshBuilder(pos, block->texSide, FACE_LEFT, isTrans); }
-  if (IsNeighbourTransparent(world, chunk, localX, localY, localZ + 1, block->id)) { AddFaceToMeshBuilder(pos, block->texSide, FACE_FRONT, isTrans); }
-  if (IsNeighbourTransparent(world, chunk, localX, localY, localZ - 1, block->id)) { AddFaceToMeshBuilder(pos, block->texSide, FACE_BACK, isTrans); }
+  if (IsNeighbourTransparent(world, chunk, localX + 1, localY, localZ, block->id)) {
+    flipQuad = ComputeFaceAO(world, chunk, localX, localY, localZ, FACE_RIGHT, ao);
+    AddFaceToMeshBuilder(pos, block->texSide, FACE_RIGHT, isTrans, ao, flipQuad);
+  }
+  if (IsNeighbourTransparent(world, chunk, localX - 1, localY, localZ, block->id)) {
+    flipQuad = ComputeFaceAO(world, chunk, localX, localY, localZ, FACE_LEFT, ao);
+    AddFaceToMeshBuilder(pos, block->texSide, FACE_LEFT, isTrans, ao, flipQuad);
+  }
+  if (IsNeighbourTransparent(world, chunk, localX, localY, localZ + 1, block->id)) {
+    flipQuad = ComputeFaceAO(world, chunk, localX, localY, localZ, FACE_FRONT, ao);
+    AddFaceToMeshBuilder(pos, block->texSide, FACE_FRONT, isTrans, ao, flipQuad);
+  }
+  if (IsNeighbourTransparent(world, chunk, localX, localY, localZ - 1, block->id)) {
+    flipQuad = ComputeFaceAO(world, chunk, localX, localY, localZ, FACE_BACK, ao);
+    AddFaceToMeshBuilder(pos, block->texSide, FACE_BACK, isTrans, ao, flipQuad);
+  }
 }
 
 void BuildChunkMesh(World *world, Chunk *chunk){
@@ -235,6 +404,9 @@ void BuildChunkMesh(World *world, Chunk *chunk){
     chunk->mesh.texcoords = (float *)MemAlloc((size_t)vCount * 2 * sizeof(float));
     memcpy(chunk->mesh.texcoords, tempTexCoords, (size_t)vCount * 2 * sizeof(float));
 
+    chunk->mesh.colors = (unsigned char *)MemAlloc((size_t)vCount * COLOR_CHANNELS * sizeof(unsigned char));
+    memcpy(chunk->mesh.colors, tempColors, (size_t)vCount * COLOR_CHANNELS * sizeof(unsigned char));
+
     UploadMesh(&chunk->mesh, false);
     chunk->hasMesh = true;
   }
@@ -256,6 +428,9 @@ void BuildChunkMesh(World *world, Chunk *chunk){
 
     chunk->translucentMesh.texcoords = (float *)MemAlloc((size_t)transVCount * 2 * sizeof(float));
     memcpy(chunk->translucentMesh.texcoords, transTexCoords, (size_t)transVCount * 2 * sizeof(float));
+
+    chunk->translucentMesh.colors = (unsigned char *)MemAlloc((size_t)transVCount * COLOR_CHANNELS * sizeof(unsigned char));
+    memcpy(chunk->translucentMesh.colors, transColors, (size_t)transVCount * COLOR_CHANNELS * sizeof(unsigned char));
 
     UploadMesh(&chunk->translucentMesh, false);
     chunk->hasTranslucentMesh = true;
