@@ -15,6 +15,7 @@ typedef struct World World;
 
 typedef struct Chunk {
   Mesh mesh;
+  Mesh translucentMesh;
 
   unsigned char data[CHUNK_SIZE][CHUNK_SIZE][CHUNK_SIZE];
 
@@ -27,6 +28,7 @@ typedef struct Chunk {
 
   bool isDirty;
   bool hasMesh;
+  bool hasTranslucentMesh;
   bool isModified;
 
   atomic_bool isGenerating;

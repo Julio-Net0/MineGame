@@ -25,12 +25,18 @@
 static Texture2D blockAtlas;
 
 static float tempTexCoords[MAX_FACES * VERTICES_PER_FACE * 2];
-
 static float tempVertices[MAX_FACES * VERTICES_PER_FACE * FLOATS_PER_VERTEX];
 static unsigned short tempIndices[MAX_FACES * INDICES_PER_FACES];
 
 static int vCount = 0;
 static int iCount = 0;
+
+static float transTexCoords[MAX_FACES * VERTICES_PER_FACE * 2];
+static float transVertices[MAX_FACES * VERTICES_PER_FACE * FLOATS_PER_VERTEX];
+static unsigned short transIndices[MAX_FACES * INDICES_PER_FACES];
+
+static int transVCount = 0;
+static int transICount = 0;
 
 static Material chunkMaterial;
 
@@ -55,127 +61,146 @@ static void GetTextureUV(int textureIndex, Vector2 *uvMin, Vector2 *uvMax){
   uvMax->y = v + h;
 }
 
-static bool IsNeighbourTransparent(World *world, Chunk *chunk, int localX, int localY, int localZ){
+static bool IsNeighbourTransparent(World *world, Chunk *chunk, int localX, int localY, int localZ, unsigned char selfID){
+  unsigned char id = 0;
   if(localX >= 0 && localX < CHUNK_SIZE && localY >= 0 && localY < CHUNK_SIZE && localZ >= 0 && localZ < CHUNK_SIZE){
-      unsigned char id = chunk->data[localX][localY][localZ];
-      if(id == 0) { return true; }
-      return GetBlockDef(id)->isTransparent;
+      id = chunk->data[localX][localY][localZ];
+  } else {
+      int globalX = (chunk->chunkX * CHUNK_SIZE) + localX;
+      int globalY = (chunk->chunkY * CHUNK_SIZE) + localY;
+      int globalZ = (chunk->chunkZ * CHUNK_SIZE) + localZ;
+      id = GetBlockIDFromWorld(world, (Vector3){(float)globalX, (float)globalY, (float)globalZ});
   }
 
-  int globalX = (chunk->chunkX * CHUNK_SIZE) + localX;
-  int globalY = (chunk->chunkY * CHUNK_SIZE) + localY;
-  int globalZ = (chunk->chunkZ * CHUNK_SIZE) + localZ;
-
-  int id = GetBlockIDFromWorld(world, (Vector3){(float)globalX, (float)globalY, (float)globalZ});
   if(id == 0) { return true; }
+  if (id == selfID && GetBlockDef(selfID)->isTransparent) {
+    return false; // Cull transparent faces between the same block type (e.g. water next to water)
+  }
   return GetBlockDef(id)->isTransparent;
 }
 
-static void AddFaceIndices(void){
-  tempIndices[iCount++] = vCount + 0;
-  tempIndices[iCount++] = vCount + 1;
-  tempIndices[iCount++] = vCount + 2;
-  tempIndices[iCount++] = vCount + 0;
-  tempIndices[iCount++] = vCount + 2;
-  tempIndices[iCount++] = vCount + 3;
+static void AddFaceIndices(bool isTrans){
+  if (isTrans) {
+    transIndices[transICount++] = transVCount + 0;
+    transIndices[transICount++] = transVCount + 1;
+    transIndices[transICount++] = transVCount + 2;
+    transIndices[transICount++] = transVCount + 0;
+    transIndices[transICount++] = transVCount + 2;
+    transIndices[transICount++] = transVCount + 3;
+  } else {
+    tempIndices[iCount++] = vCount + 0;
+    tempIndices[iCount++] = vCount + 1;
+    tempIndices[iCount++] = vCount + 2;
+    tempIndices[iCount++] = vCount + 0;
+    tempIndices[iCount++] = vCount + 2;
+    tempIndices[iCount++] = vCount + 3;
+  }
 }
 
-static void AddFaceTexCoords(int textureIndex){
-  int uvIdx = vCount * 2;
+static void AddFaceTexCoords(int textureIndex, bool isTrans){
+  int uvIdx = (isTrans ? transVCount : vCount) * 2;
+  float *uvArray = isTrans ? transTexCoords : tempTexCoords;
   Vector2 uvMin;
   Vector2 uvMax;
 
   GetTextureUV(textureIndex, &uvMin, &uvMax);
 
-  tempTexCoords[uvIdx++] = uvMin.x; tempTexCoords[uvIdx++] = uvMax.y;
-  tempTexCoords[uvIdx++] = uvMax.x; tempTexCoords[uvIdx++] = uvMax.y;
-  tempTexCoords[uvIdx++] = uvMax.x; tempTexCoords[uvIdx++] = uvMin.y;
-  tempTexCoords[uvIdx++] = uvMin.x; tempTexCoords[uvIdx++] = uvMin.y;
+  uvArray[uvIdx++] = uvMin.x; uvArray[uvIdx++] = uvMax.y;
+  uvArray[uvIdx++] = uvMax.x; uvArray[uvIdx++] = uvMax.y;
+  uvArray[uvIdx++] = uvMax.x; uvArray[uvIdx++] = uvMin.y;
+  uvArray[uvIdx++] = uvMin.x; uvArray[uvIdx++] = uvMin.y;
 }
 
-static void AddFaceVerticies(Vector3 pos, BlockFace face){
+static void AddFaceVerticies(Vector3 pos, BlockFace face, bool isTrans){
   float x = pos.x;
   float y = pos.y;
   float z = pos.z;
 
-  int vIdx = vCount * 3;
+  int vIdx = (isTrans ? transVCount : vCount) * 3;
+  float *vArray = isTrans ? transVertices : tempVertices;
 
   switch (face) {
     case FACE_TOP:
-      tempVertices[vIdx++] = x - BLOCK_HALF_SIZE; tempVertices[vIdx++] = y + BLOCK_HALF_SIZE; tempVertices[vIdx++] = z + BLOCK_HALF_SIZE; // Inferior-Esquerdo
-      tempVertices[vIdx++] = x + BLOCK_HALF_SIZE; tempVertices[vIdx++] = y + BLOCK_HALF_SIZE; tempVertices[vIdx++] = z + BLOCK_HALF_SIZE; // Inferior-Direito
-      tempVertices[vIdx++] = x + BLOCK_HALF_SIZE; tempVertices[vIdx++] = y + BLOCK_HALF_SIZE; tempVertices[vIdx++] = z - BLOCK_HALF_SIZE; // Superior-Direito
-      tempVertices[vIdx++] = x - BLOCK_HALF_SIZE; tempVertices[vIdx++] = y + BLOCK_HALF_SIZE; tempVertices[vIdx++] = z - BLOCK_HALF_SIZE; // Superior-Esquerdo
+      vArray[vIdx++] = x - BLOCK_HALF_SIZE; vArray[vIdx++] = y + BLOCK_HALF_SIZE; vArray[vIdx++] = z + BLOCK_HALF_SIZE;
+      vArray[vIdx++] = x + BLOCK_HALF_SIZE; vArray[vIdx++] = y + BLOCK_HALF_SIZE; vArray[vIdx++] = z + BLOCK_HALF_SIZE;
+      vArray[vIdx++] = x + BLOCK_HALF_SIZE; vArray[vIdx++] = y + BLOCK_HALF_SIZE; vArray[vIdx++] = z - BLOCK_HALF_SIZE;
+      vArray[vIdx++] = x - BLOCK_HALF_SIZE; vArray[vIdx++] = y + BLOCK_HALF_SIZE; vArray[vIdx++] = z - BLOCK_HALF_SIZE;
       break;
     case FACE_BOTTOM:
-      tempVertices[vIdx++] = x - BLOCK_HALF_SIZE; tempVertices[vIdx++] = y - BLOCK_HALF_SIZE; tempVertices[vIdx++] = z - BLOCK_HALF_SIZE; // Inferior-Esquerdo
-      tempVertices[vIdx++] = x + BLOCK_HALF_SIZE; tempVertices[vIdx++] = y - BLOCK_HALF_SIZE; tempVertices[vIdx++] = z - BLOCK_HALF_SIZE; // Inferior-Direito
-      tempVertices[vIdx++] = x + BLOCK_HALF_SIZE; tempVertices[vIdx++] = y - BLOCK_HALF_SIZE; tempVertices[vIdx++] = z + BLOCK_HALF_SIZE; // Superior-Direito
-      tempVertices[vIdx++] = x - BLOCK_HALF_SIZE; tempVertices[vIdx++] = y - BLOCK_HALF_SIZE; tempVertices[vIdx++] = z + BLOCK_HALF_SIZE; // Superior-Esquerdo
+      vArray[vIdx++] = x - BLOCK_HALF_SIZE; vArray[vIdx++] = y - BLOCK_HALF_SIZE; vArray[vIdx++] = z - BLOCK_HALF_SIZE;
+      vArray[vIdx++] = x + BLOCK_HALF_SIZE; vArray[vIdx++] = y - BLOCK_HALF_SIZE; vArray[vIdx++] = z - BLOCK_HALF_SIZE;
+      vArray[vIdx++] = x + BLOCK_HALF_SIZE; vArray[vIdx++] = y - BLOCK_HALF_SIZE; vArray[vIdx++] = z + BLOCK_HALF_SIZE;
+      vArray[vIdx++] = x - BLOCK_HALF_SIZE; vArray[vIdx++] = y - BLOCK_HALF_SIZE; vArray[vIdx++] = z + BLOCK_HALF_SIZE;
       break;
-    case FACE_FRONT: // +Z
-      tempVertices[vIdx++] = x - BLOCK_HALF_SIZE; tempVertices[vIdx++] = y - BLOCK_HALF_SIZE; tempVertices[vIdx++] = z + BLOCK_HALF_SIZE; // Inferior-Esquerdo
-      tempVertices[vIdx++] = x + BLOCK_HALF_SIZE; tempVertices[vIdx++] = y - BLOCK_HALF_SIZE; tempVertices[vIdx++] = z + BLOCK_HALF_SIZE; // Inferior-Direito
-      tempVertices[vIdx++] = x + BLOCK_HALF_SIZE; tempVertices[vIdx++] = y + BLOCK_HALF_SIZE; tempVertices[vIdx++] = z + BLOCK_HALF_SIZE; // Superior-Direito
-      tempVertices[vIdx++] = x - BLOCK_HALF_SIZE; tempVertices[vIdx++] = y + BLOCK_HALF_SIZE; tempVertices[vIdx++] = z + BLOCK_HALF_SIZE; // Superior-Esquerdo
+    case FACE_FRONT:
+      vArray[vIdx++] = x - BLOCK_HALF_SIZE; vArray[vIdx++] = y - BLOCK_HALF_SIZE; vArray[vIdx++] = z + BLOCK_HALF_SIZE;
+      vArray[vIdx++] = x + BLOCK_HALF_SIZE; vArray[vIdx++] = y - BLOCK_HALF_SIZE; vArray[vIdx++] = z + BLOCK_HALF_SIZE;
+      vArray[vIdx++] = x + BLOCK_HALF_SIZE; vArray[vIdx++] = y + BLOCK_HALF_SIZE; vArray[vIdx++] = z + BLOCK_HALF_SIZE;
+      vArray[vIdx++] = x - BLOCK_HALF_SIZE; vArray[vIdx++] = y + BLOCK_HALF_SIZE; vArray[vIdx++] = z + BLOCK_HALF_SIZE;
       break;
-    case FACE_BACK: // -Z
-      tempVertices[vIdx++] = x + BLOCK_HALF_SIZE; tempVertices[vIdx++] = y - BLOCK_HALF_SIZE; tempVertices[vIdx++] = z - BLOCK_HALF_SIZE; // Inferior-Esquerdo
-      tempVertices[vIdx++] = x - BLOCK_HALF_SIZE; tempVertices[vIdx++] = y - BLOCK_HALF_SIZE; tempVertices[vIdx++] = z - BLOCK_HALF_SIZE; // Inferior-Direito
-      tempVertices[vIdx++] = x - BLOCK_HALF_SIZE; tempVertices[vIdx++] = y + BLOCK_HALF_SIZE; tempVertices[vIdx++] = z - BLOCK_HALF_SIZE; // Superior-Direito
-      tempVertices[vIdx++] = x + BLOCK_HALF_SIZE; tempVertices[vIdx++] = y + BLOCK_HALF_SIZE; tempVertices[vIdx++] = z - BLOCK_HALF_SIZE; // Superior-Esquerdo
+    case FACE_BACK:
+      vArray[vIdx++] = x + BLOCK_HALF_SIZE; vArray[vIdx++] = y - BLOCK_HALF_SIZE; vArray[vIdx++] = z - BLOCK_HALF_SIZE;
+      vArray[vIdx++] = x - BLOCK_HALF_SIZE; vArray[vIdx++] = y - BLOCK_HALF_SIZE; vArray[vIdx++] = z - BLOCK_HALF_SIZE;
+      vArray[vIdx++] = x - BLOCK_HALF_SIZE; vArray[vIdx++] = y + BLOCK_HALF_SIZE; vArray[vIdx++] = z - BLOCK_HALF_SIZE;
+      vArray[vIdx++] = x + BLOCK_HALF_SIZE; vArray[vIdx++] = y + BLOCK_HALF_SIZE; vArray[vIdx++] = z - BLOCK_HALF_SIZE;
       break;
-    case FACE_LEFT: // -X
-      tempVertices[vIdx++] = x - BLOCK_HALF_SIZE; tempVertices[vIdx++] = y - BLOCK_HALF_SIZE; tempVertices[vIdx++] = z - BLOCK_HALF_SIZE; // Inferior-Esquerdo
-      tempVertices[vIdx++] = x - BLOCK_HALF_SIZE; tempVertices[vIdx++] = y - BLOCK_HALF_SIZE; tempVertices[vIdx++] = z + BLOCK_HALF_SIZE; // Inferior-Direito
-      tempVertices[vIdx++] = x - BLOCK_HALF_SIZE; tempVertices[vIdx++] = y + BLOCK_HALF_SIZE; tempVertices[vIdx++] = z + BLOCK_HALF_SIZE; // Superior-Direito
-      tempVertices[vIdx++] = x - BLOCK_HALF_SIZE; tempVertices[vIdx++] = y + BLOCK_HALF_SIZE; tempVertices[vIdx++] = z - BLOCK_HALF_SIZE; // Superior-Esquerdo
+    case FACE_LEFT:
+      vArray[vIdx++] = x - BLOCK_HALF_SIZE; vArray[vIdx++] = y - BLOCK_HALF_SIZE; vArray[vIdx++] = z - BLOCK_HALF_SIZE;
+      vArray[vIdx++] = x - BLOCK_HALF_SIZE; vArray[vIdx++] = y - BLOCK_HALF_SIZE; vArray[vIdx++] = z + BLOCK_HALF_SIZE;
+      vArray[vIdx++] = x - BLOCK_HALF_SIZE; vArray[vIdx++] = y + BLOCK_HALF_SIZE; vArray[vIdx++] = z + BLOCK_HALF_SIZE;
+      vArray[vIdx++] = x - BLOCK_HALF_SIZE; vArray[vIdx++] = y + BLOCK_HALF_SIZE; vArray[vIdx++] = z - BLOCK_HALF_SIZE;
       break;
-    case FACE_RIGHT: // +X
-      tempVertices[vIdx++] = x + BLOCK_HALF_SIZE; tempVertices[vIdx++] = y - BLOCK_HALF_SIZE; tempVertices[vIdx++] = z + BLOCK_HALF_SIZE; // Inferior-Esquerdo
-      tempVertices[vIdx++] = x + BLOCK_HALF_SIZE; tempVertices[vIdx++] = y - BLOCK_HALF_SIZE; tempVertices[vIdx++] = z - BLOCK_HALF_SIZE; // Inferior-Direito
-      tempVertices[vIdx++] = x + BLOCK_HALF_SIZE; tempVertices[vIdx++] = y + BLOCK_HALF_SIZE; tempVertices[vIdx++] = z - BLOCK_HALF_SIZE; // Superior-Direito
-      tempVertices[vIdx++] = x + BLOCK_HALF_SIZE; tempVertices[vIdx++] = y + BLOCK_HALF_SIZE; tempVertices[vIdx++] = z + BLOCK_HALF_SIZE; // Superior-Esquerdo
+    case FACE_RIGHT:
+      vArray[vIdx++] = x + BLOCK_HALF_SIZE; vArray[vIdx++] = y - BLOCK_HALF_SIZE; vArray[vIdx++] = z + BLOCK_HALF_SIZE;
+      vArray[vIdx++] = x + BLOCK_HALF_SIZE; vArray[vIdx++] = y - BLOCK_HALF_SIZE; vArray[vIdx++] = z - BLOCK_HALF_SIZE;
+      vArray[vIdx++] = x + BLOCK_HALF_SIZE; vArray[vIdx++] = y + BLOCK_HALF_SIZE; vArray[vIdx++] = z - BLOCK_HALF_SIZE;
+      vArray[vIdx++] = x + BLOCK_HALF_SIZE; vArray[vIdx++] = y + BLOCK_HALF_SIZE; vArray[vIdx++] = z + BLOCK_HALF_SIZE;
       break;
   }
 }
 
-static void AddFaceToMeshBuilder(Vector3 pos, int textureIndex, BlockFace face){
-  AddFaceIndices();
-  AddFaceTexCoords(textureIndex);
-  AddFaceVerticies(pos, face);
+static void AddFaceToMeshBuilder(Vector3 pos, int textureIndex, BlockFace face, bool isTrans){
+  AddFaceIndices(isTrans);
+  AddFaceTexCoords(textureIndex, isTrans);
+  AddFaceVerticies(pos, face, isTrans);
 
-  vCount += 4;
+  if (isTrans) {
+    transVCount += 4;
+  } else {
+    vCount += 4;
+  }
 }
 
-
 static void AddCubeToMeshBuilder(World *world, Chunk *chunk, int localX, int localY, int localZ, BlockType *block){
-
   int globalX = (chunk->chunkX * CHUNK_SIZE) + localX;
   int globalY = (chunk->chunkY * CHUNK_SIZE) + localY;
   int globalZ = (chunk->chunkZ * CHUNK_SIZE) + localZ;
   Vector3 pos = { (float)globalX, (float)globalY, (float)globalZ };  
 
-  if (IsNeighbourTransparent(world, chunk, localX, localY + 1, localZ)) { AddFaceToMeshBuilder(pos, block->texTop, FACE_TOP); }
-  if (IsNeighbourTransparent(world, chunk, localX, localY - 1, localZ)) { AddFaceToMeshBuilder(pos, block->texBottom, FACE_BOTTOM); }
+  bool isTrans = block->isTransparent;
 
-  if (IsNeighbourTransparent(world, chunk, localX + 1, localY, localZ)) { AddFaceToMeshBuilder(pos, block->texSide, FACE_RIGHT); }
-  if (IsNeighbourTransparent(world, chunk, localX - 1, localY, localZ)) { AddFaceToMeshBuilder(pos, block->texSide, FACE_LEFT); }
-  if (IsNeighbourTransparent(world, chunk, localX, localY, localZ + 1)) { AddFaceToMeshBuilder(pos, block->texSide, FACE_FRONT); }
-  if (IsNeighbourTransparent(world, chunk, localX, localY, localZ - 1)) { AddFaceToMeshBuilder(pos, block->texSide, FACE_BACK); }
+  if (IsNeighbourTransparent(world, chunk, localX, localY + 1, localZ, block->id)) { AddFaceToMeshBuilder(pos, block->texTop, FACE_TOP, isTrans); }
+  if (IsNeighbourTransparent(world, chunk, localX, localY - 1, localZ, block->id)) { AddFaceToMeshBuilder(pos, block->texBottom, FACE_BOTTOM, isTrans); }
+
+  if (IsNeighbourTransparent(world, chunk, localX + 1, localY, localZ, block->id)) { AddFaceToMeshBuilder(pos, block->texSide, FACE_RIGHT, isTrans); }
+  if (IsNeighbourTransparent(world, chunk, localX - 1, localY, localZ, block->id)) { AddFaceToMeshBuilder(pos, block->texSide, FACE_LEFT, isTrans); }
+  if (IsNeighbourTransparent(world, chunk, localX, localY, localZ + 1, block->id)) { AddFaceToMeshBuilder(pos, block->texSide, FACE_FRONT, isTrans); }
+  if (IsNeighbourTransparent(world, chunk, localX, localY, localZ - 1, block->id)) { AddFaceToMeshBuilder(pos, block->texSide, FACE_BACK, isTrans); }
 }
 
 void BuildChunkMesh(World *world, Chunk *chunk){
-
   if(chunk->solidBlockCount == 0){
     UnloadChunkMesh(chunk);
     chunk->isDirty = false;
     chunk->hasMesh = false;
+    chunk->hasTranslucentMesh = false;
     return;
   }
 
   vCount = 0;
   iCount = 0;
+  transVCount = 0;
+  transICount = 0;
 
   for (int x = 0; x < CHUNK_SIZE; x++) {
     for (int y = 0; y < CHUNK_SIZE; y++) {
@@ -191,28 +216,49 @@ void BuildChunkMesh(World *world, Chunk *chunk){
 
   chunk->isDirty = false;
 
+  // 1. Build & Upload Opaque Mesh
   if(vCount == 0){ 
     chunk->hasMesh = false;
-    return;
+  } else {
+    chunk->mesh = (Mesh){0};
+    chunk->mesh.vaoId = 0;
+    chunk->mesh.vertexCount = vCount;
+    chunk->mesh.triangleCount = iCount / 3;
+
+    chunk->mesh.vertices = (float *)MemAlloc((size_t)vCount * FLOATS_PER_VERTEX * sizeof(float));
+    memcpy(chunk->mesh.vertices, tempVertices, (size_t)vCount * FLOATS_PER_VERTEX * sizeof(float));
+
+    chunk->mesh.indices = (unsigned short *)MemAlloc((size_t)iCount * sizeof(unsigned short));
+    memcpy(chunk->mesh.indices, tempIndices, (size_t)iCount * sizeof(unsigned short));
+
+    chunk->mesh.texcoords = (float *)MemAlloc((size_t)vCount * 2 * sizeof(float));
+    memcpy(chunk->mesh.texcoords, tempTexCoords, (size_t)vCount * 2 * sizeof(float));
+
+    UploadMesh(&chunk->mesh, false);
+    chunk->hasMesh = true;
   }
 
-  chunk->mesh = (Mesh){0};
-  chunk->mesh.vaoId = 0;
-  chunk->mesh.vertexCount = vCount;
-  chunk->mesh.triangleCount = iCount / 3;
+  // 2. Build & Upload Translucent Mesh
+  if(transVCount == 0){
+    chunk->hasTranslucentMesh = false;
+  } else {
+    chunk->translucentMesh = (Mesh){0};
+    chunk->translucentMesh.vaoId = 0;
+    chunk->translucentMesh.vertexCount = transVCount;
+    chunk->translucentMesh.triangleCount = transICount / 3;
 
-  chunk->mesh.vertices = (float *)MemAlloc((size_t)vCount * FLOATS_PER_VERTEX * sizeof(float));
-  memcpy(chunk->mesh.vertices, tempVertices, (size_t)vCount * FLOATS_PER_VERTEX * sizeof(float));
+    chunk->translucentMesh.vertices = (float *)MemAlloc((size_t)transVCount * FLOATS_PER_VERTEX * sizeof(float));
+    memcpy(chunk->translucentMesh.vertices, transVertices, (size_t)transVCount * FLOATS_PER_VERTEX * sizeof(float));
 
-  chunk->mesh.indices = (unsigned short *)MemAlloc((size_t)iCount * sizeof(unsigned short));
-  memcpy(chunk->mesh.indices, tempIndices, (size_t)iCount * sizeof(unsigned short));
+    chunk->translucentMesh.indices = (unsigned short *)MemAlloc((size_t)transICount * sizeof(unsigned short));
+    memcpy(chunk->translucentMesh.indices, transIndices, (size_t)transICount * sizeof(unsigned short));
 
-  chunk->mesh.texcoords = (float *)MemAlloc((size_t)vCount * 2 * sizeof(float));
-  memcpy(chunk->mesh.texcoords, tempTexCoords, (size_t)vCount * 2 * sizeof(float));
+    chunk->translucentMesh.texcoords = (float *)MemAlloc((size_t)transVCount * 2 * sizeof(float));
+    memcpy(chunk->translucentMesh.texcoords, transTexCoords, (size_t)transVCount * 2 * sizeof(float));
 
-  UploadMesh(&chunk->mesh, false);
-
-  chunk->hasMesh = true;
+    UploadMesh(&chunk->translucentMesh, false);
+    chunk->hasTranslucentMesh = true;
+  }
 }
 
 void RenderChunkMesh(Chunk *chunk){
@@ -221,10 +267,20 @@ void RenderChunkMesh(Chunk *chunk){
   }
 }
 
+void RenderChunkTranslucentMesh(Chunk *chunk){
+  if(chunk->hasTranslucentMesh){
+    DrawMesh(chunk->translucentMesh, chunkMaterial, MatrixIdentity());
+  }
+}
+
 void UnloadChunkMesh(Chunk *chunk){
   if(chunk->hasMesh){
     UnloadMesh(chunk->mesh);
     chunk->hasMesh = false;
+  }
+  if(chunk->hasTranslucentMesh){
+    UnloadMesh(chunk->translucentMesh);
+    chunk->hasTranslucentMesh = false;
   }
 }
 
@@ -257,6 +313,7 @@ void DrawWorld(World *world, Camera3D camera){
     rlEnableWireMode();
   }
 
+  // 1. Opaque Pass
   for(int i = 0; i < world->chunkCount; i++){
 
     if(!IsChunkInFrustum(camera, &world->chunks[i])){
@@ -275,6 +332,24 @@ void DrawWorld(World *world, Camera3D camera){
       DrawCubeWires(center, CHUNK_SIZE, CHUNK_SIZE, CHUNK_SIZE, YELLOW);
     }
   }
+
+  // 2. Translucent Pass
+  rlDrawRenderBatchActive();
+  rlDisableDepthMask();
+  rlEnableColorBlend();
+
+  for(int i = 0; i < world->chunkCount; i++){
+    if(!IsChunkInFrustum(camera, &world->chunks[i])){
+      continue;
+    }
+
+    RenderChunkTranslucentMesh(&world->chunks[i]);
+  }
+
+  rlDrawRenderBatchActive();
+  rlEnableDepthMask();
+  // We keep color blend enabled because Raylib's 2D/UI rendering expects it by default
+
 
   if(g_debug.wireframe){
     rlDisableWireMode();
