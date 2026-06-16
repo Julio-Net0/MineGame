@@ -13,6 +13,8 @@ typedef struct World {
   Chunk chunks[MAX_ACTIVE_CHUNKS];
   int chunkHashMap[CHUNK_MAP_SIZE];
   int chunkCount;
+  int freeList[MAX_ACTIVE_CHUNKS];
+  int freeCount;
 } World ;
 
 typedef struct {

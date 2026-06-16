@@ -37,6 +37,11 @@ void InitWorld(World *world){
   for(int i = 0; i < CHUNK_MAP_SIZE; i++){
     world->chunkHashMap[i] = HASH_EMPTY;
   }
+
+  world->freeCount = MAX_ACTIVE_CHUNKS;
+  for(int i = 0; i < MAX_ACTIVE_CHUNKS; i++){
+    world->freeList[i] = i;
+  }
 }
 
 static void InsertChunkIntoMap(World *world, int chunkIndex) {
@@ -114,47 +119,49 @@ void UpdateNeighborsDirtyFlag(World *world, int cx, int cy, int cz){
   neighbor = GetChunkFromWorld(world, cx, cy, cz + 1); if (neighbor) { neighbor->isDirty = true; }
 }
 
-static void CreateOrRecycleChunk(World *world, int chunkX, int chunkY, int chunkZ, bool *keepChunk){
-  for(int i = 0; i < MAX_ACTIVE_CHUNKS; i++){
-
-    if(world->chunks[i].isGenerating){
+static void EvictUnneededChunks(World *world, bool *keepChunk){
+  for(int i = 0; i < world->chunkCount; i++){
+    if(keepChunk[i] || world->chunks[i].isGenerating){
       continue;
     }
 
-    if(i >= world->chunkCount || !keepChunk[i]){
+    int oldX = world->chunks[i].chunkX;
+    int oldY = world->chunks[i].chunkY;
+    int oldZ = world->chunks[i].chunkZ;
 
-      if(i < world->chunkCount) { 
-        int oldX = world->chunks[i].chunkX;
-        int oldY = world->chunks[i].chunkY;
-        int oldZ = world->chunks[i].chunkZ;
-
-        if (world->chunks[i].isModified) {
-          SaveChunkToDisk(&world->chunks[i]);
-        }
-
-        RemoveChunkFromMap(world, oldX, oldY, oldZ);
-
-        UpdateNeighborsDirtyFlag(world, oldX, oldY, oldZ);
-      }
-
-      if(world->chunks[i].hasMesh){
-        UnloadChunkMesh(&world->chunks[i]);
-      }
-
-      world->chunks[i].chunkX = chunkX;
-      world->chunks[i].chunkY = chunkY;
-      world->chunks[i].chunkZ = chunkZ;
-
-      EnqueueChunkGeneration(&world->chunks[i]);
-
-      keepChunk[i] = true;
-      InsertChunkIntoMap(world, i);
-
-      if(i >= world->chunkCount){
-        world->chunkCount++;
-      }
-      break;
+    if(world->chunks[i].isModified){
+      SaveChunkToDisk(&world->chunks[i]);
     }
+
+    if(world->chunks[i].hasMesh){
+      UnloadChunkMesh(&world->chunks[i]);
+    }
+
+    RemoveChunkFromMap(world, oldX, oldY, oldZ);
+    UpdateNeighborsDirtyFlag(world, oldX, oldY, oldZ);
+
+    keepChunk[i] = true;
+    world->freeList[world->freeCount++] = i;
+  }
+}
+
+static void CreateOrRecycleChunk(World *world, int chunkX, int chunkY, int chunkZ){
+  if(world->freeCount == 0){
+    TraceLog(LOG_WARNING, "WORLD: Free-list exhausted, skipping chunk (%d,%d,%d)", chunkX, chunkY, chunkZ);
+    return;
+  }
+
+  int i = world->freeList[--world->freeCount];
+
+  world->chunks[i].chunkX = chunkX;
+  world->chunks[i].chunkY = chunkY;
+  world->chunks[i].chunkZ = chunkZ;
+
+  EnqueueChunkGeneration(&world->chunks[i]);
+  InsertChunkIntoMap(world, i);
+
+  if(i >= world->chunkCount){
+    world->chunkCount = i + 1;
   }
 }
 
@@ -171,13 +178,14 @@ void UpdateWorld(World *world, Vector3 playerPos, int renderDist){
   bool keepChunk[MAX_ACTIVE_CHUNKS] = { false };
 
   MarkUsefulChunks(world, pChunkX, pChunkY, pChunkZ, renderDist, keepChunk);
+  EvictUnneededChunks(world, keepChunk);
 
   for(int x = pChunkX - renderDist; x <= pChunkX + renderDist; x++){
     for(int y = pChunkY - renderDist; y <= pChunkY + renderDist; y++){
       for(int z = pChunkZ - renderDist; z <= pChunkZ + renderDist; z++){
 
         if(GetChunkFromWorld(world, x, y, z) == NULL){
-          CreateOrRecycleChunk(world, x, y, z, keepChunk);
+          CreateOrRecycleChunk(world, x, y, z);
         }
       }
     }
