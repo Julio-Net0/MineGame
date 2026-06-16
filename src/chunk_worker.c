@@ -11,34 +11,39 @@ static Chunk* generationQueue[QUEUE_SIZE];
 static int queueHead = 0;
 static int queueTail = 0;
 
-static pthread_t workerThread;
+#define WORKER_THREAD_COUNT 4
+
+static pthread_t workerThreads[WORKER_THREAD_COUNT];
 static pthread_mutex_t queueMutex;
+static pthread_cond_t workAvail;
 static atomic_bool workerRunning = false;
 
 static void* WorkerLoop(void* arg) {
-  TraceLog(LOG_INFO, "WORKER THREAD ID: %p", (void*)pthread_self());
-  while (workerRunning) {
-    Chunk *target = NULL;
-
+  (void)arg;
+  while (1) {
     pthread_mutex_lock(&queueMutex);
-    if (queueHead != queueTail) {
-      target = generationQueue[queueHead];
-      queueHead = (queueHead + 1) % QUEUE_SIZE;
+
+    while (workerRunning && queueHead == queueTail) {
+      pthread_cond_wait(&workAvail, &queueMutex);
     }
+
+    if (!workerRunning && queueHead == queueTail) {
+      pthread_mutex_unlock(&queueMutex);
+      break;
+    }
+
+    Chunk *target = generationQueue[queueHead];
+    queueHead = (queueHead + 1) % QUEUE_SIZE;
+
     pthread_mutex_unlock(&queueMutex);
 
-    if (target != NULL) {
-      if (!LoadChunkFromDisk(target)) {
-        GenerateChunkTerrain(target);
-      }
-
-      target->terrainJustGenerated = true;
-      target->isGenerated = true;
-      target->isGenerating = false;
-
-    } else {
-      WaitTime(0.001); 
+    if (!LoadChunkFromDisk(target)) {
+      GenerateChunkTerrain(target);
     }
+
+    target->terrainJustGenerated = true;
+    target->isGenerated = true;
+    target->isGenerating = false;
   }
   return NULL;
 }
@@ -46,12 +51,19 @@ static void* WorkerLoop(void* arg) {
 void InitChunkWorker(void) {
     workerRunning = true;
     pthread_mutex_init(&queueMutex, NULL);
-    pthread_create(&workerThread, NULL, WorkerLoop, NULL);
+    pthread_cond_init(&workAvail, NULL);
+    for (int i = 0; i < WORKER_THREAD_COUNT; i++) {
+        pthread_create(&workerThreads[i], NULL, WorkerLoop, NULL);
+    }
 }
 
 void CloseChunkWorker(void) {
     workerRunning = false;
-    pthread_join(workerThread, NULL);
+    pthread_cond_broadcast(&workAvail);
+    for (int i = 0; i < WORKER_THREAD_COUNT; i++) {
+        pthread_join(workerThreads[i], NULL);
+    }
+    pthread_cond_destroy(&workAvail);
     pthread_mutex_destroy(&queueMutex);
 }
 
@@ -66,6 +78,7 @@ void EnqueueChunkGeneration(Chunk *chunk) {
 
       generationQueue[queueTail] = chunk;
       queueTail = nextTail;
+      pthread_cond_signal(&workAvail);
     } else {
       TraceLog(LOG_WARNING, "Chunk generation queue full! Chunk rejected at: %d, %d, %d", chunk->chunkX, chunk->chunkY, chunk->chunkZ);
       chunk->isGenerating = false;
