@@ -36,8 +36,11 @@ typedef struct {
 
 static RegionMutexEntry g_regionMutexTable[REGION_MUTEX_BUCKETS];
 static int g_regionMutexCount = 0;
+static pthread_mutex_t g_tableMutex = PTHREAD_MUTEX_INITIALIZER;
 
 static pthread_mutex_t* GetOrCreateRegionMutex(int rx, int ry, int rz) {
+  pthread_mutex_lock(&g_tableMutex);
+
   int64_t key = ((int64_t)rx << 40) | ((int64_t)(ry & 0xFFFFF) << 20) | (int64_t)(rz & 0xFFFFF);
   if (key == 0) { key = INT64_MIN; }
 
@@ -45,20 +48,24 @@ static pthread_mutex_t* GetOrCreateRegionMutex(int rx, int ry, int rz) {
   for (int i = 0; i < REGION_MUTEX_BUCKETS; i++) {
     int idx = (slot + i) % REGION_MUTEX_BUCKETS;
     if (g_regionMutexTable[idx].key == key) {
+      pthread_mutex_unlock(&g_tableMutex);
       return &g_regionMutexTable[idx].mutex;
     }
     if (g_regionMutexTable[idx].key == 0) {
       if (g_regionMutexCount >= REGION_MUTEX_BUCKETS / 2) {
         TraceLog(LOG_FATAL, "WORLD_SAVE: Region mutex table full, cannot lock region (%d,%d,%d)", rx, ry, rz);
+        pthread_mutex_unlock(&g_tableMutex);
         return NULL;
       }
       g_regionMutexTable[idx].key = key;
       pthread_mutex_init(&g_regionMutexTable[idx].mutex, NULL);
       g_regionMutexCount++;
+      pthread_mutex_unlock(&g_tableMutex);
       return &g_regionMutexTable[idx].mutex;
     }
   }
   TraceLog(LOG_FATAL, "WORLD_SAVE: Region mutex table probe exhausted for region (%d,%d,%d)", rx, ry, rz);
+  pthread_mutex_unlock(&g_tableMutex);
   return NULL;
 }
 
