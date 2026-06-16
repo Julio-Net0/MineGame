@@ -6,6 +6,7 @@
 typedef struct World World;
 
 #define CHUNK_SIZE 16
+#define CHUNK_VOLUME ((size_t)CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE)
 #define CHUNK_HALF_SIZE (CHUNK_SIZE / 2)
 
 #define BLOCK_SIZE 1.0F
@@ -36,7 +37,7 @@ typedef struct Chunk {
 
 void GenerateChunkTerrain(Chunk *chunk);
 
-void SetBlockInChunk(Chunk* chunk, Vector3 pos, unsigned char blockID);
+void SetBlockInChunk(Chunk *chunk, Vector3 pos, unsigned char blockID);
 int GetBlockIDInChunk(Chunk *chunk, Vector3 pos);
 
 #endif
