@@ -7,6 +7,8 @@
 #include <string.h>
 #include <time.h>
 #include <errno.h>
+#include <stdint.h>
+#include <pthread.h>
 
 #ifdef _WIN32
 #include <direct.h>
@@ -25,6 +27,41 @@ typedef struct {
   uint64_t seed;
 } LevelMetadata;
 
+#define REGION_MUTEX_BUCKETS 64
+
+typedef struct {
+  int64_t key;
+  pthread_mutex_t mutex;
+} RegionMutexEntry;
+
+static RegionMutexEntry g_regionMutexTable[REGION_MUTEX_BUCKETS];
+static int g_regionMutexCount = 0;
+
+static pthread_mutex_t* GetOrCreateRegionMutex(int rx, int ry, int rz) {
+  int64_t key = ((int64_t)rx << 40) | ((int64_t)(ry & 0xFFFFF) << 20) | (int64_t)(rz & 0xFFFFF);
+  if (key == 0) { key = INT64_MIN; }
+
+  int slot = (int)((uint64_t)key % REGION_MUTEX_BUCKETS);
+  for (int i = 0; i < REGION_MUTEX_BUCKETS; i++) {
+    int idx = (slot + i) % REGION_MUTEX_BUCKETS;
+    if (g_regionMutexTable[idx].key == key) {
+      return &g_regionMutexTable[idx].mutex;
+    }
+    if (g_regionMutexTable[idx].key == 0) {
+      if (g_regionMutexCount >= REGION_MUTEX_BUCKETS / 2) {
+        TraceLog(LOG_FATAL, "WORLD_SAVE: Region mutex table full, cannot lock region (%d,%d,%d)", rx, ry, rz);
+        return NULL;
+      }
+      g_regionMutexTable[idx].key = key;
+      pthread_mutex_init(&g_regionMutexTable[idx].mutex, NULL);
+      g_regionMutexCount++;
+      return &g_regionMutexTable[idx].mutex;
+    }
+  }
+  TraceLog(LOG_FATAL, "WORLD_SAVE: Region mutex table probe exhausted for region (%d,%d,%d)", rx, ry, rz);
+  return NULL;
+}
+
 static uint64_t g_worldSeed = 0;
 
 static uint64_t generate_random_seed(void) {
@@ -39,7 +76,9 @@ static uint64_t generate_random_seed(void) {
 }
 
 void InitWorldSave(void) {
-  // Create world directory if it doesn't exist
+  memset(g_regionMutexTable, 0, sizeof(g_regionMutexTable));
+  g_regionMutexCount = 0;
+
   make_dir("world");
 
   LevelMetadata meta;
@@ -81,7 +120,11 @@ void InitWorldSave(void) {
 }
 
 void CloseWorldSave(void) {
-  // Currently nothing specific to cleanup for metadata, but placeholder for region files later
+  for (int i = 0; i < REGION_MUTEX_BUCKETS; i++) {
+    if (g_regionMutexTable[i].key != 0) {
+      pthread_mutex_destroy(&g_regionMutexTable[i].mutex);
+    }
+  }
   TraceLog(LOG_INFO, "WORLD_SAVE: Closed save system.");
 }
 
@@ -128,6 +171,10 @@ void SaveChunkToDisk(Chunk *chunk) {
   int ry = FloorDiv8(chunk->chunkY);
   int rz = FloorDiv8(chunk->chunkZ);
 
+  pthread_mutex_t *regionMutex = GetOrCreateRegionMutex(rx, ry, rz);
+  if (regionMutex == NULL) { return; }
+  pthread_mutex_lock(regionMutex);
+
   char path[256];
   snprintf(path, sizeof(path), "world/r.%d.%d.%d.bin", rx, ry, rz);
 
@@ -136,12 +183,14 @@ void SaveChunkToDisk(Chunk *chunk) {
     f = OpenFileWithRetry(path, "w+b");
     if (f == NULL) {
       TraceLog(LOG_WARNING, "WORLD_SAVE: Failed to create region file %s", path);
+      pthread_mutex_unlock(regionMutex);
       return;
     }
     uint8_t emptyHeader[1536] = {0};
     if (fwrite(emptyHeader, 1, sizeof(emptyHeader), f) != sizeof(emptyHeader)) {
       TraceLog(LOG_WARNING, "WORLD_SAVE: Failed to write empty header to %s", path);
       fclose(f);
+      pthread_mutex_unlock(regionMutex);
       return;
     }
   }
@@ -161,11 +210,13 @@ void SaveChunkToDisk(Chunk *chunk) {
   if (fseek(f, idx * 3, SEEK_SET) != 0) {
     TraceLog(LOG_WARNING, "WORLD_SAVE: Failed to seek header entry in %s", path);
     fclose(f);
+    pthread_mutex_unlock(regionMutex);
     return;
   }
   if (fwrite(entry, 1, 3, f) != 3) {
     TraceLog(LOG_WARNING, "WORLD_SAVE: Failed to write header entry in %s", path);
     fclose(f);
+    pthread_mutex_unlock(regionMutex);
     return;
   }
 
@@ -173,15 +224,18 @@ void SaveChunkToDisk(Chunk *chunk) {
   if (fseek(f, slotOffset, SEEK_SET) != 0) {
     TraceLog(LOG_WARNING, "WORLD_SAVE: Failed to seek body slot in %s", path);
     fclose(f);
+    pthread_mutex_unlock(regionMutex);
     return;
   }
   if (fwrite(tempBuffer, 1, dataSize, f) != dataSize) {
     TraceLog(LOG_WARNING, "WORLD_SAVE: Failed to write body slot in %s", path);
     fclose(f);
+    pthread_mutex_unlock(regionMutex);
     return;
   }
 
   fclose(f);
+  pthread_mutex_unlock(regionMutex);
 }
 
 bool LoadChunkFromDisk(Chunk *chunk) {
@@ -189,11 +243,16 @@ bool LoadChunkFromDisk(Chunk *chunk) {
   int ry = FloorDiv8(chunk->chunkY);
   int rz = FloorDiv8(chunk->chunkZ);
 
+  pthread_mutex_t *regionMutex = GetOrCreateRegionMutex(rx, ry, rz);
+  if (regionMutex == NULL) { return false; }
+  pthread_mutex_lock(regionMutex);
+
   char path[256];
   snprintf(path, sizeof(path), "world/r.%d.%d.%d.bin", rx, ry, rz);
 
   FILE *f = OpenFileWithRetry(path, "rb");
   if (f == NULL) {
+    pthread_mutex_unlock(regionMutex);
     return false;
   }
 
@@ -201,12 +260,14 @@ bool LoadChunkFromDisk(Chunk *chunk) {
 
   if (fseek(f, idx * 3, SEEK_SET) != 0) {
     fclose(f);
+    pthread_mutex_unlock(regionMutex);
     return false;
   }
 
   uint8_t entry[3];
   if (fread(entry, 1, 3, f) != 3) {
     fclose(f);
+    pthread_mutex_unlock(regionMutex);
     return false;
   }
 
@@ -215,22 +276,26 @@ bool LoadChunkFromDisk(Chunk *chunk) {
 
   if ((flags & 1) == 0) {
     fclose(f);
+    pthread_mutex_unlock(regionMutex);
     return false;
   }
 
   long slotOffset = 1536 + (long)idx * 4096;
   if (fseek(f, slotOffset, SEEK_SET) != 0) {
     fclose(f);
+    pthread_mutex_unlock(regionMutex);
     return false;
   }
 
   uint8_t tempBuffer[4096];
   if (fread(tempBuffer, 1, dataSize, f) != dataSize) {
     fclose(f);
+    pthread_mutex_unlock(regionMutex);
     return false;
   }
 
   fclose(f);
+  pthread_mutex_unlock(regionMutex);
 
   bool isRaw = (flags & 2) != 0;
   bool success = ChunkDeserialize(chunk, tempBuffer, dataSize, isRaw);
