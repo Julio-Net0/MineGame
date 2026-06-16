@@ -10,6 +10,9 @@
 #include <string.h>
 
 
+#define DEBUG_HELP_LINE_SIZE 128
+#define DEBUG_STATUS_MSG_SIZE 64
+
 void CommandHelp(const char *args, CommandContext *ctx);
 void CommandTP(const char *args, CommandContext *ctx);
 void CommandPos(const char *args, CommandContext *ctx);
@@ -230,7 +233,7 @@ void CommandDebug(const char *args, CommandContext *ctx) {
   if (strcmp(debug_str, "help") == 0) {
     ReturnCommand(ctx->chat, LOG_INFO, "===DEBUG COMMANDS===");
     for (int i = 0; i < AVAILABLEDEBUGSCOUNT; i++) {
-      char helpLine[128];
+      char helpLine[DEBUG_HELP_LINE_SIZE];
       snprintf(helpLine, sizeof(helpLine), "/debug %s %s",
                AVAILABLEDEBUGS[i].name, AVAILABLEDEBUGS[i].description);
       ReturnCommand(ctx->chat, LOG_INFO, "%s", helpLine);
@@ -251,7 +254,7 @@ void CommandDebug(const char *args, CommandContext *ctx) {
 
       AVAILABLEDEBUGS[i].func(ctx, state);
 
-      char msg[64];
+      char msg[DEBUG_STATUS_MSG_SIZE];
       snprintf(msg, sizeof(msg), "Debug %s %s", debug_str,
                state ? "activated" : "deactivated");
       ReturnCommand(ctx->chat, LOG_INFO, "%s", msg);
