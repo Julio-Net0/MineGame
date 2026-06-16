@@ -71,9 +71,20 @@ void CommandTP(char *args, CommandContext *ctx){
   char *z_str = strtok(NULL, " ");
 
   if(x_str && y_str && z_str){
-    float x = (float)atof(x_str);
-    float y = (float)atof(y_str);
-    float z = (float)atof(z_str);
+    char *endX;
+    char *endY;
+    char *endZ;
+
+    float x = strtof(x_str, &endX);
+    float y = strtof(y_str, &endY);
+    float z = strtof(z_str, &endZ);
+
+    if (endX == x_str || *endX != '\0' ||
+        endY == y_str || *endY != '\0' ||
+        endZ == z_str || *endZ != '\0') {
+      ReturnCommand(ctx->chat, LOG_ERROR, "Invalid coordinates. Must be numeric values.");
+      return;
+    }
 
     ctx->player->position = (Vector3){x, y, z};
     ctx->player->velocity = (Vector3){0,0,0};

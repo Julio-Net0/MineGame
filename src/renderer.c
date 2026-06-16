@@ -109,6 +109,12 @@ void InitRenderer(void) {
     SetShaderValue(chunkShader, blockArrayLoc, &unit, SHADER_UNIFORM_INT);
 }
 
+void CloseRenderer(void) {
+    UnloadShader(chunkShader);
+    UnloadTexture(blockAtlas);
+    glDeleteTextures(1, &blockArrayTexID);
+}
+
 // ---------------------------------------------------------------------------
 // Atlas UV (DrawBlockIcon only)
 // ---------------------------------------------------------------------------
@@ -670,7 +676,7 @@ void UnloadChunkMesh(Chunk *chunk) {
 // Frustum culling + world draw (unchanged logic)
 // ---------------------------------------------------------------------------
 
-static bool IsChunkInFrustum(Camera3D camera, Chunk *chunk) {
+bool IsChunkInFrustum(Camera3D camera, Chunk *chunk) {
     float const HALFCHUNKSIZE = CHUNK_SIZE / 2.0F;
     Vector3 chunkCenter = {
         (float)(chunk->chunkX * CHUNK_SIZE) + HALFCHUNKSIZE,

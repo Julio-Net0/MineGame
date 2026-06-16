@@ -121,7 +121,7 @@ int main(void){
         DrawAABBDebug(world, &player);
       }EndMode3D();
 
-      DrawHUD(&player, world, showDebug);
+      DrawHUD(&player, world, *activeCamera, showDebug);
       DrawChat(&chat);
     }EndDrawing();
   }
@@ -137,6 +137,7 @@ int main(void){
 
   CloseWorldSave();
   MemFree(world);
+  CloseRenderer();
   CloseWindow();
   return 0;
 }

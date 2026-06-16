@@ -4,6 +4,6 @@
 #include "player.h"
 #include "world.h"
 
-void DrawHUD(Player *player, World *world, bool showDebugF3);
+void DrawHUD(Player *player, World *world, Camera3D camera, bool showDebugF3);
 
 #endif

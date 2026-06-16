@@ -63,16 +63,22 @@ static void DrawCrosshair(void){
   DrawRectangle(centerX - halfThick, centerY - halfSize, CROSSHAIR_THICKNESS, CROSSHAIR_SIZE, Fade(WHITE, CROSSHAIR_TRANSPARENCY));
 }
 
-static void DrawDebugScreen(Player *player, World *world){
+static void DrawDebugScreen(Player *player, World *world, Camera3D camera){
   DrawFPS(DEBUG_FPS_X, DEBUG_FPS_Y);
 
   DrawText(TextFormat("XYZ: %.3f / %.5f / %.3f", player->position.x, player->position.y, player->position.z), DEBUG_COORDS_X, DEBUG_COORDS_Y, DEBUG_FONT_SIZE, RAYWHITE);
 
-  DrawText(TextFormat("Active Chunks: %d / %d", world->chunkCount, MAX_ACTIVE_CHUNKS), DEBUG_ACTIVE_CHUNKS_X, DEBUG_ACTIVE_CHUNKS_Y, DEBUG_FONT_SIZE, RAYWHITE);
+  int activeChunks = 0;
+  for(int i = 0; i < world->chunkCount; i++){
+    if(world->chunks[i].isGenerated){
+      activeChunks++;
+    }
+  }
+  DrawText(TextFormat("Active Chunks: %d / %d", activeChunks, MAX_ACTIVE_CHUNKS), DEBUG_ACTIVE_CHUNKS_X, DEBUG_ACTIVE_CHUNKS_Y, DEBUG_FONT_SIZE, RAYWHITE);
 
   int renderedChunks = 0;
   for(int i = 0; i < world->chunkCount; i++){
-    if(world->chunks[i].hasMesh){
+    if(world->chunks[i].hasMesh && IsChunkInFrustum(camera, &world->chunks[i])){
       renderedChunks++;
     }
   }
@@ -80,10 +86,10 @@ static void DrawDebugScreen(Player *player, World *world){
 
 }
 
-void DrawHUD(Player *player, World *world, bool showDebugF3){
+void DrawHUD(Player *player, World *world, Camera3D camera, bool showDebugF3){
   DrawHotbar(player);
   if(showDebugF3){
-    DrawDebugScreen(player, world);
+    DrawDebugScreen(player, world, camera);
   }
   DrawCrosshair();
 }
