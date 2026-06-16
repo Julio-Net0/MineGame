@@ -17,13 +17,7 @@ int ChunkSerialize(const Chunk *chunk, uint8_t *outBuffer, bool *isRaw) {
           if (outIndex + 2 >= 4096) {
             // RLE would reach or exceed 4096 bytes: fall back to raw copy
             *isRaw = true;
-            for (int rx = 0; rx < CHUNK_SIZE; rx++) {
-              for (int ry = 0; ry < CHUNK_SIZE; ry++) {
-                for (int rz = 0; rz < CHUNK_SIZE; rz++) {
-                  outBuffer[rx * CHUNK_SIZE * CHUNK_SIZE + ry * CHUNK_SIZE + rz] = chunk->data[rx][ry][rz];
-                }
-              }
-            }
+            memcpy(outBuffer, chunk->data, 4096);
             return 4096;
           }
           outBuffer[outIndex++] = currentId;
@@ -38,13 +32,7 @@ int ChunkSerialize(const Chunk *chunk, uint8_t *outBuffer, bool *isRaw) {
   // Write the final run
   if (outIndex + 2 >= 4096) {
     *isRaw = true;
-    for (int rx = 0; rx < CHUNK_SIZE; rx++) {
-      for (int ry = 0; ry < CHUNK_SIZE; ry++) {
-        for (int rz = 0; rz < CHUNK_SIZE; rz++) {
-          outBuffer[rx * CHUNK_SIZE * CHUNK_SIZE + ry * CHUNK_SIZE + rz] = chunk->data[rx][ry][rz];
-        }
-      }
-    }
+    memcpy(outBuffer, chunk->data, 4096);
     return 4096;
   }
   outBuffer[outIndex++] = currentId;
