@@ -16,7 +16,7 @@ typedef struct{
   World *world;
 } CommandContext;
 
-typedef void (*CommandFunc)(char *args, CommandContext *ctx);
+typedef void (*CommandFunc)(const char *args, CommandContext *ctx);
 
 typedef struct{
   const char* name;
