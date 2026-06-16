@@ -16,6 +16,10 @@
 #define INITIAL_WIDTH 1280
 #define INITIAL_HEIGHT 720
 
+#define PLAYER_SPAWN_X 0.0f
+#define PLAYER_SPAWN_Y 25.0f
+#define PLAYER_SPAWN_Z 0.0f
+
 static void InitGame(World **world, Player *player, Camera3D *playerCamera,
                      ChatState *chat, Camera3D *freeCamera) {
   SetTraceLogLevel(LOG_WARNING);
@@ -36,7 +40,8 @@ static void InitGame(World **world, Player *player, Camera3D *playerCamera,
   TraceLog(LOG_INFO, "MAIN THREAD ID: %p", (void *)pthread_self());
   InitChunkWorker();
 
-  *player = InitPlayer((Vector3){0, 25, 0});
+  *player = InitPlayer(
+      (Vector3){PLAYER_SPAWN_X, PLAYER_SPAWN_Y, PLAYER_SPAWN_Z});
   *playerCamera = CreateGameCamera();
   *freeCamera = CreateGameCamera();
   InitChat(chat);
