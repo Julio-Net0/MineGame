@@ -1,17 +1,18 @@
 #include "block_system.h"
+#include "camera.h"
+#include "chat.h"
 #include "chunk.h"
 #include "chunk_worker.h"
 #include "debug.h"
 #include "hud.h"
+#include "player.h"
 #include "pthread.h"
 #include "raylib.h"
-#include "camera.h"
 #include "renderer.h"
-#include "world.h"
-#include "chat.h"
-#include "player.h"
 #include "rlgl.h"
+#include "world.h"
 #include "world_save.h"
+
 
 #define INITIAL_WIDTH 1280
 #define INITIAL_HEIGHT 720
@@ -37,11 +38,12 @@ static void InitGame(World **world, Player *player, Camera3D *playerCamera,
   *world = (World *)MemAlloc(sizeof(World));
   InitWorldSave();
   InitWorld(*world);
-  TraceLog(LOG_INFO, "MAIN THREAD ID: %p", (void *)pthread_self());
+  TraceLog(LOG_INFO, "MAIN THREAD ID: %llu",
+           (unsigned long long)pthread_self());
   InitChunkWorker();
 
-  *player = InitPlayer(
-      (Vector3){PLAYER_SPAWN_X, PLAYER_SPAWN_Y, PLAYER_SPAWN_Z});
+  *player =
+      InitPlayer((Vector3){PLAYER_SPAWN_X, PLAYER_SPAWN_Y, PLAYER_SPAWN_Z});
   *playerCamera = CreateGameCamera();
   *freeCamera = CreateGameCamera();
   InitChat(chat);
@@ -69,7 +71,7 @@ static void UpdateSystemInputs(bool *showDebug) {
   }
 
   if (IsKeyPressed(KEY_F3)) {
-    *showDebug = !*showDebug;
+    *showDebug = ((!*showDebug) != 0);
   }
 }
 
@@ -164,7 +166,7 @@ int main(void) {
         (g_debug.freecam && wasFreecam) ? freeCamera.position : player.position;
     UpdateWorld(world, loadCenter, MAX_RENDER_DISTANCE);
 
-    bool hasControl = !chat.isActive;
+    bool hasControl = (!chat.isActive) != 0;
     UpdatePlayer(&player, &playerCamera, world, dt, hasControl);
 
     Camera3D *activeCamera = NULL;
