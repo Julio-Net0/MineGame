@@ -15,6 +15,14 @@ enum BlockIDs {
   BLOCK_WATER = 5
 };
 
+#define NOISE_SCALE 0.01F
+#define NOISE_LACUNARITY 2.0F
+#define NOISE_GAIN 0.5F
+#define NOISE_OCTAVES 4
+#define BASE_HEIGHT 24
+#define HEIGHT_VARIANCE 16.0F
+
+
 static unsigned char DetermineBlockID(int globalY, int terrainHeight) {
   const int SEA_LEVEL = 18;
   if (globalY > terrainHeight) {
@@ -38,7 +46,9 @@ void GenerateChunkTerrain(Chunk *chunk) {
   const int SEED_OFFSET_HALF = 50000;
   const int SEED_SHIFT_UPPER = 32;
   float offsetX = (float)((int)(seed % SEED_OFFSET_RANGE) - SEED_OFFSET_HALF);
-  float offsetZ = (float)((int)((seed >> SEED_SHIFT_UPPER) % SEED_OFFSET_RANGE) - SEED_OFFSET_HALF);
+  float offsetZ =
+      (float)((int)((seed >> SEED_SHIFT_UPPER) % SEED_OFFSET_RANGE) -
+              SEED_OFFSET_HALF);
 
   memset(chunk->data, 0, sizeof(chunk->data));
 
@@ -47,16 +57,12 @@ void GenerateChunkTerrain(Chunk *chunk) {
       int globalX = (chunk->chunkX * CHUNK_SIZE) + x;
       int globalZ = (chunk->chunkZ * CHUNK_SIZE) + z;
 
-      float scale = 0.01f;
-      float lacunarity = 2.0f;
-      float gain = 0.5f;
-      int octaves = 4;
-
       float noise = stb_perlin_fbm_noise3(
-          ((float)globalX + offsetX) * scale, 0.0f,
-          ((float)globalZ + offsetZ) * scale, lacunarity, gain, octaves);
+          ((float)globalX + offsetX) * NOISE_SCALE, 0.0F,
+          ((float)globalZ + offsetZ) * NOISE_SCALE, NOISE_LACUNARITY,
+          NOISE_GAIN, NOISE_OCTAVES);
 
-      int terrainHeight = 24 + (int)(noise * 16.0f);
+      int terrainHeight = BASE_HEIGHT + (int)(noise * HEIGHT_VARIANCE);
 
       for (int y = 0; y < CHUNK_SIZE; y++) {
         int globalY = (chunk->chunkY * CHUNK_SIZE) + y;
