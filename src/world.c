@@ -9,12 +9,12 @@
 
 #define DDA_MAX_CROSSED_AXES 3.0F
 
-#define HASH_EMPTY -1
-#define HASH_DELETED -2
+#define HASH_EMPTY (-1)
+#define HASH_DELETED (-2)
 
-#define SPATIAL_PRIME_X 73856093
-#define SPATIAL_PRIME_Y 19349663
-#define SPATIAL_PRIME_Z 83492791 
+#define SPATIAL_PRIME_X (73856093)
+#define SPATIAL_PRIME_Y (19349663)
+#define SPATIAL_PRIME_Z (83492791)
  
 typedef struct {
   float tMaxX, tMaxY, tMaxZ;
@@ -28,7 +28,7 @@ typedef struct {
 
 static int HashChunkPos(int x, int y, int z){
   unsigned int h = (unsigned int)((x * SPATIAL_PRIME_X) ^ (y * SPATIAL_PRIME_Y) ^ (z * SPATIAL_PRIME_Z));
-  return h % CHUNK_MAP_SIZE;
+  return (int)(h % (unsigned int)CHUNK_MAP_SIZE);
 }
 
 void InitWorld(World *world){
@@ -166,7 +166,8 @@ static void CreateOrRecycleChunk(World *world, int chunkX, int chunkY, int chunk
 }
 
 void UpdateWorld(World *world, Vector3 playerPos, int renderDist){
-  int requiredChunks = (2 * renderDist + 1) * (2 * renderDist + 1) * (2 * renderDist + 1);
+  int side = (2 * renderDist) + 1;
+  int requiredChunks = side * side * side;
   if(requiredChunks > MAX_ACTIVE_CHUNKS){
     renderDist = MAX_RENDER_DISTANCE;
   }
@@ -352,7 +353,8 @@ bool AreNeighborsGenerated(World *world, Chunk *chunk) {
   int cy = chunk->chunkY;
   int cz = chunk->chunkZ;
 
-  int neighborCoords[6][3] = {
+#define NEIGHBOR_COUNT 6
+  int neighborCoords[NEIGHBOR_COUNT][3] = {
     {cx - 1, cy, cz},
     {cx + 1, cy, cz},
     {cx, cy - 1, cz},
@@ -361,7 +363,7 @@ bool AreNeighborsGenerated(World *world, Chunk *chunk) {
     {cx, cy, cz + 1}
   };
 
-  for (int i = 0; i < 6; i++) {
+  for (int i = 0; i < NEIGHBOR_COUNT; i++) {
     Chunk *neighbor = GetChunkFromWorld(world, neighborCoords[i][0], neighborCoords[i][1], neighborCoords[i][2]);
     if (neighbor != NULL) {
       if (!neighbor->isGenerated || neighbor->isGenerating) {
@@ -369,6 +371,7 @@ bool AreNeighborsGenerated(World *world, Chunk *chunk) {
       }
     }
   }
+#undef NEIGHBOR_COUNT
 
   return true;
 }

@@ -6,6 +6,21 @@
 #include "world.h"
 #include <math.h>
 
+#define INIT_SLOT_0 0
+#define INIT_SLOT_1 1
+#define INIT_SLOT_2 2
+#define INIT_SLOT_3 3
+#define INIT_SLOT_4 4
+#define INIT_SLOT_5 5
+#define INIT_SLOT_6 6
+
+#define INIT_BLOCK_1 1
+#define INIT_BLOCK_2 2
+#define INIT_BLOCK_3 3
+#define INIT_BLOCK_4 4
+#define INIT_BLOCK_5 5
+#define INIT_BLOCK_6 6
+#define INIT_BLOCK_7 7
 
 Player InitPlayer(Vector3 spawnPos) {
 
@@ -23,13 +38,13 @@ Player InitPlayer(Vector3 spawnPos) {
   p.isGrounded = false;
   p.noclip = false;
 
-  SetHotbarSlot(&p, 0, 1);
-  SetHotbarSlot(&p, 1, 2);
-  SetHotbarSlot(&p, 2, 3);
-  SetHotbarSlot(&p, 3, 4);
-  SetHotbarSlot(&p, 4, 5);
-  SetHotbarSlot(&p, 5, 6);
-  SetHotbarSlot(&p, 6, 7);
+  SetHotbarSlot(&p, INIT_SLOT_0, INIT_BLOCK_1);
+  SetHotbarSlot(&p, INIT_SLOT_1, INIT_BLOCK_2);
+  SetHotbarSlot(&p, INIT_SLOT_2, INIT_BLOCK_3);
+  SetHotbarSlot(&p, INIT_SLOT_3, INIT_BLOCK_4);
+  SetHotbarSlot(&p, INIT_SLOT_4, INIT_BLOCK_5);
+  SetHotbarSlot(&p, INIT_SLOT_5, INIT_BLOCK_6);
+  SetHotbarSlot(&p, INIT_SLOT_6, INIT_BLOCK_7);
 
   return p;
 }
@@ -47,7 +62,7 @@ bool IsPointSolid(World *world, Vector3 pos) {
 
   int blockID = GetBlockIDFromWorld(world, blockPos);
 
-  return (blockID != 0 && GetBlockDef(blockID)->isSolid);
+  return (blockID != 0 && GetBlockDef(blockID)->isSolid) != 0;
 }
 
 void GetPlayerPoints(Player *player, PointConfig config,

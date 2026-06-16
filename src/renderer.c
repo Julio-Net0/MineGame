@@ -18,6 +18,8 @@
 #define VERTICES_PER_FACE 4
 #define FLOATS_PER_VERTEX 3
 #define COLOR_CHANNELS 4
+#define OPAQUE_ALPHA_VALUE 255
+#define CHUNK_CLOSE_DISTANCE_FACTOR 2.0F
 #define INDICES_PER_FACES 6
 #define MAX_FACES (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE * INDICES_PER_FACES)
 
@@ -75,11 +77,11 @@ static void LoadBlockTextureArray(void) {
         int tileRow = tileIdx / (int)ATLAS_COLS;
 
         for (int row = 0; row < tileH; row++) {
-            int srcRow = tileRow * tileH + row;
+            int srcRow = (tileRow * tileH) + row;
             int srcCol = tileCol * tileW;
-            memcpy(tileBuf + row * tileW * 4,
-                   pixels + (srcRow * atlasImg.width + srcCol) * 4,
-                   (size_t)(tileW * 4));
+            memcpy(tileBuf + ((size_t)row * (size_t)tileW * 4U),
+                   pixels + ((((size_t)srcRow * (size_t)atlasImg.width) + (size_t)srcCol) * 4U),
+                   (size_t)tileW * 4U);
         }
 
         glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, tileIdx,
@@ -121,7 +123,8 @@ void CloseRenderer(void) {
 
 static void GetTextureUV(int textureIndex, Vector2 *uvMin, Vector2 *uvMax) {
     float u = (float)(textureIndex % (int)ATLAS_COLS) / ATLAS_COLS;
-    float v = (float)(textureIndex / (int)ATLAS_COLS) / ATLAS_ROWS;
+    int row = textureIndex / (int)ATLAS_COLS;
+    float v = (float)row / ATLAS_ROWS;
     float w = 1.0F / ATLAS_COLS;
     float h = 1.0F / ATLAS_ROWS;
     uvMin->x = u; uvMin->y = v;
@@ -138,9 +141,9 @@ static unsigned char GetBlockIDAtLocal(World *world, Chunk *chunk, int lx, int l
         lz >= 0 && lz < CHUNK_SIZE) {
         return chunk->data[lx][ly][lz];
     }
-    int gx = chunk->chunkX * CHUNK_SIZE + lx;
-    int gy = chunk->chunkY * CHUNK_SIZE + ly;
-    int gz = chunk->chunkZ * CHUNK_SIZE + lz;
+    int gx = (chunk->chunkX * CHUNK_SIZE) + lx;
+    int gy = (chunk->chunkY * CHUNK_SIZE) + ly;
+    int gz = (chunk->chunkZ * CHUNK_SIZE) + lz;
     return (unsigned char)GetBlockIDFromWorld(world, (Vector3){(float)gx, (float)gy, (float)gz});
 }
 
@@ -148,14 +151,14 @@ static bool IsNeighbourTransparent(World *world, Chunk *chunk,
                                    int localX, int localY, int localZ,
                                    unsigned char selfID) {
     unsigned char id = GetBlockIDAtLocal(world, chunk, localX, localY, localZ);
-    if (id == 0) return true;
-    if (id == selfID && GetBlockDef(selfID)->isTransparent) return false;
+    if (id == 0) { return true; }
+    if (id == selfID && GetBlockDef(selfID)->isTransparent) { return false; }
     return GetBlockDef(id)->isTransparent;
 }
 
 static bool IsSolidForAO(World *world, Chunk *chunk, int localX, int localY, int localZ) {
     unsigned char id = GetBlockIDAtLocal(world, chunk, localX, localY, localZ);
-    if (id == 0) return false;
+    if (id == 0) { return false; }
     return GetBlockDef(id)->isSolid;
 }
 
@@ -223,8 +226,8 @@ static bool ComputeFaceAO(World *world, Chunk *chunk,
         bool s2 = IsSolidForAO(world, chunk, s2x, s2y, s2z);
         bool corner = IsSolidForAO(world, chunk, cx, cy, cz);
 
-        if (s1 && s2) ao[v] = 3;
-        else ao[v] = (s1 ? 1 : 0) + (s2 ? 1 : 0) + (corner ? 1 : 0);
+        if (s1 && s2) { ao[v] = 3; }
+        else { ao[v] = ((int)s1 + (int)s2 + (int)corner); }
     }
     return (ao[0] + ao[2] > ao[1] + ao[3]);
 }
@@ -277,7 +280,7 @@ static void AddFaceColors(const int ao[4], bool isTrans) {
         colorsArray[colIdx++] = b;
         colorsArray[colIdx++] = b;
         colorsArray[colIdx++] = b;
-        colorsArray[colIdx++] = 255;
+        colorsArray[colIdx++] = OPAQUE_ALPHA_VALUE;
     }
 }
 
@@ -285,18 +288,18 @@ static void AddFaceColors(const int ao[4], bool isTrans) {
 static void AddGreedyFaceTexCoords(float uMax, float vMax, bool isTrans) {
     int uvIdx = (isTrans ? transVCount : vCount) * 2;
     float *uvArray = isTrans ? transTexCoords : tempTexCoords;
-    uvArray[uvIdx++] = 0.0f; uvArray[uvIdx++] = vMax;
+    uvArray[uvIdx++] = 0.0F; uvArray[uvIdx++] = vMax;
     uvArray[uvIdx++] = uMax; uvArray[uvIdx++] = vMax;
-    uvArray[uvIdx++] = uMax; uvArray[uvIdx++] = 0.0f;
-    uvArray[uvIdx++] = 0.0f; uvArray[uvIdx++] = 0.0f;
+    uvArray[uvIdx++] = uMax; uvArray[uvIdx++] = 0.0F;
+    uvArray[uvIdx++] = 0.0F; uvArray[uvIdx++] = 0.0F;
 }
 
 static void AddFaceTexLayer(float layer, bool isTrans) {
     int tc2Idx = (isTrans ? transVCount : vCount) * 2;
     float *tc2Array = isTrans ? transTexCoords2 : tempTexCoords2;
     for (int i = 0; i < 4; i++) {
-        tc2Array[tc2Idx + i * 2 + 0] = layer;
-        tc2Array[tc2Idx + i * 2 + 1] = 0.0f;
+        tc2Array[tc2Idx + (i * 2) + 0] = layer;
+        tc2Array[tc2Idx + (i * 2) + 1] = 0.0F;
     }
 }
 
@@ -309,9 +312,9 @@ static void AddGreedyFaceVertices(BlockFace face,
     float *vArray = isTrans ? transVertices : tempVertices;
     int vIdx = (isTrans ? transVCount : vCount) * FLOATS_PER_VERTEX;
 
-    float x0 = (float)wx0 - 0.5f;
-    float y0 = (float)wy0 - 0.5f;
-    float z0 = (float)wz0 - 0.5f;
+    float x0 = (float)wx0 - BLOCK_HALF_SIZE;
+    float y0 = (float)wy0 - BLOCK_HALF_SIZE;
+    float z0 = (float)wz0 - BLOCK_HALF_SIZE;
     float fw = (float)W;
     float fh = (float)H;
 
@@ -366,8 +369,8 @@ static void AddGreedyFaceToMeshBuilder(BlockFace face,
     AddFaceTexLayer((float)texIndex, isTrans);
     AddGreedyFaceVertices(face, wx0, wy0, wz0, W, H, isTrans);
 
-    if (isTrans) transVCount += 4;
-    else vCount += 4;
+    if (isTrans) { transVCount += VERTICES_PER_FACE; }
+    else { vCount += VERTICES_PER_FACE; }
 }
 
 // ---------------------------------------------------------------------------
@@ -400,18 +403,18 @@ static const FaceDir FACE_DIRS[6] = {
 };
 
 static int GetFaceTex(BlockType *def, BlockFace face) {
-    if (face == FACE_TOP) return def->texTop;
-    if (face == FACE_BOTTOM) return def->texBottom;
+    if (face == FACE_TOP) { return def->texTop; }
+    if (face == FACE_BOTTOM) { return def->texBottom; }
     return def->texSide;
 }
 
 static bool MasksCompatible(const FaceMask *a, const FaceMask *b) {
-    if (a->blockID == 0 || b->blockID == 0) return false;
-    if (a->used || b->used) return false;
-    if (a->blockID != b->blockID) return false;
-    if (a->texIndex != b->texIndex) return false;
-    if (a->flipQuad != b->flipQuad) return false;
-    for (int i = 0; i < 4; i++) if (a->ao[i] != b->ao[i]) return false;
+    if (a->blockID == 0 || b->blockID == 0) { return false; }
+    if (a->used || b->used) { return false; }
+    if (a->blockID != b->blockID) { return false; }
+    if (a->texIndex != b->texIndex) { return false; }
+    if (a->flipQuad != b->flipQuad) { return false; }
+    for (int i = 0; i < VERTICES_PER_FACE; i++) { if (a->ao[i] != b->ao[i]) { return false; } }
     return true;
 }
 
@@ -429,18 +432,20 @@ static void BuildGreedyFacePass(World *world, Chunk *chunk, const FaceDir *fd) {
                 lpos[fd->normalAxis] = slice;
                 lpos[fd->uAxis] = u;
                 lpos[fd->vAxis] = v;
-                int lx = lpos[0], ly = lpos[1], lz = lpos[2];
+                int lx = lpos[0];
+                int ly = lpos[1];
+                int lz = lpos[2];
 
                 unsigned char id = chunk->data[lx][ly][lz];
-                if (id == 0) continue;
+                if (id == 0) { continue; }
 
                 BlockType *def = GetBlockDef(id);
-                if (def->isTransparent) continue;
+                if (def->isTransparent) { continue; }
 
                 int nlpos[3] = { lpos[0], lpos[1], lpos[2] };
                 nlpos[fd->normalAxis] += fd->normalDir;
                 if (!IsNeighbourTransparent(world, chunk,
-                                            nlpos[0], nlpos[1], nlpos[2], id)) continue;
+                                            nlpos[0], nlpos[1], nlpos[2], id)) { continue; }
 
                 mask[u][v].blockID   = id;
                 mask[u][v].texIndex  = (unsigned char)GetFaceTex(def, fd->face);
@@ -453,12 +458,14 @@ static void BuildGreedyFacePass(World *world, Chunk *chunk, const FaceDir *fd) {
         for (int u0 = 0; u0 < CHUNK_SIZE; u0++) {
             for (int v0 = 0; v0 < CHUNK_SIZE; v0++) {
                 FaceMask *origin = &mask[u0][v0];
-                if (origin->blockID == 0 || origin->used) continue;
+                if (origin->blockID == 0 || origin->used) { continue; }
 
                 // Expand width (u direction)
                 int w = 1;
                 while (u0 + w < CHUNK_SIZE &&
-                       MasksCompatible(origin, &mask[u0 + w][v0])) w++;
+                       MasksCompatible(origin, &mask[u0 + w][v0])) {
+                    w++;
+                }
 
                 // Expand height (v direction)
                 int h = 1;
@@ -470,7 +477,9 @@ static void BuildGreedyFacePass(World *world, Chunk *chunk, const FaceDir *fd) {
                             break;
                         }
                     }
-                    if (can_expand) h++;
+                    if (can_expand) {
+                        h++;
+                    }
                 }
 
                 // Compute world position of first block in merged region
@@ -478,18 +487,20 @@ static void BuildGreedyFacePass(World *world, Chunk *chunk, const FaceDir *fd) {
                 first_lpos[fd->normalAxis] = slice;
                 first_lpos[fd->uAxis] = u0;
                 first_lpos[fd->vAxis] = v0;
-                int wx0 = chunk->chunkX * CHUNK_SIZE + first_lpos[0];
-                int wy0 = chunk->chunkY * CHUNK_SIZE + first_lpos[1];
-                int wz0 = chunk->chunkZ * CHUNK_SIZE + first_lpos[2];
+                int wx0 = (chunk->chunkX * CHUNK_SIZE) + first_lpos[0];
+                int wy0 = (chunk->chunkY * CHUNK_SIZE) + first_lpos[1];
+                int wz0 = (chunk->chunkZ * CHUNK_SIZE) + first_lpos[2];
 
                 AddGreedyFaceToMeshBuilder(fd->face, wx0, wy0, wz0, w, h,
                                            origin->texIndex, origin->ao,
                                            origin->flipQuad, false);
 
                 // Mark used
-                for (int ku = 0; ku < w; ku++)
-                    for (int kv = 0; kv < h; kv++)
+                for (int ku = 0; ku < w; ku++) {
+                    for (int kv = 0; kv < h; kv++) {
                         mask[u0 + ku][v0 + kv].used = true;
+                    }
+                }
             }
         }
     }
@@ -501,17 +512,17 @@ static void BuildTransparentFacePass(World *world, Chunk *chunk) {
         for (int y = 0; y < CHUNK_SIZE; y++) {
             for (int z = 0; z < CHUNK_SIZE; z++) {
                 unsigned char id = chunk->data[x][y][z];
-                if (id == 0) continue;
+                if (id == 0) { continue; }
 
                 BlockType *def = GetBlockDef(id);
-                if (!def->isTransparent) continue;
+                if (!def->isTransparent) { continue; }
 
                 int ao[4];
                 bool flip;
 
-                int wx = chunk->chunkX * CHUNK_SIZE + x;
-                int wy = chunk->chunkY * CHUNK_SIZE + y;
-                int wz = chunk->chunkZ * CHUNK_SIZE + z;
+                int wx = (chunk->chunkX * CHUNK_SIZE) + x;
+                int wy = (chunk->chunkY * CHUNK_SIZE) + y;
+                int wz = (chunk->chunkZ * CHUNK_SIZE) + z;
 
                 if (IsNeighbourTransparent(world, chunk, x, y+1, z, id)) {
                     flip = ComputeFaceAO(world, chunk, x, y, z, FACE_TOP, ao);
@@ -565,7 +576,8 @@ void BuildChunkMesh(World *world, Chunk *chunk) {
     transVCount = 0; transICount = 0;
 
     // Opaque greedy pass
-    for (int fd = 0; fd < 6; fd++) BuildGreedyFacePass(world, chunk, &FACE_DIRS[fd]);
+    static const int FACE_DIRS_COUNT = (int)(sizeof(FACE_DIRS) / sizeof(FACE_DIRS[0]));
+    for (int fd = 0; fd < FACE_DIRS_COUNT; fd++) { BuildGreedyFacePass(world, chunk, &FACE_DIRS[fd]); }
 
     // Transparent per-face pass
     BuildTransparentFacePass(world, chunk);
@@ -633,7 +645,7 @@ void BuildChunkMesh(World *world, Chunk *chunk) {
 // ---------------------------------------------------------------------------
 
 static void DrawChunkMeshDirect(Mesh *mesh) {
-    if (mesh->vaoId == 0) return;
+    if (mesh->vaoId == 0) { return; }
 
     rlEnableShader(chunkShader.id);
 
@@ -654,11 +666,11 @@ static void DrawChunkMeshDirect(Mesh *mesh) {
 }
 
 void RenderChunkMesh(Chunk *chunk) {
-    if (chunk->hasMesh) DrawChunkMeshDirect(&chunk->mesh);
+    if (chunk->hasMesh) { DrawChunkMeshDirect(&chunk->mesh); }
 }
 
 void RenderChunkTranslucentMesh(Chunk *chunk) {
-    if (chunk->hasTranslucentMesh) DrawChunkMeshDirect(&chunk->translucentMesh);
+    if (chunk->hasTranslucentMesh) { DrawChunkMeshDirect(&chunk->translucentMesh); }
 }
 
 void UnloadChunkMesh(Chunk *chunk) {
@@ -685,12 +697,13 @@ bool IsChunkInFrustum(Camera3D camera, Chunk *chunk) {
     };
     Vector3 vecToChunk = Vector3Subtract(chunkCenter, camera.position);
     float distance = Vector3Length(vecToChunk);
-    if (distance < CHUNK_SPHERE_RADIUS * 2.0F) return true;
+    if (distance < CHUNK_SPHERE_RADIUS * CHUNK_CLOSE_DISTANCE_FACTOR) { return true; }
     Vector3 dirToChunk = Vector3Scale(vecToChunk, 1.0F / distance);
     Vector3 camForward = Vector3Normalize(Vector3Subtract(camera.target, camera.position));
     float dotProduct = Vector3DotProduct(camForward, dirToChunk);
     float safeMargin = CHUNK_SPHERE_RADIUS / distance;
-    return dotProduct >= (0.4f - safeMargin);
+#define FRUSTUM_DOT_THRESHOLD 0.4F
+    return dotProduct >= (FRUSTUM_DOT_THRESHOLD - safeMargin);
 }
 
 typedef struct {
@@ -705,11 +718,11 @@ static int CompareChunkDistance(const void *a, const void *b) {
 }
 
 void DrawWorld(World *world, Camera3D camera) {
-    if (g_debug.wireframe) rlEnableWireMode();
+    if (g_debug.wireframe) { rlEnableWireMode(); }
 
     // Opaque pass
     for (int i = 0; i < world->chunkCount; i++) {
-        if (!IsChunkInFrustum(camera, &world->chunks[i])) continue;
+        if (!IsChunkInFrustum(camera, &world->chunks[i])) { continue; }
         RenderChunkMesh(&world->chunks[i]);
         if (g_debug.chunkBorders) {
             Vector3 center = {
@@ -731,8 +744,8 @@ void DrawWorld(World *world, Camera3D camera) {
 
     for (int i = 0; i < world->chunkCount; i++) {
         Chunk *c = &world->chunks[i];
-        if (!c->hasTranslucentMesh) continue;
-        if (!IsChunkInFrustum(camera, c)) continue;
+        if (!c->hasTranslucentMesh) { continue; }
+        if (!IsChunkInFrustum(camera, c)) { continue; }
         float const H = CHUNK_SIZE / 2.0F;
         Vector3 center = {
             (float)(c->chunkX * CHUNK_SIZE) + H,
@@ -741,18 +754,19 @@ void DrawWorld(World *world, Camera3D camera) {
         };
         Vector3 v = Vector3Subtract(center, camera.position);
         visibleChunks[visibleCount].index = i;
-        visibleChunks[visibleCount].distanceSq = v.x*v.x + v.y*v.y + v.z*v.z;
+        visibleChunks[visibleCount].distanceSq = (v.x*v.x) + (v.y*v.y) + (v.z*v.z);
         visibleCount++;
     }
 
     qsort(visibleChunks, visibleCount, sizeof(ChunkDistance), CompareChunkDistance);
-    for (int i = 0; i < visibleCount; i++)
+    for (int i = 0; i < visibleCount; i++) {
         RenderChunkTranslucentMesh(&world->chunks[visibleChunks[i].index]);
+    }
 
     rlDrawRenderBatchActive();
     rlEnableDepthMask();
 
-    if (g_debug.wireframe) rlDisableWireMode();
+    if (g_debug.wireframe) { rlDisableWireMode(); }
 }
 
 void DrawBlockHighlight(Vector3 pos) {
@@ -760,7 +774,7 @@ void DrawBlockHighlight(Vector3 pos) {
 }
 
 void DrawAABBDebug(World *world, Player *player) {
-    if (!g_debug.AABB) return;
+    if (!g_debug.AABB) { return; }
 
     Vector3 bottomPoints[COLLISION_POINTS];
     Vector3 topPoints[COLLISION_POINTS];
@@ -785,21 +799,31 @@ void DrawAABBDebug(World *world, Player *player) {
     }
 }
 
+#define BLOCK_ICON_HALF_DIVISOR  2.0F
+#define BLOCK_ICON_QUART_DIVISOR 4.0F
+#define BLOCK_ICON_COLOR_TOP     255U
+#define BLOCK_ICON_COLOR_LEFT    150U
+#define BLOCK_ICON_COLOR_RIGHT   200U
+#define BLOCK_ICON_ALPHA         255U
+
 void DrawBlockIcon(int blockID, int x, int y, int size) {
-    if (blockID == 0) return;
+    if (blockID == 0) { return; }
     BlockType *def = GetBlockDef(blockID);
 
-    Vector2 topMin, topMax, sideMin, sideMax;
+    Vector2 topMin;
+    Vector2 topMax;
+    Vector2 sideMin;
+    Vector2 sideMax;
     GetTextureUV(def->texTop,  &topMin,  &topMax);
     GetTextureUV(def->texSide, &sideMin, &sideMax);
 
-    float cx = x + size / 2.0f;
-    float cy = y + size / 2.0f;
-    float h  = size / 4.0f;
+    float cx = (float)x + ((float)size / BLOCK_ICON_HALF_DIVISOR);
+    float cy = (float)y + ((float)size / BLOCK_ICON_HALF_DIVISOR);
+    float h  = (float)size / BLOCK_ICON_QUART_DIVISOR;
 
     Vector2 pTop        = {cx, (float)y};
-    Vector2 pTopLeft    = {(float)x, y + h};
-    Vector2 pTopRight   = {(float)(x + size), y + h};
+    Vector2 pTopLeft    = {(float)x, (float)y + h};
+    Vector2 pTopRight   = {(float)(x + size), (float)y + h};
     Vector2 pCenter     = {cx, cy};
     Vector2 pBottomLeft = {(float)x, cy + h};
     Vector2 pBottomRight = {(float)(x + size), cy + h};
@@ -808,19 +832,19 @@ void DrawBlockIcon(int blockID, int x, int y, int size) {
     rlSetTexture(blockAtlas.id);
     rlBegin(RL_QUADS);
 
-    rlColor4ub(255, 255, 255, 255);
+    rlColor4ub(BLOCK_ICON_COLOR_TOP, BLOCK_ICON_COLOR_TOP, BLOCK_ICON_COLOR_TOP, BLOCK_ICON_ALPHA);
     rlTexCoord2f(topMin.x, topMin.y); rlVertex2f(pTop.x,      pTop.y);
     rlTexCoord2f(topMin.x, topMax.y); rlVertex2f(pTopLeft.x,  pTopLeft.y);
     rlTexCoord2f(topMax.x, topMax.y); rlVertex2f(pCenter.x,   pCenter.y);
     rlTexCoord2f(topMax.x, topMin.y); rlVertex2f(pTopRight.x, pTopRight.y);
 
-    rlColor4ub(150, 150, 150, 255);
+    rlColor4ub(BLOCK_ICON_COLOR_LEFT, BLOCK_ICON_COLOR_LEFT, BLOCK_ICON_COLOR_LEFT, BLOCK_ICON_ALPHA);
     rlTexCoord2f(sideMin.x, sideMin.y); rlVertex2f(pTopLeft.x,    pTopLeft.y);
     rlTexCoord2f(sideMin.x, sideMax.y); rlVertex2f(pBottomLeft.x, pBottomLeft.y);
     rlTexCoord2f(sideMax.x, sideMax.y); rlVertex2f(pBottom.x,     pBottom.y);
     rlTexCoord2f(sideMax.x, sideMin.y); rlVertex2f(pCenter.x,     pCenter.y);
 
-    rlColor4ub(200, 200, 200, 255);
+    rlColor4ub(BLOCK_ICON_COLOR_RIGHT, BLOCK_ICON_COLOR_RIGHT, BLOCK_ICON_COLOR_RIGHT, BLOCK_ICON_ALPHA);
     rlTexCoord2f(sideMin.x, sideMin.y); rlVertex2f(pCenter.x,      pCenter.y);
     rlTexCoord2f(sideMin.x, sideMax.y); rlVertex2f(pBottom.x,      pBottom.y);
     rlTexCoord2f(sideMax.x, sideMax.y); rlVertex2f(pBottomRight.x, pBottomRight.y);

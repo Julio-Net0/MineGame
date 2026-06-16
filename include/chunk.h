@@ -7,7 +7,7 @@ typedef struct World World;
 
 #define CHUNK_SIZE 16
 #define CHUNK_VOLUME ((size_t)CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE)
-#define CHUNK_HALF_SIZE (CHUNK_SIZE / 2)
+#define CHUNK_HALF_SIZE (CHUNK_SIZE / 2.0F)
 
 #define BLOCK_SIZE 1.0F
 #define BLOCK_HALF_SIZE (BLOCK_SIZE / 2.0F)

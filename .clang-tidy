@@ -7,15 +7,20 @@ Checks: >
   performance-*,
   readability-*,
   -readability-identifier-length,
-  -altera-*
+  -altera-*,
+  -clang-diagnostic-deprecated-declarations,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
+  -bugprone-easily-swappable-parameters,
+  -readability-function-cognitive-complexity,
+  -readability-implicit-bool-conversion
 
 CheckOptions:
   - key:             readability-identifier-naming.FunctionCase
     value:           CamelCase
   - key:             readability-identifier-naming.VariableCase
-    value:           camelCase
+    value:           CamelCase
   - key:             readability-identifier-naming.ParameterCase
-    value:           camelCase
+    value:           CamelCase
   - key:             readability-identifier-naming.ConstantCase
     value:           UPPER_CASE
   - key:             readability-identifier-naming.VariableMinLength

@@ -183,7 +183,7 @@ void CommandNoclip(const char *args, CommandContext *ctx) {
   char *opt_str = strtok(argsCopy, " ");
 
   if (opt_str) {
-    int opt = atoi(opt_str);
+    int opt = (int)strtol(opt_str, NULL, 10);
     if (opt == 1) {
       ctx->player->noclip = true;
       ReturnCommand(ctx->chat, LOG_INFO, "Noclip activated");
@@ -247,7 +247,7 @@ void CommandDebug(const char *args, CommandContext *ctx) {
     return;
   }
 
-  bool state = (atoi(opt_str) == 1);
+  bool state = (strtol(opt_str, NULL, 10) == 1);
 
   for (int i = 0; i < AVAILABLEDEBUGSCOUNT; i++) {
     if (strcmp(debug_str, AVAILABLEDEBUGS[i].name) == 0) {
