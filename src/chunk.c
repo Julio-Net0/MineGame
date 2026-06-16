@@ -34,8 +34,10 @@ void GenerateChunkTerrain(Chunk *chunk) {
   int solidCount = 0;
 
   uint64_t seed = GetWorldSeed();
-  float offsetX = (float)((int)(seed % 100000) - 50000);
-  float offsetZ = (float)((int)((seed >> 32) % 100000) - 50000);
+  const int SEED_OFFSET_RANGE = 100000;
+  const int SEED_OFFSET_HALF = 50000;
+  float offsetX = (float)((int)(seed % SEED_OFFSET_RANGE) - SEED_OFFSET_HALF);
+  float offsetZ = (float)((int)((seed >> 32) % SEED_OFFSET_RANGE) - SEED_OFFSET_HALF);
 
   memset(chunk->data, 0, sizeof(chunk->data));
 
