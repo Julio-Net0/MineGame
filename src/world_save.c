@@ -10,10 +10,12 @@
 
 #ifdef _WIN32
 #include <direct.h>
+#include <intrin.h>
 #define make_dir(path) _mkdir(path)
 #else
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/time.h>
 #define make_dir(path) mkdir(path, 0777)
 #endif
 
@@ -26,12 +28,14 @@ typedef struct {
 static uint64_t g_worldSeed = 0;
 
 static uint64_t generate_random_seed(void) {
-  srand((unsigned int)time(NULL));
-  uint64_t s1 = (uint64_t)rand() & 0xFFFF;
-  uint64_t s2 = (uint64_t)rand() & 0xFFFF;
-  uint64_t s3 = (uint64_t)rand() & 0xFFFF;
-  uint64_t s4 = (uint64_t)rand() & 0xFFFF;
-  return (s1 << 48) | (s2 << 32) | (s3 << 16) | s4;
+#ifdef _WIN32
+  uint64_t hires = (uint64_t)__rdtsc();
+#else
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+  uint64_t hires = (uint64_t)tv.tv_sec * 1000000ULL + (uint64_t)tv.tv_usec;
+#endif
+  return hires ^ ((uint64_t)time(NULL) * 6364136223846793005ULL);
 }
 
 void InitWorldSave(void) {

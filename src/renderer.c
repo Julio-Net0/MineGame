@@ -126,37 +126,29 @@ static void GetTextureUV(int textureIndex, Vector2 *uvMin, Vector2 *uvMax) {
 // AO helpers (unchanged)
 // ---------------------------------------------------------------------------
 
+static unsigned char GetBlockIDAtLocal(World *world, Chunk *chunk, int lx, int ly, int lz) {
+    if (lx >= 0 && lx < CHUNK_SIZE &&
+        ly >= 0 && ly < CHUNK_SIZE &&
+        lz >= 0 && lz < CHUNK_SIZE) {
+        return chunk->data[lx][ly][lz];
+    }
+    int gx = chunk->chunkX * CHUNK_SIZE + lx;
+    int gy = chunk->chunkY * CHUNK_SIZE + ly;
+    int gz = chunk->chunkZ * CHUNK_SIZE + lz;
+    return (unsigned char)GetBlockIDFromWorld(world, (Vector3){(float)gx, (float)gy, (float)gz});
+}
+
 static bool IsNeighbourTransparent(World *world, Chunk *chunk,
                                    int localX, int localY, int localZ,
                                    unsigned char selfID) {
-    unsigned char id = 0;
-    if (localX >= 0 && localX < CHUNK_SIZE &&
-        localY >= 0 && localY < CHUNK_SIZE &&
-        localZ >= 0 && localZ < CHUNK_SIZE) {
-        id = chunk->data[localX][localY][localZ];
-    } else {
-        int gx = chunk->chunkX * CHUNK_SIZE + localX;
-        int gy = chunk->chunkY * CHUNK_SIZE + localY;
-        int gz = chunk->chunkZ * CHUNK_SIZE + localZ;
-        id = GetBlockIDFromWorld(world, (Vector3){(float)gx, (float)gy, (float)gz});
-    }
+    unsigned char id = GetBlockIDAtLocal(world, chunk, localX, localY, localZ);
     if (id == 0) return true;
     if (id == selfID && GetBlockDef(selfID)->isTransparent) return false;
     return GetBlockDef(id)->isTransparent;
 }
 
 static bool IsSolidForAO(World *world, Chunk *chunk, int localX, int localY, int localZ) {
-    unsigned char id = 0;
-    if (localX >= 0 && localX < CHUNK_SIZE &&
-        localY >= 0 && localY < CHUNK_SIZE &&
-        localZ >= 0 && localZ < CHUNK_SIZE) {
-        id = chunk->data[localX][localY][localZ];
-    } else {
-        int gx = chunk->chunkX * CHUNK_SIZE + localX;
-        int gy = chunk->chunkY * CHUNK_SIZE + localY;
-        int gz = chunk->chunkZ * CHUNK_SIZE + localZ;
-        id = GetBlockIDFromWorld(world, (Vector3){(float)gx, (float)gy, (float)gz});
-    }
+    unsigned char id = GetBlockIDAtLocal(world, chunk, localX, localY, localZ);
     if (id == 0) return false;
     return GetBlockDef(id)->isSolid;
 }
