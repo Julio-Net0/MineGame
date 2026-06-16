@@ -6,18 +6,27 @@
 #define STB_PERLING_IMPLEMENTATION
 #include "stb_perling.h"
 
-static unsigned char DetermineBlockID(int globalY, int terrainHeight) { // NOLINT(bugprone-easily-swappable-parameters)
-  const int seaLevel = 18;
+enum BlockIDs {
+  BLOCK_AIR = 0,
+  BLOCK_GRASS = 1,
+  BLOCK_DIRT = 2,
+  BLOCK_STONE = 3,
+  BLOCK_SAND = 4,
+  BLOCK_WATER = 5
+};
+
+static unsigned char DetermineBlockID(int globalY, int terrainHeight) {
+  const int SEA_LEVEL = 18;
   if (globalY > terrainHeight) {
-    return (globalY <= seaLevel) ? 5 : 0;
+    return (globalY <= SEA_LEVEL) ? BLOCK_WATER : BLOCK_AIR;
   }
   if (globalY == terrainHeight) {
-    return (globalY <= seaLevel + 1) ? 4 : 1;
+    return (globalY <= SEA_LEVEL + 1) ? BLOCK_SAND : BLOCK_GRASS;
   }
   if (globalY > terrainHeight - 3) {
-    return 2;
+    return BLOCK_DIRT;
   }
-  return 3;
+  return BLOCK_STONE;
 }
 
 void GenerateChunkTerrain(Chunk *chunk) {
