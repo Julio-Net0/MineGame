@@ -17,7 +17,7 @@
 #define INITIAL_HEIGHT 720
 
 static void InitGame(World **world, Player *player, Camera3D *playerCamera,
-                       Camera3D *freeCamera, ChatState *chat) {
+                     ChatState *chat, Camera3D *freeCamera) {
   SetTraceLogLevel(LOG_WARNING);
   ChangeDirectory(GetApplicationDirectory());
 
@@ -148,7 +148,7 @@ int main(void) {
   ChatState chat;
   bool showDebug = false;
 
-  InitGame(&world, &player, &playerCamera, &freeCamera, &chat);
+  InitGame(&world, &player, &playerCamera, &chat, &freeCamera);
 
   while (!WindowShouldClose()) {
     float dt = GetFrameTime();
