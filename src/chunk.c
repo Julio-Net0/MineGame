@@ -1,5 +1,4 @@
 #include "chunk.h"
-#include "renderer.h"
 #include "world.h"
 #include "raylib.h"
 #include "world_save.h"
@@ -73,37 +72,6 @@ void GenerateChunkTerrain(Chunk *chunk) {
 
   chunk->solidBlockCount = solidCount;
   chunk->isDirty = true;
-}
-
-void GenerateFlatChunk(Chunk *chunk){
-  chunk->isModified = false;
-
-  chunk->solidBlockCount = 0;
-
-  for(int x = 0; x < CHUNK_SIZE; x++){
-    for(int y = 0; y < CHUNK_SIZE; y++){
-      for(int z = 0; z < CHUNK_SIZE; z++){
-
-        int globalY = (chunk->chunkY * CHUNK_SIZE) + y;
-
-        if(globalY < 4){
-          chunk->data[x][y][z] = 3;
-          chunk->solidBlockCount++;
-        }else if(globalY < 10){
-          chunk->data[x][y][z] = 1;
-          chunk->solidBlockCount++;
-        }else{
-          chunk->data[x][y][z] = 0;
-        }
-      }
-    }
-  }
-  chunk->isDirty = true;
-  chunk->hasMesh = false;
-}
-
-void DrawChunk(World *world, Chunk *chunk){
-  RenderChunkMesh(chunk);
 }
 
 int GetBlockIDInChunk(Chunk *chunk, Vector3 localPos){

@@ -19,14 +19,12 @@ typedef struct Chunk {
 
   unsigned char data[CHUNK_SIZE][CHUNK_SIZE][CHUNK_SIZE];
 
-  Vector3 worldPosition;
-
   int chunkX;
   int chunkY;
   int chunkZ;
   int solidBlockCount;
 
-  bool isDirty;
+  atomic_bool isDirty;
   bool hasMesh;
   bool hasTranslucentMesh;
   bool isModified;
@@ -37,9 +35,6 @@ typedef struct Chunk {
 } Chunk;
 
 void GenerateChunkTerrain(Chunk *chunk);
-void GenerateFlatChunk(Chunk *chunk);
-void DrawChunk(World *world, Chunk *chunk);
-void UpdateNeighborsDirtyFlag(World *world, int cx, int cy, int cz);
 
 void SetBlockInChunk(Chunk* chunk, Vector3 pos, unsigned char blockID);
 int GetBlockIDInChunk(Chunk *chunk, Vector3 pos);

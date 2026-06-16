@@ -21,7 +21,7 @@ int main(void){
   SetTraceLogLevel(LOG_WARNING);
   ChangeDirectory(GetApplicationDirectory());
 
-  InitWindow(INITIAL_WIDTH, INITIAL_HEIGHT, "MineGame Beta 2");
+  InitWindow(INITIAL_WIDTH, INITIAL_HEIGHT, "MineGame Beta 3");
   ToggleBorderlessWindowed();
   DisableCursor();
 
@@ -35,6 +35,8 @@ int main(void){
   InitWorld(world);
   TraceLog(LOG_INFO, "MAIN THREAD ID: %p", (void*)pthread_self());
   InitChunkWorker();
+
+  bool showDebug = false;
 
   Player player = InitPlayer((Vector3){0, 25, 0});
   
@@ -53,7 +55,12 @@ int main(void){
       ToggleBorderlessWindowed();
     }
 
-    UpdateWorld(world, player.position, MAX_RENDER_DISTANCE);
+    if(IsKeyPressed(KEY_F3)){
+      showDebug = !showDebug;
+    }
+
+    Vector3 loadCenter = (g_debug.freecam && wasFreecam) ? freeCamera.position : player.position;
+    UpdateWorld(world, loadCenter, MAX_RENDER_DISTANCE);
     
     bool hasControl = !chat.isActive;
     UpdatePlayer(&player, &playerCamera, world, dt, hasControl);
@@ -79,7 +86,7 @@ int main(void){
       Chunk *c = &world->chunks[i];
       if(c->isGenerated && c->terrainJustGenerated){
         UpdateNeighborsDirtyFlag(world, c->chunkX, c->chunkY, c->chunkZ);
-        c->terrainJustGenerated = false; // Desliga para não dar o loop infinito!
+        c->terrainJustGenerated = false;
       }
     }
 
@@ -105,7 +112,7 @@ int main(void){
 
       BeginMode3D(*activeCamera);{
 
-        DrawWorld(world, playerCamera);
+        DrawWorld(world, *activeCamera);
 
         if(player.targetBlock.hit){
           DrawBlockHighlight(player.targetBlock.blockPos);
@@ -114,7 +121,7 @@ int main(void){
         DrawAABBDebug(world, &player);
       }EndMode3D();
 
-      DrawHUD(&player, world, true);
+      DrawHUD(&player, world, showDebug);
       DrawChat(&chat);
     }EndDrawing();
   }
