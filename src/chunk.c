@@ -6,7 +6,8 @@
 #define STB_PERLING_IMPLEMENTATION
 #include "stb_perling.h"
 
-static unsigned char DetermineBlockID(int globalY, int terrainHeight, int seaLevel) {
+static unsigned char DetermineBlockID(int globalY, int terrainHeight) { // NOLINT(bugprone-easily-swappable-parameters)
+  const int seaLevel = 18;
   if (globalY > terrainHeight) {
     return (globalY <= seaLevel) ? 5 : 0;
   }
@@ -45,11 +46,9 @@ void GenerateChunkTerrain(Chunk *chunk) {
 
       int terrainHeight = 24 + (int)(noise * 16.0f);
 
-      int seaLevel = 18;
-
       for (int y = 0; y < CHUNK_SIZE; y++) {
         int globalY = (chunk->chunkY * CHUNK_SIZE) + y;
-        unsigned char blockID = DetermineBlockID(globalY, terrainHeight, seaLevel);
+        unsigned char blockID = DetermineBlockID(globalY, terrainHeight);
 
         chunk->data[x][y][z] = blockID;
 
