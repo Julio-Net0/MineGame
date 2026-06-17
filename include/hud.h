@@ -3,7 +3,8 @@
 
 #include "player.h"
 #include "world.h"
+#include "raylib.h"
 
-void DrawHUD(Player *player, World *world, Camera3D camera, bool showDebugF3);
+void DrawHUD(Player *Player, World *World, Camera3D Camera, bool ShowDebugF3);
 
 #endif

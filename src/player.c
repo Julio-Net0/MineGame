@@ -4,7 +4,6 @@
 #include "raylib.h"
 #include "raymath.h"
 #include "world.h"
-#include <math.h>
 
 #define INIT_SLOT_0 0
 #define INIT_SLOT_1 1
@@ -22,402 +21,393 @@
 #define INIT_BLOCK_6 6
 #define INIT_BLOCK_7 7
 
-Player InitPlayer(Vector3 spawnPos) {
+Player InitPlayer(Vector3 SpawnPos) {
+  Player PlayerObj = {0};
 
-  Player p = {0};
+  PlayerObj.Id = 0;
+  PlayerObj.Position = SpawnPos;
+  PlayerObj.Velocity = (Vector3){0.0F, 0.0F, 0.0F};
+  PlayerObj.Size = PLAYER_SIZE;
+  PlayerObj.Radius = PLAYER_RADIUS;
+  PlayerObj.Speed = PLAYER_SPEED;
+  PlayerObj.SelectedHotbarSlot = 0;
+  PlayerObj.ReachDistance = PLAYER_REACH_DISTANCE;
+  PlayerObj.HeadOffset = PLAYER_HEAD_OFFSET;
+  PlayerObj.IsGrounded = false;
+  PlayerObj.Noclip = false;
 
-  p.id = 0;
-  p.position = spawnPos;
-  p.velocity = (Vector3){0, 0, 0};
-  p.size = PLAYER_SIZE;
-  p.radius = PLAYER_RADIUS;
-  p.speed = PLAYER_SPEED;
-  p.selectedHotbarSlot = 0;
-  p.reachDistance = PLAYER_REACH_DISTANCE;
-  p.headOffset = PLAYER_HEAD_OFFSET;
-  p.isGrounded = false;
-  p.noclip = false;
+  SetHotbarSlot(&PlayerObj, INIT_SLOT_0, INIT_BLOCK_1);
+  SetHotbarSlot(&PlayerObj, INIT_SLOT_1, INIT_BLOCK_2);
+  SetHotbarSlot(&PlayerObj, INIT_SLOT_2, INIT_BLOCK_3);
+  SetHotbarSlot(&PlayerObj, INIT_SLOT_3, INIT_BLOCK_4);
+  SetHotbarSlot(&PlayerObj, INIT_SLOT_4, INIT_BLOCK_5);
+  SetHotbarSlot(&PlayerObj, INIT_SLOT_5, INIT_BLOCK_6);
+  SetHotbarSlot(&PlayerObj, INIT_SLOT_6, INIT_BLOCK_7);
 
-  SetHotbarSlot(&p, INIT_SLOT_0, INIT_BLOCK_1);
-  SetHotbarSlot(&p, INIT_SLOT_1, INIT_BLOCK_2);
-  SetHotbarSlot(&p, INIT_SLOT_2, INIT_BLOCK_3);
-  SetHotbarSlot(&p, INIT_SLOT_3, INIT_BLOCK_4);
-  SetHotbarSlot(&p, INIT_SLOT_4, INIT_BLOCK_5);
-  SetHotbarSlot(&p, INIT_SLOT_5, INIT_BLOCK_6);
-  SetHotbarSlot(&p, INIT_SLOT_6, INIT_BLOCK_7);
-
-  return p;
+  return PlayerObj;
 }
 
-void SetHotbarSlot(Player *player, int slot, unsigned char blockID) {
-  if (slot >= 0 && slot < HOTBAR_SIZE) {
-    player->hotbar[slot] = blockID;
+void SetHotbarSlot(Player *PlayerVal, int Slot, unsigned char BlockId) {
+  if (Slot >= 0 && Slot < HOTBAR_SIZE) {
+    PlayerVal->Hotbar[Slot] = BlockId;
   }
 }
 
-bool IsPointSolid(World *world, Vector3 pos) {
-  Vector3 blockPos = {floorf(pos.x + BLOCK_HALF_SIZE),
-                      floorf(pos.y + BLOCK_HALF_SIZE),
-                      floorf(pos.z + BLOCK_HALF_SIZE)};
+bool IsPointSolid(World *WorldVal, Vector3 Pos) {
+  Vector3 BlockPos = {__builtin_floorf(Pos.x + BLOCK_HALF_SIZE),
+                      __builtin_floorf(Pos.y + BLOCK_HALF_SIZE),
+                      __builtin_floorf(Pos.z + BLOCK_HALF_SIZE)};
 
-  int blockID = GetBlockIDFromWorld(world, blockPos);
+  int BlockId = GetBlockIDFromWorld(WorldVal, BlockPos);
 
-  return (blockID != 0 && GetBlockDef(blockID)->isSolid) != 0;
+  return (BlockId != 0 && GetBlockDef(BlockId)->IsSolid) != 0;
 }
 
-void GetPlayerPoints(Player *player, PointConfig config,
-                     Vector3 outPoints[COLLISION_POINTS]) {
-  float checkY = player->position.y + config.yOffset + config.epsilon;
+void GetPlayerPoints(Player *PlayerVal, PointConfig Config,
+                     Vector3 OutPoints[COLLISION_POINTS]) {
+  float CheckY = PlayerVal->Position.y + Config.YOffset + Config.Epsilon;
 
-  outPoints[0] = (Vector3){player->position.x, checkY, player->position.z};
-  outPoints[1] = (Vector3){player->position.x - config.radius, checkY,
-                           player->position.z - config.radius};
-  outPoints[2] = (Vector3){player->position.x + config.radius, checkY,
-                           player->position.z - config.radius};
-  outPoints[3] = (Vector3){player->position.x - config.radius, checkY,
-                           player->position.z + config.radius};
-  outPoints[4] = (Vector3){player->position.x + config.radius, checkY,
-                           player->position.z + config.radius};
+  OutPoints[0] = (Vector3){PlayerVal->Position.x, CheckY, PlayerVal->Position.z};
+  OutPoints[1] = (Vector3){PlayerVal->Position.x - Config.Radius, CheckY,
+                           PlayerVal->Position.z - Config.Radius};
+  OutPoints[2] = (Vector3){PlayerVal->Position.x + Config.Radius, CheckY,
+                           PlayerVal->Position.z - Config.Radius};
+  OutPoints[3] = (Vector3){PlayerVal->Position.x - Config.Radius, CheckY,
+                           PlayerVal->Position.z + Config.Radius};
+  OutPoints[4] = (Vector3){PlayerVal->Position.x + Config.Radius, CheckY,
+                           PlayerVal->Position.z + Config.Radius};
 }
 
-static bool IsAnyPointSolid(World *world, Vector3 points[], int pointsLen) {
-  for (int i = 0; i < pointsLen; i++) {
-    if (IsPointSolid(world, points[i])) {
+static bool IsAnyPointSolid(World *WorldVal, Vector3 Points[], int PointsLen) {
+  #pragma unroll 4
+  for (int IdxI = 0; IdxI < PointsLen; IdxI++) {
+    if (IsPointSolid(WorldVal, Points[IdxI])) {
       return true;
     }
   }
   return false;
 }
 
-static bool IsPlayerOnGround(World *world, Player *player) {
-  Vector3 bottomPoints[COLLISION_POINTS];
+static bool IsPlayerOnGround(World *WorldVal, Player *PlayerVal) {
+  Vector3 BottomPoints[COLLISION_POINTS];
   GetPlayerPoints(
-      player,
-      (PointConfig){.radius = player->radius - VERTICAL_RADIUS_SHRINK,
-                    .yOffset = 0.0F,
-                    .epsilon = -COLLISION_EPSILON},
-      bottomPoints);
+      PlayerVal,
+      (PointConfig){.Radius = PlayerVal->Radius - VERTICAL_RADIUS_SHRINK,
+                    .YOffset = 0.0F,
+                    .Epsilon = -COLLISION_EPSILON},
+      BottomPoints);
 
-  return IsAnyPointSolid(world, bottomPoints, COLLISION_POINTS);
+  return IsAnyPointSolid(WorldVal, BottomPoints, COLLISION_POINTS);
 }
 
-static bool VerifyBottomCollision(Player *player, World *world, float nextY) {
+static bool VerifyBottomCollision(Player *PlayerVal, World *WorldVal, float NextY) {
+  float CurrentY = PlayerVal->Position.y;
+  PlayerVal->Position.y = NextY;
+  bool HitsGround = IsPlayerOnGround(WorldVal, PlayerVal);
+  PlayerVal->Position.y = CurrentY;
 
-  float currentY = player->position.y;
-  player->position.y = nextY;
-  bool hitsGround = IsPlayerOnGround(world, player);
-  player->position.y = currentY;
+  if (PlayerVal->Velocity.y <= 0.0F && HitsGround) {
+    PlayerVal->Velocity.y = 0.0F;
+    PlayerVal->IsGrounded = true;
 
-  if (player->velocity.y <= 0 && hitsGround) {
-    player->velocity.y = 0;
-    player->isGrounded = true;
+    float CheckY = NextY - COLLISION_EPSILON;
+    float BlockCenterY = __builtin_floorf(CheckY + BLOCK_HALF_SIZE);
 
-    float checkY = nextY - COLLISION_EPSILON;
-    float blockCenterY = floorf(checkY + BLOCK_HALF_SIZE);
-
-    player->position.y = blockCenterY + BLOCK_HALF_SIZE;
+    PlayerVal->Position.y = BlockCenterY + BLOCK_HALF_SIZE;
 
     return true;
   }
 
-  player->isGrounded = false;
+  PlayerVal->IsGrounded = false;
   return false;
 }
 
-static bool IsPlayerOnTop(World *world, Player *player, float nextY) {
+static bool IsPlayerOnTop(World *WorldVal, Player *PlayerVal, float NextY) {
+  float CurrentY = PlayerVal->Position.y;
+  PlayerVal->Position.y = NextY;
 
-  float currentY = player->position.y;
-
-  player->position.y = nextY;
-
-  Vector3 topPoints[COLLISION_POINTS];
+  Vector3 TopPoints[COLLISION_POINTS];
   GetPlayerPoints(
-      player,
-      (PointConfig){.radius = player->radius - VERTICAL_RADIUS_SHRINK,
-                    .yOffset = player->size.y,
-                    .epsilon = COLLISION_EPSILON},
-      topPoints);
+      PlayerVal,
+      (PointConfig){.Radius = PlayerVal->Radius - VERTICAL_RADIUS_SHRINK,
+                    .YOffset = PlayerVal->Size.y,
+                    .Epsilon = COLLISION_EPSILON},
+      TopPoints);
 
-  player->position.y = currentY;
+  PlayerVal->Position.y = CurrentY;
 
-  return IsAnyPointSolid(world, topPoints, COLLISION_POINTS);
+  return IsAnyPointSolid(WorldVal, TopPoints, COLLISION_POINTS);
 }
 
-static bool VerifyTopCollision(Player *player, World *world, float nextY) {
+static bool VerifyTopCollision(Player *PlayerVal, World *WorldVal, float NextY) {
+  if (PlayerVal->Velocity.y > 0.0F && IsPlayerOnTop(WorldVal, PlayerVal, NextY)) {
+    PlayerVal->Velocity.y = 0.0F;
 
-  if (player->velocity.y > 0 && IsPlayerOnTop(world, player, nextY)) {
-    player->velocity.y = 0;
+    float CheckY = NextY + PlayerVal->Size.y + COLLISION_EPSILON;
+    float BlockCenterY = __builtin_floorf(CheckY + BLOCK_HALF_SIZE);
+    float CeilingBottom = BlockCenterY - BLOCK_HALF_SIZE;
 
-    float checkY = nextY + player->size.y + COLLISION_EPSILON;
-    float blockCenterY = floorf(checkY + BLOCK_HALF_SIZE);
-    float ceilingBottom = blockCenterY - BLOCK_HALF_SIZE;
-
-    player->position.y = ceilingBottom - player->size.y - AABB_OFFSET_MARGIN;
+    PlayerVal->Position.y = CeilingBottom - PlayerVal->Size.y - AABB_OFFSET_MARGIN;
     return true;
   }
   return false;
 }
 
-static bool IsPlayerCollidingLateral(World *world, Player *player) {
-  Vector3 shinPoints[COLLISION_POINTS];
-  Vector3 facePoints[COLLISION_POINTS];
+static bool IsPlayerCollidingLateral(World *WorldVal, Player *PlayerVal) {
+  Vector3 ShinPoints[COLLISION_POINTS];
+  Vector3 FacePoints[COLLISION_POINTS];
 
-  GetPlayerPoints(player,
-                  (PointConfig){.radius = player->radius,
-                                .yOffset = LATERAL_Y_MARGIN,
-                                .epsilon = 0.0F},
-                  shinPoints);
-  GetPlayerPoints(player,
-                  (PointConfig){.radius = player->radius,
-                                .yOffset = player->size.y - LATERAL_Y_MARGIN,
-                                .epsilon = 0.0F},
-                  facePoints);
+  GetPlayerPoints(PlayerVal,
+                  (PointConfig){.Radius = PlayerVal->Radius,
+                                .YOffset = LATERAL_Y_MARGIN,
+                                .Epsilon = 0.0F},
+                  ShinPoints);
+  GetPlayerPoints(PlayerVal,
+                  (PointConfig){.Radius = PlayerVal->Radius,
+                                .YOffset = PlayerVal->Size.y - LATERAL_Y_MARGIN,
+                                .Epsilon = 0.0F},
+                  FacePoints);
 
-  if (IsAnyPointSolid(world, shinPoints, COLLISION_POINTS)) {
+  if (IsAnyPointSolid(WorldVal, ShinPoints, COLLISION_POINTS)) {
     return true;
   }
-  if (IsAnyPointSolid(world, facePoints, COLLISION_POINTS)) {
+  if (IsAnyPointSolid(WorldVal, FacePoints, COLLISION_POINTS)) {
     return true;
   }
 
   return false;
 }
 
-static bool VerifyXCollision(Player *player, World *world, float nextX) {
-
-  if (player->velocity.x == 0) {
+static bool VerifyXCollision(Player *PlayerVal, World *WorldVal, float NextX) {
+  if (PlayerVal->Velocity.x == 0.0F) {
     return false;
   }
 
-  float currentX = player->position.x;
-  player->position.x = nextX;
-  bool hitsWall = IsPlayerCollidingLateral(world, player);
-  player->position.x = currentX;
+  float CurrentX = PlayerVal->Position.x;
+  PlayerVal->Position.x = NextX;
+  bool HitsWall = IsPlayerCollidingLateral(WorldVal, PlayerVal);
+  PlayerVal->Position.x = CurrentX;
 
-  if (hitsWall) {
-    float sign = (player->velocity.x > 0) ? 1.0F : -1.0F;
+  if (HitsWall) {
+    float Sign = (PlayerVal->Velocity.x > 0.0F) ? 1.0F : -1.0F;
 
-    float hitPointX =
-        nextX + (player->radius * sign) + (COLLISION_EPSILON * sign);
-    float blockCenterX = floorf(hitPointX + BLOCK_HALF_SIZE);
+    float HitPointX =
+        NextX + (PlayerVal->Radius * Sign) + (COLLISION_EPSILON * Sign);
+    float BlockCenterX = __builtin_floorf(HitPointX + BLOCK_HALF_SIZE);
 
-    if (player->velocity.x > 0) {
-      player->position.x = (blockCenterX - BLOCK_HALF_SIZE) - player->radius -
+    if (PlayerVal->Velocity.x > 0.0F) {
+      PlayerVal->Position.x = (BlockCenterX - BLOCK_HALF_SIZE) - PlayerVal->Radius -
                            AABB_OFFSET_MARGIN;
     } else {
-      player->position.x = (blockCenterX + BLOCK_HALF_SIZE) + player->radius +
+      PlayerVal->Position.x = (BlockCenterX + BLOCK_HALF_SIZE) + PlayerVal->Radius +
                            AABB_OFFSET_MARGIN;
     }
 
-    player->velocity.x = 0;
+    PlayerVal->Velocity.x = 0.0F;
     return true;
   }
   return false;
 }
 
-static bool VerifyZCollision(Player *player, World *world, float nextZ) {
-  if (player->velocity.z == 0) {
+static bool VerifyZCollision(Player *PlayerVal, World *WorldVal, float NextZ) {
+  if (PlayerVal->Velocity.z == 0.0F) {
     return false;
   }
 
-  float currentZ = player->position.z;
-  player->position.z = nextZ;
-  bool hitsWall = IsPlayerCollidingLateral(world, player);
-  player->position.z = currentZ;
+  float CurrentZ = PlayerVal->Position.z;
+  PlayerVal->Position.z = NextZ;
+  bool HitsWall = IsPlayerCollidingLateral(WorldVal, PlayerVal);
+  PlayerVal->Position.z = CurrentZ;
 
-  if (hitsWall) {
-    float sign = (player->velocity.z > 0) ? 1.0F : -1.0F;
+  if (HitsWall) {
+    float Sign = (PlayerVal->Velocity.z > 0.0F) ? 1.0F : -1.0F;
 
-    float hitPointZ =
-        nextZ + (player->radius * sign) + (COLLISION_EPSILON * sign);
-    float blockCenterZ = floorf(hitPointZ + BLOCK_HALF_SIZE);
+    float HitPointZ =
+        NextZ + (PlayerVal->Radius * Sign) + (COLLISION_EPSILON * Sign);
+    float BlockCenterZ = __builtin_floorf(HitPointZ + BLOCK_HALF_SIZE);
 
-    if (player->velocity.z > 0) {
-      player->position.z = (blockCenterZ - BLOCK_HALF_SIZE) - player->radius -
+    if (PlayerVal->Velocity.z > 0.0F) {
+      PlayerVal->Position.z = (BlockCenterZ - BLOCK_HALF_SIZE) - PlayerVal->Radius -
                            AABB_OFFSET_MARGIN;
     } else {
-      player->position.z = (blockCenterZ + BLOCK_HALF_SIZE) + player->radius +
+      PlayerVal->Position.z = (BlockCenterZ + BLOCK_HALF_SIZE) + PlayerVal->Radius +
                            AABB_OFFSET_MARGIN;
     }
 
-    player->velocity.z = 0;
+    PlayerVal->Velocity.z = 0.0F;
     return true;
   }
   return false;
 }
 
-static void PhysicalMov(Player *player, World *world, float dt,
-                        bool hasControl) {
-
-  if (player->isGrounded && IsKeyPressed(KEY_SPACE) && hasControl) {
-    player->velocity.y = PLAYER_JUMP_FORCE;
-    player->isGrounded = false;
+static void PhysicalMov(Player *PlayerVal, World *WorldVal, float Dt,
+                        bool HasControl) {
+  if (PlayerVal->IsGrounded && IsKeyPressed(KEY_SPACE) && HasControl) {
+    PlayerVal->Velocity.y = PLAYER_JUMP_FORCE;
+    PlayerVal->IsGrounded = false;
   }
 
-  player->velocity.y -= PLAYER_GRAVITY * dt;
-  if (player->velocity.y < -PLAYER_TERMINAL_VELOCITY) {
-    player->velocity.y = -PLAYER_TERMINAL_VELOCITY;
+  PlayerVal->Velocity.y -= PLAYER_GRAVITY * Dt;
+  if (PlayerVal->Velocity.y < -PLAYER_TERMINAL_VELOCITY) {
+    PlayerVal->Velocity.y = -PLAYER_TERMINAL_VELOCITY;
   }
 
-  float nextY = player->position.y + (player->velocity.y * dt);
-  if (player->velocity.y > 0) {
-    if (!VerifyTopCollision(player, world, nextY)) {
-      player->position.y = nextY;
+  float NextY = PlayerVal->Position.y + (PlayerVal->Velocity.y * Dt);
+  if (PlayerVal->Velocity.y > 0.0F) {
+    if (!VerifyTopCollision(PlayerVal, WorldVal, NextY)) {
+      PlayerVal->Position.y = NextY;
     }
   } else {
-    if (!VerifyBottomCollision(player, world, nextY)) {
-      player->position.y = nextY;
+    if (!VerifyBottomCollision(PlayerVal, WorldVal, NextY)) {
+      PlayerVal->Position.y = NextY;
     }
   }
 
-  float nextX = player->position.x + (player->velocity.x * dt);
-  if (!VerifyXCollision(player, world, nextX)) {
-    player->position.x = nextX;
+  float NextX = PlayerVal->Position.x + (PlayerVal->Velocity.x * Dt);
+  if (!VerifyXCollision(PlayerVal, WorldVal, NextX)) {
+    PlayerVal->Position.x = NextX;
   }
-  float nextZ = player->position.z + (player->velocity.z * dt);
-  if (!VerifyZCollision(player, world, nextZ)) {
-    player->position.z = nextZ;
+  float NextZ = PlayerVal->Position.z + (PlayerVal->Velocity.z * Dt);
+  if (!VerifyZCollision(PlayerVal, WorldVal, NextZ)) {
+    PlayerVal->Position.z = NextZ;
   }
 }
 
-static void NoClipMov(Player *player, float dt) {
-  player->velocity.y = 0;
+static void NoClipMov(Player *PlayerVal, float Dt) {
+  PlayerVal->Velocity.y = 0.0F;
   if (IsKeyDown(KEY_SPACE)) {
-    player->position.y += player->speed * dt;
+    PlayerVal->Position.y += PlayerVal->Speed * Dt;
   }
   if (IsKeyDown(KEY_LEFT_CONTROL)) {
-    player->position.y -= player->speed * dt;
+    PlayerVal->Position.y -= PlayerVal->Speed * Dt;
   }
 
-  player->position.x += player->velocity.x * dt;
-  player->position.z += player->velocity.z * dt;
+  PlayerVal->Position.x += PlayerVal->Velocity.x * Dt;
+  PlayerVal->Position.z += PlayerVal->Velocity.z * Dt;
 }
 
-static Vector3 HandleInput(bool hasControl) {
-  Vector3 input = {0};
+static Vector3 HandleInput(bool HasControl) {
+  Vector3 Input = {0.0F, 0.0F, 0.0F};
 
-  if (!hasControl) {
-    return input;
+  if (!HasControl) {
+    return Input;
   }
 
   if (IsKeyDown(KEY_W)) {
-    input.z += 1.0F;
+    Input.z += 1.0F;
   }
   if (IsKeyDown(KEY_S)) {
-    input.z -= 1.0F;
+    Input.z -= 1.0F;
   }
   if (IsKeyDown(KEY_A)) {
-    input.x -= 1.0F;
+    Input.x -= 1.0F;
   }
   if (IsKeyDown(KEY_D)) {
-    input.x += 1.0F;
+    Input.x += 1.0F;
   }
 
-  return input;
+  return Input;
 }
 
-static Vector3 CalculateMoveDir(Camera3D *camera, Vector3 input) {
-  Vector3 viewVector = Vector3Subtract(camera->target, camera->position);
-  Vector3 forward = Vector3Normalize((Vector3){viewVector.x, 0, viewVector.z});
-  Vector3 right =
-      Vector3Normalize(Vector3CrossProduct(forward, (Vector3){0, 1, 0}));
+static Vector3 CalculateMoveDir(Camera3D *CameraVal, Vector3 Input) {
+  Vector3 ViewVector = Vector3Subtract(CameraVal->target, CameraVal->position);
+  Vector3 Forward = Vector3Normalize((Vector3){ViewVector.x, 0.0F, ViewVector.z});
+  Vector3 Right =
+      Vector3Normalize(Vector3CrossProduct(Forward, (Vector3){0.0F, 1.0F, 0.0F}));
 
-  Vector3 moveDir = {0};
+  Vector3 MoveDir = {0.0F, 0.0F, 0.0F};
 
-  moveDir = Vector3Add(moveDir, Vector3Scale(forward, input.z));
-  moveDir = Vector3Add(moveDir, Vector3Scale(right, input.x));
+  MoveDir = Vector3Add(MoveDir, Vector3Scale(Forward, Input.z));
+  MoveDir = Vector3Add(MoveDir, Vector3Scale(Right, Input.x));
 
-  if (Vector3Length(moveDir) > 0) {
-    moveDir = Vector3Normalize(moveDir);
+  if (Vector3Length(MoveDir) > 0.0F) {
+    MoveDir = Vector3Normalize(MoveDir);
   }
 
-  return moveDir;
+  return MoveDir;
 }
 
-static void UpdateCameraFollow(Player *player, Camera3D *camera) {
-  Vector3 viewVector = Vector3Subtract(camera->target, camera->position);
+static void UpdateCameraFollow(Player *PlayerVal, Camera3D *CameraVal) {
+  Vector3 ViewVector = Vector3Subtract(CameraVal->target, CameraVal->position);
 
-  camera->position.x = player->position.x;
-  camera->position.y = player->position.y + player->headOffset;
-  camera->position.z = player->position.z;
+  CameraVal->position.x = PlayerVal->Position.x;
+  CameraVal->position.y = PlayerVal->Position.y + PlayerVal->HeadOffset;
+  CameraVal->position.z = PlayerVal->Position.z;
 
-  camera->target = Vector3Add(camera->position, viewVector);
+  CameraVal->target = Vector3Add(CameraVal->position, ViewVector);
 }
 
-void UpdatePlayer(Player *player, Camera3D *camera, World *world, float dt,
-                  bool hasControl) {
-
-  if (g_debug.freecam) {
+void UpdatePlayer(Player *PlayerVal, Camera3D *CameraVal, World *WorldVal, float Dt,
+                  bool HasControl) {
+  if (GetDebugState()->Freecam) {
     return;
   }
 
-  Vector3 input = HandleInput(hasControl);
+  Vector3 Input = HandleInput(HasControl);
 
-  Vector3 moveDir = CalculateMoveDir(camera, input);
+  Vector3 MoveDir = CalculateMoveDir(CameraVal, Input);
 
-  player->velocity.x = moveDir.x * player->speed;
-  player->velocity.z = moveDir.z * player->speed;
+  PlayerVal->Velocity.x = MoveDir.x * PlayerVal->Speed;
+  PlayerVal->Velocity.z = MoveDir.z * PlayerVal->Speed;
 
-  if (!player->noclip) {
-    PhysicalMov(player, world, dt, hasControl);
+  if (!PlayerVal->Noclip) {
+    PhysicalMov(PlayerVal, WorldVal, Dt, HasControl);
   } else {
-    NoClipMov(player, dt);
+    NoClipMov(PlayerVal, Dt);
   }
 
-  UpdateCameraFollow(player, camera);
+  UpdateCameraFollow(PlayerVal, CameraVal);
 }
 
-static void RequestBlockBreak(World *world, Vector3 pos) {
-  SetBlockInWorld(world, pos, 0);
+static void RequestBlockBreak(World *WorldVal, Vector3 Pos) {
+  SetBlockInWorld(WorldVal, Pos, 0);
 }
 
-static void RequestBlockPlace(World *world, Vector3 pos,
-                              unsigned char blockID) {
-  SetBlockInWorld(world, pos, blockID);
+static void RequestBlockPlace(World *WorldVal, Vector3 Pos,
+                              unsigned char BlockId) {
+  SetBlockInWorld(WorldVal, Pos, BlockId);
 }
 
-void HandlePlayerInteraction(Player *player, Camera3D *camera, World *world,
-                             bool hasControl) {
+void HandlePlayerInteraction(Player *PlayerVal, Camera3D *CameraVal, World *WorldVal,
+                             bool HasControl) {
+  Vector3 RayDir =
+      Vector3Normalize(Vector3Subtract(CameraVal->target, CameraVal->position));
+  PlayerVal->TargetBlock =
+      RayCastToWorld(WorldVal, CameraVal->position, RayDir, PlayerVal->ReachDistance);
 
-  Vector3 rayDir =
-      Vector3Normalize(Vector3Subtract(camera->target, camera->position));
-  player->targetBlock =
-      RayCastToWorld(world, camera->position, rayDir, player->reachDistance);
-
-  if (!hasControl) {
+  if (!HasControl) {
     return;
   }
 
-  for (int i = 0; i < HOTBAR_SIZE; i++) {
-    if (IsKeyPressed(KEY_ONE + i)) {
-      player->selectedHotbarSlot = i;
+  #pragma unroll 4
+  for (int IdxI = 0; IdxI < HOTBAR_SIZE; IdxI++) {
+    if (IsKeyPressed(KEY_ONE + IdxI)) {
+      PlayerVal->SelectedHotbarSlot = IdxI;
     }
   }
 
-  float wheel = GetMouseWheelMove();
-  if (wheel != 0.0F) {
-    player->selectedHotbarSlot -= (int)wheel;
-    if (player->selectedHotbarSlot < 0) {
-      player->selectedHotbarSlot = HOTBAR_SIZE - 1;
+  float Wheel = GetMouseWheelMove();
+  if (Wheel != 0.0F) {
+    PlayerVal->SelectedHotbarSlot -= (int)Wheel;
+    if (PlayerVal->SelectedHotbarSlot < 0) {
+      PlayerVal->SelectedHotbarSlot = HOTBAR_SIZE - 1;
     }
-    if (player->selectedHotbarSlot > HOTBAR_SIZE - 1) {
-      player->selectedHotbarSlot = 0;
+    if (PlayerVal->SelectedHotbarSlot > HOTBAR_SIZE - 1) {
+      PlayerVal->SelectedHotbarSlot = 0;
     }
   }
 
-  if (player->targetBlock.hit) {
-
+  if (PlayerVal->TargetBlock.Hit) {
     if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
-      RequestBlockBreak(world, player->targetBlock.blockPos);
+      RequestBlockBreak(WorldVal, PlayerVal->TargetBlock.BlockPos);
     }
 
     if (IsMouseButtonPressed(MOUSE_RIGHT_BUTTON)) {
+      unsigned char BlockInHandId = PlayerVal->Hotbar[PlayerVal->SelectedHotbarSlot];
 
-      unsigned char blockInHandID = player->hotbar[player->selectedHotbarSlot];
-
-      Vector3 placePos =
-          Vector3Add(player->targetBlock.blockPos, player->targetBlock.normal);
-      RequestBlockPlace(world, placePos, blockInHandID);
+      Vector3 PlacePos =
+          Vector3Add(PlayerVal->TargetBlock.BlockPos, PlayerVal->TargetBlock.Normal);
+      RequestBlockPlace(WorldVal, PlacePos, BlockInHandId);
     }
   }
 }

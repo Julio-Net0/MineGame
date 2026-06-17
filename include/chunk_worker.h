@@ -5,6 +5,6 @@
 
 void InitChunkWorker(void);
 void CloseChunkWorker(void);
-void EnqueueChunkGeneration(Chunk *chunk);
+void EnqueueChunkGeneration(Chunk *ChunkVal);
 
 #endif

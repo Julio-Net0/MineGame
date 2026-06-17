@@ -1,9 +1,9 @@
 #ifndef CHAT_H
 #define CHAT_H
 
+#include "player.h"
 #include "raylib.h"
 #include "world.h"
-#include "player.h"
 #include <stdbool.h>
 
 #define CHAT_Y_MARGIN_F ((float)GetScreenWidth() / 200.0F)
@@ -15,7 +15,7 @@
 #define CHAT_X_MARGIN CHAT_Y_MARGIN
 #define CHAT_POSITION_X CHAT_X_MARGIN
 #define CHAT_POSITION_Y (GetScreenHeight() - CHAT_HEIGHT - CHAT_Y_MARGIN)
-#define CHAT_MAX_INPUT_CHARS 256 // Recommended limit is 256 to prevent Stack Overflow on Windows (1MB stack)
+#define CHAT_MAX_INPUT_CHARS 256 
 #define CHAT_MAX_HISTORY 256
 #define CHAT_DISPLAY_TIME 3.0F
 #define CHAT_FADE_TIME 1.0F
@@ -26,27 +26,27 @@
 #define CHAT_BG_ALPHA 0.5F
 #define CHAT_HISTORY_BG_ALPHA 0.3F
 
-
 typedef struct {
-  char text[CHAT_MAX_INPUT_CHARS];
-  double timeCreated;
+  char Text[CHAT_MAX_INPUT_CHARS];
+  double TimeCreated;
 } ChatMessage;
 
-typedef struct{
-  ChatMessage history[CHAT_MAX_HISTORY];
+typedef struct {
+  ChatMessage History[CHAT_MAX_HISTORY];
 
-  char inputText[CHAT_MAX_INPUT_CHARS + 1];
+  char InputText[CHAT_MAX_INPUT_CHARS + 1];
 
-  int letterCount;
-  int historyCount;
-  int scrollOffset;
+  int LetterCount;
+  int HistoryCount;
+  int ScrollOffset;
 
-  bool isActive;
+  bool IsActive;
 } ChatState;
 
-void InitChat(ChatState *chat);
-void UpdateChat(ChatState *chat, Camera3D *camera, Player *player, World* world);
-void DrawChat(ChatState *chat);
-void AddChatHistory(ChatState *chat, const char *format, ...);
+void InitChat(ChatState *Chat);
+void UpdateChat(ChatState *Chat, Camera3D *Camera, Player *Player,
+                World *World);
+void DrawChat(ChatState *Chat);
+void AddChatHistory(ChatState *Chat, const char *Message);
 
 #endif

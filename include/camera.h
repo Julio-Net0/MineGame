@@ -5,6 +5,6 @@
 
 Camera3D CreateGameCamera(void);
 
-void UpdateGameCamera(Camera3D *camera, Vector2 lookDelta);
+void UpdateGameCamera(Camera3D *Camera, Vector2 LookDelta);
 
 #endif

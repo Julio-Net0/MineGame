@@ -23,35 +23,35 @@
 #define LATERAL_Y_MARGIN 0.1F
 
 typedef struct {
-  RaycastResult targetBlock;
+  RaycastResult TargetBlock;
 
-  Vector3 position;
-  Vector3 velocity;
-  Vector3 size;
+  Vector3 Position;
+  Vector3 Velocity;
+  Vector3 Size;
 
-  float reachDistance;
-  float radius;
-  float speed;
-  float headOffset;
-  int id;
-  int selectedHotbarSlot;
+  float ReachDistance;
+  float Radius;
+  float Speed;
+  float HeadOffset;
+  int Id;
+  int SelectedHotbarSlot;
 
-  unsigned char hotbar[HOTBAR_SIZE];
-  bool isGrounded;
-  bool noclip;
-} Player ;
+  unsigned char Hotbar[HOTBAR_SIZE];
+  bool IsGrounded;
+  bool Noclip;
+} Player;
 
 typedef struct {
-  float radius;
-  float yOffset;
-  float epsilon;
+  float Radius;
+  float YOffset;
+  float Epsilon;
 } PointConfig;
 
-Player InitPlayer(Vector3 spawnPos);
-void UpdatePlayer(Player *player, Camera3D *camera, World *world, float dt, bool hasControl);
-void HandlePlayerInteraction(Player *player, Camera3D *camera, World *world, bool hasControl);
-bool IsPointSolid(World *world, Vector3 pos);
-void GetPlayerPoints(Player *player, PointConfig config, Vector3 outPoints[COLLISION_POINTS]);
-void SetHotbarSlot(Player *player, int slot, unsigned char blockID);
+Player InitPlayer(Vector3 SpawnPos);
+void UpdatePlayer(Player *PlayerVal, Camera3D *CameraVal, World *WorldVal, float Dt, bool HasControl);
+void HandlePlayerInteraction(Player *PlayerVal, Camera3D *CameraVal, World *WorldVal, bool HasControl);
+bool IsPointSolid(World *WorldVal, Vector3 Pos);
+void GetPlayerPoints(Player *PlayerVal, PointConfig Config, Vector3 OutPoints[COLLISION_POINTS]);
+void SetHotbarSlot(Player *PlayerVal, int Slot, unsigned char BlockId);
 
 #endif

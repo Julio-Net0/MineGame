@@ -4,12 +4,12 @@
 #include <stdbool.h>
 
 typedef struct {
-  bool wireframe;
-  bool chunkBorders;
-  bool AABB;
-  bool freecam;
+  bool Wireframe;
+  bool ChunkBorders;
+  bool Aabb;
+  bool Freecam;
 } DebugState;
 
-extern DebugState g_debug;
+DebugState *GetDebugState(void);
 
 #endif

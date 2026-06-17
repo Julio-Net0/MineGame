@@ -1,92 +1,124 @@
 #include "chunk_serial.h"
-#include <string.h>
+#include "chunk.h"
+#include <stdbool.h>
+#include <stdint.h>
 
-int ChunkSerialize(const Chunk *chunk, uint8_t *outBuffer, bool *isRaw) {
-  int outIndex = 0;
-  unsigned char currentId = chunk->data[0][0][0];
-  int currentRun = 0;
+int ChunkSerialize(const Chunk *ChunkVal, uint8_t *OutBuffer, bool *IsRaw) {
+  int OutIndex = 0;
+  unsigned char CurrentId = ChunkVal->Data[0][0][0];
+  int CurrentRun = 0;
 
-  for (int x = 0; x < CHUNK_SIZE; x++) {
-    for (int y = 0; y < CHUNK_SIZE; y++) {
-      for (int z = 0; z < CHUNK_SIZE; z++) {
-        unsigned char id = chunk->data[x][y][z];
-        if (id == currentId && currentRun < MAX_RLE_RUN_LENGTH) {
-          currentRun++;
+  #pragma unroll 4
+  for (int IdxX = 0; IdxX < CHUNK_SIZE; IdxX++) {
+    #pragma unroll 4
+    for (int IdxY = 0; IdxY < CHUNK_SIZE; IdxY++) {
+      #pragma unroll 4
+      for (int IdxZ = 0; IdxZ < CHUNK_SIZE; IdxZ++) {
+        unsigned char BlockId = ChunkVal->Data[IdxX][IdxY][IdxZ];
+        if (BlockId == CurrentId && CurrentRun < MAX_RLE_RUN_LENGTH) {
+          CurrentRun++;
         } else {
           // Write the previous run
-          if (outIndex + 2 >= CHUNK_VOLUME) {
+          if (OutIndex + 2 >= (int)CHUNK_VOLUME) {
             // RLE would reach or exceed CHUNK_VOLUME bytes: fall back to raw copy
-            *isRaw = true;
-            memcpy(outBuffer, chunk->data, CHUNK_VOLUME);
-            return CHUNK_VOLUME;
+            *IsRaw = true;
+            const uint8_t *SrcFlat = (const uint8_t *)ChunkVal->Data;
+            #pragma unroll 4
+            for (int IdxI = 0; IdxI < (int)CHUNK_VOLUME; IdxI++) {
+              OutBuffer[IdxI] = SrcFlat[IdxI];
+            }
+            return (int)CHUNK_VOLUME;
           }
-          outBuffer[outIndex++] = currentId;
-          outBuffer[outIndex++] = (uint8_t)currentRun;
-          currentId = id;
-          currentRun = 1;
+          OutBuffer[OutIndex++] = CurrentId;
+          OutBuffer[OutIndex++] = (uint8_t)CurrentRun;
+          CurrentId = BlockId;
+          CurrentRun = 1;
         }
       }
     }
   }
 
   // Write the final run
-  if (outIndex + 2 >= CHUNK_VOLUME) {
-    *isRaw = true;
-    memcpy(outBuffer, chunk->data, CHUNK_VOLUME);
-    return CHUNK_VOLUME;
+  if (OutIndex + 2 >= (int)CHUNK_VOLUME) {
+    *IsRaw = true;
+    const uint8_t *SrcFlat = (const uint8_t *)ChunkVal->Data;
+    #pragma unroll 4
+    for (int IdxI = 0; IdxI < (int)CHUNK_VOLUME; IdxI++) {
+      OutBuffer[IdxI] = SrcFlat[IdxI];
+    }
+    return (int)CHUNK_VOLUME;
   }
-  outBuffer[outIndex++] = currentId;
-  outBuffer[outIndex++] = (uint8_t)currentRun;
+  OutBuffer[OutIndex++] = CurrentId;
+  OutBuffer[OutIndex++] = (uint8_t)CurrentRun;
 
-  *isRaw = false;
-  return outIndex;
+  *IsRaw = false;
+  return OutIndex;
 }
 
-bool ChunkDeserialize(Chunk *chunk, const uint8_t *inBuffer, int dataSize,
-                      bool isRaw) {
-  unsigned char tempData[CHUNK_SIZE][CHUNK_SIZE][CHUNK_SIZE] = {0};
-  int solidCount = 0;
+bool ChunkDeserialize(Chunk *ChunkVal, const uint8_t *InBuffer, int DataSize,
+                      bool IsRaw) {
+  unsigned char TempData[CHUNK_SIZE][CHUNK_SIZE][CHUNK_SIZE] = {0};
+  int SolidCount = 0;
 
-  if (isRaw) {
-    if (dataSize != CHUNK_VOLUME) {
+  if (IsRaw) {
+    if (DataSize != (int)CHUNK_VOLUME) {
       return false;
     }
-    memcpy(tempData, inBuffer, CHUNK_VOLUME);
-    for (int i = 0; i < CHUNK_VOLUME; i++) {
-      if (inBuffer[i] != 0) {
-        solidCount++;
+    uint8_t *DestFlat = (uint8_t *)TempData;
+    #pragma unroll 4
+    for (int IdxI = 0; IdxI < (int)CHUNK_VOLUME; IdxI++) {
+      DestFlat[IdxI] = InBuffer[IdxI];
+    }
+    #pragma unroll 4
+    for (int IdxI = 0; IdxI < (int)CHUNK_VOLUME; IdxI++) {
+      if (InBuffer[IdxI] != 0) {
+        SolidCount++;
       }
     }
   } else {
-    int idx = 0;
-    int blocksDecoded = 0;
-    unsigned char *flatData = (unsigned char *)tempData;
-    while (idx < dataSize) {
-      if (idx + 2 > dataSize) {
+    int Idx = 0;
+    int BlocksDecoded = 0;
+    unsigned char *FlatData = (unsigned char *)TempData;
+    while (Idx < DataSize) {
+      if (Idx + 2 > DataSize) {
         return false; // incomplete pair
       }
-      unsigned char id = inBuffer[idx++];
-      int run = inBuffer[idx++];
-      if (run == 0) {
+      unsigned char BlockId = InBuffer[Idx++];
+      int Run = InBuffer[Idx++];
+      if (Run == 0) {
         return false; // invalid run length
       }
-      if (blocksDecoded + run > CHUNK_VOLUME) {
+      if (BlocksDecoded + Run > (int)CHUNK_VOLUME) {
         return false; // exceeds chunk boundaries
       }
-      memset(flatData + blocksDecoded, id, run);
-      if (id != 0) {
-        solidCount += run;
+      int RunLimit = Run;
+      if (RunLimit > MAX_RLE_RUN_LENGTH) {
+        RunLimit = MAX_RLE_RUN_LENGTH;
       }
-      blocksDecoded += run;
+      #pragma unroll 4
+      for (int IdxI = 0; IdxI < MAX_RLE_RUN_LENGTH; IdxI++) {
+        if (IdxI < RunLimit) {
+          FlatData[BlocksDecoded + IdxI] = BlockId;
+        }
+      }
+      if (BlockId != 0) {
+        SolidCount += Run;
+      }
+      BlocksDecoded += Run;
     }
-    if (blocksDecoded != CHUNK_VOLUME) {
+    if (BlocksDecoded != (int)CHUNK_VOLUME) {
       return false; // run lengths don't sum to CHUNK_VOLUME
     }
   }
 
   // Copy values to the destination chunk
-  memcpy(chunk->data, tempData, sizeof(chunk->data));
-  chunk->solidBlockCount = solidCount;
-  chunk->isDirty = true;
+  uint8_t *DestFlat = (uint8_t *)ChunkVal->Data;
+  const uint8_t *SrcFlat = (const uint8_t *)TempData;
+  #pragma unroll 4
+  for (int IdxI = 0; IdxI < (int)CHUNK_VOLUME; IdxI++) {
+    DestFlat[IdxI] = SrcFlat[IdxI];
+  }
+  ChunkVal->SolidBlockCount = SolidCount;
+  ChunkVal->IsDirty = true;
   return true;
 }

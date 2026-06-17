@@ -12,17 +12,17 @@
 #include "rlgl.h"
 #include "world.h"
 #include "world_save.h"
-
+#include <stdbool.h>
 
 #define INITIAL_WIDTH 1280
 #define INITIAL_HEIGHT 720
 
-#define PLAYER_SPAWN_X 0.0f
-#define PLAYER_SPAWN_Y 25.0f
-#define PLAYER_SPAWN_Z 0.0f
+#define PLAYER_SPAWN_X 0.0F
+#define PLAYER_SPAWN_Y 25.0F
+#define PLAYER_SPAWN_Z 0.0F
 
-static void InitGame(World **world, Player *player, Camera3D *playerCamera,
-                     ChatState *chat, Camera3D *freeCamera) {
+static void InitGame(World **WorldVal, Player *PlayerVal, Camera3D *PlayerCamera,
+                     ChatState *ChatVal, Camera3D *FreeCamera) {
   SetTraceLogLevel(LOG_WARNING);
   ChangeDirectory(GetApplicationDirectory());
 
@@ -35,153 +35,156 @@ static void InitGame(World **world, Player *player, Camera3D *playerCamera,
   InitBlockRegistry();
   LoadAllBlockDefinitions("assets/blocks");
 
-  *world = (World *)MemAlloc(sizeof(World));
+  *WorldVal = (World *)MemAlloc(sizeof(World));
   InitWorldSave();
-  InitWorld(*world);
+  InitWorld(*WorldVal);
   TraceLog(LOG_INFO, "MAIN THREAD ID: %llu",
            (unsigned long long)pthread_self());
   InitChunkWorker();
 
-  *player =
+  *PlayerVal =
       InitPlayer((Vector3){PLAYER_SPAWN_X, PLAYER_SPAWN_Y, PLAYER_SPAWN_Z});
-  *playerCamera = CreateGameCamera();
-  *freeCamera = CreateGameCamera();
-  InitChat(chat);
+  *PlayerCamera = CreateGameCamera();
+  *FreeCamera = CreateGameCamera();
+  InitChat(ChatVal);
 }
 
-static void CleanupGame(World *world) {
+static void CleanupGame(World *WorldVal) {
   CloseChunkWorker();
 
   // Sweep and save all modified chunks
-  for (int i = 0; i < world->chunkCount; i++) {
-    if (world->chunks[i].isModified) {
-      SaveChunkToDisk(&world->chunks[i]);
+  #pragma unroll 4
+  for (int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++) {
+    if (WorldVal->Chunks[IdxI].IsModified) {
+      SaveChunkToDisk(&WorldVal->Chunks[IdxI]);
     }
   }
 
   CloseWorldSave();
-  MemFree(world);
+  MemFree(WorldVal);
   CloseRenderer();
   CloseWindow();
 }
 
-static void UpdateSystemInputs(bool *showDebug) {
+static void UpdateSystemInputs(bool *ShowDebug) {
   if (IsKeyPressed(KEY_F11)) {
     ToggleBorderlessWindowed();
   }
 
   if (IsKeyPressed(KEY_F3)) {
-    *showDebug = ((!*showDebug) != 0);
+    *ShowDebug = ((!*ShowDebug) != 0);
   }
 }
 
-static void UpdateCameras(Camera3D *playerCamera, Camera3D *freeCamera,
-                          bool *wasFreecam, bool hasControl,
-                          Camera3D **activeCamera) {
-  *activeCamera = playerCamera;
+static void UpdateCameras(Camera3D *PlayerCamera, Camera3D *FreeCamera,
+                           bool *WasFreecam, bool HasControl,
+                           Camera3D **ActiveCamera) {
+  *ActiveCamera = PlayerCamera;
 
-  if (g_debug.freecam) {
-    if (!*wasFreecam) {
-      *freeCamera = *playerCamera;
+  if (GetDebugState()->Freecam) {
+    if (!*WasFreecam) {
+      *FreeCamera = *PlayerCamera;
     }
-    UpdateCamera(freeCamera, CAMERA_FREE);
-    *activeCamera = freeCamera;
-  } else if (hasControl) {
-    UpdateGameCamera(playerCamera, GetMouseDelta());
+    UpdateCamera(FreeCamera, CAMERA_FREE);
+    *ActiveCamera = FreeCamera;
+  } else if (HasControl) {
+    UpdateGameCamera(PlayerCamera, GetMouseDelta());
   }
 
-  *wasFreecam = g_debug.freecam;
+  *WasFreecam = GetDebugState()->Freecam;
 }
 
-static void UpdateWorldChunks(World *world) {
-  for (int i = 0; i < world->chunkCount; i++) {
-    Chunk *c = &world->chunks[i];
-    if (c->isGenerated && c->terrainJustGenerated) {
-      UpdateNeighborsDirtyFlag(world, c->chunkX, c->chunkY, c->chunkZ);
-      c->terrainJustGenerated = false;
+static void UpdateWorldChunks(World *WorldVal) {
+  #pragma unroll 4
+  for (int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++) {
+    Chunk *ChunkVal = &WorldVal->Chunks[IdxI];
+    if (ChunkVal->IsGenerated && ChunkVal->TerrainJustGenerated) {
+      UpdateNeighborsDirtyFlag(WorldVal, ChunkVal->ChunkX, ChunkVal->ChunkY, ChunkVal->ChunkZ);
+      ChunkVal->TerrainJustGenerated = false;
     }
   }
 }
 
-static void BuildMeshes(World *world) {
-  int meshesBuiltThisFrame = 0;
-  int maxMeshesPerFrame = 2;
+static void BuildMeshes(World *WorldVal) {
+  int MeshesBuiltThisFrame = 0;
+  int MaxMeshesPerFrame = 2;
 
-  for (int i = 0; i < world->chunkCount; i++) {
-    Chunk *c = &world->chunks[i];
+  #pragma unroll 4
+  for (int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++) {
+    Chunk *ChunkVal = &WorldVal->Chunks[IdxI];
 
-    if (c->isGenerated && c->isDirty && !c->isGenerating &&
-        AreNeighborsGenerated(world, c)) {
-      BuildChunkMesh(world, c);
-      meshesBuiltThisFrame++;
+    if (ChunkVal->IsGenerated && ChunkVal->IsDirty && !ChunkVal->IsGenerating &&
+        AreNeighborsGenerated(WorldVal, ChunkVal)) {
+      BuildChunkMesh(WorldVal, ChunkVal);
+      MeshesBuiltThisFrame++;
 
-      if (meshesBuiltThisFrame >= maxMeshesPerFrame) {
+      if (MeshesBuiltThisFrame >= MaxMeshesPerFrame) {
         break;
       }
     }
   }
 }
 
-static void RenderGame(World *world, Player *player, Camera3D *activeCamera,
-                       ChatState *chat, bool showDebug) {
+static void RenderGame(World *WorldVal, Player *PlayerVal, Camera3D *ActiveCamera,
+                       ChatState *ChatVal, bool ShowDebug) {
   BeginDrawing();
   {
     ClearBackground(SKYBLUE);
 
-    BeginMode3D(*activeCamera);
+    BeginMode3D(*ActiveCamera);
     {
-      DrawWorld(world, *activeCamera);
+      DrawWorld(WorldVal, *ActiveCamera);
 
-      if (player->targetBlock.hit) {
-        DrawBlockHighlight(player->targetBlock.blockPos);
+      if (PlayerVal->TargetBlock.Hit) {
+        DrawBlockHighlight(PlayerVal->TargetBlock.BlockPos);
       }
 
-      DrawAABBDebug(world, player);
+      DrawAABBDebug(WorldVal, PlayerVal);
     }
     EndMode3D();
 
-    DrawHUD(player, world, *activeCamera, showDebug);
-    DrawChat(chat);
+    DrawHUD(PlayerVal, WorldVal, *ActiveCamera, ShowDebug);
+    DrawChat(ChatVal);
   }
   EndDrawing();
 }
 
 int main(void) {
-  World *world = NULL;
-  Player player;
-  Camera3D playerCamera;
-  Camera3D freeCamera;
-  bool wasFreecam = false;
-  ChatState chat;
-  bool showDebug = false;
+  World *WorldVal = (World *)0;
+  Player PlayerVal;
+  Camera3D PlayerCamera;
+  Camera3D FreeCamera;
+  bool WasFreecam = false;
+  ChatState ChatVal;
+  bool ShowDebug = false;
 
-  InitGame(&world, &player, &playerCamera, &chat, &freeCamera);
+  InitGame(&WorldVal, &PlayerVal, &PlayerCamera, &ChatVal, &FreeCamera);
 
   while (!WindowShouldClose()) {
-    float dt = GetFrameTime();
+    float Dt = GetFrameTime();
 
-    UpdateSystemInputs(&showDebug);
+    UpdateSystemInputs(&ShowDebug);
 
-    Vector3 loadCenter =
-        (g_debug.freecam && wasFreecam) ? freeCamera.position : player.position;
-    UpdateWorld(world, loadCenter, MAX_RENDER_DISTANCE);
+    Vector3 LoadCenter =
+        (GetDebugState()->Freecam && WasFreecam) ? FreeCamera.position : PlayerVal.Position;
+    UpdateWorld(WorldVal, LoadCenter, MAX_RENDER_DISTANCE);
 
-    bool hasControl = (!chat.isActive) != 0;
-    UpdatePlayer(&player, &playerCamera, world, dt, hasControl);
+    bool HasControl = (!ChatVal.IsActive) != 0;
+    UpdatePlayer(&PlayerVal, &PlayerCamera, WorldVal, Dt, HasControl);
 
-    Camera3D *activeCamera = NULL;
-    UpdateCameras(&playerCamera, &freeCamera, &wasFreecam, hasControl,
-                  &activeCamera);
+    Camera3D *ActiveCamera = (Camera3D *)0;
+    UpdateCameras(&PlayerCamera, &FreeCamera, &WasFreecam, HasControl,
+                  &ActiveCamera);
 
-    UpdateChat(&chat, activeCamera, &player, world);
-    HandlePlayerInteraction(&player, activeCamera, world, hasControl);
+    UpdateChat(&ChatVal, ActiveCamera, &PlayerVal, WorldVal);
+    HandlePlayerInteraction(&PlayerVal, ActiveCamera, WorldVal, HasControl);
 
-    UpdateWorldChunks(world);
-    BuildMeshes(world);
+    UpdateWorldChunks(WorldVal);
+    BuildMeshes(WorldVal);
 
-    RenderGame(world, &player, activeCamera, &chat, showDebug);
+    RenderGame(WorldVal, &PlayerVal, ActiveCamera, &ChatVal, ShowDebug);
   }
 
-  CleanupGame(world);
+  CleanupGame(WorldVal);
   return 0;
 }

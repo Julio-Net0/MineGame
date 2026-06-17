@@ -6,8 +6,7 @@
 #include "raymath.h"
 #include "player.h"
 #include <stddef.h>
-#include <stdlib.h>
-#include <string.h>
+
 // Must include glad before rlgl to get raw GL constants (GL_TEXTURE_2D_ARRAY etc.)
 #include "external/glad.h"
 #include <rlgl.h>
@@ -26,140 +25,152 @@
 #define BLOCK_HIGHLIGHT_SCALE (BLOCK_SIZE + 0.01F)
 #define CHUNK_SPHERE_RADIUS 14.0F
 
-// Kept for DrawBlockIcon atlas UV lookup only
-static Texture2D blockAtlas;
+typedef struct {
+  Texture2D BlockAtlas;
+  unsigned int BlockArrayTexID;
+  Shader ChunkShader;
 
-// GL_TEXTURE_2D_ARRAY used by chunk shader
-static unsigned int blockArrayTexID;
+  float TempTexCoords[MAX_FACES * VERTICES_PER_FACE * 2];
+  float TempVertices[MAX_FACES * VERTICES_PER_FACE * FLOATS_PER_VERTEX];
+  unsigned short TempIndices[MAX_FACES * INDICES_PER_FACES];
+  unsigned char TempColors[MAX_FACES * VERTICES_PER_FACE * COLOR_CHANNELS];
+  float TempTexCoords2[MAX_FACES * VERTICES_PER_FACE * 2];
 
-static Shader chunkShader;
+  int VCount;
+  int ICount;
 
-static float tempTexCoords[MAX_FACES * VERTICES_PER_FACE * 2];
-static float tempVertices[MAX_FACES * VERTICES_PER_FACE * FLOATS_PER_VERTEX];
-static unsigned short tempIndices[MAX_FACES * INDICES_PER_FACES];
-static unsigned char tempColors[MAX_FACES * VERTICES_PER_FACE * COLOR_CHANNELS];
-static float tempTexCoords2[MAX_FACES * VERTICES_PER_FACE * 2];
+  float TransTexCoords[MAX_FACES * VERTICES_PER_FACE * 2];
+  float TransVertices[MAX_FACES * VERTICES_PER_FACE * FLOATS_PER_VERTEX];
+  unsigned short TransIndices[MAX_FACES * INDICES_PER_FACES];
+  unsigned char TransColors[MAX_FACES * VERTICES_PER_FACE * COLOR_CHANNELS];
+  float TransTexCoords2[MAX_FACES * VERTICES_PER_FACE * 2];
 
-static int vCount = 0;
-static int iCount = 0;
+  int TransVCount;
+  int TransICount;
+} RendererState;
 
-static float transTexCoords[MAX_FACES * VERTICES_PER_FACE * 2];
-static float transVertices[MAX_FACES * VERTICES_PER_FACE * FLOATS_PER_VERTEX];
-static unsigned short transIndices[MAX_FACES * INDICES_PER_FACES];
-static unsigned char transColors[MAX_FACES * VERTICES_PER_FACE * COLOR_CHANNELS];
-static float transTexCoords2[MAX_FACES * VERTICES_PER_FACE * 2];
-
-static int transVCount = 0;
-static int transICount = 0;
+static RendererState *GetRendererState(void) {
+  static RendererState State;
+  return &State;
+}
 
 // ---------------------------------------------------------------------------
 // Texture array loader
 // ---------------------------------------------------------------------------
 
 static void LoadBlockTextureArray(void) {
-    Image atlasImg = LoadImage("assets/atlas/terrain.png");
-    ImageFormat(&atlasImg, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+    RendererState *State = GetRendererState();
+    Image AtlasImg = LoadImage("assets/atlas/terrain.png");
+    ImageFormat(&AtlasImg, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
 
-    int tileW = atlasImg.width  / (int)ATLAS_COLS;
-    int tileH = atlasImg.height / (int)ATLAS_ROWS;
-    int totalTiles = (int)ATLAS_COLS * (int)ATLAS_ROWS;
+    int TileW = AtlasImg.width  / (int)ATLAS_COLS;
+    int TileH = AtlasImg.height / (int)ATLAS_ROWS;
+    int TotalTiles = (int)ATLAS_COLS * (int)ATLAS_ROWS;
 
-    glGenTextures(1, &blockArrayTexID);
-    glBindTexture(GL_TEXTURE_2D_ARRAY, blockArrayTexID);
-    glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8, tileW, tileH, totalTiles,
-                 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glGenTextures(1, &State->BlockArrayTexID);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, State->BlockArrayTexID);
+    glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8, TileW, TileH, TotalTiles,
+                 0, GL_RGBA, GL_UNSIGNED_BYTE, (const void *)0);
 
-    unsigned char *pixels = (unsigned char *)atlasImg.data;
-    unsigned char *tileBuf = (unsigned char *)MemAlloc((size_t)(tileW * tileH * 4));
+    unsigned char *Pixels = (unsigned char *)AtlasImg.data;
+    unsigned char *TileBuf = (unsigned char *)MemAlloc((size_t)(TileW * TileH * 4));
 
-    for (int tileIdx = 0; tileIdx < totalTiles; tileIdx++) {
-        int tileCol = tileIdx % (int)ATLAS_COLS;
-        int tileRow = tileIdx / (int)ATLAS_COLS;
+    #pragma unroll 4
+    for (int TileIdx = 0; TileIdx < TotalTiles; TileIdx++) {
+        int TileCol = TileIdx % (int)ATLAS_COLS;
+        int TileRow = TileIdx / (int)ATLAS_COLS;
 
-        for (int row = 0; row < tileH; row++) {
-            int srcRow = (tileRow * tileH) + row;
-            int srcCol = tileCol * tileW;
-            memcpy(tileBuf + ((size_t)row * (size_t)tileW * 4U),
-                   pixels + ((((size_t)srcRow * (size_t)atlasImg.width) + (size_t)srcCol) * 4U),
-                   (size_t)tileW * 4U);
+        #pragma unroll 4
+        for (int Row = 0; Row < TileH; Row++) {
+            int SrcRow = (TileRow * TileH) + Row;
+            int SrcCol = TileCol * TileW;
+            size_t DestOffset = (size_t)Row * (size_t)TileW * 4U;
+            size_t SrcOffset = (((size_t)SrcRow * (size_t)AtlasImg.width) + (size_t)SrcCol) * 4U;
+            size_t Len = (size_t)TileW * 4U;
+            #pragma unroll 4
+            for (size_t IdxI = 0; IdxI < Len; IdxI++) {
+                TileBuf[DestOffset + IdxI] = Pixels[SrcOffset + IdxI];
+            }
         }
 
-        glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, tileIdx,
-                        tileW, tileH, 1, GL_RGBA, GL_UNSIGNED_BYTE, tileBuf);
+        glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, TileIdx,
+                        TileW, TileH, 1, GL_RGBA, GL_UNSIGNED_BYTE, TileBuf);
     }
 
-    MemFree(tileBuf);
+    MemFree(TileBuf);
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_REPEAT);
     glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
 
-    UnloadImage(atlasImg);
+    UnloadImage(AtlasImg);
 }
 
 void InitRenderer(void) {
+    RendererState *State = GetRendererState();
     // Keep 2D atlas for DrawBlockIcon
-    blockAtlas = LoadTexture("assets/atlas/terrain.png");
-    SetTextureFilter(blockAtlas, TEXTURE_FILTER_POINT);
+    State->BlockAtlas = LoadTexture("assets/atlas/terrain.png");
+    SetTextureFilter(State->BlockAtlas, TEXTURE_FILTER_POINT);
 
     LoadBlockTextureArray();
 
-    chunkShader = LoadShader("assets/shaders/chunk.vert", "assets/shaders/chunk.frag");
-    int blockArrayLoc = GetShaderLocation(chunkShader, "uBlockArray");
-    int unit = 0;
-    SetShaderValue(chunkShader, blockArrayLoc, &unit, SHADER_UNIFORM_INT);
+    State->ChunkShader = LoadShader("assets/shaders/chunk.vert", "assets/shaders/chunk.frag");
+    int BlockArrayLoc = GetShaderLocation(State->ChunkShader, "uBlockArray");
+    int Unit = 0;
+    SetShaderValue(State->ChunkShader, BlockArrayLoc, &Unit, SHADER_UNIFORM_INT);
 }
 
 void CloseRenderer(void) {
-    UnloadShader(chunkShader);
-    UnloadTexture(blockAtlas);
-    glDeleteTextures(1, &blockArrayTexID);
+    RendererState *State = GetRendererState();
+    UnloadShader(State->ChunkShader);
+    UnloadTexture(State->BlockAtlas);
+    glDeleteTextures(1, &State->BlockArrayTexID);
 }
 
 // ---------------------------------------------------------------------------
 // Atlas UV (DrawBlockIcon only)
 // ---------------------------------------------------------------------------
 
-static void GetTextureUV(int textureIndex, Vector2 *uvMin, Vector2 *uvMax) {
-    float u = (float)(textureIndex % (int)ATLAS_COLS) / ATLAS_COLS;
-    int row = textureIndex / (int)ATLAS_COLS;
-    float v = (float)row / ATLAS_ROWS;
-    float w = 1.0F / ATLAS_COLS;
-    float h = 1.0F / ATLAS_ROWS;
-    uvMin->x = u; uvMin->y = v;
-    uvMax->x = u + w; uvMax->y = v + h;
+static void GetTextureUV(int TextureIndex, Vector2 *UvMin, Vector2 *UvMax) {
+    float U = (float)(TextureIndex % (int)ATLAS_COLS) / ATLAS_COLS;
+    int Row = TextureIndex / (int)ATLAS_COLS;
+    float V = (float)Row / ATLAS_ROWS;
+    float W = 1.0F / ATLAS_COLS;
+    float H = 1.0F / ATLAS_ROWS;
+    UvMin->x = U; UvMin->y = V;
+    UvMax->x = U + W; UvMax->y = V + H;
 }
 
 // ---------------------------------------------------------------------------
 // AO helpers (unchanged)
 // ---------------------------------------------------------------------------
 
-static unsigned char GetBlockIDAtLocal(World *world, Chunk *chunk, int lx, int ly, int lz) {
-    if (lx >= 0 && lx < CHUNK_SIZE &&
-        ly >= 0 && ly < CHUNK_SIZE &&
-        lz >= 0 && lz < CHUNK_SIZE) {
-        return chunk->data[lx][ly][lz];
+static unsigned char GetBlockIDAtLocal(World *WorldVal, Chunk *ChunkVal, int LocalX, int LocalY, int LocalZ) {
+    if (LocalX >= 0 && LocalX < CHUNK_SIZE &&
+        LocalY >= 0 && LocalY < CHUNK_SIZE &&
+        LocalZ >= 0 && LocalZ < CHUNK_SIZE) {
+        return ChunkVal->Data[LocalX][LocalY][LocalZ];
     }
-    int gx = (chunk->chunkX * CHUNK_SIZE) + lx;
-    int gy = (chunk->chunkY * CHUNK_SIZE) + ly;
-    int gz = (chunk->chunkZ * CHUNK_SIZE) + lz;
-    return (unsigned char)GetBlockIDFromWorld(world, (Vector3){(float)gx, (float)gy, (float)gz});
+    int Gx = (ChunkVal->ChunkX * CHUNK_SIZE) + LocalX;
+    int Gy = (ChunkVal->ChunkY * CHUNK_SIZE) + LocalY;
+    int Gz = (ChunkVal->ChunkZ * CHUNK_SIZE) + LocalZ;
+    return (unsigned char)GetBlockIDFromWorld(WorldVal, (Vector3){(float)Gx, (float)Gy, (float)Gz});
 }
 
-static bool IsNeighbourTransparent(World *world, Chunk *chunk,
-                                   int localX, int localY, int localZ,
-                                   unsigned char selfID) {
-    unsigned char id = GetBlockIDAtLocal(world, chunk, localX, localY, localZ);
-    if (id == 0) { return true; }
-    if (id == selfID && GetBlockDef(selfID)->isTransparent) { return false; }
-    return GetBlockDef(id)->isTransparent;
+static bool IsNeighbourTransparent(World *WorldVal, Chunk *ChunkVal,
+                                   int LocalX, int LocalY, int LocalZ,
+                                   unsigned char SelfId) {
+    unsigned char Id = GetBlockIDAtLocal(WorldVal, ChunkVal, LocalX, LocalY, LocalZ);
+    if (Id == 0) { return true; }
+    if (Id == SelfId && GetBlockDef(SelfId)->IsTransparent) { return false; }
+    return GetBlockDef(Id)->IsTransparent;
 }
 
-static bool IsSolidForAO(World *world, Chunk *chunk, int localX, int localY, int localZ) {
-    unsigned char id = GetBlockIDAtLocal(world, chunk, localX, localY, localZ);
-    if (id == 0) { return false; }
-    return GetBlockDef(id)->isSolid;
+static bool IsSolidForAO(World *WorldVal, Chunk *ChunkVal, int LocalX, int LocalY, int LocalZ) {
+    unsigned char Id = GetBlockIDAtLocal(WorldVal, ChunkVal, LocalX, LocalY, LocalZ);
+    if (Id == 0) { return false; }
+    return GetBlockDef(Id)->IsSolid;
 }
 
 static const int AO_OFFSETS[6][4][3][3] = {
@@ -209,168 +220,176 @@ static const int AO_OFFSETS[6][4][3][3] = {
 
 static const unsigned char AO_BRIGHTNESS[4] = {255, 210, 165, 120};
 
-static bool ComputeFaceAO(World *world, Chunk *chunk,
-                           int lx, int ly, int lz, BlockFace face, int ao[4]) {
-    for (int v = 0; v < 4; v++) {
-        int s1x = lx + AO_OFFSETS[face][v][0][0];
-        int s1y = ly + AO_OFFSETS[face][v][0][1];
-        int s1z = lz + AO_OFFSETS[face][v][0][2];
-        int s2x = lx + AO_OFFSETS[face][v][1][0];
-        int s2y = ly + AO_OFFSETS[face][v][1][1];
-        int s2z = lz + AO_OFFSETS[face][v][1][2];
-        int cx  = lx + AO_OFFSETS[face][v][2][0];
-        int cy  = ly + AO_OFFSETS[face][v][2][1];
-        int cz  = lz + AO_OFFSETS[face][v][2][2];
+static bool ComputeFaceAO(World *WorldVal, Chunk *ChunkVal,
+                           int LocalX, int LocalY, int LocalZ, BlockFace Face, int Ao[4]) {
+    for (int V = 0; V < 4; V++) {
+        int S1x = LocalX + AO_OFFSETS[Face][V][0][0];
+        int S1y = LocalY + AO_OFFSETS[Face][V][0][1];
+        int S1z = LocalZ + AO_OFFSETS[Face][V][0][2];
+        int S2x = LocalX + AO_OFFSETS[Face][V][1][0];
+        int S2y = LocalY + AO_OFFSETS[Face][V][1][1];
+        int S2z = LocalZ + AO_OFFSETS[Face][V][1][2];
+        int Cx  = LocalX + AO_OFFSETS[Face][V][2][0];
+        int Cy  = LocalY + AO_OFFSETS[Face][V][2][1];
+        int Cz  = LocalZ + AO_OFFSETS[Face][V][2][2];
 
-        bool s1 = IsSolidForAO(world, chunk, s1x, s1y, s1z);
-        bool s2 = IsSolidForAO(world, chunk, s2x, s2y, s2z);
-        bool corner = IsSolidForAO(world, chunk, cx, cy, cz);
+        bool S1 = IsSolidForAO(WorldVal, ChunkVal, S1x, S1y, S1z);
+        bool S2 = IsSolidForAO(WorldVal, ChunkVal, S2x, S2y, S2z);
+        bool Corner = IsSolidForAO(WorldVal, ChunkVal, Cx, Cy, Cz);
 
-        if (s1 && s2) { ao[v] = 3; }
-        else { ao[v] = ((int)s1 + (int)s2 + (int)corner); }
+        if (S1 && S2) { Ao[V] = 3; }
+        else { Ao[V] = ((int)S1 + (int)S2 + (int)Corner); }
     }
-    return (ao[0] + ao[2] > ao[1] + ao[3]);
+    return (Ao[0] + Ao[2] > Ao[1] + Ao[3]);
 }
 
 // ---------------------------------------------------------------------------
 // Mesh builder primitives
 // ---------------------------------------------------------------------------
 
-static void AddFaceIndices(bool isTrans, bool flipQuad) {
-    if (isTrans) {
-        if (flipQuad) {
-            transIndices[transICount++] = transVCount + 0;
-            transIndices[transICount++] = transVCount + 1;
-            transIndices[transICount++] = transVCount + 3;
-            transIndices[transICount++] = transVCount + 1;
-            transIndices[transICount++] = transVCount + 2;
-            transIndices[transICount++] = transVCount + 3;
+static void AddFaceIndices(bool IsTrans, bool FlipQuad) {
+    RendererState *State = GetRendererState();
+    if (IsTrans) {
+        if (FlipQuad) {
+            State->TransIndices[State->TransICount++] = State->TransVCount + 0;
+            State->TransIndices[State->TransICount++] = State->TransVCount + 1;
+            State->TransIndices[State->TransICount++] = State->TransVCount + 3;
+            State->TransIndices[State->TransICount++] = State->TransVCount + 1;
+            State->TransIndices[State->TransICount++] = State->TransVCount + 2;
+            State->TransIndices[State->TransICount++] = State->TransVCount + 3;
         } else {
-            transIndices[transICount++] = transVCount + 0;
-            transIndices[transICount++] = transVCount + 1;
-            transIndices[transICount++] = transVCount + 2;
-            transIndices[transICount++] = transVCount + 0;
-            transIndices[transICount++] = transVCount + 2;
-            transIndices[transICount++] = transVCount + 3;
+            State->TransIndices[State->TransICount++] = State->TransVCount + 0;
+            State->TransIndices[State->TransICount++] = State->TransVCount + 1;
+            State->TransIndices[State->TransICount++] = State->TransVCount + 2;
+            State->TransIndices[State->TransICount++] = State->TransVCount + 0;
+            State->TransIndices[State->TransICount++] = State->TransVCount + 2;
+            State->TransIndices[State->TransICount++] = State->TransVCount + 3;
         }
     } else {
-        if (flipQuad) {
-            tempIndices[iCount++] = vCount + 0;
-            tempIndices[iCount++] = vCount + 1;
-            tempIndices[iCount++] = vCount + 3;
-            tempIndices[iCount++] = vCount + 1;
-            tempIndices[iCount++] = vCount + 2;
-            tempIndices[iCount++] = vCount + 3;
+        if (FlipQuad) {
+            State->TempIndices[State->ICount++] = State->VCount + 0;
+            State->TempIndices[State->ICount++] = State->VCount + 1;
+            State->TempIndices[State->ICount++] = State->VCount + 3;
+            State->TempIndices[State->ICount++] = State->VCount + 1;
+            State->TempIndices[State->ICount++] = State->VCount + 2;
+            State->TempIndices[State->ICount++] = State->VCount + 3;
         } else {
-            tempIndices[iCount++] = vCount + 0;
-            tempIndices[iCount++] = vCount + 1;
-            tempIndices[iCount++] = vCount + 2;
-            tempIndices[iCount++] = vCount + 0;
-            tempIndices[iCount++] = vCount + 2;
-            tempIndices[iCount++] = vCount + 3;
+            State->TempIndices[State->ICount++] = State->VCount + 0;
+            State->TempIndices[State->ICount++] = State->VCount + 1;
+            State->TempIndices[State->ICount++] = State->VCount + 2;
+            State->TempIndices[State->ICount++] = State->VCount + 0;
+            State->TempIndices[State->ICount++] = State->VCount + 2;
+            State->TempIndices[State->ICount++] = State->VCount + 3;
         }
     }
 }
 
-static void AddFaceColors(const int ao[4], bool isTrans) {
-    int colIdx = (isTrans ? transVCount : vCount) * COLOR_CHANNELS;
-    unsigned char *colorsArray = isTrans ? transColors : tempColors;
-    for (int i = 0; i < 4; i++) {
-        unsigned char b = AO_BRIGHTNESS[ao[i]];
-        colorsArray[colIdx++] = b;
-        colorsArray[colIdx++] = b;
-        colorsArray[colIdx++] = b;
-        colorsArray[colIdx++] = OPAQUE_ALPHA_VALUE;
+static void AddFaceColors(const int Ao[4], bool IsTrans) {
+    RendererState *State = GetRendererState();
+    int ColIdx = (IsTrans ? State->TransVCount : State->VCount) * COLOR_CHANNELS;
+    unsigned char *ColorsArray = IsTrans ? State->TransColors : State->TempColors;
+    #pragma unroll 4
+    for (int IdxI = 0; IdxI < 4; IdxI++) {
+        unsigned char B = AO_BRIGHTNESS[Ao[IdxI]];
+        ColorsArray[ColIdx++] = B;
+        ColorsArray[ColIdx++] = B;
+        ColorsArray[ColIdx++] = B;
+        ColorsArray[ColIdx++] = OPAQUE_ALPHA_VALUE;
     }
 }
 
 // UV: raw tile-count coords [0..W, 0..H] — shader + array texture handles tiling
-static void AddGreedyFaceTexCoords(float uMax, float vMax, bool isTrans) {
-    int uvIdx = (isTrans ? transVCount : vCount) * 2;
-    float *uvArray = isTrans ? transTexCoords : tempTexCoords;
-    uvArray[uvIdx++] = 0.0F; uvArray[uvIdx++] = vMax;
-    uvArray[uvIdx++] = uMax; uvArray[uvIdx++] = vMax;
-    uvArray[uvIdx++] = uMax; uvArray[uvIdx++] = 0.0F;
-    uvArray[uvIdx++] = 0.0F; uvArray[uvIdx++] = 0.0F;
+static void AddGreedyFaceTexCoords(float UMax, float VMax, bool IsTrans) {
+    RendererState *State = GetRendererState();
+    int UvIdx = (IsTrans ? State->TransVCount : State->VCount) * 2;
+    float *UvArray = IsTrans ? State->TransTexCoords : State->TempTexCoords;
+    UvArray[UvIdx++] = 0.0F; UvArray[UvIdx++] = VMax;
+    UvArray[UvIdx++] = UMax; UvArray[UvIdx++] = VMax;
+    UvArray[UvIdx++] = UMax; UvArray[UvIdx++] = 0.0F;
+    UvArray[UvIdx++] = 0.0F; UvArray[UvIdx++] = 0.0F;
 }
 
-static void AddFaceTexLayer(float layer, bool isTrans) {
-    int tc2Idx = (isTrans ? transVCount : vCount) * 2;
-    float *tc2Array = isTrans ? transTexCoords2 : tempTexCoords2;
-    for (int i = 0; i < 4; i++) {
-        tc2Array[tc2Idx + (i * 2) + 0] = layer;
-        tc2Array[tc2Idx + (i * 2) + 1] = 0.0F;
+static void AddFaceTexLayer(float Layer, bool IsTrans) {
+    RendererState *State = GetRendererState();
+    int Tc2Idx = (IsTrans ? State->TransVCount : State->VCount) * 2;
+    float *Tc2Array = IsTrans ? State->TransTexCoords2 : State->TempTexCoords2;
+    #pragma unroll 4
+    for (int IdxI = 0; IdxI < 4; IdxI++) {
+        Tc2Array[Tc2Idx + (IdxI * 2) + 0] = Layer;
+        Tc2Array[Tc2Idx + (IdxI * 2) + 1] = 0.0F;
     }
 }
 
 // Greedy quad vertices for a W×H merged face.
-// wx0,wy0,wz0 = world block coords of the first block in the merged region.
+// Wx0,Wy0,Wz0 = world block coords of the first block in the merged region.
 // W = width in u-axis blocks, H = height in v-axis blocks.
-static void AddGreedyFaceVertices(BlockFace face,
-                                   int wx0, int wy0, int wz0,
-                                   int W, int H, bool isTrans) {
-    float *vArray = isTrans ? transVertices : tempVertices;
-    int vIdx = (isTrans ? transVCount : vCount) * FLOATS_PER_VERTEX;
+static void AddGreedyFaceVertices(BlockFace Face,
+                                   int Wx0, int Wy0, int Wz0,
+                                   int W, int H, bool IsTrans) {
+    RendererState *State = GetRendererState();
+    float *VArray = IsTrans ? State->TransVertices : State->TempVertices;
+    int VIdx = (IsTrans ? State->TransVCount : State->VCount) * FLOATS_PER_VERTEX;
 
-    float x0 = (float)wx0 - BLOCK_HALF_SIZE;
-    float y0 = (float)wy0 - BLOCK_HALF_SIZE;
-    float z0 = (float)wz0 - BLOCK_HALF_SIZE;
-    float fw = (float)W;
-    float fh = (float)H;
+    float X0 = (float)Wx0 - BLOCK_HALF_SIZE;
+    float Y0 = (float)Wy0 - BLOCK_HALF_SIZE;
+    float Z0 = (float)Wz0 - BLOCK_HALF_SIZE;
+    float Fw = (float)W;
+    float Fh = (float)H;
 
-    switch (face) {
+    switch (Face) {
         case FACE_TOP:    // u=X, v=Z
-            vArray[vIdx++] = x0;    vArray[vIdx++] = y0+1; vArray[vIdx++] = z0+fh;
-            vArray[vIdx++] = x0+fw; vArray[vIdx++] = y0+1; vArray[vIdx++] = z0+fh;
-            vArray[vIdx++] = x0+fw; vArray[vIdx++] = y0+1; vArray[vIdx++] = z0;
-            vArray[vIdx++] = x0;    vArray[vIdx++] = y0+1; vArray[vIdx++] = z0;
+            VArray[VIdx++] = X0;    VArray[VIdx++] = Y0+1.0F; VArray[VIdx++] = Z0+Fh;
+            VArray[VIdx++] = X0+Fw; VArray[VIdx++] = Y0+1.0F; VArray[VIdx++] = Z0+Fh;
+            VArray[VIdx++] = X0+Fw; VArray[VIdx++] = Y0+1.0F; VArray[VIdx++] = Z0;
+            VArray[VIdx++] = X0;    VArray[VIdx++] = Y0+1.0F; VArray[VIdx++] = Z0;
             break;
         case FACE_BOTTOM: // u=X, v=Z (winding reversed)
-            vArray[vIdx++] = x0;    vArray[vIdx++] = y0; vArray[vIdx++] = z0;
-            vArray[vIdx++] = x0+fw; vArray[vIdx++] = y0; vArray[vIdx++] = z0;
-            vArray[vIdx++] = x0+fw; vArray[vIdx++] = y0; vArray[vIdx++] = z0+fh;
-            vArray[vIdx++] = x0;    vArray[vIdx++] = y0; vArray[vIdx++] = z0+fh;
+            VArray[VIdx++] = X0;    VArray[VIdx++] = Y0; VArray[VIdx++] = Z0;
+            VArray[VIdx++] = X0+Fw; VArray[VIdx++] = Y0; VArray[VIdx++] = Z0;
+            VArray[VIdx++] = X0+Fw; VArray[VIdx++] = Y0; VArray[VIdx++] = Z0+Fh;
+            VArray[VIdx++] = X0;    VArray[VIdx++] = Y0; VArray[VIdx++] = Z0+Fh;
             break;
         case FACE_FRONT:  // u=X, v=Y
-            vArray[vIdx++] = x0;    vArray[vIdx++] = y0;    vArray[vIdx++] = z0+1;
-            vArray[vIdx++] = x0+fw; vArray[vIdx++] = y0;    vArray[vIdx++] = z0+1;
-            vArray[vIdx++] = x0+fw; vArray[vIdx++] = y0+fh; vArray[vIdx++] = z0+1;
-            vArray[vIdx++] = x0;    vArray[vIdx++] = y0+fh; vArray[vIdx++] = z0+1;
+            VArray[VIdx++] = X0;    VArray[VIdx++] = Y0;    VArray[VIdx++] = Z0+1.0F;
+            VArray[VIdx++] = X0+Fw; VArray[VIdx++] = Y0;    VArray[VIdx++] = Z0+1.0F;
+            VArray[VIdx++] = X0+Fw; VArray[VIdx++] = Y0+Fh; VArray[VIdx++] = Z0+1.0F;
+            VArray[VIdx++] = X0;    VArray[VIdx++] = Y0+Fh; VArray[VIdx++] = Z0+1.0F;
             break;
         case FACE_BACK:   // u=X reversed, v=Y
-            vArray[vIdx++] = x0+fw; vArray[vIdx++] = y0;    vArray[vIdx++] = z0;
-            vArray[vIdx++] = x0;    vArray[vIdx++] = y0;    vArray[vIdx++] = z0;
-            vArray[vIdx++] = x0;    vArray[vIdx++] = y0+fh; vArray[vIdx++] = z0;
-            vArray[vIdx++] = x0+fw; vArray[vIdx++] = y0+fh; vArray[vIdx++] = z0;
+            VArray[VIdx++] = X0+Fw; VArray[VIdx++] = Y0;    VArray[VIdx++] = Z0;
+            VArray[VIdx++] = X0;    VArray[VIdx++] = Y0;    VArray[VIdx++] = Z0;
+            VArray[VIdx++] = X0;    VArray[VIdx++] = Y0+Fh; VArray[VIdx++] = Z0;
+            VArray[VIdx++] = X0+Fw; VArray[VIdx++] = Y0+Fh; VArray[VIdx++] = Z0;
             break;
         case FACE_LEFT:   // u=Z, v=Y
-            vArray[vIdx++] = x0; vArray[vIdx++] = y0;    vArray[vIdx++] = z0;
-            vArray[vIdx++] = x0; vArray[vIdx++] = y0;    vArray[vIdx++] = z0+fw;
-            vArray[vIdx++] = x0; vArray[vIdx++] = y0+fh; vArray[vIdx++] = z0+fw;
-            vArray[vIdx++] = x0; vArray[vIdx++] = y0+fh; vArray[vIdx++] = z0;
+            VArray[VIdx++] = X0; VArray[VIdx++] = Y0;    VArray[VIdx++] = Z0;
+            VArray[VIdx++] = X0; VArray[VIdx++] = Y0;    VArray[VIdx++] = Z0+Fw;
+            VArray[VIdx++] = X0; VArray[VIdx++] = Y0+Fh; VArray[VIdx++] = Z0+Fw;
+            VArray[VIdx++] = X0; VArray[VIdx++] = Y0+Fh; VArray[VIdx++] = Z0;
             break;
         case FACE_RIGHT:  // u=Z reversed, v=Y
-            vArray[vIdx++] = x0+1; vArray[vIdx++] = y0;    vArray[vIdx++] = z0+fw;
-            vArray[vIdx++] = x0+1; vArray[vIdx++] = y0;    vArray[vIdx++] = z0;
-            vArray[vIdx++] = x0+1; vArray[vIdx++] = y0+fh; vArray[vIdx++] = z0;
-            vArray[vIdx++] = x0+1; vArray[vIdx++] = y0+fh; vArray[vIdx++] = z0+fw;
+            VArray[VIdx++] = X0+1.0F; VArray[VIdx++] = Y0;    VArray[VIdx++] = Z0+Fw;
+            VArray[VIdx++] = X0+1.0F; VArray[VIdx++] = Y0;    VArray[VIdx++] = Z0;
+            VArray[VIdx++] = X0+1.0F; VArray[VIdx++] = Y0+Fh; VArray[VIdx++] = Z0;
+            VArray[VIdx++] = X0+1.0F; VArray[VIdx++] = Y0+Fh; VArray[VIdx++] = Z0+Fw;
             break;
     }
 }
 
-static void AddGreedyFaceToMeshBuilder(BlockFace face,
-                                        int wx0, int wy0, int wz0,
+static void AddGreedyFaceToMeshBuilder(BlockFace Face,
+                                        int Wx0, int Wy0, int Wz0,
                                         int W, int H,
-                                        int texIndex, const int ao[4],
-                                        bool flipQuad, bool isTrans) {
-    AddFaceIndices(isTrans, flipQuad);
-    AddGreedyFaceTexCoords((float)W, (float)H, isTrans);
-    AddFaceColors(ao, isTrans);
-    AddFaceTexLayer((float)texIndex, isTrans);
-    AddGreedyFaceVertices(face, wx0, wy0, wz0, W, H, isTrans);
+                                        int TexIndex, const int Ao[4],
+                                        bool FlipQuad, bool IsTrans) {
+    RendererState *State = GetRendererState();
+    AddFaceIndices(IsTrans, FlipQuad);
+    AddGreedyFaceTexCoords((float)W, (float)H, IsTrans);
+    AddFaceColors(Ao, IsTrans);
+    AddFaceTexLayer((float)TexIndex, IsTrans);
+    AddGreedyFaceVertices(Face, Wx0, Wy0, Wz0, W, H, IsTrans);
 
-    if (isTrans) { transVCount += VERTICES_PER_FACE; }
-    else { vCount += VERTICES_PER_FACE; }
+    if (IsTrans) { State->TransVCount += VERTICES_PER_FACE; }
+    else { State->VCount += VERTICES_PER_FACE; }
 }
 
 // ---------------------------------------------------------------------------
@@ -378,19 +397,19 @@ static void AddGreedyFaceToMeshBuilder(BlockFace face,
 // ---------------------------------------------------------------------------
 
 typedef struct {
-    unsigned char blockID;
-    unsigned char texIndex;
-    int ao[4];
-    bool flipQuad;
-    bool used;
-} FaceMask;
+    unsigned char BlockId;
+    unsigned char TexIndex;
+    int Ao[4];
+    bool FlipQuad;
+    bool Used;
+} FaceMaskData;
 
 typedef struct {
-    BlockFace face;
-    int normalAxis; // 0=X, 1=Y, 2=Z
-    int normalDir;  // +1 or -1
-    int uAxis;
-    int vAxis;
+    BlockFace Face;
+    int NormalAxis; // 0=X, 1=Y, 2=Z
+    int NormalDir;  // +1 or -1
+    int UAxis;
+    int VAxis;
 } FaceDir;
 
 static const FaceDir FACE_DIRS[6] = {
@@ -402,103 +421,108 @@ static const FaceDir FACE_DIRS[6] = {
     { FACE_BACK,   2, -1, 0, 1 },
 };
 
-static int GetFaceTex(BlockType *def, BlockFace face) {
-    if (face == FACE_TOP) { return def->texTop; }
-    if (face == FACE_BOTTOM) { return def->texBottom; }
-    return def->texSide;
+static int GetFaceTex(BlockType *Def, BlockFace Face) {
+    if (Face == FACE_TOP) { return Def->TexTop; }
+    if (Face == FACE_BOTTOM) { return Def->TexBottom; }
+    return Def->TexSide;
 }
 
-static bool MasksCompatible(const FaceMask *a, const FaceMask *b) {
-    if (a->blockID == 0 || b->blockID == 0) { return false; }
-    if (a->used || b->used) { return false; }
-    if (a->blockID != b->blockID) { return false; }
-    if (a->texIndex != b->texIndex) { return false; }
-    if (a->flipQuad != b->flipQuad) { return false; }
-    for (int i = 0; i < VERTICES_PER_FACE; i++) { if (a->ao[i] != b->ao[i]) { return false; } }
+static bool MasksCompatible(const FaceMaskData *A, const FaceMaskData *B) {
+    if (A->BlockId == 0 || B->BlockId == 0) { return false; }
+    if (A->Used || B->Used) { return false; }
+    if (A->BlockId != B->BlockId) { return false; }
+    if (A->TexIndex != B->TexIndex) { return false; }
+    if (A->FlipQuad != B->FlipQuad) { return false; }
+    #pragma unroll 4
+    for (int IdxI = 0; IdxI < VERTICES_PER_FACE; IdxI++) { if (A->Ao[IdxI] != B->Ao[IdxI]) { return false; } }
     return true;
 }
 
-static void BuildGreedyFacePass(World *world, Chunk *chunk, const FaceDir *fd) {
-    for (int slice = 0; slice < CHUNK_SIZE; slice++) {
-        FaceMask mask[CHUNK_SIZE][CHUNK_SIZE];
+static void BuildGreedyFacePass(World *WorldVal, Chunk *ChunkVal, const FaceDir *Fd) {
+    for (int Slice = 0; Slice < CHUNK_SIZE; Slice++) {
+        FaceMaskData Mask[CHUNK_SIZE][CHUNK_SIZE];
 
         // Build mask for this slice
-        for (int u = 0; u < CHUNK_SIZE; u++) {
-            for (int v = 0; v < CHUNK_SIZE; v++) {
-                mask[u][v].blockID = 0;
-                mask[u][v].used = false;
+        #pragma unroll 4
+        for (int U = 0; U < CHUNK_SIZE; U++) {
+            #pragma unroll 4
+            for (int V = 0; V < CHUNK_SIZE; V++) {
+                Mask[U][V].BlockId = 0;
+                Mask[U][V].Used = false;
 
-                int lpos[3];
-                lpos[fd->normalAxis] = slice;
-                lpos[fd->uAxis] = u;
-                lpos[fd->vAxis] = v;
-                int lx = lpos[0];
-                int ly = lpos[1];
-                int lz = lpos[2];
+                int Lpos[3];
+                Lpos[Fd->NormalAxis] = Slice;
+                Lpos[Fd->UAxis] = U;
+                Lpos[Fd->VAxis] = V;
+                int Lx = Lpos[0];
+                int Ly = Lpos[1];
+                int Lz = Lpos[2];
 
-                unsigned char id = chunk->data[lx][ly][lz];
-                if (id == 0) { continue; }
+                unsigned char Id = ChunkVal->Data[Lx][Ly][Lz];
+                if (Id == 0) { continue; }
 
-                BlockType *def = GetBlockDef(id);
-                if (def->isTransparent) { continue; }
+                BlockType *Def = GetBlockDef(Id);
+                if (Def->IsTransparent) { continue; }
 
-                int nlpos[3] = { lpos[0], lpos[1], lpos[2] };
-                nlpos[fd->normalAxis] += fd->normalDir;
-                if (!IsNeighbourTransparent(world, chunk,
-                                            nlpos[0], nlpos[1], nlpos[2], id)) { continue; }
+                int Nlpos[3] = { Lpos[0], Lpos[1], Lpos[2] };
+                Nlpos[Fd->NormalAxis] += Fd->NormalDir;
+                if (!IsNeighbourTransparent(WorldVal, ChunkVal,
+                                            Nlpos[0], Nlpos[1], Nlpos[2], Id)) { continue; }
 
-                mask[u][v].blockID   = id;
-                mask[u][v].texIndex  = (unsigned char)GetFaceTex(def, fd->face);
-                mask[u][v].flipQuad  = ComputeFaceAO(world, chunk, lx, ly, lz,
-                                                     fd->face, mask[u][v].ao);
+                Mask[U][V].BlockId   = Id;
+                Mask[U][V].TexIndex  = (unsigned char)GetFaceTex(Def, Fd->Face);
+                Mask[U][V].FlipQuad  = ComputeFaceAO(WorldVal, ChunkVal, Lx, Ly, Lz,
+                                                     Fd->Face, Mask[U][V].Ao);
             }
         }
 
-        // Greedy scan
-        for (int u0 = 0; u0 < CHUNK_SIZE; u0++) {
-            for (int v0 = 0; v0 < CHUNK_SIZE; v0++) {
-                FaceMask *origin = &mask[u0][v0];
-                if (origin->blockID == 0 || origin->used) { continue; }
+        for (int U0 = 0; U0 < CHUNK_SIZE; U0++) {
+            for (int V0 = 0; V0 < CHUNK_SIZE; V0++) {
+                FaceMaskData *Origin = &Mask[U0][V0];
+                if (Origin->BlockId == 0 || Origin->Used) { continue; }
 
                 // Expand width (u direction)
-                int w = 1;
-                while (u0 + w < CHUNK_SIZE &&
-                       MasksCompatible(origin, &mask[u0 + w][v0])) {
-                    w++;
+                int W = 1;
+                while (U0 + W < CHUNK_SIZE &&
+                       MasksCompatible(Origin, &Mask[U0 + W][V0])) {
+                    W++;
                 }
 
                 // Expand height (v direction)
-                int h = 1;
-                bool can_expand = true;
-                while (v0 + h < CHUNK_SIZE && can_expand) {
-                    for (int ku = 0; ku < w; ku++) {
-                        if (!MasksCompatible(origin, &mask[u0 + ku][v0 + h])) {
-                            can_expand = false;
+                int H = 1;
+                bool CanExpand = true;
+                while (V0 + H < CHUNK_SIZE && CanExpand) {
+                    #pragma unroll 4
+                    for (int Ku = 0; Ku < W; Ku++) {
+                        if (!MasksCompatible(Origin, &Mask[U0 + Ku][V0 + H])) {
+                            CanExpand = false;
                             break;
                         }
                     }
-                    if (can_expand) {
-                        h++;
+                    if (CanExpand) {
+                        H++;
                     }
                 }
 
                 // Compute world position of first block in merged region
-                int first_lpos[3];
-                first_lpos[fd->normalAxis] = slice;
-                first_lpos[fd->uAxis] = u0;
-                first_lpos[fd->vAxis] = v0;
-                int wx0 = (chunk->chunkX * CHUNK_SIZE) + first_lpos[0];
-                int wy0 = (chunk->chunkY * CHUNK_SIZE) + first_lpos[1];
-                int wz0 = (chunk->chunkZ * CHUNK_SIZE) + first_lpos[2];
+                int FirstLpos[3];
+                FirstLpos[Fd->NormalAxis] = Slice;
+                FirstLpos[Fd->UAxis] = U0;
+                FirstLpos[Fd->VAxis] = V0;
+                int Wx0 = (ChunkVal->ChunkX * CHUNK_SIZE) + FirstLpos[0];
+                int Wy0 = (ChunkVal->ChunkY * CHUNK_SIZE) + FirstLpos[1];
+                int Wz0 = (ChunkVal->ChunkZ * CHUNK_SIZE) + FirstLpos[2];
 
-                AddGreedyFaceToMeshBuilder(fd->face, wx0, wy0, wz0, w, h,
-                                           origin->texIndex, origin->ao,
-                                           origin->flipQuad, false);
+                AddGreedyFaceToMeshBuilder(Fd->Face, Wx0, Wy0, Wz0, W, H,
+                                           Origin->TexIndex, Origin->Ao,
+                                           Origin->FlipQuad, false);
 
                 // Mark used
-                for (int ku = 0; ku < w; ku++) {
-                    for (int kv = 0; kv < h; kv++) {
-                        mask[u0 + ku][v0 + kv].used = true;
+                #pragma unroll 4
+                for (int Ku = 0; Ku < W; Ku++) {
+                    #pragma unroll 4
+                    for (int Kv = 0; Kv < H; Kv++) {
+                        Mask[U0 + Ku][V0 + Kv].Used = true;
                     }
                 }
             }
@@ -507,52 +531,55 @@ static void BuildGreedyFacePass(World *world, Chunk *chunk, const FaceDir *fd) {
 }
 
 // Per-face pass for transparent blocks (no greedy merging)
-static void BuildTransparentFacePass(World *world, Chunk *chunk) {
-    for (int x = 0; x < CHUNK_SIZE; x++) {
-        for (int y = 0; y < CHUNK_SIZE; y++) {
-            for (int z = 0; z < CHUNK_SIZE; z++) {
-                unsigned char id = chunk->data[x][y][z];
-                if (id == 0) { continue; }
+static void BuildTransparentFacePass(World *WorldVal, Chunk *ChunkVal) {
+    #pragma unroll 4
+    for (int X = 0; X < CHUNK_SIZE; X++) {
+        #pragma unroll 4
+        for (int Y = 0; Y < CHUNK_SIZE; Y++) {
+            #pragma unroll 4
+            for (int Z = 0; Z < CHUNK_SIZE; Z++) {
+                unsigned char Id = ChunkVal->Data[X][Y][Z];
+                if (Id == 0) { continue; }
 
-                BlockType *def = GetBlockDef(id);
-                if (!def->isTransparent) { continue; }
+                BlockType *Def = GetBlockDef(Id);
+                if (!Def->IsTransparent) { continue; }
 
-                int ao[4];
-                bool flip;
+                int Ao[4];
+                bool Flip;
 
-                int wx = (chunk->chunkX * CHUNK_SIZE) + x;
-                int wy = (chunk->chunkY * CHUNK_SIZE) + y;
-                int wz = (chunk->chunkZ * CHUNK_SIZE) + z;
+                int Wx = (ChunkVal->ChunkX * CHUNK_SIZE) + X;
+                int Wy = (ChunkVal->ChunkY * CHUNK_SIZE) + Y;
+                int Wz = (ChunkVal->ChunkZ * CHUNK_SIZE) + Z;
 
-                if (IsNeighbourTransparent(world, chunk, x, y+1, z, id)) {
-                    flip = ComputeFaceAO(world, chunk, x, y, z, FACE_TOP, ao);
-                    AddGreedyFaceToMeshBuilder(FACE_TOP, wx, wy, wz, 1, 1,
-                                               def->texTop, ao, flip, true);
+                if (IsNeighbourTransparent(WorldVal, ChunkVal, X, Y+1, Z, Id)) {
+                    Flip = ComputeFaceAO(WorldVal, ChunkVal, X, Y, Z, FACE_TOP, Ao);
+                    AddGreedyFaceToMeshBuilder(FACE_TOP, Wx, Wy, Wz, 1, 1,
+                                               Def->TexTop, Ao, Flip, true);
                 }
-                if (IsNeighbourTransparent(world, chunk, x, y-1, z, id)) {
-                    flip = ComputeFaceAO(world, chunk, x, y, z, FACE_BOTTOM, ao);
-                    AddGreedyFaceToMeshBuilder(FACE_BOTTOM, wx, wy, wz, 1, 1,
-                                               def->texBottom, ao, flip, true);
+                if (IsNeighbourTransparent(WorldVal, ChunkVal, X, Y-1, Z, Id)) {
+                    Flip = ComputeFaceAO(WorldVal, ChunkVal, X, Y, Z, FACE_BOTTOM, Ao);
+                    AddGreedyFaceToMeshBuilder(FACE_BOTTOM, Wx, Wy, Wz, 1, 1,
+                                               Def->TexBottom, Ao, Flip, true);
                 }
-                if (IsNeighbourTransparent(world, chunk, x+1, y, z, id)) {
-                    flip = ComputeFaceAO(world, chunk, x, y, z, FACE_RIGHT, ao);
-                    AddGreedyFaceToMeshBuilder(FACE_RIGHT, wx, wy, wz, 1, 1,
-                                               def->texSide, ao, flip, true);
+                if (IsNeighbourTransparent(WorldVal, ChunkVal, X+1, Y, Z, Id)) {
+                    Flip = ComputeFaceAO(WorldVal, ChunkVal, X, Y, Z, FACE_RIGHT, Ao);
+                    AddGreedyFaceToMeshBuilder(FACE_RIGHT, Wx, Wy, Wz, 1, 1,
+                                               Def->TexSide, Ao, Flip, true);
                 }
-                if (IsNeighbourTransparent(world, chunk, x-1, y, z, id)) {
-                    flip = ComputeFaceAO(world, chunk, x, y, z, FACE_LEFT, ao);
-                    AddGreedyFaceToMeshBuilder(FACE_LEFT, wx, wy, wz, 1, 1,
-                                               def->texSide, ao, flip, true);
+                if (IsNeighbourTransparent(WorldVal, ChunkVal, X-1, Y, Z, Id)) {
+                    Flip = ComputeFaceAO(WorldVal, ChunkVal, X, Y, Z, FACE_LEFT, Ao);
+                    AddGreedyFaceToMeshBuilder(FACE_LEFT, Wx, Wy, Wz, 1, 1,
+                                               Def->TexSide, Ao, Flip, true);
                 }
-                if (IsNeighbourTransparent(world, chunk, x, y, z+1, id)) {
-                    flip = ComputeFaceAO(world, chunk, x, y, z, FACE_FRONT, ao);
-                    AddGreedyFaceToMeshBuilder(FACE_FRONT, wx, wy, wz, 1, 1,
-                                               def->texSide, ao, flip, true);
+                if (IsNeighbourTransparent(WorldVal, ChunkVal, X, Y, Z+1, Id)) {
+                    Flip = ComputeFaceAO(WorldVal, ChunkVal, X, Y, Z, FACE_FRONT, Ao);
+                    AddGreedyFaceToMeshBuilder(FACE_FRONT, Wx, Wy, Wz, 1, 1,
+                                               Def->TexSide, Ao, Flip, true);
                 }
-                if (IsNeighbourTransparent(world, chunk, x, y, z-1, id)) {
-                    flip = ComputeFaceAO(world, chunk, x, y, z, FACE_BACK, ao);
-                    AddGreedyFaceToMeshBuilder(FACE_BACK, wx, wy, wz, 1, 1,
-                                               def->texSide, ao, flip, true);
+                if (IsNeighbourTransparent(WorldVal, ChunkVal, X, Y, Z-1, Id)) {
+                    Flip = ComputeFaceAO(WorldVal, ChunkVal, X, Y, Z, FACE_BACK, Ao);
+                    AddGreedyFaceToMeshBuilder(FACE_BACK, Wx, Wy, Wz, 1, 1,
+                                               Def->TexSide, Ao, Flip, true);
                 }
             }
         }
@@ -563,80 +590,120 @@ static void BuildTransparentFacePass(World *world, Chunk *chunk) {
 // BuildChunkMesh
 // ---------------------------------------------------------------------------
 
-void BuildChunkMesh(World *world, Chunk *chunk) {
-    if (chunk->solidBlockCount == 0) {
-        UnloadChunkMesh(chunk);
-        chunk->isDirty = false;
-        chunk->hasMesh = false;
-        chunk->hasTranslucentMesh = false;
+void BuildChunkMesh(World *WorldVal, Chunk *ChunkVal) {
+    RendererState *State = GetRendererState();
+    if (ChunkVal->SolidBlockCount == 0) {
+        UnloadChunkMesh(ChunkVal);
+        ChunkVal->IsDirty = false;
+        ChunkVal->HasMesh = false;
+        ChunkVal->HasTranslucentMesh = false;
         return;
     }
 
-    vCount = 0; iCount = 0;
-    transVCount = 0; transICount = 0;
+    State->VCount = 0; State->ICount = 0;
+    State->TransVCount = 0; State->TransICount = 0;
 
     // Opaque greedy pass
     static const int FACE_DIRS_COUNT = (int)(sizeof(FACE_DIRS) / sizeof(FACE_DIRS[0]));
-    for (int fd = 0; fd < FACE_DIRS_COUNT; fd++) { BuildGreedyFacePass(world, chunk, &FACE_DIRS[fd]); }
+    #pragma unroll 4
+    for (int Fd = 0; Fd < FACE_DIRS_COUNT; Fd++) { BuildGreedyFacePass(WorldVal, ChunkVal, &FACE_DIRS[Fd]); }
 
     // Transparent per-face pass
-    BuildTransparentFacePass(world, chunk);
+    BuildTransparentFacePass(WorldVal, ChunkVal);
 
-    UnloadChunkMesh(chunk);
-    chunk->isDirty = false;
+    UnloadChunkMesh(ChunkVal);
+    ChunkVal->IsDirty = false;
 
     // Upload opaque mesh
-    if (vCount == 0) {
-        chunk->hasMesh = false;
+    if (State->VCount == 0) {
+        ChunkVal->HasMesh = false;
     } else {
-        chunk->mesh = (Mesh){0};
-        chunk->mesh.vertexCount = vCount;
-        chunk->mesh.triangleCount = iCount / 3;
+        ChunkVal->ChunkMesh = (Mesh){0};
+        ChunkVal->ChunkMesh.vertexCount = State->VCount;
+        ChunkVal->ChunkMesh.triangleCount = State->ICount / 3;
 
-        chunk->mesh.vertices = (float *)MemAlloc((size_t)vCount * FLOATS_PER_VERTEX * sizeof(float));
-        memcpy(chunk->mesh.vertices, tempVertices, (size_t)vCount * FLOATS_PER_VERTEX * sizeof(float));
+        ChunkVal->ChunkMesh.vertices = (float *)MemAlloc((size_t)State->VCount * FLOATS_PER_VERTEX * sizeof(float));
+        size_t LenVerts = (size_t)State->VCount * FLOATS_PER_VERTEX;
+        #pragma unroll 4
+        for (size_t IdxI = 0; IdxI < LenVerts; IdxI++) {
+            ChunkVal->ChunkMesh.vertices[IdxI] = State->TempVertices[IdxI];
+        }
 
-        chunk->mesh.indices = (unsigned short *)MemAlloc((size_t)iCount * sizeof(unsigned short));
-        memcpy(chunk->mesh.indices, tempIndices, (size_t)iCount * sizeof(unsigned short));
+        ChunkVal->ChunkMesh.indices = (unsigned short *)MemAlloc((size_t)State->ICount * sizeof(unsigned short));
+        size_t LenIndices = (size_t)State->ICount;
+        #pragma unroll 4
+        for (size_t IdxI = 0; IdxI < LenIndices; IdxI++) {
+            ChunkVal->ChunkMesh.indices[IdxI] = State->TempIndices[IdxI];
+        }
 
-        chunk->mesh.texcoords = (float *)MemAlloc((size_t)vCount * 2 * sizeof(float));
-        memcpy(chunk->mesh.texcoords, tempTexCoords, (size_t)vCount * 2 * sizeof(float));
+        ChunkVal->ChunkMesh.texcoords = (float *)MemAlloc((size_t)State->VCount * 2 * sizeof(float));
+        size_t LenTex = (size_t)State->VCount * 2U;
+        #pragma unroll 4
+        for (size_t IdxI = 0; IdxI < LenTex; IdxI++) {
+            ChunkVal->ChunkMesh.texcoords[IdxI] = State->TempTexCoords[IdxI];
+        }
 
-        chunk->mesh.colors = (unsigned char *)MemAlloc((size_t)vCount * COLOR_CHANNELS * sizeof(unsigned char));
-        memcpy(chunk->mesh.colors, tempColors, (size_t)vCount * COLOR_CHANNELS * sizeof(unsigned char));
+        ChunkVal->ChunkMesh.colors = (unsigned char *)MemAlloc((size_t)State->VCount * COLOR_CHANNELS * sizeof(unsigned char));
+        size_t LenColors = (size_t)State->VCount * COLOR_CHANNELS;
+        #pragma unroll 4
+        for (size_t IdxI = 0; IdxI < LenColors; IdxI++) {
+            ChunkVal->ChunkMesh.colors[IdxI] = State->TempColors[IdxI];
+        }
 
-        chunk->mesh.texcoords2 = (float *)MemAlloc((size_t)vCount * 2 * sizeof(float));
-        memcpy(chunk->mesh.texcoords2, tempTexCoords2, (size_t)vCount * 2 * sizeof(float));
+        ChunkVal->ChunkMesh.texcoords2 = (float *)MemAlloc((size_t)State->VCount * 2 * sizeof(float));
+        #pragma unroll 4
+        for (size_t IdxI = 0; IdxI < LenTex; IdxI++) {
+            ChunkVal->ChunkMesh.texcoords2[IdxI] = State->TempTexCoords2[IdxI];
+        }
 
-        UploadMesh(&chunk->mesh, false);
-        chunk->hasMesh = true;
+        UploadMesh(&ChunkVal->ChunkMesh, false);
+        ChunkVal->HasMesh = true;
     }
 
     // Upload translucent mesh
-    if (transVCount == 0) {
-        chunk->hasTranslucentMesh = false;
+    if (State->TransVCount == 0) {
+        ChunkVal->HasTranslucentMesh = false;
     } else {
-        chunk->translucentMesh = (Mesh){0};
-        chunk->translucentMesh.vertexCount = transVCount;
-        chunk->translucentMesh.triangleCount = transICount / 3;
+        ChunkVal->TranslucentMesh = (Mesh){0};
+        ChunkVal->TranslucentMesh.vertexCount = State->TransVCount;
+        ChunkVal->TranslucentMesh.triangleCount = State->TransICount / 3;
 
-        chunk->translucentMesh.vertices = (float *)MemAlloc((size_t)transVCount * FLOATS_PER_VERTEX * sizeof(float));
-        memcpy(chunk->translucentMesh.vertices, transVertices, (size_t)transVCount * FLOATS_PER_VERTEX * sizeof(float));
+        ChunkVal->TranslucentMesh.vertices = (float *)MemAlloc((size_t)State->TransVCount * FLOATS_PER_VERTEX * sizeof(float));
+        size_t LenVerts = (size_t)State->TransVCount * FLOATS_PER_VERTEX;
+        #pragma unroll 4
+        for (size_t IdxI = 0; IdxI < LenVerts; IdxI++) {
+            ChunkVal->TranslucentMesh.vertices[IdxI] = State->TransVertices[IdxI];
+        }
 
-        chunk->translucentMesh.indices = (unsigned short *)MemAlloc((size_t)transICount * sizeof(unsigned short));
-        memcpy(chunk->translucentMesh.indices, transIndices, (size_t)transICount * sizeof(unsigned short));
+        ChunkVal->TranslucentMesh.indices = (unsigned short *)MemAlloc((size_t)State->TransICount * sizeof(unsigned short));
+        size_t LenIndices = (size_t)State->TransICount;
+        #pragma unroll 4
+        for (size_t IdxI = 0; IdxI < LenIndices; IdxI++) {
+            ChunkVal->TranslucentMesh.indices[IdxI] = State->TransIndices[IdxI];
+        }
 
-        chunk->translucentMesh.texcoords = (float *)MemAlloc((size_t)transVCount * 2 * sizeof(float));
-        memcpy(chunk->translucentMesh.texcoords, transTexCoords, (size_t)transVCount * 2 * sizeof(float));
+        ChunkVal->TranslucentMesh.texcoords = (float *)MemAlloc((size_t)State->TransVCount * 2 * sizeof(float));
+        size_t LenTex = (size_t)State->TransVCount * 2U;
+        #pragma unroll 4
+        for (size_t IdxI = 0; IdxI < LenTex; IdxI++) {
+            ChunkVal->TranslucentMesh.texcoords[IdxI] = State->TransTexCoords[IdxI];
+        }
 
-        chunk->translucentMesh.colors = (unsigned char *)MemAlloc((size_t)transVCount * COLOR_CHANNELS * sizeof(unsigned char));
-        memcpy(chunk->translucentMesh.colors, transColors, (size_t)transVCount * COLOR_CHANNELS * sizeof(unsigned char));
+        ChunkVal->TranslucentMesh.colors = (unsigned char *)MemAlloc((size_t)State->TransVCount * COLOR_CHANNELS * sizeof(unsigned char));
+        size_t LenColors = (size_t)State->TransVCount * COLOR_CHANNELS;
+        #pragma unroll 4
+        for (size_t IdxI = 0; IdxI < LenColors; IdxI++) {
+            ChunkVal->TranslucentMesh.colors[IdxI] = State->TransColors[IdxI];
+        }
 
-        chunk->translucentMesh.texcoords2 = (float *)MemAlloc((size_t)transVCount * 2 * sizeof(float));
-        memcpy(chunk->translucentMesh.texcoords2, transTexCoords2, (size_t)transVCount * 2 * sizeof(float));
+        ChunkVal->TranslucentMesh.texcoords2 = (float *)MemAlloc((size_t)State->TransVCount * 2 * sizeof(float));
+        #pragma unroll 4
+        for (size_t IdxI = 0; IdxI < LenTex; IdxI++) {
+            ChunkVal->TranslucentMesh.texcoords2[IdxI] = State->TransTexCoords2[IdxI];
+        }
 
-        UploadMesh(&chunk->translucentMesh, false);
-        chunk->hasTranslucentMesh = true;
+        UploadMesh(&ChunkVal->TranslucentMesh, false);
+        ChunkVal->HasTranslucentMesh = true;
     }
 }
 
@@ -644,43 +711,44 @@ void BuildChunkMesh(World *world, Chunk *chunk) {
 // Custom draw — bypasses Raylib material/texture binding
 // ---------------------------------------------------------------------------
 
-static void DrawChunkMeshDirect(Mesh *mesh) {
-    if (mesh->vaoId == 0) { return; }
+static void DrawChunkMeshDirect(Mesh *MeshVal) {
+    RendererState *State = GetRendererState();
+    if (MeshVal->vaoId == 0) { return; }
 
-    rlEnableShader(chunkShader.id);
+    rlEnableShader(State->ChunkShader.id);
 
-    Matrix matView = rlGetMatrixModelview();
-    Matrix matProj = rlGetMatrixProjection();
-    Matrix matMVP  = MatrixMultiply(matView, matProj);
-    rlSetUniformMatrix(chunkShader.locs[SHADER_LOC_MATRIX_MVP], matMVP);
+    Matrix MatView = rlGetMatrixModelview();
+    Matrix MatProj = rlGetMatrixProjection();
+    Matrix MatMVP  = MatrixMultiply(MatView, MatProj);
+    rlSetUniformMatrix(State->ChunkShader.locs[SHADER_LOC_MATRIX_MVP], MatMVP);
 
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D_ARRAY, blockArrayTexID);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, State->BlockArrayTexID);
 
-    rlEnableVertexArray(mesh->vaoId);
-    rlDrawVertexArrayElements(0, mesh->triangleCount * 3, 0);
+    rlEnableVertexArray(MeshVal->vaoId);
+    rlDrawVertexArrayElements(0, MeshVal->triangleCount * 3, 0);
     rlDisableVertexArray();
 
     rlDisableShader();
     glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
 }
 
-void RenderChunkMesh(Chunk *chunk) {
-    if (chunk->hasMesh) { DrawChunkMeshDirect(&chunk->mesh); }
+void RenderChunkMesh(Chunk *ChunkVal) {
+    if (ChunkVal->HasMesh) { DrawChunkMeshDirect(&ChunkVal->ChunkMesh); }
 }
 
-void RenderChunkTranslucentMesh(Chunk *chunk) {
-    if (chunk->hasTranslucentMesh) { DrawChunkMeshDirect(&chunk->translucentMesh); }
+void RenderChunkTranslucentMesh(Chunk *ChunkVal) {
+    if (ChunkVal->HasTranslucentMesh) { DrawChunkMeshDirect(&ChunkVal->TranslucentMesh); }
 }
 
-void UnloadChunkMesh(Chunk *chunk) {
-    if (chunk->hasMesh) {
-        UnloadMesh(chunk->mesh);
-        chunk->hasMesh = false;
+void UnloadChunkMesh(Chunk *ChunkVal) {
+    if (ChunkVal->HasMesh) {
+        UnloadMesh(ChunkVal->ChunkMesh);
+        ChunkVal->HasMesh = false;
     }
-    if (chunk->hasTranslucentMesh) {
-        UnloadMesh(chunk->translucentMesh);
-        chunk->hasTranslucentMesh = false;
+    if (ChunkVal->HasTranslucentMesh) {
+        UnloadMesh(ChunkVal->TranslucentMesh);
+        ChunkVal->HasTranslucentMesh = false;
     }
 }
 
@@ -688,49 +756,57 @@ void UnloadChunkMesh(Chunk *chunk) {
 // Frustum culling + world draw (unchanged logic)
 // ---------------------------------------------------------------------------
 
-bool IsChunkInFrustum(Camera3D camera, Chunk *chunk) {
+bool IsChunkInFrustum(Camera3D CameraVal, Chunk *ChunkVal) {
     float const HALFCHUNKSIZE = CHUNK_SIZE / 2.0F;
-    Vector3 chunkCenter = {
-        (float)(chunk->chunkX * CHUNK_SIZE) + HALFCHUNKSIZE,
-        (float)(chunk->chunkY * CHUNK_SIZE) + HALFCHUNKSIZE,
-        (float)(chunk->chunkZ * CHUNK_SIZE) + HALFCHUNKSIZE,
+    Vector3 ChunkCenter = {
+        (float)(ChunkVal->ChunkX * CHUNK_SIZE) + HALFCHUNKSIZE,
+        (float)(ChunkVal->ChunkY * CHUNK_SIZE) + HALFCHUNKSIZE,
+        (float)(ChunkVal->ChunkZ * CHUNK_SIZE) + HALFCHUNKSIZE,
     };
-    Vector3 vecToChunk = Vector3Subtract(chunkCenter, camera.position);
-    float distance = Vector3Length(vecToChunk);
-    if (distance < CHUNK_SPHERE_RADIUS * CHUNK_CLOSE_DISTANCE_FACTOR) { return true; }
-    Vector3 dirToChunk = Vector3Scale(vecToChunk, 1.0F / distance);
-    Vector3 camForward = Vector3Normalize(Vector3Subtract(camera.target, camera.position));
-    float dotProduct = Vector3DotProduct(camForward, dirToChunk);
-    float safeMargin = CHUNK_SPHERE_RADIUS / distance;
+    Vector3 VecToChunk = Vector3Subtract(ChunkCenter, CameraVal.position);
+    float Distance = Vector3Length(VecToChunk);
+    if (Distance < CHUNK_SPHERE_RADIUS * CHUNK_CLOSE_DISTANCE_FACTOR) { return true; }
+    Vector3 DirToChunk = Vector3Scale(VecToChunk, 1.0F / Distance);
+    Vector3 CamForward = Vector3Normalize(Vector3Subtract(CameraVal.target, CameraVal.position));
+    float DotProduct = Vector3DotProduct(CamForward, DirToChunk);
+    float SafeMargin = CHUNK_SPHERE_RADIUS / Distance;
 #define FRUSTUM_DOT_THRESHOLD 0.4F
-    return dotProduct >= (FRUSTUM_DOT_THRESHOLD - safeMargin);
+    return DotProduct >= (FRUSTUM_DOT_THRESHOLD - SafeMargin);
 }
 
 typedef struct {
-    int index;
-    float distanceSq;
+    int Index;
+    float DistanceSq;
 } ChunkDistance;
 
-static int CompareChunkDistance(const void *a, const void *b) {
-    float dA = ((ChunkDistance *)a)->distanceSq;
-    float dB = ((ChunkDistance *)b)->distanceSq;
-    return (dB > dA) - (dB < dA);
+static void ShellSortChunks(ChunkDistance Array[], int Len) {
+    for (int Gap = Len / 2; Gap > 0; Gap /= 2) {
+        for (int IdxI = Gap; IdxI < Len; IdxI++) {
+            ChunkDistance Temp = Array[IdxI];
+            int IdxJ;
+            for (IdxJ = IdxI; IdxJ >= Gap && Array[IdxJ - Gap].DistanceSq < Temp.DistanceSq; IdxJ -= Gap) {
+                Array[IdxJ] = Array[IdxJ - Gap];
+            }
+            Array[IdxJ] = Temp;
+        }
+    }
 }
 
-void DrawWorld(World *world, Camera3D camera) {
-    if (g_debug.wireframe) { rlEnableWireMode(); }
+void DrawWorld(World *WorldVal, Camera3D CameraVal) {
+    if (GetDebugState()->Wireframe) { rlEnableWireMode(); }
 
     // Opaque pass
-    for (int i = 0; i < world->chunkCount; i++) {
-        if (!IsChunkInFrustum(camera, &world->chunks[i])) { continue; }
-        RenderChunkMesh(&world->chunks[i]);
-        if (g_debug.chunkBorders) {
-            Vector3 center = {
-                (float)(world->chunks[i].chunkX * CHUNK_SIZE) + CHUNK_HALF_SIZE,
-                (float)(world->chunks[i].chunkY * CHUNK_SIZE) + CHUNK_HALF_SIZE,
-                (float)(world->chunks[i].chunkZ * CHUNK_SIZE) + CHUNK_HALF_SIZE,
+    #pragma unroll 4
+    for (int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++) {
+        if (!IsChunkInFrustum(CameraVal, &WorldVal->Chunks[IdxI])) { continue; }
+        RenderChunkMesh(&WorldVal->Chunks[IdxI]);
+        if (GetDebugState()->ChunkBorders) {
+            Vector3 Center = {
+                (float)(WorldVal->Chunks[IdxI].ChunkX * CHUNK_SIZE) + CHUNK_HALF_SIZE,
+                (float)(WorldVal->Chunks[IdxI].ChunkY * CHUNK_SIZE) + CHUNK_HALF_SIZE,
+                (float)(WorldVal->Chunks[IdxI].ChunkZ * CHUNK_SIZE) + CHUNK_HALF_SIZE,
             };
-            DrawCubeWires(center, CHUNK_SIZE, CHUNK_SIZE, CHUNK_SIZE, YELLOW);
+            DrawCubeWires(Center, CHUNK_SIZE, CHUNK_SIZE, CHUNK_SIZE, YELLOW);
         }
     }
 
@@ -739,63 +815,66 @@ void DrawWorld(World *world, Camera3D camera) {
     rlDisableDepthMask();
     rlEnableColorBlend();
 
-    static ChunkDistance visibleChunks[MAX_ACTIVE_CHUNKS];
-    int visibleCount = 0;
+    static ChunkDistance VisibleChunks[MAX_ACTIVE_CHUNKS];
+    int VisibleCount = 0;
 
-    for (int i = 0; i < world->chunkCount; i++) {
-        Chunk *c = &world->chunks[i];
-        if (!c->hasTranslucentMesh) { continue; }
-        if (!IsChunkInFrustum(camera, c)) { continue; }
+    #pragma unroll 4
+    for (int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++) {
+        Chunk *ChunkVal = &WorldVal->Chunks[IdxI];
+        if (!ChunkVal->HasTranslucentMesh) { continue; }
+        if (!IsChunkInFrustum(CameraVal, ChunkVal)) { continue; }
         float const H = CHUNK_SIZE / 2.0F;
-        Vector3 center = {
-            (float)(c->chunkX * CHUNK_SIZE) + H,
-            (float)(c->chunkY * CHUNK_SIZE) + H,
-            (float)(c->chunkZ * CHUNK_SIZE) + H,
+        Vector3 Center = {
+            (float)(ChunkVal->ChunkX * CHUNK_SIZE) + H,
+            (float)(ChunkVal->ChunkY * CHUNK_SIZE) + H,
+            (float)(ChunkVal->ChunkZ * CHUNK_SIZE) + H,
         };
-        Vector3 v = Vector3Subtract(center, camera.position);
-        visibleChunks[visibleCount].index = i;
-        visibleChunks[visibleCount].distanceSq = (v.x*v.x) + (v.y*v.y) + (v.z*v.z);
-        visibleCount++;
+        Vector3 V = Vector3Subtract(Center, CameraVal.position);
+        VisibleChunks[VisibleCount].Index = IdxI;
+        VisibleChunks[VisibleCount].DistanceSq = (V.x*V.x) + (V.y*V.y) + (V.z*V.z);
+        VisibleCount++;
     }
 
-    qsort(visibleChunks, visibleCount, sizeof(ChunkDistance), CompareChunkDistance);
-    for (int i = 0; i < visibleCount; i++) {
-        RenderChunkTranslucentMesh(&world->chunks[visibleChunks[i].index]);
+    ShellSortChunks(VisibleChunks, VisibleCount);
+    #pragma unroll 4
+    for (int IdxI = 0; IdxI < VisibleCount; IdxI++) {
+        RenderChunkTranslucentMesh(&WorldVal->Chunks[VisibleChunks[IdxI].Index]);
     }
 
     rlDrawRenderBatchActive();
     rlEnableDepthMask();
 
-    if (g_debug.wireframe) { rlDisableWireMode(); }
+    if (GetDebugState()->Wireframe) { rlDisableWireMode(); }
 }
 
-void DrawBlockHighlight(Vector3 pos) {
-    DrawCubeWires(pos, BLOCK_HIGHLIGHT_SCALE, BLOCK_HIGHLIGHT_SCALE, BLOCK_HIGHLIGHT_SCALE, BLACK);
+void DrawBlockHighlight(Vector3 Pos) {
+    DrawCubeWires(Pos, BLOCK_HIGHLIGHT_SCALE, BLOCK_HIGHLIGHT_SCALE, BLOCK_HIGHLIGHT_SCALE, BLACK);
 }
 
-void DrawAABBDebug(World *world, Player *player) {
-    if (!g_debug.AABB) { return; }
+void DrawAABBDebug(World *WorldVal, Player *PlayerVal) {
+    if (!GetDebugState()->Aabb) { return; }
 
-    Vector3 bottomPoints[COLLISION_POINTS];
-    Vector3 topPoints[COLLISION_POINTS];
-    Vector3 shinPoints[COLLISION_POINTS];
-    Vector3 facePoints[COLLISION_POINTS];
+    Vector3 BottomPoints[COLLISION_POINTS];
+    Vector3 TopPoints[COLLISION_POINTS];
+    Vector3 ShinPoints[COLLISION_POINTS];
+    Vector3 FacePoints[COLLISION_POINTS];
 
-    GetPlayerPoints(player, (PointConfig){ .radius = player->radius - VERTICAL_RADIUS_SHRINK, .yOffset = 0.0F, .epsilon = -COLLISION_EPSILON }, bottomPoints);
-    GetPlayerPoints(player, (PointConfig){ .radius = player->radius - VERTICAL_RADIUS_SHRINK, .yOffset = player->size.y, .epsilon = COLLISION_EPSILON }, topPoints);
+    GetPlayerPoints(PlayerVal, (PointConfig){ .Radius = PlayerVal->Radius - VERTICAL_RADIUS_SHRINK, .YOffset = 0.0F, .Epsilon = -COLLISION_EPSILON }, BottomPoints);
+    GetPlayerPoints(PlayerVal, (PointConfig){ .Radius = PlayerVal->Radius - VERTICAL_RADIUS_SHRINK, .YOffset = PlayerVal->Size.y, .Epsilon = COLLISION_EPSILON }, TopPoints);
 
-    const float LATERALDEBUGRADIUS = player->radius + 0.01F;
-    GetPlayerPoints(player, (PointConfig){ .radius = LATERALDEBUGRADIUS, .yOffset = LATERAL_Y_MARGIN, .epsilon = 0.0F }, shinPoints);
-    GetPlayerPoints(player, (PointConfig){ .radius = LATERALDEBUGRADIUS, .yOffset = player->size.y, .epsilon = 0.0F }, facePoints);
+    const float LATERALDEBUGRADIUS = PlayerVal->Radius + 0.01F;
+    GetPlayerPoints(PlayerVal, (PointConfig){ .Radius = LATERALDEBUGRADIUS, .YOffset = LATERAL_Y_MARGIN, .Epsilon = 0.0F }, ShinPoints);
+    GetPlayerPoints(PlayerVal, (PointConfig){ .Radius = LATERALDEBUGRADIUS, .YOffset = PlayerVal->Size.y, .Epsilon = 0.0F }, FacePoints);
 
-    float sz = PLAYER_DEBUG_AABB_SQUARES_SIZE;
-    float wz = PLAYER_DEBUG_AABB_WIRES_SIZE;
+    float Sz = PLAYER_DEBUG_AABB_SQUARES_SIZE;
+    float Wz = PLAYER_DEBUG_AABB_WIRES_SIZE;
 
-    for (int i = 0; i < COLLISION_POINTS; i++) {
-        DrawCube(bottomPoints[i], sz, sz, sz, IsPointSolid(world, bottomPoints[i]) ? BLUE : RED);
-        DrawCube(topPoints[i], sz, sz, sz, IsPointSolid(world, topPoints[i]) ? BLUE : RED);
-        DrawCubeWires(shinPoints[i], wz, wz, wz, IsPointSolid(world, shinPoints[i]) ? PURPLE : ORANGE);
-        DrawCubeWires(facePoints[i], wz, wz, wz, IsPointSolid(world, facePoints[i]) ? PURPLE : ORANGE);
+    #pragma unroll 4
+    for (int IdxI = 0; IdxI < COLLISION_POINTS; IdxI++) {
+        DrawCube(BottomPoints[IdxI], Sz, Sz, Sz, IsPointSolid(WorldVal, BottomPoints[IdxI]) ? BLUE : RED);
+        DrawCube(TopPoints[IdxI], Sz, Sz, Sz, IsPointSolid(WorldVal, TopPoints[IdxI]) ? BLUE : RED);
+        DrawCubeWires(ShinPoints[IdxI], Wz, Wz, Wz, IsPointSolid(WorldVal, ShinPoints[IdxI]) ? PURPLE : ORANGE);
+        DrawCubeWires(FacePoints[IdxI], Wz, Wz, Wz, IsPointSolid(WorldVal, FacePoints[IdxI]) ? PURPLE : ORANGE);
     }
 }
 
@@ -806,49 +885,50 @@ void DrawAABBDebug(World *world, Player *player) {
 #define BLOCK_ICON_COLOR_RIGHT   200U
 #define BLOCK_ICON_ALPHA         255U
 
-void DrawBlockIcon(int blockID, int x, int y, int size) {
-    if (blockID == 0) { return; }
-    BlockType *def = GetBlockDef(blockID);
+void DrawBlockIcon(int BlockId, int X, int Y, int Size) {
+    RendererState *State = GetRendererState();
+    if (BlockId == 0) { return; }
+    BlockType *Def = GetBlockDef(BlockId);
 
-    Vector2 topMin;
-    Vector2 topMax;
-    Vector2 sideMin;
-    Vector2 sideMax;
-    GetTextureUV(def->texTop,  &topMin,  &topMax);
-    GetTextureUV(def->texSide, &sideMin, &sideMax);
+    Vector2 TopMin;
+    Vector2 TopMax;
+    Vector2 SideMin;
+    Vector2 SideMax;
+    GetTextureUV(Def->TexTop,  &TopMin,  &TopMax);
+    GetTextureUV(Def->TexSide, &SideMin, &SideMax);
 
-    float cx = (float)x + ((float)size / BLOCK_ICON_HALF_DIVISOR);
-    float cy = (float)y + ((float)size / BLOCK_ICON_HALF_DIVISOR);
-    float h  = (float)size / BLOCK_ICON_QUART_DIVISOR;
+    float Cx = (float)X + ((float)Size / BLOCK_ICON_HALF_DIVISOR);
+    float Cy = (float)Y + ((float)Size / BLOCK_ICON_HALF_DIVISOR);
+    float H  = (float)Size / BLOCK_ICON_QUART_DIVISOR;
 
-    Vector2 pTop        = {cx, (float)y};
-    Vector2 pTopLeft    = {(float)x, (float)y + h};
-    Vector2 pTopRight   = {(float)(x + size), (float)y + h};
-    Vector2 pCenter     = {cx, cy};
-    Vector2 pBottomLeft = {(float)x, cy + h};
-    Vector2 pBottomRight = {(float)(x + size), cy + h};
-    Vector2 pBottom     = {cx, (float)(y + size)};
+    Vector2 PTop        = {Cx, (float)Y};
+    Vector2 PTopLeft    = {(float)X, (float)Y + H};
+    Vector2 PTopRight   = {(float)(X + Size), (float)Y + H};
+    Vector2 PCenter     = {Cx, Cy};
+    Vector2 PBottomLeft = {(float)X, Cy + H};
+    Vector2 PBottomRight = {(float)(X + Size), Cy + H};
+    Vector2 PBottom     = {Cx, (float)(Y + Size)};
 
-    rlSetTexture(blockAtlas.id);
+    rlSetTexture(State->BlockAtlas.id);
     rlBegin(RL_QUADS);
 
     rlColor4ub(BLOCK_ICON_COLOR_TOP, BLOCK_ICON_COLOR_TOP, BLOCK_ICON_COLOR_TOP, BLOCK_ICON_ALPHA);
-    rlTexCoord2f(topMin.x, topMin.y); rlVertex2f(pTop.x,      pTop.y);
-    rlTexCoord2f(topMin.x, topMax.y); rlVertex2f(pTopLeft.x,  pTopLeft.y);
-    rlTexCoord2f(topMax.x, topMax.y); rlVertex2f(pCenter.x,   pCenter.y);
-    rlTexCoord2f(topMax.x, topMin.y); rlVertex2f(pTopRight.x, pTopRight.y);
+    rlTexCoord2f(TopMin.x, TopMin.y); rlVertex2f(PTop.x,      PTop.y);
+    rlTexCoord2f(TopMin.x, TopMax.y); rlVertex2f(PTopLeft.x,  PTopLeft.y);
+    rlTexCoord2f(TopMax.x, TopMax.y); rlVertex2f(PCenter.x,   PCenter.y);
+    rlTexCoord2f(TopMax.x, TopMin.y); rlVertex2f(PTopRight.x, PTopRight.y);
 
     rlColor4ub(BLOCK_ICON_COLOR_LEFT, BLOCK_ICON_COLOR_LEFT, BLOCK_ICON_COLOR_LEFT, BLOCK_ICON_ALPHA);
-    rlTexCoord2f(sideMin.x, sideMin.y); rlVertex2f(pTopLeft.x,    pTopLeft.y);
-    rlTexCoord2f(sideMin.x, sideMax.y); rlVertex2f(pBottomLeft.x, pBottomLeft.y);
-    rlTexCoord2f(sideMax.x, sideMax.y); rlVertex2f(pBottom.x,     pBottom.y);
-    rlTexCoord2f(sideMax.x, sideMin.y); rlVertex2f(pCenter.x,     pCenter.y);
+    rlTexCoord2f(SideMin.x, SideMin.y); rlVertex2f(PTopLeft.x,    PTopLeft.y);
+    rlTexCoord2f(SideMin.x, SideMax.y); rlVertex2f(PBottomLeft.x, PBottomLeft.y);
+    rlTexCoord2f(SideMax.x, SideMax.y); rlVertex2f(PBottom.x,     PBottom.y);
+    rlTexCoord2f(SideMax.x, SideMin.y); rlVertex2f(PCenter.x,     PCenter.y);
 
     rlColor4ub(BLOCK_ICON_COLOR_RIGHT, BLOCK_ICON_COLOR_RIGHT, BLOCK_ICON_COLOR_RIGHT, BLOCK_ICON_ALPHA);
-    rlTexCoord2f(sideMin.x, sideMin.y); rlVertex2f(pCenter.x,      pCenter.y);
-    rlTexCoord2f(sideMin.x, sideMax.y); rlVertex2f(pBottom.x,      pBottom.y);
-    rlTexCoord2f(sideMax.x, sideMax.y); rlVertex2f(pBottomRight.x, pBottomRight.y);
-    rlTexCoord2f(sideMax.x, sideMin.y); rlVertex2f(pTopRight.x,    pTopRight.y);
+    rlTexCoord2f(SideMin.x, SideMin.y); rlVertex2f(PCenter.x,      PCenter.y);
+    rlTexCoord2f(SideMin.x, SideMax.y); rlVertex2f(PBottom.x,      PBottom.y);
+    rlTexCoord2f(SideMax.x, SideMax.y); rlVertex2f(PBottomRight.x, PBottomRight.y);
+    rlTexCoord2f(SideMax.x, SideMin.y); rlVertex2f(PTopRight.x,    PTopRight.y);
 
     rlEnd();
     rlSetTexture(0);

@@ -4,8 +4,8 @@
 #include "renderer.h"
 #include "chunk_worker.h"
 #include "world_save.h"
-#include <math.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 #define DDA_MAX_CROSSED_AXES 3.0F
 
@@ -17,356 +17,364 @@
 #define SPATIAL_PRIME_Z (83492791)
  
 typedef struct {
-  float tMaxX, tMaxY, tMaxZ;
-  float tDeltaX, tDeltaY, tDeltaZ;
-  float distanceTravelled;
+  float TMaxX, TMaxY, TMaxZ;
+  float TDeltaX, TDeltaY, TDeltaZ;
+  float DistanceTravelled;
 
-  int voxelX, voxelY, voxelZ;
-  int stepX, stepY, stepZ;
-  int lastStep;
-} DDAState;
+  int VoxelX, VoxelY, VoxelZ;
+  int StepX, StepY, StepZ;
+  int LastStep;
+} DdaState;
 
-static int HashChunkPos(int x, int y, int z){
-  unsigned int h = (unsigned int)((x * SPATIAL_PRIME_X) ^ (y * SPATIAL_PRIME_Y) ^ (z * SPATIAL_PRIME_Z));
-  return (int)(h % (unsigned int)CHUNK_MAP_SIZE);
+static int HashChunkPos(int Cx, int Cy, int Cz){
+  unsigned int H = (unsigned int)((Cx * SPATIAL_PRIME_X) ^ (Cy * SPATIAL_PRIME_Y) ^ (Cz * SPATIAL_PRIME_Z));
+  return (int)(H % (unsigned int)CHUNK_MAP_SIZE);
 }
 
-void InitWorld(World *world){
-  world->chunkCount = 0;
+void InitWorld(World *WorldVal){
+  WorldVal->ChunkCount = 0;
 
-  for(int i = 0; i < CHUNK_MAP_SIZE; i++){
-    world->chunkHashMap[i] = HASH_EMPTY;
+  #pragma unroll 4
+  for(int IdxI = 0; IdxI < CHUNK_MAP_SIZE; IdxI++){
+    WorldVal->ChunkHashMap[IdxI] = HASH_EMPTY;
   }
 
-  world->freeCount = MAX_ACTIVE_CHUNKS;
-  for(int i = 0; i < MAX_ACTIVE_CHUNKS; i++){
-    world->freeList[i] = i;
+  WorldVal->FreeCount = MAX_ACTIVE_CHUNKS;
+  #pragma unroll 4
+  for(int IdxI = 0; IdxI < MAX_ACTIVE_CHUNKS; IdxI++){
+    WorldVal->FreeList[IdxI] = IdxI;
   }
 }
 
-static void InsertChunkIntoMap(World *world, int chunkIndex) {
-  int x = world->chunks[chunkIndex].chunkX;
-  int y = world->chunks[chunkIndex].chunkY;
-  int z = world->chunks[chunkIndex].chunkZ;
-  int hash = HashChunkPos(x, y, z);
+static void InsertChunkIntoMap(World *WorldVal, int ChunkIndex) {
+  int Cx = WorldVal->Chunks[ChunkIndex].ChunkX;
+  int Cy = WorldVal->Chunks[ChunkIndex].ChunkY;
+  int Cz = WorldVal->Chunks[ChunkIndex].ChunkZ;
+  int Hash = HashChunkPos(Cx, Cy, Cz);
 
-  while(world->chunkHashMap[hash] >= 0){
-    hash = (hash + 1) % CHUNK_MAP_SIZE;
+  while(WorldVal->ChunkHashMap[Hash] >= 0){
+    Hash = (Hash + 1) % CHUNK_MAP_SIZE;
   }
-  world->chunkHashMap[hash] = chunkIndex;
+  WorldVal->ChunkHashMap[Hash] = ChunkIndex;
 }
 
-static void RemoveChunkFromMap(World *world, int chunkX, int chunkY, int chunkZ) {
-  int hash = HashChunkPos(chunkX, chunkY, chunkZ);
-  int initialHash = hash;
+static void RemoveChunkFromMap(World *WorldVal, int ChunkX, int ChunkY, int ChunkZ) {
+  int Hash = HashChunkPos(ChunkX, ChunkY, ChunkZ);
+  int InitialHash = Hash;
 
-  while(world->chunkHashMap[hash] != HASH_EMPTY) {
-    int idx = world->chunkHashMap[hash];
-    if(idx >= 0 && world->chunks[idx].chunkX == chunkX && world->chunks[idx].chunkY == chunkY && world->chunks[idx].chunkZ == chunkZ) {
-      world->chunkHashMap[hash] = HASH_DELETED;
+  while(WorldVal->ChunkHashMap[Hash] != HASH_EMPTY) {
+    int Idx = WorldVal->ChunkHashMap[Hash];
+    if(Idx >= 0 && WorldVal->Chunks[Idx].ChunkX == ChunkX && WorldVal->Chunks[Idx].ChunkY == ChunkY && WorldVal->Chunks[Idx].ChunkZ == ChunkZ) {
+      WorldVal->ChunkHashMap[Hash] = HASH_DELETED;
       return;
     }
-    hash = (hash + 1) % CHUNK_MAP_SIZE;
-    if(hash == initialHash) { break; }
+    Hash = (Hash + 1) % CHUNK_MAP_SIZE;
+    if(Hash == InitialHash) { break; }
   }
 }
 
-Chunk* GetChunkFromWorld(World *world, int chunkX, int chunkY, int chunkZ){
-  int hash = HashChunkPos(chunkX, chunkY, chunkZ);
-  int initialHash = hash;
+Chunk* GetChunkFromWorld(World *WorldVal, int ChunkX, int ChunkY, int ChunkZ){
+  int Hash = HashChunkPos(ChunkX, ChunkY, ChunkZ);
+  int InitialHash = Hash;
 
-  while(world->chunkHashMap[hash] != HASH_EMPTY) {
-    int idx = world->chunkHashMap[hash];
-    if(idx >= 0 && world->chunks[idx].chunkX == chunkX && world->chunks[idx].chunkY == chunkY && world->chunks[idx].chunkZ == chunkZ) {
-      return &world->chunks[idx];
+  while(WorldVal->ChunkHashMap[Hash] != HASH_EMPTY) {
+    int Idx = WorldVal->ChunkHashMap[Hash];
+    if(Idx >= 0 && WorldVal->Chunks[Idx].ChunkX == ChunkX && WorldVal->Chunks[Idx].ChunkY == ChunkY && WorldVal->Chunks[Idx].ChunkZ == ChunkZ) {
+      return &WorldVal->Chunks[Idx];
     }
-    hash = (hash + 1) % CHUNK_MAP_SIZE;
-    if(hash == initialHash) { break; }
+    Hash = (Hash + 1) % CHUNK_MAP_SIZE;
+    if(Hash == InitialHash) { break; }
   }
-  return NULL;
+  return (Chunk *)0;
 }
 
-Chunk* GetChunkAtPos(World *world, Vector3 pos){
-  int chunkX = (int)floorf(pos.x / CHUNK_SIZE);
-  int chunkY = (int)floorf(pos.y / CHUNK_SIZE);
-  int chunkZ = (int)floorf(pos.z / CHUNK_SIZE);
+Chunk* GetChunkAtPos(World *WorldVal, Vector3 Pos){
+  int ChunkX = (int)__builtin_floorf(Pos.x / CHUNK_SIZE);
+  int ChunkY = (int)__builtin_floorf(Pos.y / CHUNK_SIZE);
+  int ChunkZ = (int)__builtin_floorf(Pos.z / CHUNK_SIZE);
 
-  return GetChunkFromWorld(world, chunkX, chunkY, chunkZ);
+  return GetChunkFromWorld(WorldVal, ChunkX, ChunkY, ChunkZ);
 }
 
-static void MarkUsefulChunks(World *world, int pChunkX, int pChunkY, int pChunkZ, int renderDist, bool *keepChunk){
-  for(int x = pChunkX - renderDist; x <= pChunkX + renderDist; x++){
-    for(int y = pChunkY - renderDist; y <= pChunkY + renderDist; y++){
-      for(int z = pChunkZ - renderDist; z <= pChunkZ + renderDist; z++){
-
-        Chunk* c = GetChunkFromWorld(world, x, y, z);
-        if(c != NULL){
-          int idx = (int)(c - world->chunks);
-          keepChunk[idx] = true;
+static void MarkUsefulChunks(World *WorldVal, int PChunkX, int PChunkY, int PChunkZ, int RenderDist, bool *KeepChunk){
+  #pragma unroll 4
+  for(int IdxX = PChunkX - RenderDist; IdxX <= PChunkX + RenderDist; IdxX++){
+    #pragma unroll 4
+    for(int IdxY = PChunkY - RenderDist; IdxY <= PChunkY + RenderDist; IdxY++){
+      #pragma unroll 4
+      for(int IdxZ = PChunkZ - RenderDist; IdxZ <= PChunkZ + RenderDist; IdxZ++){
+        Chunk* ChunkVal = GetChunkFromWorld(WorldVal, IdxX, IdxY, IdxZ);
+        if(ChunkVal != (Chunk *)0){
+          int Idx = (int)(ChunkVal - WorldVal->Chunks);
+          KeepChunk[Idx] = true;
         }
       }
     }
   }
 }
 
-void UpdateNeighborsDirtyFlag(World *world, int cx, int cy, int cz){
-  Chunk *neighbor;
-  neighbor = GetChunkFromWorld(world, cx - 1, cy, cz); if (neighbor) { neighbor->isDirty = true; }
-  neighbor = GetChunkFromWorld(world, cx + 1, cy, cz); if (neighbor) { neighbor->isDirty = true; }
-  neighbor = GetChunkFromWorld(world, cx, cy - 1, cz); if (neighbor) { neighbor->isDirty = true; }
-  neighbor = GetChunkFromWorld(world, cx, cy + 1, cz); if (neighbor) { neighbor->isDirty = true; }
-  neighbor = GetChunkFromWorld(world, cx, cy, cz - 1); if (neighbor) { neighbor->isDirty = true; }
-  neighbor = GetChunkFromWorld(world, cx, cy, cz + 1); if (neighbor) { neighbor->isDirty = true; }
+void UpdateNeighborsDirtyFlag(World *WorldVal, int Cx, int Cy, int Cz){
+  Chunk *Neighbor;
+  Neighbor = GetChunkFromWorld(WorldVal, Cx - 1, Cy, Cz); if (Neighbor != (Chunk *)0) { Neighbor->IsDirty = true; }
+  Neighbor = GetChunkFromWorld(WorldVal, Cx + 1, Cy, Cz); if (Neighbor != (Chunk *)0) { Neighbor->IsDirty = true; }
+  Neighbor = GetChunkFromWorld(WorldVal, Cx, Cy - 1, Cz); if (Neighbor != (Chunk *)0) { Neighbor->IsDirty = true; }
+  Neighbor = GetChunkFromWorld(WorldVal, Cx, Cy + 1, Cz); if (Neighbor != (Chunk *)0) { Neighbor->IsDirty = true; }
+  Neighbor = GetChunkFromWorld(WorldVal, Cx, Cy, Cz - 1); if (Neighbor != (Chunk *)0) { Neighbor->IsDirty = true; }
+  Neighbor = GetChunkFromWorld(WorldVal, Cx, Cy, Cz + 1); if (Neighbor != (Chunk *)0) { Neighbor->IsDirty = true; }
 }
 
-static void EvictUnneededChunks(World *world, bool *keepChunk){
-  for(int i = 0; i < world->chunkCount; i++){
-    if(keepChunk[i] || world->chunks[i].isGenerating){
+static void EvictUnneededChunks(World *WorldVal, bool *KeepChunk){
+  #pragma unroll 4
+  for(int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++){
+    if(KeepChunk[IdxI] || WorldVal->Chunks[IdxI].IsGenerating){
       continue;
     }
 
-    int oldX = world->chunks[i].chunkX;
-    int oldY = world->chunks[i].chunkY;
-    int oldZ = world->chunks[i].chunkZ;
+    int OldX = WorldVal->Chunks[IdxI].ChunkX;
+    int OldY = WorldVal->Chunks[IdxI].ChunkY;
+    int OldZ = WorldVal->Chunks[IdxI].ChunkZ;
 
-    if(world->chunks[i].isModified){
-      SaveChunkToDisk(&world->chunks[i]);
+    if(WorldVal->Chunks[IdxI].IsModified){
+      SaveChunkToDisk(&WorldVal->Chunks[IdxI]);
     }
 
-    if(world->chunks[i].hasMesh){
-      UnloadChunkMesh(&world->chunks[i]);
+    if(WorldVal->Chunks[IdxI].HasMesh){
+      UnloadChunkMesh(&WorldVal->Chunks[IdxI]);
     }
 
-    RemoveChunkFromMap(world, oldX, oldY, oldZ);
-    UpdateNeighborsDirtyFlag(world, oldX, oldY, oldZ);
+    RemoveChunkFromMap(WorldVal, OldX, OldY, OldZ);
+    UpdateNeighborsDirtyFlag(WorldVal, OldX, OldY, OldZ);
 
-    keepChunk[i] = true;
-    world->freeList[world->freeCount++] = i;
+    KeepChunk[IdxI] = true;
+    WorldVal->FreeList[WorldVal->FreeCount++] = IdxI;
   }
 }
 
-static void CreateOrRecycleChunk(World *world, int chunkX, int chunkY, int chunkZ){
-  if(world->freeCount == 0){
-    TraceLog(LOG_WARNING, "WORLD: Free-list exhausted, skipping chunk (%d,%d,%d)", chunkX, chunkY, chunkZ);
+static void CreateOrRecycleChunk(World *WorldVal, int ChunkX, int ChunkY, int ChunkZ){
+  if(WorldVal->FreeCount == 0){
+    TraceLog(LOG_WARNING, "WORLD: Free-list exhausted, skipping chunk (%d,%d,%d)", ChunkX, ChunkY, ChunkZ);
     return;
   }
 
-  int i = world->freeList[--world->freeCount];
+  int IdxI = WorldVal->FreeList[--WorldVal->FreeCount];
 
-  world->chunks[i].chunkX = chunkX;
-  world->chunks[i].chunkY = chunkY;
-  world->chunks[i].chunkZ = chunkZ;
+  WorldVal->Chunks[IdxI].ChunkX = ChunkX;
+  WorldVal->Chunks[IdxI].ChunkY = ChunkY;
+  WorldVal->Chunks[IdxI].ChunkZ = ChunkZ;
 
-  EnqueueChunkGeneration(&world->chunks[i]);
-  InsertChunkIntoMap(world, i);
+  EnqueueChunkGeneration(&WorldVal->Chunks[IdxI]);
+  InsertChunkIntoMap(WorldVal, IdxI);
 
-  if(i >= world->chunkCount){
-    world->chunkCount = i + 1;
+  if(IdxI >= WorldVal->ChunkCount){
+    WorldVal->ChunkCount = IdxI + 1;
   }
 }
 
-void UpdateWorld(World *world, Vector3 playerPos, int renderDist){
-  int side = (2 * renderDist) + 1;
-  int requiredChunks = side * side * side;
-  if(requiredChunks > MAX_ACTIVE_CHUNKS){
-    renderDist = MAX_RENDER_DISTANCE;
+void UpdateWorld(World *WorldVal, Vector3 PlayerPos, int RenderDist){
+  int Side = (2 * RenderDist) + 1;
+  int RequiredChunks = Side * Side * Side;
+  if(RequiredChunks > MAX_ACTIVE_CHUNKS){
+    RenderDist = MAX_RENDER_DISTANCE;
   }
 
-  int pChunkX = (int)floorf(playerPos.x / CHUNK_SIZE);
-  int pChunkY = (int)floorf(playerPos.y / CHUNK_SIZE);
-  int pChunkZ = (int)floorf(playerPos.z / CHUNK_SIZE);
+  int PChunkX = (int)__builtin_floorf(PlayerPos.x / CHUNK_SIZE);
+  int PChunkY = (int)__builtin_floorf(PlayerPos.y / CHUNK_SIZE);
+  int PChunkZ = (int)__builtin_floorf(PlayerPos.z / CHUNK_SIZE);
 
-  bool keepChunk[MAX_ACTIVE_CHUNKS] = { false };
+  bool KeepChunk[MAX_ACTIVE_CHUNKS] = { false };
 
-  MarkUsefulChunks(world, pChunkX, pChunkY, pChunkZ, renderDist, keepChunk);
-  EvictUnneededChunks(world, keepChunk);
+  MarkUsefulChunks(WorldVal, PChunkX, PChunkY, PChunkZ, RenderDist, KeepChunk);
+  EvictUnneededChunks(WorldVal, KeepChunk);
 
-  for(int x = pChunkX - renderDist; x <= pChunkX + renderDist; x++){
-    for(int y = pChunkY - renderDist; y <= pChunkY + renderDist; y++){
-      for(int z = pChunkZ - renderDist; z <= pChunkZ + renderDist; z++){
-
-        if(GetChunkFromWorld(world, x, y, z) == NULL){
-          CreateOrRecycleChunk(world, x, y, z);
+  #pragma unroll 4
+  for(int IdxX = PChunkX - RenderDist; IdxX <= PChunkX + RenderDist; IdxX++){
+    #pragma unroll 4
+    for(int IdxY = PChunkY - RenderDist; IdxY <= PChunkY + RenderDist; IdxY++){
+      #pragma unroll 4
+      for(int IdxZ = PChunkZ - RenderDist; IdxZ <= PChunkZ + RenderDist; IdxZ++){
+        if(GetChunkFromWorld(WorldVal, IdxX, IdxY, IdxZ) == (Chunk *)0){
+          CreateOrRecycleChunk(WorldVal, IdxX, IdxY, IdxZ);
         }
       }
     }
   }
 }
 
-static Chunk* GetLocalCoords(World *world, Vector3 globalPos, int *localX, int *localY, int *localZ){
+static Chunk* GetLocalCoords(World *WorldVal, Vector3 GlobalPos, int *LocalX, int *LocalY, int *LocalZ){
+  int ChunkX = (int)__builtin_floorf(GlobalPos.x / CHUNK_SIZE);
+  int ChunkY = (int)__builtin_floorf(GlobalPos.y / CHUNK_SIZE);
+  int ChunkZ = (int)__builtin_floorf(GlobalPos.z / CHUNK_SIZE);
 
-  int chunkX = (int)floorf(globalPos.x / CHUNK_SIZE);
-  int chunkY = (int)floorf(globalPos.y / CHUNK_SIZE);
-  int chunkZ = (int)floorf(globalPos.z / CHUNK_SIZE);
+  *LocalX = (int)__builtin_floorf(GlobalPos.x) - (ChunkX * CHUNK_SIZE);
+  *LocalY = (int)__builtin_floorf(GlobalPos.y) - (ChunkY * CHUNK_SIZE);
+  *LocalZ = (int)__builtin_floorf(GlobalPos.z) - (ChunkZ * CHUNK_SIZE);
 
-  *localX = (int)floorf(globalPos.x) - (chunkX * CHUNK_SIZE);
-  *localY = (int)floorf(globalPos.y) - (chunkY * CHUNK_SIZE);
-  *localZ = (int)floorf(globalPos.z) - (chunkZ * CHUNK_SIZE);
-
-  return GetChunkFromWorld(world, chunkX, chunkY, chunkZ);
+  return GetChunkFromWorld(WorldVal, ChunkX, ChunkY, ChunkZ);
 }
 
-void SetBlockInWorld(World *world, Vector3 pos, unsigned char blockID){
-  Chunk *chunk = GetChunkAtPos(world, pos);
-  if (chunk == NULL) { return; }
+void SetBlockInWorld(World *WorldVal, Vector3 Pos, unsigned char BlockId){
+  Chunk *ChunkVal = GetChunkAtPos(WorldVal, Pos);
+  if (ChunkVal == (Chunk *)0) { return; }
 
-  int localX = ((int)floorf(pos.x)) % CHUNK_SIZE;
-  int localY = ((int)floorf(pos.y)) % CHUNK_SIZE;
-  int localZ = ((int)floorf(pos.z)) % CHUNK_SIZE;
+  int LocalX = ((int)__builtin_floorf(Pos.x)) % CHUNK_SIZE;
+  int LocalY = ((int)__builtin_floorf(Pos.y)) % CHUNK_SIZE;
+  int LocalZ = ((int)__builtin_floorf(Pos.z)) % CHUNK_SIZE;
 
-  if (localX < 0) { localX += CHUNK_SIZE; }
-  if (localY < 0) { localY += CHUNK_SIZE; }
-  if (localZ < 0) { localZ += CHUNK_SIZE; }
+  if (LocalX < 0) { LocalX += CHUNK_SIZE; }
+  if (LocalY < 0) { LocalY += CHUNK_SIZE; }
+  if (LocalZ < 0) { LocalZ += CHUNK_SIZE; }
 
-  SetBlockInChunk(chunk, (Vector3){(float)localX, (float)localY, (float)localZ}, blockID);
-  chunk->isDirty = true;
+  SetBlockInChunk(ChunkVal, (Vector3){(float)LocalX, (float)LocalY, (float)LocalZ}, BlockId);
+  ChunkVal->IsDirty = true;
 
-  if (localX == 0) {
-    Chunk *neighbor = GetChunkFromWorld(world, chunk->chunkX - 1, chunk->chunkY,chunk->chunkZ);
-    if (neighbor) { neighbor->isDirty = true; }
+  if (LocalX == 0) {
+    Chunk *Neighbor = GetChunkFromWorld(WorldVal, ChunkVal->ChunkX - 1, ChunkVal->ChunkY, ChunkVal->ChunkZ);
+    if (Neighbor != (Chunk *)0) { Neighbor->IsDirty = true; }
   } 
-  else if (localX == CHUNK_SIZE - 1) {
-    Chunk *neighbor = GetChunkFromWorld(world, chunk->chunkX + 1, chunk->chunkY,chunk->chunkZ);
-    if (neighbor) { neighbor->isDirty = true; }
+  else if (LocalX == CHUNK_SIZE - 1) {
+    Chunk *Neighbor = GetChunkFromWorld(WorldVal, ChunkVal->ChunkX + 1, ChunkVal->ChunkY, ChunkVal->ChunkZ);
+    if (Neighbor != (Chunk *)0) { Neighbor->IsDirty = true; }
   }
 
-  if (localY == 0) {
-    Chunk *neighbor = GetChunkFromWorld(world, chunk->chunkX, chunk->chunkY - 1,chunk->chunkZ);
-    if (neighbor) { neighbor->isDirty = true; }
+  if (LocalY == 0) {
+    Chunk *Neighbor = GetChunkFromWorld(WorldVal, ChunkVal->ChunkX, ChunkVal->ChunkY - 1, ChunkVal->ChunkZ);
+    if (Neighbor != (Chunk *)0) { Neighbor->IsDirty = true; }
   } 
-  else if (localY == CHUNK_SIZE - 1) {
-    Chunk *neighbor = GetChunkFromWorld(world, chunk->chunkX, chunk->chunkY + 1,chunk->chunkZ);
-    if (neighbor) { neighbor->isDirty = true; }
+  else if (LocalY == CHUNK_SIZE - 1) {
+    Chunk *Neighbor = GetChunkFromWorld(WorldVal, ChunkVal->ChunkX, ChunkVal->ChunkY + 1, ChunkVal->ChunkZ);
+    if (Neighbor != (Chunk *)0) { Neighbor->IsDirty = true; }
   }
 
-  if (localZ == 0) {
-    Chunk *neighbor = GetChunkFromWorld(world, chunk->chunkX, chunk->chunkY,chunk->chunkZ - 1);
-    if (neighbor) { neighbor->isDirty = true; }
+  if (LocalZ == 0) {
+    Chunk *Neighbor = GetChunkFromWorld(WorldVal, ChunkVal->ChunkX, ChunkVal->ChunkY, ChunkVal->ChunkZ - 1);
+    if (Neighbor != (Chunk *)0) { Neighbor->IsDirty = true; }
   } 
-  else if (localZ == CHUNK_SIZE - 1) {
-    Chunk *neighbor = GetChunkFromWorld(world, chunk->chunkX, chunk->chunkY,chunk->chunkZ + 1);
-    if (neighbor) { neighbor->isDirty = true; }
+  else if (LocalZ == CHUNK_SIZE - 1) {
+    Chunk *Neighbor = GetChunkFromWorld(WorldVal, ChunkVal->ChunkX, ChunkVal->ChunkY, ChunkVal->ChunkZ + 1);
+    if (Neighbor != (Chunk *)0) { Neighbor->IsDirty = true; }
   }
 }
 
-int GetBlockIDFromWorld(World *world, Vector3 globalPos){
-  int lx; 
-  int ly; 
-  int lz;
+int GetBlockIDFromWorld(World *WorldVal, Vector3 GlobalPos){
+  int Lx; 
+  int Ly; 
+  int Lz;
 
-  Chunk *c = GetLocalCoords(world, globalPos, &lx, &ly, &lz);
+  Chunk *ChunkVal = GetLocalCoords(WorldVal, GlobalPos, &Lx, &Ly, &Lz);
 
-  if(c != NULL){
-    return GetBlockIDInChunk(c, (Vector3){(float)lx, (float)ly, (float)lz});
+  if(ChunkVal != (Chunk *)0){
+    return GetBlockIdInChunk(ChunkVal, (Vector3){(float)Lx, (float)Ly, (float)Lz});
   }
 
   return 0;
 }
 
-static DDAState InitDDAState(Vector3 rayOrigin, Vector3 rayDir){
-  DDAState state = {0};
+static DdaState InitDDAState(Vector3 RayOrigin, Vector3 RayDir){
+  DdaState State = {0};
 
-  float startX = rayOrigin.x + BLOCK_HALF_SIZE;
-  float startY = rayOrigin.y + BLOCK_HALF_SIZE;
-  float startZ = rayOrigin.z + BLOCK_HALF_SIZE;
+  float StartX = RayOrigin.x + BLOCK_HALF_SIZE;
+  float StartY = RayOrigin.y + BLOCK_HALF_SIZE;
+  float StartZ = RayOrigin.z + BLOCK_HALF_SIZE;
 
-  state.voxelX = (int)floorf(startX);
-  state.voxelY = (int)floorf(startY);
-  state.voxelZ = (int)floorf(startZ);
+  State.VoxelX = (int)__builtin_floorf(StartX);
+  State.VoxelY = (int)__builtin_floorf(StartY);
+  State.VoxelZ = (int)__builtin_floorf(StartZ);
 
-  state.stepX = (rayDir.x > 0) - (rayDir.x < 0);
-  state.stepY = (rayDir.y > 0) - (rayDir.y < 0);
-  state.stepZ = (rayDir.z > 0) - (rayDir.z < 0);
+  State.StepX = (RayDir.x > 0.0F) - (RayDir.x < 0.0F);
+  State.StepY = (RayDir.y > 0.0F) - (RayDir.y < 0.0F);
+  State.StepZ = (RayDir.z > 0.0F) - (RayDir.z < 0.0F);
 
-  state.tDeltaX = (rayDir.x != 0) ? fabsf(BLOCK_SIZE / rayDir.x) : INFINITY;
-  state.tDeltaY = (rayDir.y != 0) ? fabsf(BLOCK_SIZE / rayDir.y) : INFINITY;
-  state.tDeltaZ = (rayDir.z != 0) ? fabsf(BLOCK_SIZE / rayDir.z) : INFINITY;
+  State.TDeltaX = (RayDir.x != 0.0F) ? __builtin_fabsf(BLOCK_SIZE / RayDir.x) : __builtin_huge_valf();
+  State.TDeltaY = (RayDir.y != 0.0F) ? __builtin_fabsf(BLOCK_SIZE / RayDir.y) : __builtin_huge_valf();
+  State.TDeltaZ = (RayDir.z != 0.0F) ? __builtin_fabsf(BLOCK_SIZE / RayDir.z) : __builtin_huge_valf();
 
-  state.tMaxX = (state.stepX > 0) ? (floorf(startX) + BLOCK_SIZE - startX) * state.tDeltaX : (startX - floorf(startX)) * state.tDeltaX;
-  state.tMaxY = (state.stepY > 0) ? (floorf(startY) + BLOCK_SIZE - startY) * state.tDeltaY : (startY - floorf(startY)) * state.tDeltaY;
-  state.tMaxZ = (state.stepZ > 0) ? (floorf(startZ) + BLOCK_SIZE - startZ) * state.tDeltaZ : (startZ - floorf(startZ)) * state.tDeltaZ;
+  State.TMaxX = (State.StepX > 0) ? (__builtin_floorf(StartX) + BLOCK_SIZE - StartX) * State.TDeltaX : (StartX - __builtin_floorf(StartX)) * State.TDeltaX;
+  State.TMaxY = (State.StepY > 0) ? (__builtin_floorf(StartY) + BLOCK_SIZE - StartY) * State.TDeltaY : (StartY - __builtin_floorf(StartY)) * State.TDeltaY;
+  State.TMaxZ = (State.StepZ > 0) ? (__builtin_floorf(StartZ) + BLOCK_SIZE - StartZ) * State.TDeltaZ : (StartZ - __builtin_floorf(StartZ)) * State.TDeltaZ;
 
-  return state;
+  return State;
 }
 
-static void StepDDA(DDAState *state){
-  if(state->tMaxX < state->tMaxY){
-    if(state->tMaxX < state->tMaxZ){
-      state->voxelX += state->stepX;
-      state->distanceTravelled = state->tMaxX;
-      state->tMaxX += state->tDeltaX;
-      state->lastStep = 0;
+static void StepDDA(DdaState *State){
+  if(State->TMaxX < State->TMaxY){
+    if(State->TMaxX < State->TMaxZ){
+      State->VoxelX += State->StepX;
+      State->DistanceTravelled = State->TMaxX;
+      State->TMaxX += State->TDeltaX;
+      State->LastStep = 0;
     } else {
-      state->voxelZ += state->stepZ;
-      state->distanceTravelled = state->tMaxZ;
-      state->tMaxZ += state->tDeltaZ;
-      state->lastStep = 2;
+      State->VoxelZ += State->StepZ;
+      State->DistanceTravelled = State->TMaxZ;
+      State->TMaxZ += State->TDeltaZ;
+      State->LastStep = 2;
     }
   } else {
-    if(state->tMaxY < state->tMaxZ){
-      state->voxelY += state->stepY;
-      state->distanceTravelled = state->tMaxY;
-      state->tMaxY += state->tDeltaY;
-      state->lastStep = 1;
+    if(State->TMaxY < State->TMaxZ){
+      State->VoxelY += State->StepY;
+      State->DistanceTravelled = State->TMaxY;
+      State->TMaxY += State->TDeltaY;
+      State->LastStep = 1;
     } else {
-      state->voxelZ += state->stepZ;
-      state->distanceTravelled = state->tMaxZ;
-      state->tMaxZ += state->tDeltaZ;
-      state->lastStep = 2;
+      State->VoxelZ += State->StepZ;
+      State->DistanceTravelled = State->TMaxZ;
+      State->TMaxZ += State->TDeltaZ;
+      State->LastStep = 2;
     }
   }
 }
 
-RaycastResult RayCastToWorld(World *world, Vector3 rayOrigin, Vector3 rayDir, float maxDistance){
-  RaycastResult result = { .hit = false, .blockPos ={0}, .blockID = 0, .normal = {0} };
+RaycastResult RayCastToWorld(World *WorldVal, Vector3 RayOrigin, Vector3 RayDir, float MaxDistance){
+  RaycastResult Result = { .Hit = false, .BlockPos ={0.0F, 0.0F, 0.0F}, .BlockId = 0, .Normal = {0.0F, 0.0F, 0.0F} };
 
-  DDAState dda = InitDDAState(rayOrigin, rayDir);
+  DdaState Dda = InitDDAState(RayOrigin, RayDir);
 
-  int maxIter = (int)(maxDistance * DDA_MAX_CROSSED_AXES) + 1; 
+  int MaxIter = (int)(MaxDistance * DDA_MAX_CROSSED_AXES) + 1; 
 
-  for(int i = 0; i < maxIter; i++){
-    Vector3 checkPos = { (float)dda.voxelX, (float)dda.voxelY, (float)dda.voxelZ };
-    int id = GetBlockIDFromWorld(world, checkPos);
+  #pragma unroll 4
+  for(int IdxI = 0; IdxI < MaxIter; IdxI++){
+    Vector3 CheckPos = { (float)Dda.VoxelX, (float)Dda.VoxelY, (float)Dda.VoxelZ };
+    int Id = GetBlockIDFromWorld(WorldVal, CheckPos);
 
-    if(id != 0){
-      result.hit = true;
-      result.blockPos = checkPos;
-      result.blockID = id;
+    if(Id != 0){
+      Result.Hit = true;
+      Result.BlockPos = CheckPos;
+      Result.BlockId = Id;
 
-      if(dda.lastStep == 0) { result.normal = (Vector3){ (float)-dda.stepX, 0, 0 }; }
-      else if(dda.lastStep == 1) { result.normal = (Vector3){ 0, (float)-dda.stepY, 0 }; }
-      else if(dda.lastStep == 2) { result.normal = (Vector3){ 0, 0, (float)-dda.stepZ }; }
+      if(Dda.LastStep == 0) { Result.Normal = (Vector3){ (float)-Dda.StepX, 0.0F, 0.0F }; }
+      else if(Dda.LastStep == 1) { Result.Normal = (Vector3){ 0.0F, (float)-Dda.StepY, 0.0F }; }
+      else if(Dda.LastStep == 2) { Result.Normal = (Vector3){ 0.0F, 0.0F, (float)-Dda.StepZ }; }
 
-      return result;
+      return Result;
     }
 
-    StepDDA(&dda);
+    StepDDA(&Dda);
 
-    if(dda.distanceTravelled > maxDistance) { break; }
+    if(Dda.DistanceTravelled > MaxDistance) { break; }
   }
 
-  return result;
+  return Result;
 }
 
-bool AreNeighborsGenerated(World *world, Chunk *chunk) {
-  int cx = chunk->chunkX;
-  int cy = chunk->chunkY;
-  int cz = chunk->chunkZ;
+bool AreNeighborsGenerated(World *WorldVal, Chunk *ChunkVal) {
+  int Cx = ChunkVal->ChunkX;
+  int Cy = ChunkVal->ChunkY;
+  int Cz = ChunkVal->ChunkZ;
 
 #define NEIGHBOR_COUNT 6
-  int neighborCoords[NEIGHBOR_COUNT][3] = {
-    {cx - 1, cy, cz},
-    {cx + 1, cy, cz},
-    {cx, cy - 1, cz},
-    {cx, cy + 1, cz},
-    {cx, cy, cz - 1},
-    {cx, cy, cz + 1}
+  int NeighborCoords[NEIGHBOR_COUNT][3] = {
+    {Cx - 1, Cy, Cz},
+    {Cx + 1, Cy, Cz},
+    {Cx, Cy - 1, Cz},
+    {Cx, Cy + 1, Cz},
+    {Cx, Cy, Cz - 1},
+    {Cx, Cy, Cz + 1}
   };
 
-  for (int i = 0; i < NEIGHBOR_COUNT; i++) {
-    Chunk *neighbor = GetChunkFromWorld(world, neighborCoords[i][0], neighborCoords[i][1], neighborCoords[i][2]);
-    if (neighbor != NULL) {
-      if (!neighbor->isGenerated || neighbor->isGenerating) {
+  #pragma unroll 4
+  for (int IdxI = 0; IdxI < NEIGHBOR_COUNT; IdxI++) {
+    Chunk *Neighbor = GetChunkFromWorld(WorldVal, NeighborCoords[IdxI][0], NeighborCoords[IdxI][1], NeighborCoords[IdxI][2]);
+    if (Neighbor != (Chunk *)0) {
+      if (!Neighbor->IsGenerated || Neighbor->IsGenerating) {
         return false;
       }
     }

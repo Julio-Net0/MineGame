@@ -17,14 +17,14 @@ typedef enum {
 
 void InitRenderer(void);
 void CloseRenderer(void);
-void BuildChunkMesh(World *world, Chunk *chunk);
-void RenderChunkMesh(Chunk *chunk);
-void RenderChunkTranslucentMesh(Chunk *chunk);
-void UnloadChunkMesh(Chunk *chunk);
-void DrawWorld(World *world, Camera3D camera);
-void DrawBlockHighlight(Vector3 pos);
-void DrawAABBDebug(World *world, Player *player);
-void DrawBlockIcon(int blockID, int x, int y, int size);
-bool IsChunkInFrustum(Camera3D camera, Chunk *chunk);
+void BuildChunkMesh(World *WorldVal, Chunk *ChunkVal);
+void RenderChunkMesh(Chunk *ChunkVal);
+void RenderChunkTranslucentMesh(Chunk *ChunkVal);
+void UnloadChunkMesh(Chunk *ChunkVal);
+void DrawWorld(World *WorldVal, Camera3D CameraVal);
+void DrawBlockHighlight(Vector3 Pos);
+void DrawAABBDebug(World *WorldVal, Player *PlayerVal);
+void DrawBlockIcon(int BlockId, int X, int Y, int Size);
+bool IsChunkInFrustum(Camera3D CameraVal, Chunk *ChunkVal);
 
 #endif

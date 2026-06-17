@@ -3,87 +3,105 @@
 #include <pthread.h>
 #include <raylib.h>
 #include <stdatomic.h>
+#include <stdbool.h>
 
-//Needs to be bigger than MAX_ACTIVE_CHUNKS
 #define QUEUE_SIZE 2048
-
-static Chunk* generationQueue[QUEUE_SIZE];
-static int queueHead = 0;
-static int queueTail = 0;
-
 #define WORKER_THREAD_COUNT 4
 
-static pthread_t workerThreads[WORKER_THREAD_COUNT];
-static pthread_mutex_t queueMutex;
-static pthread_cond_t workAvail;
-static atomic_bool workerRunning = false;
+typedef struct ChunkWorkerState {
+  Chunk *GenerationQueue[QUEUE_SIZE];
+  int QueueHead;
+  int QueueTail;
+  pthread_t WorkerThreads[WORKER_THREAD_COUNT];
+  pthread_mutex_t QueueMutex;
+  pthread_cond_t WorkAvail;
+  atomic_bool WorkerRunning;
+} ChunkWorkerState;
 
-static void* WorkerLoop(void* arg) {
-  (void)arg;
-  while (1) {
-    pthread_mutex_lock(&queueMutex);
+static ChunkWorkerState *GetWorkerState(void) {
+  static ChunkWorkerState State = {
+    .QueueHead = 0,
+    .QueueTail = 0,
+    .WorkerRunning = false
+  };
+  return &State;
+}
 
-    while (workerRunning && queueHead == queueTail) {
-      pthread_cond_wait(&workAvail, &queueMutex);
-    }
-
-    if (!workerRunning && queueHead == queueTail) {
-      pthread_mutex_unlock(&queueMutex);
+static void *WorkerLoop(void *Arg) {
+  (void)Arg;
+  ChunkWorkerState *State = GetWorkerState();
+  for (;;) {
+    int LockRes = pthread_mutex_lock(&State->QueueMutex);
+    if (LockRes != 0) {
       break;
     }
 
-    Chunk *target = generationQueue[queueHead];
-    queueHead = (queueHead + 1) % QUEUE_SIZE;
-
-    pthread_mutex_unlock(&queueMutex);
-
-    if (!LoadChunkFromDisk(target)) {
-      GenerateChunkTerrain(target);
+    while (atomic_load(&State->WorkerRunning) && State->QueueHead == State->QueueTail) {
+      pthread_cond_wait(&State->WorkAvail, &State->QueueMutex);
     }
 
-    target->terrainJustGenerated = true;
-    target->isGenerated = true;
-    target->isGenerating = false;
+    if (!atomic_load(&State->WorkerRunning) && State->QueueHead == State->QueueTail) {
+      pthread_mutex_unlock(&State->QueueMutex);
+      break;
+    }
+
+    Chunk *Target = State->GenerationQueue[State->QueueHead];
+    State->QueueHead = (State->QueueHead + 1) % QUEUE_SIZE;
+
+    pthread_mutex_unlock(&State->QueueMutex);
+
+    if (!LoadChunkFromDisk(Target)) {
+      GenerateChunkTerrain(Target);
+    }
+
+    Target->TerrainJustGenerated = true;
+    Target->IsGenerated = true;
+    Target->IsGenerating = false;
   }
-  return NULL;
+  return (void *)0;
 }
 
 void InitChunkWorker(void) {
-    workerRunning = true;
-    pthread_mutex_init(&queueMutex, NULL);
-    pthread_cond_init(&workAvail, NULL);
-    for (int i = 0; i < WORKER_THREAD_COUNT; i++) {
-        pthread_create(&workerThreads[i], NULL, WorkerLoop, NULL);
-    }
+  ChunkWorkerState *State = GetWorkerState();
+  atomic_store(&State->WorkerRunning, true);
+  pthread_mutex_init(&State->QueueMutex, (const pthread_mutexattr_t *)0);
+  pthread_cond_init(&State->WorkAvail, (const pthread_condattr_t *)0);
+  #pragma unroll 4
+  for (int Idx = 0; Idx < WORKER_THREAD_COUNT; Idx++) {
+    pthread_create(&State->WorkerThreads[Idx], (const pthread_attr_t *)0, WorkerLoop, (void *)0);
+  }
 }
 
 void CloseChunkWorker(void) {
-    workerRunning = false;
-    pthread_cond_broadcast(&workAvail);
-    for (int i = 0; i < WORKER_THREAD_COUNT; i++) {
-        pthread_join(workerThreads[i], NULL);
-    }
-    pthread_cond_destroy(&workAvail);
-    pthread_mutex_destroy(&queueMutex);
+  ChunkWorkerState *State = GetWorkerState();
+  atomic_store(&State->WorkerRunning, false);
+  pthread_cond_broadcast(&State->WorkAvail);
+  #pragma unroll 4
+  for (int Idx = 0; Idx < WORKER_THREAD_COUNT; Idx++) {
+    pthread_join(State->WorkerThreads[Idx], (void **)0);
+  }
+  pthread_cond_destroy(&State->WorkAvail);
+  pthread_mutex_destroy(&State->QueueMutex);
 }
 
-void EnqueueChunkGeneration(Chunk *chunk) {
-    pthread_mutex_lock(&queueMutex);
+void EnqueueChunkGeneration(Chunk *ChunkVal) {
+  ChunkWorkerState *State = GetWorkerState();
+  pthread_mutex_lock(&State->QueueMutex);
 
-    int nextTail = (queueTail + 1) % QUEUE_SIZE;
+  int NextTail = (State->QueueTail + 1) % QUEUE_SIZE;
 
-    if (nextTail != queueHead) {
-      chunk->isGenerating = true;
-      chunk->isGenerated = false;
+  if (NextTail != State->QueueHead) {
+    ChunkVal->IsGenerating = true;
+    ChunkVal->IsGenerated = false;
 
-      generationQueue[queueTail] = chunk;
-      queueTail = nextTail;
-      pthread_cond_signal(&workAvail);
-    } else {
-      TraceLog(LOG_WARNING, "Chunk generation queue full! Chunk rejected at: %d, %d, %d", chunk->chunkX, chunk->chunkY, chunk->chunkZ);
-      chunk->isGenerating = false;
-      chunk->isGenerated = false;
-    }
+    State->GenerationQueue[State->QueueTail] = ChunkVal;
+    State->QueueTail = NextTail;
+    pthread_cond_signal(&State->WorkAvail);
+  } else {
+    TraceLog(LOG_WARNING, "Chunk generation queue full! Chunk rejected at: %d, %d, %d", ChunkVal->ChunkX, ChunkVal->ChunkY, ChunkVal->ChunkZ);
+    ChunkVal->IsGenerating = false;
+    ChunkVal->IsGenerated = false;
+  }
 
-    pthread_mutex_unlock(&queueMutex);
+  pthread_mutex_unlock(&State->QueueMutex);
 }

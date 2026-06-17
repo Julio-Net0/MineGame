@@ -10,28 +10,28 @@
 #define CHUNK_MAP_SIZE (MAX_ACTIVE_CHUNKS * 4)
 
 typedef struct World {
-  Chunk chunks[MAX_ACTIVE_CHUNKS];
-  int chunkHashMap[CHUNK_MAP_SIZE];
-  int chunkCount;
-  int freeList[MAX_ACTIVE_CHUNKS];
-  int freeCount;
-} World ;
+  Chunk Chunks[MAX_ACTIVE_CHUNKS];
+  int ChunkHashMap[CHUNK_MAP_SIZE];
+  int ChunkCount;
+  int FreeList[MAX_ACTIVE_CHUNKS];
+  int FreeCount;
+} World;
 
 typedef struct {
-  Vector3 blockPos;
-  Vector3 normal;
-  int blockID;
-  bool hit;
+  Vector3 BlockPos;
+  Vector3 Normal;
+  int BlockId;
+  bool Hit;
 } RaycastResult;
 
-void InitWorld(World *world);
-void UpdateWorld(World *world, Vector3 playerPos, int renderDist);
-void UpdateNeighborsDirtyFlag(World *world, int cx, int cy, int cz);
-int GetBlockIDFromWorld(World *world, Vector3 globalPos);
-void SetBlockInWorld(World *world, Vector3 globalPos, unsigned char blockID);
-RaycastResult RayCastToWorld(World *world, Vector3 rayOrigin, Vector3 rayDir, float maxDistance);
-Chunk* GetChunkFromWorld(World *world, int chunkX, int chunkY, int chunkZ);
-Chunk* GetChunkAtPos(World *world, Vector3 pos);
-bool AreNeighborsGenerated(World *world, Chunk *chunk);
+void InitWorld(World *WorldVal);
+void UpdateWorld(World *WorldVal, Vector3 PlayerPos, int RenderDist);
+void UpdateNeighborsDirtyFlag(World *WorldVal, int Cx, int Cy, int Cz);
+int GetBlockIDFromWorld(World *WorldVal, Vector3 GlobalPos);
+void SetBlockInWorld(World *WorldVal, Vector3 GlobalPos, unsigned char BlockId);
+RaycastResult RayCastToWorld(World *WorldVal, Vector3 RayOrigin, Vector3 RayDir, float MaxDistance);
+Chunk *GetChunkFromWorld(World *WorldVal, int ChunkX, int ChunkY, int ChunkZ);
+Chunk *GetChunkAtPos(World *WorldVal, Vector3 Pos);
+bool AreNeighborsGenerated(World *WorldVal, Chunk *ChunkVal);
 
 #endif

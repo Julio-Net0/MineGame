@@ -7,32 +7,32 @@
 #include "player.h"
 #include "world.h"
 
-typedef struct{
-  ChatState *chat;
-  Camera3D *camera;
-  BlockType *blockRegistry;
-  int blockCount;
-  Player *player;
-  World *world;
+typedef struct {
+  ChatState *Chat;
+  Camera3D *Camera;
+  BlockType *BlockRegistry;
+  int BlockCount;
+  Player *Player;
+  World *World;
 } CommandContext;
 
-typedef void (*CommandFunc)(const char *args, CommandContext *ctx);
-
-typedef struct{
-  const char* name;
-  const char* use;
-  const char* description;
-  CommandFunc function;
-} CommandInfo;
-
-typedef void (*DebugFunc)(CommandContext *ctx, bool state);
+typedef void (*CommandFunc)(const char *Args, CommandContext *Ctx);
 
 typedef struct {
-  const char *name;
-  const char *description;
-  DebugFunc func;
+  const char *Name;
+  const char *Use;
+  const char *Description;
+  CommandFunc Function;
+} CommandInfo;
+
+typedef void (*DebugFunc)(CommandContext *Ctx, bool State);
+
+typedef struct {
+  const char *Name;
+  const char *Description;
+  DebugFunc Func;
 } DebugToggle;
 
-void CommandHandler(char *command, ChatState *chat, Camera3D *camera, Player *player, World *world);
+void CommandHandler(char *Command, ChatState *Chat, Camera3D *Camera, Player *Player, World *World);
 
 #endif

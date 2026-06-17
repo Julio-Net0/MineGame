@@ -7,16 +7,9 @@
 
 #define MAX_RLE_RUN_LENGTH 255
 
-// Serializes chunk data into outBuffer.
-// Returns the size of the serialized data (bytes written).
-// Sets *isRaw to true if it falls back to raw 4096-byte copy, false if RLE.
-int ChunkSerialize(const Chunk *chunk, uint8_t *outBuffer, bool *isRaw);
+int ChunkSerialize(const Chunk *ChunkVal, uint8_t *OutBuffer, bool *IsRaw);
 
-// Deserializes data from inBuffer of size dataSize.
-// isRaw indicates if the data is raw 4096-byte copy or RLE.
-// Returns true on success, false on validation error (destination chunk remains
-// untouched).
-bool ChunkDeserialize(Chunk *chunk, const uint8_t *inBuffer, int dataSize,
-                      bool isRaw);
+bool ChunkDeserialize(Chunk *ChunkVal, const uint8_t *InBuffer, int DataSize,
+                      bool IsRaw);
 
 #endif // CHUNK_SERIAL_H

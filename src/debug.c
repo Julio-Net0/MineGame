@@ -1,8 +1,11 @@
 #include "debug.h"
 
-DebugState g_debug = {
-  .wireframe = false,
-  .chunkBorders = false,
-  .AABB = false,
-  .freecam = false,
-};
+DebugState *GetDebugState(void) {
+  static DebugState SDebug = {
+    .Wireframe = false,
+    .ChunkBorders = false,
+    .Aabb = false,
+    .Freecam = false,
+  };
+  return &SDebug;
+}

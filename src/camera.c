@@ -1,7 +1,6 @@
 #include "camera.h"
 #include "raylib.h"
 #include "raymath.h"
-#include <math.h>
 
 #define WORLD_UP_VECTOR (Vector3){0.0F, 1.0F, 0.0F}
 #define WORLD_ORIGIN (Vector3){0.0F, 0.0F, 0.0F}
@@ -10,41 +9,62 @@
 #define INITIAL_LOOK_AT WORLD_ORIGIN
 
 #define INITIAL_FOV 90.0F
-
 #define CAMERA_PITCH_LIMIT 89.0F
-
 #define MOUSE_SENSITIVITY 0.05F
 
-static float cameraPitch = 0.0F;
-static float cameraYaw = 0.0F;
+enum {
+  ALIGNMENT_EIGHT = 8
+};
 
-Camera3D CreateGameCamera(void){
-  Camera3D camera = { 0 };
-  camera.position = CAMERA_POSITION;
-  camera.target = INITIAL_LOOK_AT;
-  camera.up = WORLD_UP_VECTOR;
-  camera.fovy = INITIAL_FOV;
-  camera.projection = CAMERA_PERSPECTIVE;
-  return camera;
+static float CustomCosf(float XVal) {
+  return __builtin_cosf(XVal);
 }
 
-void UpdateGameCamera(Camera3D *camera, Vector2 lookDelta){
-    float sensitivity = MOUSE_SENSITIVITY;
+static float CustomSinf(float XVal) {
+  return __builtin_sinf(XVal);
+}
 
-    cameraYaw -= (lookDelta.x * sensitivity);
-    cameraPitch -= (lookDelta.y * sensitivity);
+typedef struct {
+  float Pitch;
+  float Yaw;
+} __attribute__((aligned(ALIGNMENT_EIGHT))) CameraState;
 
-    if (cameraPitch > CAMERA_PITCH_LIMIT) { cameraPitch = CAMERA_PITCH_LIMIT; }
-    if (cameraPitch < -CAMERA_PITCH_LIMIT) { cameraPitch = -CAMERA_PITCH_LIMIT; }
+static CameraState *GetCameraState(void) {
+  static CameraState SCameraState = {0.0F, 0.0F};
+  return &SCameraState;
+}
 
-    float pitchRad = cameraPitch * DEG2RAD;
-    float yawRad = cameraYaw * DEG2RAD;
+Camera3D CreateGameCamera(void) {
+  Camera3D Camera = { 0 };
+  Camera.position = CAMERA_POSITION;
+  Camera.target = INITIAL_LOOK_AT;
+  Camera.up = WORLD_UP_VECTOR;
+  Camera.fovy = INITIAL_FOV;
+  Camera.projection = CAMERA_PERSPECTIVE;
+  return Camera;
+}
 
-    Vector3 viewVector;
+void UpdateGameCamera(Camera3D *Camera, Vector2 LookDelta) {
+  float Sensitivity = MOUSE_SENSITIVITY;
+  CameraState *State = GetCameraState();
 
-    viewVector.x = cosf(pitchRad) * sinf(yawRad);
-    viewVector.y = sinf(pitchRad);
-    viewVector.z = cosf(pitchRad) * cosf(yawRad);
+  State->Yaw -= (LookDelta.x * Sensitivity);
+  State->Pitch -= (LookDelta.y * Sensitivity);
 
-    camera->target = Vector3Add(camera->position, viewVector);
+  if (State->Pitch > CAMERA_PITCH_LIMIT) {
+    State->Pitch = CAMERA_PITCH_LIMIT;
+  }
+  if (State->Pitch < -CAMERA_PITCH_LIMIT) {
+    State->Pitch = -CAMERA_PITCH_LIMIT;
+  }
+
+  float PitchRad = State->Pitch * DEG2RAD;
+  float YawRad = State->Yaw * DEG2RAD;
+
+  Vector3 ViewVector;
+  ViewVector.x = CustomCosf(PitchRad) * CustomSinf(YawRad);
+  ViewVector.y = CustomSinf(PitchRad);
+  ViewVector.z = CustomCosf(PitchRad) * CustomCosf(YawRad);
+
+  Camera->target = Vector3Add(Camera->position, ViewVector);
 }

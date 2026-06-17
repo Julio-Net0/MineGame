@@ -1,153 +1,175 @@
 #include "block_system.h"
 #include "cJSON.h"
 #include "raylib.h"
-#include <string.h>
-#include <stdlib.h>
+#include "utils.h"
 
-BlockType blockRegistry[BLOCK_REGISTRY_SIZE];
-static int loadedBlocksCount = 0;
+enum {
+  MAX_FILES_LIMIT = 1024
+};
 
-void InitBlockRegistry(void){
-  for(int i = 0; i < BLOCK_REGISTRY_SIZE; i++){
-    blockRegistry[i].id = -1;
-    strcpy(blockRegistry[i].name, "");
-    blockRegistry[i].texTop = 0;
-    blockRegistry[i].texSide = 0;
-    blockRegistry[i].texBottom = 0;
-    blockRegistry[i].isTransparent = true;
-    blockRegistry[i].isSolid = true;
+static int *GetLoadedBlocksCountPtr(void) {
+  static int SLoadedBlocksCount = 0;
+  return &SLoadedBlocksCount;
+}
+
+BlockType *GetBlockRegistry(void) {
+  static BlockType SBlockRegistry[BLOCK_REGISTRY_SIZE];
+  return SBlockRegistry;
+}
+
+void InitBlockRegistry(void) {
+  BlockType *BlockRegistry = GetBlockRegistry();
+  #pragma unroll 4
+  for (int Idx = 0; Idx < BLOCK_REGISTRY_SIZE; Idx++) {
+    BlockRegistry[Idx].Id = -1;
+    BlockRegistry[Idx].Name[0] = '\0';
+    BlockRegistry[Idx].TexTop = 0;
+    BlockRegistry[Idx].TexSide = 0;
+    BlockRegistry[Idx].TexBottom = 0;
+    BlockRegistry[Idx].IsTransparent = true;
+    BlockRegistry[Idx].IsSolid = true;
   }
 }
 
-BlockType* GetBlockDef(int id){
-  if (id < 0 || id >= BLOCK_REGISTRY_SIZE){
-    return &blockRegistry[0];
+BlockType *GetBlockDef(int BlockId) {
+  BlockType *BlockRegistry = GetBlockRegistry();
+  if (BlockId < 0 || BlockId >= BLOCK_REGISTRY_SIZE) {
+    return &BlockRegistry[0];
   }
 
-  if(blockRegistry[id].id == -1){
-    return &blockRegistry[0];
+  if (BlockRegistry[BlockId].Id == -1) {
+    return &BlockRegistry[0];
   }
 
-  return &blockRegistry[id];
+  return &BlockRegistry[BlockId];
 }
 
-void ParseBlockFile(const char *filePath){
-  char* fileContent = LoadFileText(filePath);
-  if(fileContent == NULL){
-    TraceLog(LOG_WARNING, "BLOCK_SYSTEM: Failed to read file: %s", filePath);
+void ParseBlockFile(const char *FilePath) {
+  char *FileContent = LoadFileText(FilePath);
+  if (FileContent == (void*)0) {
+    TraceLog(LOG_WARNING, "BLOCK_SYSTEM: Failed to read file: %s", FilePath);
     return;
   }
 
-  cJSON* json = cJSON_Parse(fileContent);
-  if(json == NULL){
-    const char* errorPtr = cJSON_GetErrorPtr();
-    TraceLog(LOG_WARNING, "BLOCK_SYSTEM: JSON syntax error %s before: %s", filePath, errorPtr);
-    UnloadFileText(fileContent);
+  cJSON *Json = cJSON_Parse(FileContent);
+  if (Json == (void*)0) {
+    const char *ErrorPtr = cJSON_GetErrorPtr();
+    TraceLog(LOG_WARNING, "BLOCK_SYSTEM: JSON syntax error %s before: %s",
+             FilePath, ErrorPtr);
+    UnloadFileText(FileContent);
     return;
   }
 
-  cJSON* idItem = cJSON_GetObjectItemCaseSensitive(json, "id");
-  if(!cJSON_IsNumber(idItem)){
-    TraceLog(LOG_WARNING, "BLOCK_SYSTEM: FILE %s does not have a valid id", filePath);
-    cJSON_Delete(json);
-    UnloadFileText(fileContent);
+  cJSON *IdItem = cJSON_GetObjectItemCaseSensitive(Json, "id");
+  if (cJSON_IsNumber(IdItem) == 0) {
+    TraceLog(LOG_WARNING, "BLOCK_SYSTEM: FILE %s does not have a valid id",
+             FilePath);
+    cJSON_Delete(Json);
+    UnloadFileText(FileContent);
     return;
   }
 
-  int id = idItem->valueint;
-  if(id < 0 || id >= BLOCK_REGISTRY_SIZE){
-    TraceLog(LOG_WARNING, "BLOCK_SYSTEM: id %d from file %s is out of the allowed range (0-%d)", id, filePath, BLOCK_REGISTRY_SIZE - 1);
-    cJSON_Delete(json);
-    UnloadFileText(fileContent);
+  int ParsedId = IdItem->valueint;
+  if (ParsedId < 0 || ParsedId >= BLOCK_REGISTRY_SIZE) {
+    TraceLog(
+        LOG_WARNING,
+        "BLOCK_SYSTEM: id %d from file %s is out of the allowed range (0-%d)",
+        ParsedId, FilePath, BLOCK_REGISTRY_SIZE - 1);
+    cJSON_Delete(Json);
+    UnloadFileText(FileContent);
     return;
   }
 
-  BlockType* block = &blockRegistry[id];
-  block->id = id;
+  BlockType *BlockRegistry = GetBlockRegistry();
+  BlockType *Block = &BlockRegistry[ParsedId];
+  Block->Id = ParsedId;
 
-  cJSON* nameItem = cJSON_GetObjectItemCaseSensitive(json, "name");
-  if(cJSON_IsString(nameItem)){
-    strncpy(block->name, nameItem->valuestring, MAX_BLOCK_NAME_SIZE - 1);
-    block->name[MAX_BLOCK_NAME_SIZE - 1] = '\0';
+  cJSON *NameItem = cJSON_GetObjectItemCaseSensitive(Json, "name");
+  if (cJSON_IsString(NameItem) != 0) {
+    SafeStrncpy(Block->Name, NameItem->valuestring, MAX_BLOCK_NAME_SIZE);
   }
 
-  cJSON* texTopItem = cJSON_GetObjectItemCaseSensitive(json, "texTop");
-  if(cJSON_IsNumber(texTopItem)){
-    block->texTop = texTopItem->valueint;
-  }else{
-    block->texTop = 0;
+  cJSON *TexTopItem = cJSON_GetObjectItemCaseSensitive(Json, "texTop");
+  if (cJSON_IsNumber(TexTopItem) != 0) {
+    Block->TexTop = TexTopItem->valueint;
+  } else {
+    Block->TexTop = 0;
   }
 
-  cJSON* texBottomItem = cJSON_GetObjectItemCaseSensitive(json, "texBottom");
-  if(cJSON_IsNumber(texBottomItem)){
-    block->texBottom = texBottomItem->valueint;
-  }else{
-    block->texBottom = 0;
+  cJSON *TexBottomItem = cJSON_GetObjectItemCaseSensitive(Json, "texBottom");
+  if (cJSON_IsNumber(TexBottomItem) != 0) {
+    Block->TexBottom = TexBottomItem->valueint;
+  } else {
+    Block->TexBottom = 0;
   }
 
-
-  cJSON* texSideItem = cJSON_GetObjectItemCaseSensitive(json, "texSide");
-  if(cJSON_IsNumber(texSideItem)){
-    block->texSide = texSideItem->valueint;
-  }else{
-    block->texSide = 0;
+  cJSON *TexSideItem = cJSON_GetObjectItemCaseSensitive(Json, "texSide");
+  if (cJSON_IsNumber(TexSideItem) != 0) {
+    Block->TexSide = TexSideItem->valueint;
+  } else {
+    Block->TexSide = 0;
   }
 
-  cJSON* isBlockTransparent = cJSON_GetObjectItemCaseSensitive(json, "isTransparent");
-  if(cJSON_IsBool(isBlockTransparent)){
-    block->isTransparent = cJSON_IsTrue(isBlockTransparent);
-  }else{
-    block->isTransparent = false;
+  cJSON *IsBlockTransparent =
+      cJSON_GetObjectItemCaseSensitive(Json, "isTransparent");
+  if (cJSON_IsBool(IsBlockTransparent) != 0) {
+    Block->IsTransparent = (cJSON_IsTrue(IsBlockTransparent) != 0);
+  } else {
+    Block->IsTransparent = false;
   }
 
-  cJSON* isBlockSolid = cJSON_GetObjectItemCaseSensitive(json, "isSolid");
-  if(cJSON_IsBool(isBlockSolid)){
-    block->isSolid = cJSON_IsTrue(isBlockSolid);
-  }else{
-    block->isSolid = true;
+  cJSON *IsBlockSolid = cJSON_GetObjectItemCaseSensitive(Json, "isSolid");
+  if (cJSON_IsBool(IsBlockSolid) != 0) {
+    Block->IsSolid = (cJSON_IsTrue(IsBlockSolid) != 0);
+  } else {
+    Block->IsSolid = true;
   }
 
-  TraceLog(LOG_INFO, "BLOCK_SYSTEM: Loaded [%d] %s", id, block->name);
+  TraceLog(LOG_INFO, "BLOCK_SYSTEM: Loaded [%d] %s", ParsedId, Block->Name);
 
-  cJSON_Delete(json);
-  UnloadFileText(fileContent);
+  cJSON_Delete(Json);
+  UnloadFileText(FileContent);
 }
 
-void LoadAllBlockDefinitions(const char *directoryPath){
+void LoadAllBlockDefinitions(const char *DirectoryPath) {
+  const char *Path = TextFormat("./%s", DirectoryPath);
 
-  const char* path = TextFormat("./%s", directoryPath);
+  TraceLog(LOG_INFO, "BLOCK_SYSTEM: Attempting to load from: %s%s",
+           GetWorkingDirectory(), Path);
 
-  TraceLog(LOG_INFO, "BLOCK_SYSTEM: Attempting to load from: %s%s", GetWorkingDirectory(), path);
-
-  if(!DirectoryExists(path)) {
-    TraceLog(LOG_WARNING, "BLOCK_SYSTEM: Directory not found %s", path);
+  if (!DirectoryExists(Path)) {
+    TraceLog(LOG_WARNING, "BLOCK_SYSTEM: Directory not found %s", Path);
     return;
   }
 
-  FilePathList files = LoadDirectoryFiles(path);
+  FilePathList Files = LoadDirectoryFiles(Path);
+  int LoadedCount = 0;
 
-  int loadedCount = 0;
+  TraceLog(LOG_INFO, "BLOCK_SYSTEM: Initializing blocks in: %s", Path);
 
-  TraceLog(LOG_INFO, "BLOCK_SYSTEM: Initializing blocks in: %s", path);
+  int FilesCount = (int)Files.count;
+  int TargetCount = FilesCount < MAX_FILES_LIMIT ? FilesCount : MAX_FILES_LIMIT;
 
-  for(int i = 0; i < files.count; i++){
-    if(IsFileExtension(files.paths[i], ".json")){
-      ParseBlockFile(files.paths[i]);
-      loadedCount++;
+  #pragma unroll 4
+  for (int Idx = 0; Idx < MAX_FILES_LIMIT; Idx++) {
+    if (Idx >= TargetCount) {
+      break;
+    }
+    if (IsFileExtension(Files.paths[Idx], ".json")) {
+      ParseBlockFile(Files.paths[Idx]);
+      LoadedCount++;
     }
   }
 
-  loadedBlocksCount = loadedCount;
+  *GetLoadedBlocksCountPtr() = LoadedCount;
+  UnloadDirectoryFiles(Files);
 
-  UnloadDirectoryFiles(files);
-
-  if(loadedCount == 0){
-    TraceLog(LOG_WARNING, "BLOCK_SYSTEM: No .json file found in %s", path);
-  }else{
-    TraceLog(LOG_INFO, "BLOCK_SYSTEM: Loaded %d block definitions", loadedCount);
+  if (LoadedCount == 0) {
+    TraceLog(LOG_WARNING, "BLOCK_SYSTEM: No .json file found in %s", Path);
+  } else {
+    TraceLog(LOG_INFO, "BLOCK_SYSTEM: Loaded %d block definitions",
+             LoadedCount);
   }
 }
 
-int GetLoadedBlocksCount(void){
-  return loadedBlocksCount;
-}
+int GetLoadedBlocksCount(void) { return *GetLoadedBlocksCountPtr(); }

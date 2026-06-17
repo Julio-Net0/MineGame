@@ -10,7 +10,7 @@ void InitWorldSave(void);
 void CloseWorldSave(void);
 uint64_t GetWorldSeed(void);
 
-void SaveChunkToDisk(Chunk *chunk);
-bool LoadChunkFromDisk(Chunk *chunk);
+void SaveChunkToDisk(Chunk *ChunkVal);
+bool LoadChunkFromDisk(Chunk *ChunkVal);
 
 #endif // WORLD_SAVE_H

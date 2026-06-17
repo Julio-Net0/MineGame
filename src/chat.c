@@ -1,159 +1,168 @@
-#include <stdbool.h>
-#include <stdio.h>
-#include <string.h>
-#include <stdarg.h>
-#include "raylib.h"
 #include "chat.h"
 #include "commands.h"
 #include "player.h"
+#include "raylib.h"
+#include "utils.h"
 
-void InitChat(ChatState *chat){
-  chat->inputText[0] = '\0';
-  chat->letterCount = 0;
-  chat->isActive = false;
-  chat->historyCount = 0;
-  chat->scrollOffset = 0;
+void InitChat(ChatState *Chat) {
+  Chat->InputText[0] = '\0';
+  Chat->LetterCount = 0;
+  Chat->IsActive = false;
+  Chat->HistoryCount = 0;
+  Chat->ScrollOffset = 0;
 }
 
-void AddChatHistory(ChatState *chat, const char *format, ...){
-  
-  char message[CHAT_MAX_INPUT_CHARS];
-
-  va_list args;
-  va_start(args, format);
-
-  vsnprintf(message, CHAT_MAX_INPUT_CHARS, format, args);
-  va_end(args);
-
-  if(chat->historyCount < CHAT_MAX_HISTORY){
-    strncpy(chat->history[chat->historyCount].text, message, CHAT_MAX_INPUT_CHARS - 1);
-    chat->history[chat->historyCount].text[CHAT_MAX_INPUT_CHARS - 1] = '\0';
-    chat->history[chat->historyCount].timeCreated = GetTime();
-    chat->historyCount++;
-  }else{
-    memmove(&chat->history[0], &chat->history[1], (CHAT_MAX_HISTORY - 1) * sizeof(ChatMessage));
-    strncpy(chat->history[CHAT_MAX_HISTORY - 1].text, message, CHAT_MAX_INPUT_CHARS - 1);
-    chat->history[CHAT_MAX_HISTORY - 1].text[CHAT_MAX_INPUT_CHARS - 1] = '\0';
-    chat->history[CHAT_MAX_HISTORY - 1].timeCreated = GetTime();
-  }
-}
-
-static void UpdateChatScroll(ChatState *chat){
-  float wheel = GetMouseWheelMove();
-  if(wheel != 0.0F){
-    chat->scrollOffset += (int)wheel;
-
-    int maxVisible = (CHAT_POSITION_Y - CHAT_HISTORY_LIMIT_Y) / CHAT_FONT_SIZE;
-
-    int maxScroll = chat->historyCount - maxVisible + 1;
-    if(maxScroll < 0){ maxScroll = 0; }
-
-    if(chat->scrollOffset > maxScroll) { chat->scrollOffset = maxScroll; }
-    if(chat->scrollOffset < 0) { chat->scrollOffset = 0; }
-  }
-}
-
-static void UpdateChatInput(ChatState *chat){
-  int key = GetCharPressed();
-  while (key > 0) {
-    if ((key >= ' ') && (key <= '~') && (chat->letterCount < CHAT_MAX_INPUT_CHARS)) {
-      chat->inputText[chat->letterCount] = (char)key;
-      chat->inputText[chat->letterCount + 1] = '\0';
-      chat->letterCount++;
+void AddChatHistory(ChatState *Chat, const char *Message) {
+  if (Chat->HistoryCount < CHAT_MAX_HISTORY) {
+    SafeStrncpy(Chat->History[Chat->HistoryCount].Text, Message, CHAT_MAX_INPUT_CHARS);
+    Chat->History[Chat->HistoryCount].TimeCreated = GetTime();
+    Chat->HistoryCount++;
+  } else {
+    #pragma unroll 4
+    for (int Idx = 0; Idx < CHAT_MAX_HISTORY - 1; Idx++) {
+      Chat->History[Idx] = Chat->History[Idx + 1];
     }
-    key = GetCharPressed();
+    SafeStrncpy(Chat->History[CHAT_MAX_HISTORY - 1].Text, Message, CHAT_MAX_INPUT_CHARS);
+    Chat->History[CHAT_MAX_HISTORY - 1].TimeCreated = GetTime();
+  }
+}
+
+static void UpdateChatScroll(ChatState *Chat) {
+  float Wheel = GetMouseWheelMove();
+  if (Wheel != 0.0F) {
+    Chat->ScrollOffset += (int)Wheel;
+
+    int MaxVisible = (CHAT_POSITION_Y - CHAT_HISTORY_LIMIT_Y) / CHAT_FONT_SIZE;
+    int MaxScroll = Chat->HistoryCount - MaxVisible + 1;
+    if (MaxScroll < 0) {
+      MaxScroll = 0;
+    }
+
+    if (Chat->ScrollOffset > MaxScroll) {
+      Chat->ScrollOffset = MaxScroll;
+    }
+    if (Chat->ScrollOffset < 0) {
+      Chat->ScrollOffset = 0;
+    }
+  }
+}
+
+static void UpdateChatInput(ChatState *Chat) {
+  int Key = GetCharPressed();
+  #pragma unroll 4
+  for (int LoopIdx = 0; LoopIdx < CHAT_MAX_INPUT_CHARS; LoopIdx++) {
+    if (Key > 0) {
+      if ((Key >= ' ') && (Key <= '~') && (Chat->LetterCount < CHAT_MAX_INPUT_CHARS)) {
+        Chat->InputText[Chat->LetterCount] = (char)Key;
+        Chat->InputText[Chat->LetterCount + 1] = '\0';
+        Chat->LetterCount++;
+      }
+      Key = GetCharPressed();
+    } else {
+      break;
+    }
   }
 
   if (IsKeyPressed(KEY_BACKSPACE) || IsKeyPressedRepeat(KEY_BACKSPACE)) {
-    chat->letterCount--;
-    if (chat->letterCount < 0) { chat->letterCount = 0; }
-    chat->inputText[chat->letterCount] = '\0';
+    Chat->LetterCount--;
+    if (Chat->LetterCount < 0) {
+      Chat->LetterCount = 0;
+    }
+    Chat->InputText[Chat->LetterCount] = '\0';
   }
 }
 
-static void HandleChatActions(ChatState *chat, Camera3D *camera, Player *player, World *world){
+static void HandleChatActions(ChatState *Chat, Camera3D *Camera, Player *Player, World *World) {
   if (IsKeyPressed(KEY_DELETE)) {
-    chat->scrollOffset = 0;
-    chat->isActive = false;
+    Chat->ScrollOffset = 0;
+    Chat->IsActive = false;
     DisableCursor();
   }
 
-  if(IsKeyPressed(KEY_ENTER)) {
-
-    if(chat->inputText[0] == '/'){
-      CommandHandler(chat->inputText, chat, camera, player, world);
-    }else{
-      TraceLog(LOG_NONE, "%s", chat->inputText);
-      AddChatHistory(chat, "%s", chat->inputText);
+  if (IsKeyPressed(KEY_ENTER)) {
+    if (Chat->InputText[0] == '/') {
+      CommandHandler(Chat->InputText, Chat, Camera, Player, World);
+    } else {
+      TraceLog(LOG_NONE, "%s", Chat->InputText);
+      AddChatHistory(Chat, Chat->InputText);
     }
 
-    chat->letterCount = 0;
-    chat->inputText[0] = '\0';
-    chat->scrollOffset = 0;
-    chat->isActive = false;
+    Chat->LetterCount = 0;
+    Chat->InputText[0] = '\0';
+    Chat->ScrollOffset = 0;
+    Chat->IsActive = false;
     DisableCursor();
   }
 }
 
-void UpdateChat(ChatState *chat, Camera3D *camera, Player *player, World *world) {
-  if (!chat->isActive) {
+void UpdateChat(ChatState *Chat, Camera3D *Camera, Player *Player, World *World) {
+  if (!Chat->IsActive) {
     if (IsKeyPressed(KEY_T)) {
-      chat->isActive = true;
+      Chat->IsActive = true;
       EnableCursor();
-      while (GetCharPressed() > 0) {}
+      int Key = GetCharPressed();
+      #pragma unroll 4
+      for (int LoopIdx = 0; LoopIdx < CHAT_MAX_INPUT_CHARS; LoopIdx++) {
+        if (Key > 0) {
+          Key = GetCharPressed();
+        } else {
+          break;
+        }
+      }
     }
     return;
   }
 
-  UpdateChatScroll(chat);
-  UpdateChatInput(chat);
-  HandleChatActions(chat, camera, player, world);
+  UpdateChatScroll(Chat);
+  UpdateChatInput(Chat);
+  HandleChatActions(Chat, Camera, Player, World);
 }
 
-void DrawChat(ChatState *chat) {
+void DrawChat(ChatState *Chat) {
+  int HistoryBaseY = CHAT_POSITION_Y - CHAT_Y_MARGIN;
+  double CurrentTime = GetTime();
 
-  int historyBaseY = CHAT_POSITION_Y - CHAT_Y_MARGIN;
-  double currentTime = GetTime();
+  int HistoryLimit = Chat->HistoryCount;
+  #pragma unroll 4
+  for (int Idx = 0; Idx < CHAT_MAX_HISTORY; Idx++) {
+    if (Idx >= HistoryLimit) {
+      break;
+    }
 
-  for(int i = 0; i < chat->historyCount; i++){
-
-    int msgY = historyBaseY - ((chat->historyCount - i - chat->scrollOffset) * CHAT_FONT_SIZE);
-
-    if(msgY < CHAT_HISTORY_LIMIT_Y || msgY >= historyBaseY){
+    int MsgY = HistoryBaseY - ((Chat->HistoryCount - Idx - Chat->ScrollOffset) * CHAT_FONT_SIZE);
+    if (MsgY < CHAT_HISTORY_LIMIT_Y || MsgY >= HistoryBaseY) {
       continue;
     }
 
-    float age = (float)(currentTime - chat->history[i].timeCreated);
-    float alpha = 1.0F;
+    float Age = (float)(CurrentTime - Chat->History[Idx].TimeCreated);
+    float Alpha = 1.0F;
 
-    if(!chat->isActive){
-      if(age < CHAT_DISPLAY_TIME){
-        alpha = 1.0F;
-      }else if(age < CHAT_DISPLAY_TIME + CHAT_FADE_TIME){
-        alpha = 1.0F - ((age - CHAT_DISPLAY_TIME) / CHAT_FADE_TIME);
-      }else{
-        alpha = 0.0F;
+    if (!Chat->IsActive) {
+      if (Age < CHAT_DISPLAY_TIME) {
+        Alpha = 1.0F;
+      } else if (Age < CHAT_DISPLAY_TIME + CHAT_FADE_TIME) {
+        Alpha = 1.0F - ((Age - CHAT_DISPLAY_TIME) / CHAT_FADE_TIME);
+      } else {
+        Alpha = 0.0F;
       }
     }
 
-    if(alpha > 0.0F){
-      DrawRectangle(CHAT_POSITION_X, msgY, CHAT_HISTORY_WIDTH, CHAT_FONT_SIZE, Fade(BLACK, CHAT_HISTORY_BG_ALPHA * alpha));
-      DrawText(chat->history[i].text, CHAT_POSITION_X + CHAT_TEXT_PADDING, msgY, CHAT_FONT_SIZE, Fade(WHITE, alpha));
+    if (Alpha > 0.0F) {
+      DrawRectangle(CHAT_POSITION_X, MsgY, (int)CHAT_HISTORY_WIDTH, CHAT_FONT_SIZE, Fade(BLACK, CHAT_HISTORY_BG_ALPHA * Alpha));
+      DrawText(Chat->History[Idx].Text, CHAT_POSITION_X + CHAT_TEXT_PADDING, MsgY, CHAT_FONT_SIZE, Fade(WHITE, Alpha));
     }
   }
 
-
-  if (chat->isActive) {
+  if (Chat->IsActive) {
     DrawRectangle(CHAT_POSITION_X, CHAT_POSITION_Y, CHAT_WIDTH, CHAT_HEIGHT, Fade(BLACK, CHAT_BG_ALPHA));
     DrawRectangleLines(CHAT_POSITION_X, CHAT_POSITION_Y, CHAT_WIDTH, CHAT_HEIGHT, DARKGRAY);
 
-    int textY = CHAT_POSITION_Y + (CHAT_HEIGHT / 2) - (CHAT_FONT_SIZE / 2);
-    DrawText(chat->inputText, CHAT_POSITION_X + CHAT_TEXT_PADDING, textY, CHAT_FONT_SIZE, WHITE);
+    int TextY = CHAT_POSITION_Y + (CHAT_HEIGHT / 2) - (CHAT_FONT_SIZE / 2);
+    DrawText(Chat->InputText, CHAT_POSITION_X + CHAT_TEXT_PADDING, TextY, CHAT_FONT_SIZE, WHITE);
 
     if (((int)(GetTime() * 2)) % 2 == 0) {
-      int textWidth = MeasureText(chat->inputText, CHAT_FONT_SIZE);
-      DrawText("|", CHAT_POSITION_X + CHAT_TEXT_PADDING + textWidth, textY, CHAT_FONT_SIZE, WHITE);
+      int TextWidth = MeasureText(Chat->InputText, CHAT_FONT_SIZE);
+      DrawText("|", CHAT_POSITION_X + CHAT_TEXT_PADDING + TextWidth, TextY, CHAT_FONT_SIZE, WHITE);
     }
   }
 }
-

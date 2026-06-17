@@ -7,23 +7,23 @@
 #define MAX_BLOCK_NAME_SIZE 32
 
 typedef struct {
-  int texTop;
-  int texSide;
-  int texBottom;
-  int id;
+  int TexTop;
+  int TexSide;
+  int TexBottom;
+  int Id;
 
-  char name[MAX_BLOCK_NAME_SIZE];
+  char Name[MAX_BLOCK_NAME_SIZE];
 
-  bool isTransparent;
-  bool isSolid;
+  bool IsTransparent;
+  bool IsSolid;
 } BlockType;
 
-extern BlockType blockRegistry[BLOCK_REGISTRY_SIZE];
+BlockType *GetBlockRegistry(void);
 
 void InitBlockRegistry(void);
-void LoadAllBlockDefinitions(const char* directoryPath);
-void ParseBlockFile(const char* filePath);
-BlockType* GetBlockDef(int id);
+void LoadAllBlockDefinitions(const char *DirectoryPath);
+void ParseBlockFile(const char *FilePath);
+BlockType *GetBlockDef(int Id);
 int GetLoadedBlocksCount(void);
 
 #endif
