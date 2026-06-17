@@ -31,6 +31,8 @@ add_executable(${PROJECT_NAME}
   src/chunk_worker.c
   src/world_save.c
   src/chunk_serial.c
+  src/utils.c
+  src/stb_perlin.c
 )
 
 target_link_libraries(${PROJECT_NAME} raylib)
