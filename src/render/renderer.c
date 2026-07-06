@@ -1,10 +1,10 @@
-#include "renderer.h"
-#include "block_system.h"
-#include "chunk.h"
-#include "debug.h"
+#include "render/renderer.h"
+#include "world/block_system.h"
+#include "world/chunk.h"
+#include "ui/debug.h"
 #include "raylib.h"
 #include "raymath.h"
-#include "player.h"
+#include "player/player.h"
 #include <stddef.h>
 
 // Must include glad before rlgl to get raw GL constants (GL_TEXTURE_2D_ARRAY etc.)

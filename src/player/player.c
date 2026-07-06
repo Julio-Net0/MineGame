@@ -1,9 +1,9 @@
-#include "player.h"
-#include "block_system.h"
-#include "debug.h"
+#include "player/player.h"
+#include "world/block_system.h"
+#include "ui/debug.h"
 #include "raylib.h"
 #include "raymath.h"
-#include "world.h"
+#include "world/world.h"
 
 #define INIT_SLOT_0 0
 #define INIT_SLOT_1 1

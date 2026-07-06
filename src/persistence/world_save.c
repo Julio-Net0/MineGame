@@ -1,7 +1,7 @@
-#include "world_save.h"
+#include "persistence/world_save.h"
 #include "raylib.h"
-#include "chunk.h"
-#include "chunk_serial.h"
+#include "world/chunk.h"
+#include "persistence/chunk_serial.h"
 #include <stdio.h>
 #include <time.h>
 #include <errno.h>

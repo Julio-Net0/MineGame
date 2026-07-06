@@ -1,8 +1,8 @@
-#include "chat.h"
-#include "commands.h"
-#include "player.h"
+#include "ui/chat.h"
+#include "ui/commands.h"
+#include "player/player.h"
 #include "raylib.h"
-#include "utils.h"
+#include "core/utils.h"
 
 void InitChat(ChatState *Chat) {
   Chat->InputText[0] = '\0';

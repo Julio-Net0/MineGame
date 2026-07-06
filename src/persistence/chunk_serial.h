@@ -1,7 +1,7 @@
 #ifndef CHUNK_SERIAL_H
 #define CHUNK_SERIAL_H
 
-#include "chunk.h"
+#include "world/chunk.h"
 #include <stdbool.h>
 #include <stdint.h>
 

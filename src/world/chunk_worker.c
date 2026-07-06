@@ -1,5 +1,5 @@
-#include "chunk_worker.h"
-#include "world_save.h"
+#include "world/chunk_worker.h"
+#include "persistence/world_save.h"
 #include <pthread.h>
 #include <raylib.h>
 #include <stdatomic.h>

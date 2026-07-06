@@ -1,11 +1,11 @@
 #ifndef COMMANDS_H
 #define COMMANDS_H
 
-#include "block_system.h"
-#include "chat.h"
+#include "world/block_system.h"
+#include "ui/chat.h"
 #include "raylib.h"
-#include "player.h"
-#include "world.h"
+#include "player/player.h"
+#include "world/world.h"
 
 typedef struct {
   ChatState *Chat;

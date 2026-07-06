@@ -1,8 +1,8 @@
-#include "hud.h"
-#include "player.h"
+#include "render/hud.h"
+#include "player/player.h"
 #include "raylib.h"
-#include "renderer.h"
-#include "world.h"
+#include "render/renderer.h"
+#include "world/world.h"
 
 enum {
   HOTBAR_SLOT_SIZE = 50,

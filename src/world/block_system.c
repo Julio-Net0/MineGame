@@ -1,7 +1,7 @@
-#include "block_system.h"
-#include "cJSON.h"
+#include "world/block_system.h"
+#include "third_party/cJSON.h"
 #include "raylib.h"
-#include "utils.h"
+#include "core/utils.h"
 
 enum {
   MAX_FILES_LIMIT = 1024

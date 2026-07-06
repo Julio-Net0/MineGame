@@ -15,28 +15,28 @@ set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 
 FetchContent_MakeAvailable(raylib)
 
-add_executable(${PROJECT_NAME} 
-  src/main.c 
-  src/camera.c 
-  src/block_system.c 
-  src/cJSON.c 
-  src/world.c 
-  src/renderer.c 
-  src/chat.c 
-  src/commands.c 
-  src/player.c
-  src/chunk.c
-  src/hud.c
-  src/debug.c
-  src/chunk_worker.c
-  src/world_save.c
-  src/chunk_serial.c
-  src/utils.c
-  src/stb_perlin.c
+add_executable(${PROJECT_NAME}
+  src/main.c
+  src/world/world.c
+  src/world/chunk.c
+  src/world/chunk_worker.c
+  src/world/block_system.c
+  src/persistence/world_save.c
+  src/persistence/chunk_serial.c
+  src/player/player.c
+  src/render/renderer.c
+  src/render/camera.c
+  src/render/hud.c
+  src/ui/chat.c
+  src/ui/commands.c
+  src/ui/debug.c
+  src/core/utils.c
+  src/third_party/cJSON.c
+  src/third_party/stb_perlin.c
 )
 
 target_link_libraries(${PROJECT_NAME} raylib)
 
-target_include_directories(${PROJECT_NAME} PUBLIC include ${raylib_SOURCE_DIR}/src)
+target_include_directories(${PROJECT_NAME} PUBLIC src ${raylib_SOURCE_DIR}/src)
 
 file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/assets DESTINATION ${CMAKE_CURRENT_BINARY_DIR})

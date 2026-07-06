@@ -2,8 +2,8 @@
 #define RENDERER_H
 
 #include "raylib.h"
-#include "player.h"
-#include "world.h"
+#include "player/player.h"
+#include "world/world.h"
 #include "rlgl.h"
 
 typedef enum {

@@ -1,7 +1,7 @@
-#include "chunk.h"
+#include "world/chunk.h"
 #include "raylib.h"
-#include "stb_perling.h"
-#include "world_save.h"
+#include "third_party/stb_perlin.h"
+#include "persistence/world_save.h"
 #include <stdint.h>
 
 enum BlockIDs {

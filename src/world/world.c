@@ -1,9 +1,9 @@
-#include "world.h"
-#include "chunk.h"
+#include "world/world.h"
+#include "world/chunk.h"
 #include "raylib.h"
-#include "renderer.h"
-#include "chunk_worker.h"
-#include "world_save.h"
+#include "render/renderer.h"
+#include "world/chunk_worker.h"
+#include "persistence/world_save.h"
 #include <stddef.h>
 #include <stdbool.h>
 
@@ -44,6 +44,12 @@ void InitWorld(World *WorldVal){
   for(int IdxI = 0; IdxI < MAX_ACTIVE_CHUNKS; IdxI++){
     WorldVal->FreeList[IdxI] = IdxI;
   }
+
+  WorldVal->LastLoadChunkX = 0;
+  WorldVal->LastLoadChunkY = 0;
+  WorldVal->LastLoadChunkZ = 0;
+  WorldVal->LastLoadRenderDist = 0;
+  WorldVal->HasLoadedOnce = false;
 }
 
 static void InsertChunkIntoMap(World *WorldVal, int ChunkIndex) {
@@ -181,6 +187,18 @@ void UpdateWorld(World *WorldVal, Vector3 PlayerPos, int RenderDist){
   int PChunkY = (int)__builtin_floorf(PlayerPos.y / CHUNK_SIZE);
   int PChunkZ = (int)__builtin_floorf(PlayerPos.z / CHUNK_SIZE);
 
+  // Gate: the active-chunk set is a pure function of the player's chunk
+  // coordinate and the (clamped) render distance. Skip the recompute when
+  // neither changed since the last load. Async generation and meshing run
+  // outside this function, so in-flight chunks still complete while stationary.
+  if(WorldVal->HasLoadedOnce &&
+     WorldVal->LastLoadChunkX == PChunkX &&
+     WorldVal->LastLoadChunkY == PChunkY &&
+     WorldVal->LastLoadChunkZ == PChunkZ &&
+     WorldVal->LastLoadRenderDist == RenderDist){
+    return;
+  }
+
   bool KeepChunk[MAX_ACTIVE_CHUNKS] = { false };
 
   MarkUsefulChunks(WorldVal, PChunkX, PChunkY, PChunkZ, RenderDist, KeepChunk);
@@ -198,6 +216,12 @@ void UpdateWorld(World *WorldVal, Vector3 PlayerPos, int RenderDist){
       }
     }
   }
+
+  WorldVal->LastLoadChunkX = PChunkX;
+  WorldVal->LastLoadChunkY = PChunkY;
+  WorldVal->LastLoadChunkZ = PChunkZ;
+  WorldVal->LastLoadRenderDist = RenderDist;
+  WorldVal->HasLoadedOnce = true;
 }
 
 static Chunk* GetLocalCoords(World *WorldVal, Vector3 GlobalPos, int *LocalX, int *LocalY, int *LocalZ){

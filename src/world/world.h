@@ -2,7 +2,7 @@
 #define WORLD_H
 
 #include "raylib.h"
-#include "chunk.h"
+#include "world/chunk.h"
 
 #define MAX_RENDER_DISTANCE 5
 #define MAX_ACTIVE_CHUNKS 1331 //Recommended size: (2 * MAX_RENDER_DISTANCE + 1)^3
@@ -15,6 +15,12 @@ typedef struct World {
   int ChunkCount;
   int FreeList[MAX_ACTIVE_CHUNKS];
   int FreeCount;
+
+  int LastLoadChunkX;
+  int LastLoadChunkY;
+  int LastLoadChunkZ;
+  int LastLoadRenderDist;
+  bool HasLoadedOnce;
 } World;
 
 typedef struct {

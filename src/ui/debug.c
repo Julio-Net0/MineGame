@@ -1,4 +1,4 @@
-#include "debug.h"
+#include "ui/debug.h"
 
 DebugState *GetDebugState(void) {
   static DebugState SDebug = {

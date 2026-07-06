@@ -1,4 +1,4 @@
-#include "camera.h"
+#include "render/camera.h"
 #include "raylib.h"
 #include "raymath.h"
 

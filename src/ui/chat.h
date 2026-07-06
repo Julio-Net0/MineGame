@@ -1,9 +1,9 @@
 #ifndef CHAT_H
 #define CHAT_H
 
-#include "player.h"
+#include "player/player.h"
 #include "raylib.h"
-#include "world.h"
+#include "world/world.h"
 #include <stdbool.h>
 
 #define CHAT_Y_MARGIN_F ((float)GetScreenWidth() / 200.0F)

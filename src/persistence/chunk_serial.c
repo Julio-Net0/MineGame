@@ -1,5 +1,5 @@
-#include "chunk_serial.h"
-#include "chunk.h"
+#include "persistence/chunk_serial.h"
+#include "world/chunk.h"
 #include <stdbool.h>
 #include <stdint.h>
 

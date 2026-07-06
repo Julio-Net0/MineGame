@@ -1,11 +1,11 @@
-#include "commands.h"
-#include "block_system.h"
-#include "chat.h"
-#include "debug.h"
+#include "ui/commands.h"
+#include "world/block_system.h"
+#include "ui/chat.h"
+#include "ui/debug.h"
 #include "raylib.h"
-#include "utils.h"
-#include "world.h"
-#include "world_save.h"
+#include "core/utils.h"
+#include "world/world.h"
+#include "persistence/world_save.h"
 
 enum {
   DEBUG_HELP_LINE_SIZE = 128,

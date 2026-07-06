@@ -2,7 +2,7 @@
 #define PLAYER_H
 
 #include "raylib.h"
-#include "world.h"
+#include "world/world.h"
 
 #define PLAYER_GRAVITY 20.0F
 #define PLAYER_TERMINAL_VELOCITY 50.0F
