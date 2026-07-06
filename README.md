@@ -1,9 +1,5 @@
 # MineGame: Voxel Engine Experiment
 
-<p align="center">
-  <img src="images/README/game.gif" alt="MineGame Logo" width="600">
-</p>
-
 A minimalist Minecraft-inspired voxel engine built from scratch in **C17** using the **Raylib** library. This project focuses on learning game engine fundamentals, memory management, and clean code practices.
 
 ## 🌱 Roadmap to Beta 4
