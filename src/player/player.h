@@ -7,7 +7,7 @@
 #define PLAYER_GRAVITY 20.0F
 #define PLAYER_TERMINAL_VELOCITY 50.0F
 #define PLAYER_JUMP_FORCE 7.0F
-#define PLAYER_SIZE (Vector3){0.6F, 1.8F, 0.6F}
+#define PLAYER_SIZE (Vec3){0.6F, 1.8F, 0.6F}
 #define PLAYER_RADIUS (PLAYER_SIZE.x / 2.0F)
 #define PLAYER_SPEED 5.0F
 #define HOTBAR_SIZE 9
@@ -25,9 +25,9 @@
 typedef struct {
   RaycastResult TargetBlock;
 
-  Vector3 Position;
-  Vector3 Velocity;
-  Vector3 Size;
+  Vec3 Position;
+  Vec3 Velocity;
+  Vec3 Size;
 
   float ReachDistance;
   float Radius;
@@ -47,11 +47,11 @@ typedef struct {
   float Epsilon;
 } PointConfig;
 
-Player InitPlayer(Vector3 SpawnPos);
+Player InitPlayer(Vec3 SpawnPos);
 void UpdatePlayer(Player *PlayerVal, Camera3D *CameraVal, World *WorldVal, float Dt, bool HasControl);
 void HandlePlayerInteraction(Player *PlayerVal, Camera3D *CameraVal, World *WorldVal, bool HasControl);
-bool IsPointSolid(World *WorldVal, Vector3 Pos);
-void GetPlayerPoints(Player *PlayerVal, PointConfig Config, Vector3 OutPoints[COLLISION_POINTS]);
+bool IsPointSolid(World *WorldVal, Vec3 Pos);
+void GetPlayerPoints(Player *PlayerVal, PointConfig Config, Vec3 OutPoints[COLLISION_POINTS]);
 void SetHotbarSlot(Player *PlayerVal, int Slot, unsigned char BlockId);
 
 #endif

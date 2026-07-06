@@ -93,7 +93,7 @@ void GenerateChunkTerrain(Chunk *ChunkVal) {
   ChunkVal->IsDirty = true;
 }
 
-int GetBlockIdInChunk(Chunk *ChunkVal, Vector3 LocalPos) {
+int GetBlockIdInChunk(Chunk *ChunkVal, Vec3 LocalPos) {
   int IdxX = (int)LocalPos.x;
   int IdxY = (int)LocalPos.y;
   int IdxZ = (int)LocalPos.z;
@@ -106,7 +106,7 @@ int GetBlockIdInChunk(Chunk *ChunkVal, Vector3 LocalPos) {
   return (int)ChunkVal->Data[IdxX][IdxY][IdxZ];
 }
 
-void SetBlockInChunk(Chunk *ChunkVal, Vector3 LocalPos, unsigned char BlockId) {
+void SetBlockInChunk(Chunk *ChunkVal, Vec3 LocalPos, unsigned char BlockId) {
   int IdxX = (int)LocalPos.x;
   int IdxY = (int)LocalPos.y;
   int IdxZ = (int)LocalPos.z;

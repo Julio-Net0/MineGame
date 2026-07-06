@@ -2,6 +2,7 @@
 #define CHUNK_H
 
 #include "raylib.h"
+#include "core/vecmath.h"
 #include <stdatomic.h>
 
 #define CHUNK_SIZE 16
@@ -33,7 +34,7 @@ typedef struct Chunk {
 } Chunk;
 
 void GenerateChunkTerrain(Chunk *ChunkVal);
-void SetBlockInChunk(Chunk *ChunkVal, Vector3 Pos, unsigned char BlockId);
-int GetBlockIdInChunk(Chunk *ChunkVal, Vector3 Pos);
+void SetBlockInChunk(Chunk *ChunkVal, Vec3 Pos, unsigned char BlockId);
+int GetBlockIdInChunk(Chunk *ChunkVal, Vec3 Pos);
 
 #endif

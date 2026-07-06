@@ -9,6 +9,7 @@
 #include "pthread.h"
 #include "raylib.h"
 #include "render/renderer.h"
+#include "render/rl_compat.h"
 #include "rlgl.h"
 #include "world/world.h"
 #include "persistence/world_save.h"
@@ -43,7 +44,7 @@ static void InitGame(World **WorldVal, Player *PlayerVal, Camera3D *PlayerCamera
   InitChunkWorker();
 
   *PlayerVal =
-      InitPlayer((Vector3){PLAYER_SPAWN_X, PLAYER_SPAWN_Y, PLAYER_SPAWN_Z});
+      InitPlayer((Vec3){PLAYER_SPAWN_X, PLAYER_SPAWN_Y, PLAYER_SPAWN_Z});
   *PlayerCamera = CreateGameCamera();
   *FreeCamera = CreateGameCamera();
   InitChat(ChatVal);
@@ -165,8 +166,8 @@ int main(void) {
 
     UpdateSystemInputs(&ShowDebug);
 
-    Vector3 LoadCenter =
-        (GetDebugState()->Freecam && WasFreecam) ? FreeCamera.position : PlayerVal.Position;
+    Vec3 LoadCenter =
+        (GetDebugState()->Freecam && WasFreecam) ? Vec3FromRL(FreeCamera.position) : PlayerVal.Position;
     UpdateWorld(WorldVal, LoadCenter, MAX_RENDER_DISTANCE);
 
     bool HasControl = (!ChatVal.IsActive) != 0;

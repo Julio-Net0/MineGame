@@ -1,7 +1,7 @@
 #ifndef WORLD_H
 #define WORLD_H
 
-#include "raylib.h"
+#include "core/vecmath.h"
 #include "world/chunk.h"
 
 #define MAX_RENDER_DISTANCE 5
@@ -24,20 +24,20 @@ typedef struct World {
 } World;
 
 typedef struct {
-  Vector3 BlockPos;
-  Vector3 Normal;
+  Vec3 BlockPos;
+  Vec3 Normal;
   int BlockId;
   bool Hit;
 } RaycastResult;
 
 void InitWorld(World *WorldVal);
-void UpdateWorld(World *WorldVal, Vector3 PlayerPos, int RenderDist);
+void UpdateWorld(World *WorldVal, Vec3 PlayerPos, int RenderDist);
 void UpdateNeighborsDirtyFlag(World *WorldVal, int Cx, int Cy, int Cz);
-int GetBlockIDFromWorld(World *WorldVal, Vector3 GlobalPos);
-void SetBlockInWorld(World *WorldVal, Vector3 GlobalPos, unsigned char BlockId);
-RaycastResult RayCastToWorld(World *WorldVal, Vector3 RayOrigin, Vector3 RayDir, float MaxDistance);
+int GetBlockIDFromWorld(World *WorldVal, Vec3 GlobalPos);
+void SetBlockInWorld(World *WorldVal, Vec3 GlobalPos, unsigned char BlockId);
+RaycastResult RayCastToWorld(World *WorldVal, Vec3 RayOrigin, Vec3 RayDir, float MaxDistance);
 Chunk *GetChunkFromWorld(World *WorldVal, int ChunkX, int ChunkY, int ChunkZ);
-Chunk *GetChunkAtPos(World *WorldVal, Vector3 Pos);
+Chunk *GetChunkAtPos(World *WorldVal, Vec3 Pos);
 bool AreNeighborsGenerated(World *WorldVal, Chunk *ChunkVal);
 
 #endif

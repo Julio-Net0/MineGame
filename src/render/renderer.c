@@ -1,4 +1,5 @@
 #include "render/renderer.h"
+#include "render/rl_compat.h"
 #include "world/block_system.h"
 #include "world/chunk.h"
 #include "ui/debug.h"
@@ -155,7 +156,7 @@ static unsigned char GetBlockIDAtLocal(World *WorldVal, Chunk *ChunkVal, int Loc
     int Gx = (ChunkVal->ChunkX * CHUNK_SIZE) + LocalX;
     int Gy = (ChunkVal->ChunkY * CHUNK_SIZE) + LocalY;
     int Gz = (ChunkVal->ChunkZ * CHUNK_SIZE) + LocalZ;
-    return (unsigned char)GetBlockIDFromWorld(WorldVal, (Vector3){(float)Gx, (float)Gy, (float)Gz});
+    return (unsigned char)GetBlockIDFromWorld(WorldVal, (Vec3){(float)Gx, (float)Gy, (float)Gz});
 }
 
 static bool IsNeighbourTransparent(World *WorldVal, Chunk *ChunkVal,
@@ -847,17 +848,17 @@ void DrawWorld(World *WorldVal, Camera3D CameraVal) {
     if (GetDebugState()->Wireframe) { rlDisableWireMode(); }
 }
 
-void DrawBlockHighlight(Vector3 Pos) {
-    DrawCubeWires(Pos, BLOCK_HIGHLIGHT_SCALE, BLOCK_HIGHLIGHT_SCALE, BLOCK_HIGHLIGHT_SCALE, BLACK);
+void DrawBlockHighlight(Vec3 Pos) {
+    DrawCubeWires(Vec3ToRL(Pos), BLOCK_HIGHLIGHT_SCALE, BLOCK_HIGHLIGHT_SCALE, BLOCK_HIGHLIGHT_SCALE, BLACK);
 }
 
 void DrawAABBDebug(World *WorldVal, Player *PlayerVal) {
     if (!GetDebugState()->Aabb) { return; }
 
-    Vector3 BottomPoints[COLLISION_POINTS];
-    Vector3 TopPoints[COLLISION_POINTS];
-    Vector3 ShinPoints[COLLISION_POINTS];
-    Vector3 FacePoints[COLLISION_POINTS];
+    Vec3 BottomPoints[COLLISION_POINTS];
+    Vec3 TopPoints[COLLISION_POINTS];
+    Vec3 ShinPoints[COLLISION_POINTS];
+    Vec3 FacePoints[COLLISION_POINTS];
 
     GetPlayerPoints(PlayerVal, (PointConfig){ .Radius = PlayerVal->Radius - VERTICAL_RADIUS_SHRINK, .YOffset = 0.0F, .Epsilon = -COLLISION_EPSILON }, BottomPoints);
     GetPlayerPoints(PlayerVal, (PointConfig){ .Radius = PlayerVal->Radius - VERTICAL_RADIUS_SHRINK, .YOffset = PlayerVal->Size.y, .Epsilon = COLLISION_EPSILON }, TopPoints);
@@ -871,10 +872,10 @@ void DrawAABBDebug(World *WorldVal, Player *PlayerVal) {
 
     #pragma unroll 4
     for (int IdxI = 0; IdxI < COLLISION_POINTS; IdxI++) {
-        DrawCube(BottomPoints[IdxI], Sz, Sz, Sz, IsPointSolid(WorldVal, BottomPoints[IdxI]) ? BLUE : RED);
-        DrawCube(TopPoints[IdxI], Sz, Sz, Sz, IsPointSolid(WorldVal, TopPoints[IdxI]) ? BLUE : RED);
-        DrawCubeWires(ShinPoints[IdxI], Wz, Wz, Wz, IsPointSolid(WorldVal, ShinPoints[IdxI]) ? PURPLE : ORANGE);
-        DrawCubeWires(FacePoints[IdxI], Wz, Wz, Wz, IsPointSolid(WorldVal, FacePoints[IdxI]) ? PURPLE : ORANGE);
+        DrawCube(Vec3ToRL(BottomPoints[IdxI]), Sz, Sz, Sz, IsPointSolid(WorldVal, BottomPoints[IdxI]) ? BLUE : RED);
+        DrawCube(Vec3ToRL(TopPoints[IdxI]), Sz, Sz, Sz, IsPointSolid(WorldVal, TopPoints[IdxI]) ? BLUE : RED);
+        DrawCubeWires(Vec3ToRL(ShinPoints[IdxI]), Wz, Wz, Wz, IsPointSolid(WorldVal, ShinPoints[IdxI]) ? PURPLE : ORANGE);
+        DrawCubeWires(Vec3ToRL(FacePoints[IdxI]), Wz, Wz, Wz, IsPointSolid(WorldVal, FacePoints[IdxI]) ? PURPLE : ORANGE);
     }
 }
 

@@ -94,7 +94,7 @@ Chunk* GetChunkFromWorld(World *WorldVal, int ChunkX, int ChunkY, int ChunkZ){
   return (Chunk *)0;
 }
 
-Chunk* GetChunkAtPos(World *WorldVal, Vector3 Pos){
+Chunk* GetChunkAtPos(World *WorldVal, Vec3 Pos){
   int ChunkX = (int)__builtin_floorf(Pos.x / CHUNK_SIZE);
   int ChunkY = (int)__builtin_floorf(Pos.y / CHUNK_SIZE);
   int ChunkZ = (int)__builtin_floorf(Pos.z / CHUNK_SIZE);
@@ -176,7 +176,7 @@ static void CreateOrRecycleChunk(World *WorldVal, int ChunkX, int ChunkY, int Ch
   }
 }
 
-void UpdateWorld(World *WorldVal, Vector3 PlayerPos, int RenderDist){
+void UpdateWorld(World *WorldVal, Vec3 PlayerPos, int RenderDist){
   int Side = (2 * RenderDist) + 1;
   int RequiredChunks = Side * Side * Side;
   if(RequiredChunks > MAX_ACTIVE_CHUNKS){
@@ -224,7 +224,7 @@ void UpdateWorld(World *WorldVal, Vector3 PlayerPos, int RenderDist){
   WorldVal->HasLoadedOnce = true;
 }
 
-static Chunk* GetLocalCoords(World *WorldVal, Vector3 GlobalPos, int *LocalX, int *LocalY, int *LocalZ){
+static Chunk* GetLocalCoords(World *WorldVal, Vec3 GlobalPos, int *LocalX, int *LocalY, int *LocalZ){
   int ChunkX = (int)__builtin_floorf(GlobalPos.x / CHUNK_SIZE);
   int ChunkY = (int)__builtin_floorf(GlobalPos.y / CHUNK_SIZE);
   int ChunkZ = (int)__builtin_floorf(GlobalPos.z / CHUNK_SIZE);
@@ -236,7 +236,7 @@ static Chunk* GetLocalCoords(World *WorldVal, Vector3 GlobalPos, int *LocalX, in
   return GetChunkFromWorld(WorldVal, ChunkX, ChunkY, ChunkZ);
 }
 
-void SetBlockInWorld(World *WorldVal, Vector3 Pos, unsigned char BlockId){
+void SetBlockInWorld(World *WorldVal, Vec3 Pos, unsigned char BlockId){
   Chunk *ChunkVal = GetChunkAtPos(WorldVal, Pos);
   if (ChunkVal == (Chunk *)0) { return; }
 
@@ -248,7 +248,7 @@ void SetBlockInWorld(World *WorldVal, Vector3 Pos, unsigned char BlockId){
   if (LocalY < 0) { LocalY += CHUNK_SIZE; }
   if (LocalZ < 0) { LocalZ += CHUNK_SIZE; }
 
-  SetBlockInChunk(ChunkVal, (Vector3){(float)LocalX, (float)LocalY, (float)LocalZ}, BlockId);
+  SetBlockInChunk(ChunkVal, (Vec3){(float)LocalX, (float)LocalY, (float)LocalZ}, BlockId);
   ChunkVal->IsDirty = true;
 
   if (LocalX == 0) {
@@ -279,7 +279,7 @@ void SetBlockInWorld(World *WorldVal, Vector3 Pos, unsigned char BlockId){
   }
 }
 
-int GetBlockIDFromWorld(World *WorldVal, Vector3 GlobalPos){
+int GetBlockIDFromWorld(World *WorldVal, Vec3 GlobalPos){
   int Lx; 
   int Ly; 
   int Lz;
@@ -287,13 +287,13 @@ int GetBlockIDFromWorld(World *WorldVal, Vector3 GlobalPos){
   Chunk *ChunkVal = GetLocalCoords(WorldVal, GlobalPos, &Lx, &Ly, &Lz);
 
   if(ChunkVal != (Chunk *)0){
-    return GetBlockIdInChunk(ChunkVal, (Vector3){(float)Lx, (float)Ly, (float)Lz});
+    return GetBlockIdInChunk(ChunkVal, (Vec3){(float)Lx, (float)Ly, (float)Lz});
   }
 
   return 0;
 }
 
-static DdaState InitDDAState(Vector3 RayOrigin, Vector3 RayDir){
+static DdaState InitDDAState(Vec3 RayOrigin, Vec3 RayDir){
   DdaState State = {0};
 
   float StartX = RayOrigin.x + BLOCK_HALF_SIZE;
@@ -347,7 +347,7 @@ static void StepDDA(DdaState *State){
   }
 }
 
-RaycastResult RayCastToWorld(World *WorldVal, Vector3 RayOrigin, Vector3 RayDir, float MaxDistance){
+RaycastResult RayCastToWorld(World *WorldVal, Vec3 RayOrigin, Vec3 RayDir, float MaxDistance){
   RaycastResult Result = { .Hit = false, .BlockPos ={0.0F, 0.0F, 0.0F}, .BlockId = 0, .Normal = {0.0F, 0.0F, 0.0F} };
 
   DdaState Dda = InitDDAState(RayOrigin, RayDir);
@@ -356,7 +356,7 @@ RaycastResult RayCastToWorld(World *WorldVal, Vector3 RayOrigin, Vector3 RayDir,
 
   #pragma unroll 4
   for(int IdxI = 0; IdxI < MaxIter; IdxI++){
-    Vector3 CheckPos = { (float)Dda.VoxelX, (float)Dda.VoxelY, (float)Dda.VoxelZ };
+    Vec3 CheckPos = { (float)Dda.VoxelX, (float)Dda.VoxelY, (float)Dda.VoxelZ };
     int Id = GetBlockIDFromWorld(WorldVal, CheckPos);
 
     if(Id != 0){
@@ -364,9 +364,9 @@ RaycastResult RayCastToWorld(World *WorldVal, Vector3 RayOrigin, Vector3 RayDir,
       Result.BlockPos = CheckPos;
       Result.BlockId = Id;
 
-      if(Dda.LastStep == 0) { Result.Normal = (Vector3){ (float)-Dda.StepX, 0.0F, 0.0F }; }
-      else if(Dda.LastStep == 1) { Result.Normal = (Vector3){ 0.0F, (float)-Dda.StepY, 0.0F }; }
-      else if(Dda.LastStep == 2) { Result.Normal = (Vector3){ 0.0F, 0.0F, (float)-Dda.StepZ }; }
+      if(Dda.LastStep == 0) { Result.Normal = (Vec3){ (float)-Dda.StepX, 0.0F, 0.0F }; }
+      else if(Dda.LastStep == 1) { Result.Normal = (Vec3){ 0.0F, (float)-Dda.StepY, 0.0F }; }
+      else if(Dda.LastStep == 2) { Result.Normal = (Vec3){ 0.0F, 0.0F, (float)-Dda.StepZ }; }
 
       return Result;
     }

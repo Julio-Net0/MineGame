@@ -4,6 +4,7 @@
 #include "raylib.h"
 #include "raymath.h"
 #include "world/world.h"
+#include "core/vecmath.h"
 
 #define INIT_SLOT_0 0
 #define INIT_SLOT_1 1
@@ -21,12 +22,12 @@
 #define INIT_BLOCK_6 6
 #define INIT_BLOCK_7 7
 
-Player InitPlayer(Vector3 SpawnPos) {
+Player InitPlayer(Vec3 SpawnPos) {
   Player PlayerObj = {0};
 
   PlayerObj.Id = 0;
   PlayerObj.Position = SpawnPos;
-  PlayerObj.Velocity = (Vector3){0.0F, 0.0F, 0.0F};
+  PlayerObj.Velocity = (Vec3){0.0F, 0.0F, 0.0F};
   PlayerObj.Size = PLAYER_SIZE;
   PlayerObj.Radius = PLAYER_RADIUS;
   PlayerObj.Speed = PLAYER_SPEED;
@@ -53,8 +54,8 @@ void SetHotbarSlot(Player *PlayerVal, int Slot, unsigned char BlockId) {
   }
 }
 
-bool IsPointSolid(World *WorldVal, Vector3 Pos) {
-  Vector3 BlockPos = {__builtin_floorf(Pos.x + BLOCK_HALF_SIZE),
+bool IsPointSolid(World *WorldVal, Vec3 Pos) {
+  Vec3 BlockPos = {__builtin_floorf(Pos.x + BLOCK_HALF_SIZE),
                       __builtin_floorf(Pos.y + BLOCK_HALF_SIZE),
                       __builtin_floorf(Pos.z + BLOCK_HALF_SIZE)};
 
@@ -64,21 +65,21 @@ bool IsPointSolid(World *WorldVal, Vector3 Pos) {
 }
 
 void GetPlayerPoints(Player *PlayerVal, PointConfig Config,
-                     Vector3 OutPoints[COLLISION_POINTS]) {
+                     Vec3 OutPoints[COLLISION_POINTS]) {
   float CheckY = PlayerVal->Position.y + Config.YOffset + Config.Epsilon;
 
-  OutPoints[0] = (Vector3){PlayerVal->Position.x, CheckY, PlayerVal->Position.z};
-  OutPoints[1] = (Vector3){PlayerVal->Position.x - Config.Radius, CheckY,
+  OutPoints[0] = (Vec3){PlayerVal->Position.x, CheckY, PlayerVal->Position.z};
+  OutPoints[1] = (Vec3){PlayerVal->Position.x - Config.Radius, CheckY,
                            PlayerVal->Position.z - Config.Radius};
-  OutPoints[2] = (Vector3){PlayerVal->Position.x + Config.Radius, CheckY,
+  OutPoints[2] = (Vec3){PlayerVal->Position.x + Config.Radius, CheckY,
                            PlayerVal->Position.z - Config.Radius};
-  OutPoints[3] = (Vector3){PlayerVal->Position.x - Config.Radius, CheckY,
+  OutPoints[3] = (Vec3){PlayerVal->Position.x - Config.Radius, CheckY,
                            PlayerVal->Position.z + Config.Radius};
-  OutPoints[4] = (Vector3){PlayerVal->Position.x + Config.Radius, CheckY,
+  OutPoints[4] = (Vec3){PlayerVal->Position.x + Config.Radius, CheckY,
                            PlayerVal->Position.z + Config.Radius};
 }
 
-static bool IsAnyPointSolid(World *WorldVal, Vector3 Points[], int PointsLen) {
+static bool IsAnyPointSolid(World *WorldVal, Vec3 Points[], int PointsLen) {
   #pragma unroll 4
   for (int IdxI = 0; IdxI < PointsLen; IdxI++) {
     if (IsPointSolid(WorldVal, Points[IdxI])) {
@@ -89,7 +90,7 @@ static bool IsAnyPointSolid(World *WorldVal, Vector3 Points[], int PointsLen) {
 }
 
 static bool IsPlayerOnGround(World *WorldVal, Player *PlayerVal) {
-  Vector3 BottomPoints[COLLISION_POINTS];
+  Vec3 BottomPoints[COLLISION_POINTS];
   GetPlayerPoints(
       PlayerVal,
       (PointConfig){.Radius = PlayerVal->Radius - VERTICAL_RADIUS_SHRINK,
@@ -126,7 +127,7 @@ static bool IsPlayerOnTop(World *WorldVal, Player *PlayerVal, float NextY) {
   float CurrentY = PlayerVal->Position.y;
   PlayerVal->Position.y = NextY;
 
-  Vector3 TopPoints[COLLISION_POINTS];
+  Vec3 TopPoints[COLLISION_POINTS];
   GetPlayerPoints(
       PlayerVal,
       (PointConfig){.Radius = PlayerVal->Radius - VERTICAL_RADIUS_SHRINK,
@@ -154,8 +155,8 @@ static bool VerifyTopCollision(Player *PlayerVal, World *WorldVal, float NextY) 
 }
 
 static bool IsPlayerCollidingLateral(World *WorldVal, Player *PlayerVal) {
-  Vector3 ShinPoints[COLLISION_POINTS];
-  Vector3 FacePoints[COLLISION_POINTS];
+  Vec3 ShinPoints[COLLISION_POINTS];
+  Vec3 FacePoints[COLLISION_POINTS];
 
   GetPlayerPoints(PlayerVal,
                   (PointConfig){.Radius = PlayerVal->Radius,
@@ -286,8 +287,8 @@ static void NoClipMov(Player *PlayerVal, float Dt) {
   PlayerVal->Position.z += PlayerVal->Velocity.z * Dt;
 }
 
-static Vector3 HandleInput(bool HasControl) {
-  Vector3 Input = {0.0F, 0.0F, 0.0F};
+static Vec3 HandleInput(bool HasControl) {
+  Vec3 Input = {0.0F, 0.0F, 0.0F};
 
   if (!HasControl) {
     return Input;
@@ -309,25 +310,32 @@ static Vector3 HandleInput(bool HasControl) {
   return Input;
 }
 
-static Vector3 CalculateMoveDir(Camera3D *CameraVal, Vector3 Input) {
-  Vector3 ViewVector = Vector3Subtract(CameraVal->target, CameraVal->position);
-  Vector3 Forward = Vector3Normalize((Vector3){ViewVector.x, 0.0F, ViewVector.z});
-  Vector3 Right =
-      Vector3Normalize(Vector3CrossProduct(Forward, (Vector3){0.0F, 1.0F, 0.0F}));
+static Vec3 CalculateMoveDir(Camera3D *CameraVal, Vec3 Input) {
+  // Camera is still a Raylib type (deferred seam); convert its vectors to
+  // engine Vec3 at this boundary and run the movement math in engine ops.
+  Vec3 CamTarget = {CameraVal->target.x, CameraVal->target.y, CameraVal->target.z};
+  Vec3 CamPos = {CameraVal->position.x, CameraVal->position.y, CameraVal->position.z};
 
-  Vector3 MoveDir = {0.0F, 0.0F, 0.0F};
+  Vec3 ViewVector = Vec3Sub(CamTarget, CamPos);
+  Vec3 Forward = Vec3Normalize((Vec3){ViewVector.x, 0.0F, ViewVector.z});
+  Vec3 Right =
+      Vec3Normalize(Vec3Cross(Forward, (Vec3){0.0F, 1.0F, 0.0F}));
 
-  MoveDir = Vector3Add(MoveDir, Vector3Scale(Forward, Input.z));
-  MoveDir = Vector3Add(MoveDir, Vector3Scale(Right, Input.x));
+  Vec3 MoveDir = {0.0F, 0.0F, 0.0F};
 
-  if (Vector3Length(MoveDir) > 0.0F) {
-    MoveDir = Vector3Normalize(MoveDir);
+  MoveDir = Vec3Add(MoveDir, Vec3Scale(Forward, Input.z));
+  MoveDir = Vec3Add(MoveDir, Vec3Scale(Right, Input.x));
+
+  if (Vec3Length(MoveDir) > 0.0F) {
+    MoveDir = Vec3Normalize(MoveDir);
   }
 
   return MoveDir;
 }
 
 static void UpdateCameraFollow(Player *PlayerVal, Camera3D *CameraVal) {
+  // Camera vectors stay Raylib types (deferred seam). Preserve the view
+  // direction while snapping the camera to the player's head position.
   Vector3 ViewVector = Vector3Subtract(CameraVal->target, CameraVal->position);
 
   CameraVal->position.x = PlayerVal->Position.x;
@@ -343,9 +351,9 @@ void UpdatePlayer(Player *PlayerVal, Camera3D *CameraVal, World *WorldVal, float
     return;
   }
 
-  Vector3 Input = HandleInput(HasControl);
+  Vec3 Input = HandleInput(HasControl);
 
-  Vector3 MoveDir = CalculateMoveDir(CameraVal, Input);
+  Vec3 MoveDir = CalculateMoveDir(CameraVal, Input);
 
   PlayerVal->Velocity.x = MoveDir.x * PlayerVal->Speed;
   PlayerVal->Velocity.z = MoveDir.z * PlayerVal->Speed;
@@ -359,21 +367,24 @@ void UpdatePlayer(Player *PlayerVal, Camera3D *CameraVal, World *WorldVal, float
   UpdateCameraFollow(PlayerVal, CameraVal);
 }
 
-static void RequestBlockBreak(World *WorldVal, Vector3 Pos) {
+static void RequestBlockBreak(World *WorldVal, Vec3 Pos) {
   SetBlockInWorld(WorldVal, Pos, 0);
 }
 
-static void RequestBlockPlace(World *WorldVal, Vector3 Pos,
+static void RequestBlockPlace(World *WorldVal, Vec3 Pos,
                               unsigned char BlockId) {
   SetBlockInWorld(WorldVal, Pos, BlockId);
 }
 
 void HandlePlayerInteraction(Player *PlayerVal, Camera3D *CameraVal, World *WorldVal,
                              bool HasControl) {
-  Vector3 RayDir =
-      Vector3Normalize(Vector3Subtract(CameraVal->target, CameraVal->position));
+  // Camera is a Raylib type (deferred seam); build the ray in engine Vec3
+  // before handing it to the simulation raycast.
+  Vec3 RayOrigin = {CameraVal->position.x, CameraVal->position.y, CameraVal->position.z};
+  Vec3 CamTarget = {CameraVal->target.x, CameraVal->target.y, CameraVal->target.z};
+  Vec3 RayDir = Vec3Normalize(Vec3Sub(CamTarget, RayOrigin));
   PlayerVal->TargetBlock =
-      RayCastToWorld(WorldVal, CameraVal->position, RayDir, PlayerVal->ReachDistance);
+      RayCastToWorld(WorldVal, RayOrigin, RayDir, PlayerVal->ReachDistance);
 
   if (!HasControl) {
     return;
@@ -405,8 +416,8 @@ void HandlePlayerInteraction(Player *PlayerVal, Camera3D *CameraVal, World *Worl
     if (IsMouseButtonPressed(MOUSE_RIGHT_BUTTON)) {
       unsigned char BlockInHandId = PlayerVal->Hotbar[PlayerVal->SelectedHotbarSlot];
 
-      Vector3 PlacePos =
-          Vector3Add(PlayerVal->TargetBlock.BlockPos, PlayerVal->TargetBlock.Normal);
+      Vec3 PlacePos =
+          Vec3Add(PlayerVal->TargetBlock.BlockPos, PlayerVal->TargetBlock.Normal);
       RequestBlockPlace(WorldVal, PlacePos, BlockInHandId);
     }
   }

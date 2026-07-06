@@ -22,7 +22,7 @@ void RenderChunkMesh(Chunk *ChunkVal);
 void RenderChunkTranslucentMesh(Chunk *ChunkVal);
 void UnloadChunkMesh(Chunk *ChunkVal);
 void DrawWorld(World *WorldVal, Camera3D CameraVal);
-void DrawBlockHighlight(Vector3 Pos);
+void DrawBlockHighlight(Vec3 Pos);
 void DrawAABBDebug(World *WorldVal, Player *PlayerVal);
 void DrawBlockIcon(int BlockId, int X, int Y, int Size);
 bool IsChunkInFrustum(Camera3D CameraVal, Chunk *ChunkVal);
