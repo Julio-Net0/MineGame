@@ -6,47 +6,15 @@
 
 A minimalist Minecraft-inspired voxel engine built from scratch in **C17** using the **Raylib** library. This project focuses on learning game engine fundamentals, memory management, and clean code practices.
 
-## 🚀 Roadmap to Beta 3
-Goal: Transform the optimized rendering engine into a dynamic, infinite, visually polished, and persistent voxel game world.
-- [X] Data Architecture Upgrade: Replace the linear chunk array with an O(1) Hash Map or 2D Spatial Grid to eliminate CPU bottlenecks during chunk lookups and recover maximum FPS.
-- [X] Texture Atlas & UV Mapping: Transition from solid vertex colors to actual block graphics by mapping a single global texture image onto the VBOs.
-- [X] Procedural Terrain Generation: Integrate Perlin or Simplex noise algorithms to generate organic landscapes, mountains, valleys, and underground caves instead of flat planes.
-- [X] Multithreaded Chunk Processing: Implement background Worker Threads to handle chunk generation and meshing in parallel, eliminating all gameplay stutters when crossing chunk borders.
-- [X] World Persistence (Save/Load): Develop a binary serialization system with RLE (Run-Length Encoding) compression to save modified chunks to disk and load them seamlessly, preserving player creations.
-- [X] View Frustum Culling: Add camera-aware mathematics (Dot Product / Plane Extraction) to completely ignore and skip rendering chunks that are behind the player or outside the field of view, maximizing GPU efficiency.
-- [X] Meshing Amortization(Chunk Queue): Implement a time-sliced building queue that limits the number of meshes generated per frame. This eliminates CPU lag spikes and guarantees buttery-smooth framerates when crossing chunk boundaries at high speeds.
-- [X] Greedy Meshing: Upgrade the Face Culling algorithm to merge adjacent block faces of the same type into massive, single quads. This slashes the total vertex count by up to 80%, drastically reducing VRAM usage and GPU memory bandwidth.
-- [X] Voxel Ambient Occlusion (AO): Calculate smooth, localized shadows on block vertices based on neighboring geometry to add visual depth and that classic "voxel lighting" feel to the world.
-- [X] Translucency & Render Passes: Split chunk meshes into "Opaque" and "Transparent" passes to correctly render glass, water, and foliage without OpenGL depth-sorting bugs.
 
-## Beta 2 ✅
-Goal: Transform the engine from a free-roaming spectator into a physically-grounded game world.
-- [X] **Debug Console & Command System:** Implement an in-game text terminal to execute logic functions, list loaded assets from cJSON, toggle debug overlays, etc.
-- [X] **Physical Embodiment:** Replace the flying camera with a physics-aware Player entity using AABB (Axis-Aligned Bounding Box) collision detection.
-- [X] **Dynamic World Management:** Implement a World Handler to manage, render, and "stitch" together multiple chunks (Mesh-culling across chunk borders).
-- [X] **Player Mechanics:** Implementation of gravity, jumping, and ground-level movement (step-up/step-down logic).
-- [X] **Gameplay Loop:** Basic inventory system with a HUD Hotbar and block selection (1-9 keys) to choose materials for building.
-- [X] **Performance Pass:** Transition from Immediate Mode rendering to Vertex Buffer Objects (VBOs) to support larger view distances.
-
-## Beta 1 ✅
-Goal: Establish a functional "Creative Mode" foundation.
-- [X] **Static World:** Render a fixed world.
-- [X] **Spectator Movement:** Implementation of a 6-DOF camera to fly through the world.
-- [X] **Block Placement:** Ability to add blocks to the grid in real-time.
-- [X] **Block Destruction:** Ability to remove blocks from the grid.
 
 ## 🤓 Tech Stack
-
-<p align="center">
-  <img src="images/README/jira.png" alt="Jira" width="600">
-</p>
 
 * **Language:** C17
 * **Graphics API:** [Raylib 5.5](https://www.raylib.com/)
 * **cJSON:** [cJSON 1.7.19](https://github.com/DaveGamble/cJSON)
 * **Build System:** CMake (with FetchContent for zero-install dependency management).
 * **Static Analysis:** Clang-Tidy.
-* **Project Management:** Jira (Agile/Kanban).
 
 ## 🔧 Getting Started
 
@@ -101,3 +69,36 @@ This project is made possible thanks to these amazing open-source libraries:
     * *License:* [MIT](https://github.com/DaveGamble/cJSON/blob/master/LICENSE)
 
 Special thanks to **Ramon Santamaria (@raysan5)** for creating Raylib and the community for the continuous support.
+
+---
+
+## 📜 Completed Roadmaps (Milestones)
+
+### 🚀 Beta 3
+Goal: Transform the optimized rendering engine into a dynamic, infinite, visually polished, and persistent voxel game world.
+- [X] Data Architecture Upgrade: Replace the linear chunk array with an O(1) Hash Map or 2D Spatial Grid to eliminate CPU bottlenecks during chunk lookups and recover maximum FPS.
+- [X] Texture Atlas & UV Mapping: Transition from solid vertex colors to actual block graphics by mapping a single global texture image onto the VBOs.
+- [X] Procedural Terrain Generation: Integrate Perlin or Simplex noise algorithms to generate organic landscapes, mountains, valleys, and underground caves instead of flat planes.
+- [X] Multithreaded Chunk Processing: Implement background Worker Threads to handle chunk generation and meshing in parallel, eliminating all gameplay stutters when crossing chunk borders.
+- [X] World Persistence (Save/Load): Develop a binary serialization system with RLE (Run-Length Encoding) compression to save modified chunks to disk and load them seamlessly, preserving player creations.
+- [X] View Frustum Culling: Add camera-aware mathematics (Dot Product / Plane Extraction) to completely ignore and skip rendering chunks that are behind the player or outside the field of view, maximizing GPU efficiency.
+- [X] Meshing Amortization(Chunk Queue): Implement a time-sliced building queue that limits the number of meshes generated per frame. This eliminates CPU lag spikes and guarantees buttery-smooth framerates when crossing chunk boundaries at high speeds.
+- [X] Greedy Meshing: Upgrade the Face Culling algorithm to merge adjacent block faces of the same type into massive, single quads. This slashes the total vertex count by up to 80%, drastically reducing VRAM usage and GPU memory bandwidth.
+- [X] Voxel Ambient Occlusion (AO): Calculate smooth, localized shadows on block vertices based on neighboring geometry to add visual depth and that classic "voxel lighting" feel to the world.
+- [X] Translucency & Render Passes: Split chunk meshes into "Opaque" and "Transparent" passes to correctly render glass, water, and foliage without OpenGL depth-sorting bugs.
+
+### 🚀 Beta 2
+Goal: Transform the engine from a free-roaming spectator into a physically-grounded game world.
+- [X] **Debug Console & Command System:** Implement an in-game text terminal to execute logic functions, list loaded assets from cJSON, toggle debug overlays, etc.
+- [X] **Physical Embodiment:** Replace the flying camera with a physics-aware Player entity using AABB (Axis-Aligned Bounding Box) collision detection.
+- [X] **Dynamic World Management:** Implement a World Handler to manage, render, and "stitch" together multiple chunks (Mesh-culling across chunk borders).
+- [X] **Player Mechanics:** Implementation of gravity, jumping, and ground-level movement (step-up/step-down logic).
+- [X] **Gameplay Loop:** Basic inventory system with a HUD Hotbar and block selection (1-9 keys) to choose materials for building.
+- [X] **Performance Pass:** Transition from Immediate Mode rendering to Vertex Buffer Objects (VBOs) to support larger view distances.
+
+### 🚀 Beta 1
+Goal: Establish a functional "Creative Mode" foundation.
+- [X] **Static World:** Render a fixed world.
+- [X] **Spectator Movement:** Implementation of a 6-DOF camera to fly through the world.
+- [X] **Block Placement:** Ability to add blocks to the grid in real-time.
+- [X] **Block Destruction:** Ability to remove blocks from the grid.
