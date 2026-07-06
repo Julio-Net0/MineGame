@@ -14,7 +14,7 @@ This document serves as a repository for technical design ideas, optimizations, 
   - This allows the depth buffer writes to remain active for leaves, letting the GPU automatically cull hidden leaves at the hardware level using *Early-Z* testing.
 
 ### 1.2 Dynamic Inner-Chunk Face Sorting
-* **Context:** Sorting of translucent chunks (Back-to-Front) has been implemented in [renderer.c](file:///c:/Users/jjuli/OneDrive/Documentos/Codes/C/MineGame/src/renderer.c), but the face rendering order within a single chunk VBO remains static (generated along X ──▶ Y ──▶ Z).
+* **Context:** Sorting of translucent chunks (Back-to-Front) has been implemented in [renderer.c](file:///c:/Users/jjuli/OneDrive/Documentos/Codes/C/MineGame/src/render/renderer.c), but the face rendering order within a single chunk VBO remains static (generated along X ──▶ Y ──▶ Z).
 * **Solution:**
   - When the camera angle changes significantly (e.g., rotation > 45 degrees), re-sort the indices of translucent faces on the CPU based on the camera view vector.
   - Update the index buffer on the GPU using `rlUpdateMesh`.
@@ -33,14 +33,14 @@ This document serves as a repository for technical design ideas, optimizations, 
 ### 2.1 Fluid Physics & Dynamics (Water)
 * **Context:** Water is now non-solid (defined in [water.json](file:///c:/Users/jjuli/OneDrive/Documentos/Codes/C/MineGame/assets/blocks/water.json)), but the player falls through it with normal atmospheric gravity.
 * **Solution:**
-  - In the physics update loop in [player.c](file:///c:/Users/jjuli/OneDrive/Documentos/Codes/C/MineGame/src/player.c), detect if the player's head or feet points are inside a water block.
+  - In the physics update loop in [player.c](file:///c:/Users/jjuli/OneDrive/Documentos/Codes/C/MineGame/src/player/player.c), detect if the player's head or feet points are inside a water block.
   - Apply reduced gravity and drag forces (velocity dampening) on both horizontal and vertical axes.
   - Enable a "swimming" state that moves the player upwards when holding the jump key (`Space`).
 
 ### 2.2 Water Surface Height
 * **Context:** Water blocks currently occupy a full `1.0 x 1.0 x 1.0` volume, creating visual intersection artifacts with neighboring dry blocks.
 * **Solution:**
-  - Modify the chunk mesh generation in [renderer.c](file:///c:/Users/jjuli/OneDrive/Documentos/Codes/C/MineGame/src/renderer.c) to lower the top face (`FACE_TOP`) of water blocks slightly (e.g., to 0.9 or 0.85).
+  - Modify the chunk mesh generation in [renderer.c](file:///c:/Users/jjuli/OneDrive/Documentos/Codes/C/MineGame/src/render/renderer.c) to lower the top face (`FACE_TOP`) of water blocks slightly (e.g., to 0.9 or 0.85).
   - This creates the classic look where the water surface sits lower than the surrounding shoreline.
 
 ---
