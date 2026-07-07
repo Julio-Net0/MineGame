@@ -1,9 +1,10 @@
 #ifndef CHUNK_H
 #define CHUNK_H
 
-#include "raylib.h"
 #include "core/vecmath.h"
+#include "core/mesh_handle.h"
 #include <stdatomic.h>
+#include <stdbool.h>
 
 #define CHUNK_SIZE 16
 #define CHUNK_VOLUME ((__SIZE_TYPE__)CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE)
@@ -13,8 +14,8 @@
 #define BLOCK_HALF_SIZE (BLOCK_SIZE / 2.0F)
 
 typedef struct Chunk {
-  Mesh ChunkMesh;
-  Mesh TranslucentMesh;
+  MeshHandle ChunkMesh;
+  MeshHandle TranslucentMesh;
 
   unsigned char Data[CHUNK_SIZE][CHUNK_SIZE][CHUNK_SIZE];
 

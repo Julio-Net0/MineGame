@@ -128,26 +128,30 @@ static void BuildMeshes(World *WorldVal) {
 
 static void RenderGame(World *WorldVal, Player *PlayerVal, Camera3D *ActiveCamera,
                        ChatState *ChatVal, bool ShowDebug) {
-  BeginDrawing();
+  RenderCamera Cam = {
+      .Position = Vec3FromRL(ActiveCamera->position),
+      .Target = Vec3FromRL(ActiveCamera->target),
+      .Up = Vec3FromRL(ActiveCamera->up),
+      .FovY = ActiveCamera->fovy,
+  };
+
+  RenderBeginFrame(Cam);
   {
-    ClearBackground(SKYBLUE);
+    DrawWorld(WorldVal, Cam);
 
-    BeginMode3D(*ActiveCamera);
-    {
-      DrawWorld(WorldVal, *ActiveCamera);
-
-      if (PlayerVal->TargetBlock.Hit) {
-        DrawBlockHighlight(PlayerVal->TargetBlock.BlockPos);
-      }
-
-      DrawAABBDebug(WorldVal, PlayerVal);
+    if (PlayerVal->TargetBlock.Hit) {
+      RenderDrawBlockHighlight(PlayerVal->TargetBlock.BlockPos);
     }
-    EndMode3D();
 
-    DrawHUD(PlayerVal, WorldVal, *ActiveCamera, ShowDebug);
-    DrawChat(ChatVal);
+    DrawAABBDebug(WorldVal, PlayerVal);
   }
-  EndDrawing();
+  RenderEnd3D();
+
+  // 2D HUD layer (deferred; still drawn directly by Raylib helpers).
+  DrawHUD(PlayerVal, WorldVal, *ActiveCamera, ShowDebug);
+  DrawChat(ChatVal);
+
+  RenderEndFrame();
 }
 
 int main(void) {

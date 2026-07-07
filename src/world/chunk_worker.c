@@ -1,9 +1,9 @@
 #include "world/chunk_worker.h"
 #include "persistence/world_save.h"
 #include <pthread.h>
-#include <raylib.h>
 #include <stdatomic.h>
 #include <stdbool.h>
+#include <stdio.h>
 
 #define QUEUE_SIZE 2048
 #define WORKER_THREAD_COUNT 4
@@ -98,7 +98,7 @@ void EnqueueChunkGeneration(Chunk *ChunkVal) {
     State->QueueTail = NextTail;
     pthread_cond_signal(&State->WorkAvail);
   } else {
-    TraceLog(LOG_WARNING, "Chunk generation queue full! Chunk rejected at: %d, %d, %d", ChunkVal->ChunkX, ChunkVal->ChunkY, ChunkVal->ChunkZ);
+    (void)fprintf(stderr, "Chunk generation queue full! Chunk rejected at: %d, %d, %d\n", ChunkVal->ChunkX, ChunkVal->ChunkY, ChunkVal->ChunkZ);
     ChunkVal->IsGenerating = false;
     ChunkVal->IsGenerated = false;
   }

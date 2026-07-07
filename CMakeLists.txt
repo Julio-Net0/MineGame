@@ -25,6 +25,7 @@ add_executable(${PROJECT_NAME}
   src/persistence/chunk_serial.c
   src/player/player.c
   src/render/renderer.c
+  src/render/raylib_backend.c
   src/render/camera.c
   src/render/hud.c
   src/ui/chat.c

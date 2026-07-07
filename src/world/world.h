@@ -3,6 +3,7 @@
 
 #include "core/vecmath.h"
 #include "world/chunk.h"
+#include <stdbool.h>
 
 #define MAX_RENDER_DISTANCE 5
 #define MAX_ACTIVE_CHUNKS 1331 //Recommended size: (2 * MAX_RENDER_DISTANCE + 1)^3

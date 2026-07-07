@@ -2,6 +2,8 @@
 #include "player/player.h"
 #include "raylib.h"
 #include "render/renderer.h"
+#include "render/backend.h"
+#include "render/rl_compat.h"
 #include "world/world.h"
 
 enum {
@@ -43,7 +45,7 @@ static void DrawHotbar(Player *PlayerVal) {
 
     unsigned char BlockId = PlayerVal->Hotbar[Idx];
     if (BlockId != 0) {
-      DrawBlockIcon(BlockId, HOTBAR_INNER_PADDING + XPos,
+      RenderDrawBlockIcon(BlockId, HOTBAR_INNER_PADDING + XPos,
                     HOTBAR_INNER_PADDING + StartY, HOTBAR_ICON_SIZE);
     }
 
@@ -96,6 +98,13 @@ static void DrawDebugScreen(Player *PlayerVal, World *WorldVal, Camera3D Camera)
       TextFormat("Active Chunks: %d / %d", ActiveChunks, MAX_ACTIVE_CHUNKS),
       DEBUG_ACTIVE_CHUNKS_X, DEBUG_ACTIVE_CHUNKS_Y, DEBUG_FONT_SIZE, RAYWHITE);
 
+  RenderCamera RCam = {
+      .Position = Vec3FromRL(Camera.position),
+      .Target = Vec3FromRL(Camera.target),
+      .Up = Vec3FromRL(Camera.up),
+      .FovY = Camera.fovy,
+  };
+
   int RenderedChunks = 0;
   #pragma unroll 4
   for (int Idx = 0; Idx < MAX_ACTIVE_CHUNKS; Idx++) {
@@ -103,7 +112,7 @@ static void DrawDebugScreen(Player *PlayerVal, World *WorldVal, Camera3D Camera)
       break;
     }
     if (WorldVal->Chunks[Idx].HasMesh &&
-        IsChunkInFrustum(Camera, &WorldVal->Chunks[Idx])) {
+        IsChunkInFrustum(RCam, &WorldVal->Chunks[Idx])) {
       RenderedChunks++;
     }
   }

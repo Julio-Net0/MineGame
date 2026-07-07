@@ -1,11 +1,11 @@
 #include "world/world.h"
 #include "world/chunk.h"
-#include "raylib.h"
-#include "render/renderer.h"
+#include "render/backend.h"
 #include "world/chunk_worker.h"
 #include "persistence/world_save.h"
 #include <stddef.h>
 #include <stdbool.h>
+#include <stdio.h>
 
 #define DDA_MAX_CROSSED_AXES 3.0F
 
@@ -144,8 +144,16 @@ static void EvictUnneededChunks(World *WorldVal, bool *KeepChunk){
       SaveChunkToDisk(&WorldVal->Chunks[IdxI]);
     }
 
-    if(WorldVal->Chunks[IdxI].HasMesh){
-      UnloadChunkMesh(&WorldVal->Chunks[IdxI]);
+    Chunk *Evicted = &WorldVal->Chunks[IdxI];
+    if(Evicted->HasMesh){
+      RenderFreeMesh(Evicted->ChunkMesh);
+      Evicted->ChunkMesh = MESH_HANDLE_INVALID;
+      Evicted->HasMesh = false;
+    }
+    if(Evicted->HasTranslucentMesh){
+      RenderFreeMesh(Evicted->TranslucentMesh);
+      Evicted->TranslucentMesh = MESH_HANDLE_INVALID;
+      Evicted->HasTranslucentMesh = false;
     }
 
     RemoveChunkFromMap(WorldVal, OldX, OldY, OldZ);
@@ -158,7 +166,7 @@ static void EvictUnneededChunks(World *WorldVal, bool *KeepChunk){
 
 static void CreateOrRecycleChunk(World *WorldVal, int ChunkX, int ChunkY, int ChunkZ){
   if(WorldVal->FreeCount == 0){
-    TraceLog(LOG_WARNING, "WORLD: Free-list exhausted, skipping chunk (%d,%d,%d)", ChunkX, ChunkY, ChunkZ);
+    (void)fprintf(stderr, "WORLD: Free-list exhausted, skipping chunk (%d,%d,%d)\n", ChunkX, ChunkY, ChunkZ);
     return;
   }
 
