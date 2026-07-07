@@ -1,8 +1,6 @@
 #include "player/player.h"
 #include "world/block_system.h"
 #include "ui/debug.h"
-#include "raylib.h"
-#include "raymath.h"
 #include "world/world.h"
 #include "core/vecmath.h"
 
@@ -242,8 +240,8 @@ static bool VerifyZCollision(Player *PlayerVal, World *WorldVal, float NextZ) {
 }
 
 static void PhysicalMov(Player *PlayerVal, World *WorldVal, float Dt,
-                        bool HasControl) {
-  if (PlayerVal->IsGrounded && IsKeyPressed(KEY_SPACE) && HasControl) {
+                        bool JumpRequested) {
+  if (PlayerVal->IsGrounded && JumpRequested) {
     PlayerVal->Velocity.y = PLAYER_JUMP_FORCE;
     PlayerVal->IsGrounded = false;
   }
@@ -274,12 +272,12 @@ static void PhysicalMov(Player *PlayerVal, World *WorldVal, float Dt,
   }
 }
 
-static void NoClipMov(Player *PlayerVal, float Dt) {
+static void NoClipMov(Player *PlayerVal, float Dt, bool AscendHeld, bool DescendHeld) {
   PlayerVal->Velocity.y = 0.0F;
-  if (IsKeyDown(KEY_SPACE)) {
+  if (AscendHeld) {
     PlayerVal->Position.y += PlayerVal->Speed * Dt;
   }
-  if (IsKeyDown(KEY_LEFT_CONTROL)) {
+  if (DescendHeld) {
     PlayerVal->Position.y -= PlayerVal->Speed * Dt;
   }
 
@@ -287,44 +285,16 @@ static void NoClipMov(Player *PlayerVal, float Dt) {
   PlayerVal->Position.z += PlayerVal->Velocity.z * Dt;
 }
 
-static Vec3 HandleInput(bool HasControl) {
-  Vec3 Input = {0.0F, 0.0F, 0.0F};
-
-  if (!HasControl) {
-    return Input;
-  }
-
-  if (IsKeyDown(KEY_W)) {
-    Input.z += 1.0F;
-  }
-  if (IsKeyDown(KEY_S)) {
-    Input.z -= 1.0F;
-  }
-  if (IsKeyDown(KEY_A)) {
-    Input.x -= 1.0F;
-  }
-  if (IsKeyDown(KEY_D)) {
-    Input.x += 1.0F;
-  }
-
-  return Input;
-}
-
-static Vec3 CalculateMoveDir(Camera3D *CameraVal, Vec3 Input) {
-  // Camera is still a Raylib type (deferred seam); convert its vectors to
-  // engine Vec3 at this boundary and run the movement math in engine ops.
-  Vec3 CamTarget = {CameraVal->target.x, CameraVal->target.y, CameraVal->target.z};
-  Vec3 CamPos = {CameraVal->position.x, CameraVal->position.y, CameraVal->position.z};
-
-  Vec3 ViewVector = Vec3Sub(CamTarget, CamPos);
-  Vec3 Forward = Vec3Normalize((Vec3){ViewVector.x, 0.0F, ViewVector.z});
+// Movement basis from the view forward (flattened to the horizontal plane).
+static Vec3 CalculateMoveDir(Vec3 ViewForward, float MoveX, float MoveForward) {
+  Vec3 Forward = Vec3Normalize((Vec3){ViewForward.x, 0.0F, ViewForward.z});
   Vec3 Right =
       Vec3Normalize(Vec3Cross(Forward, (Vec3){0.0F, 1.0F, 0.0F}));
 
   Vec3 MoveDir = {0.0F, 0.0F, 0.0F};
 
-  MoveDir = Vec3Add(MoveDir, Vec3Scale(Forward, Input.z));
-  MoveDir = Vec3Add(MoveDir, Vec3Scale(Right, Input.x));
+  MoveDir = Vec3Add(MoveDir, Vec3Scale(Forward, MoveForward));
+  MoveDir = Vec3Add(MoveDir, Vec3Scale(Right, MoveX));
 
   if (Vec3Length(MoveDir) > 0.0F) {
     MoveDir = Vec3Normalize(MoveDir);
@@ -333,38 +303,22 @@ static Vec3 CalculateMoveDir(Camera3D *CameraVal, Vec3 Input) {
   return MoveDir;
 }
 
-static void UpdateCameraFollow(Player *PlayerVal, Camera3D *CameraVal) {
-  // Camera vectors stay Raylib types (deferred seam). Preserve the view
-  // direction while snapping the camera to the player's head position.
-  Vector3 ViewVector = Vector3Subtract(CameraVal->target, CameraVal->position);
-
-  CameraVal->position.x = PlayerVal->Position.x;
-  CameraVal->position.y = PlayerVal->Position.y + PlayerVal->HeadOffset;
-  CameraVal->position.z = PlayerVal->Position.z;
-
-  CameraVal->target = Vector3Add(CameraVal->position, ViewVector);
-}
-
-void UpdatePlayer(Player *PlayerVal, Camera3D *CameraVal, World *WorldVal, float Dt,
-                  bool HasControl) {
+void UpdatePlayer(Player *PlayerVal, World *WorldVal, PlayerView View,
+                  PlayerInput Input, float Dt) {
   if (GetDebugState()->Freecam) {
     return;
   }
 
-  Vec3 Input = HandleInput(HasControl);
-
-  Vec3 MoveDir = CalculateMoveDir(CameraVal, Input);
+  Vec3 MoveDir = CalculateMoveDir(View.Forward, Input.MoveX, Input.MoveForward);
 
   PlayerVal->Velocity.x = MoveDir.x * PlayerVal->Speed;
   PlayerVal->Velocity.z = MoveDir.z * PlayerVal->Speed;
 
   if (!PlayerVal->Noclip) {
-    PhysicalMov(PlayerVal, WorldVal, Dt, HasControl);
+    PhysicalMov(PlayerVal, WorldVal, Dt, Input.Jump);
   } else {
-    NoClipMov(PlayerVal, Dt);
+    NoClipMov(PlayerVal, Dt, Input.AscendHeld, Input.DescendHeld);
   }
-
-  UpdateCameraFollow(PlayerVal, CameraVal);
 }
 
 static void RequestBlockBreak(World *WorldVal, Vec3 Pos) {
@@ -376,30 +330,18 @@ static void RequestBlockPlace(World *WorldVal, Vec3 Pos,
   SetBlockInWorld(WorldVal, Pos, BlockId);
 }
 
-void HandlePlayerInteraction(Player *PlayerVal, Camera3D *CameraVal, World *WorldVal,
-                             bool HasControl) {
-  // Camera is a Raylib type (deferred seam); build the ray in engine Vec3
-  // before handing it to the simulation raycast.
-  Vec3 RayOrigin = {CameraVal->position.x, CameraVal->position.y, CameraVal->position.z};
-  Vec3 CamTarget = {CameraVal->target.x, CameraVal->target.y, CameraVal->target.z};
-  Vec3 RayDir = Vec3Normalize(Vec3Sub(CamTarget, RayOrigin));
+void HandlePlayerInteraction(Player *PlayerVal, World *WorldVal, PlayerView View,
+                             PlayerInput Input) {
+  Vec3 RayDir = Vec3Normalize(View.Forward);
   PlayerVal->TargetBlock =
-      RayCastToWorld(WorldVal, RayOrigin, RayDir, PlayerVal->ReachDistance);
+      RayCastToWorld(WorldVal, View.EyePosition, RayDir, PlayerVal->ReachDistance);
 
-  if (!HasControl) {
-    return;
+  if (Input.HotbarSelect >= 0) {
+    PlayerVal->SelectedHotbarSlot = Input.HotbarSelect;
   }
 
-  #pragma unroll 4
-  for (int IdxI = 0; IdxI < HOTBAR_SIZE; IdxI++) {
-    if (IsKeyPressed(KEY_ONE + IdxI)) {
-      PlayerVal->SelectedHotbarSlot = IdxI;
-    }
-  }
-
-  float Wheel = GetMouseWheelMove();
-  if (Wheel != 0.0F) {
-    PlayerVal->SelectedHotbarSlot -= (int)Wheel;
+  if (Input.HotbarScroll != 0) {
+    PlayerVal->SelectedHotbarSlot -= Input.HotbarScroll;
     if (PlayerVal->SelectedHotbarSlot < 0) {
       PlayerVal->SelectedHotbarSlot = HOTBAR_SIZE - 1;
     }
@@ -409,11 +351,11 @@ void HandlePlayerInteraction(Player *PlayerVal, Camera3D *CameraVal, World *Worl
   }
 
   if (PlayerVal->TargetBlock.Hit) {
-    if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
+    if (Input.Break) {
       RequestBlockBreak(WorldVal, PlayerVal->TargetBlock.BlockPos);
     }
 
-    if (IsMouseButtonPressed(MOUSE_RIGHT_BUTTON)) {
+    if (Input.Place) {
       unsigned char BlockInHandId = PlayerVal->Hotbar[PlayerVal->SelectedHotbarSlot];
 
       Vec3 PlacePos =

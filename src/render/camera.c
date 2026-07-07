@@ -1,6 +1,7 @@
 #include "render/camera.h"
 #include "raylib.h"
 #include "raymath.h"
+#include "core/vecmath.h"
 
 #define WORLD_UP_VECTOR (Vector3){0.0F, 1.0F, 0.0F}
 #define WORLD_ORIGIN (Vector3){0.0F, 0.0F, 0.0F}
@@ -65,6 +66,16 @@ void UpdateGameCamera(Camera3D *Camera, Vector2 LookDelta) {
   ViewVector.x = CustomCosf(PitchRad) * CustomSinf(YawRad);
   ViewVector.y = CustomSinf(PitchRad);
   ViewVector.z = CustomCosf(PitchRad) * CustomCosf(YawRad);
+
+  Camera->target = Vector3Add(Camera->position, ViewVector);
+}
+
+void CameraFollowTarget(Camera3D *Camera, Vec3 PlayerPos, float HeadOffset) {
+  Vector3 ViewVector = Vector3Subtract(Camera->target, Camera->position);
+
+  Camera->position.x = PlayerPos.x;
+  Camera->position.y = PlayerPos.y + HeadOffset;
+  Camera->position.z = PlayerPos.z;
 
   Camera->target = Vector3Add(Camera->position, ViewVector);
 }

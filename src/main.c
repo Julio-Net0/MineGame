@@ -5,6 +5,7 @@
 #include "world/chunk_worker.h"
 #include "ui/debug.h"
 #include "render/hud.h"
+#include "input/input.h"
 #include "player/player.h"
 #include "pthread.h"
 #include "raylib.h"
@@ -175,14 +176,20 @@ int main(void) {
     UpdateWorld(WorldVal, LoadCenter, MAX_RENDER_DISTANCE);
 
     bool HasControl = (!ChatVal.IsActive) != 0;
-    UpdatePlayer(&PlayerVal, &PlayerCamera, WorldVal, Dt, HasControl);
+    PlayerInput Input = PollPlayerInput(HasControl);
+    PlayerView MoveView = PlayerViewFromCamera(PlayerCamera);
+    UpdatePlayer(&PlayerVal, WorldVal, MoveView, Input, Dt);
+    if (!GetDebugState()->Freecam) {
+      CameraFollowTarget(&PlayerCamera, PlayerVal.Position, PlayerVal.HeadOffset);
+    }
 
     Camera3D *ActiveCamera = (Camera3D *)0;
     UpdateCameras(&PlayerCamera, &FreeCamera, &WasFreecam, HasControl,
                   &ActiveCamera);
 
     UpdateChat(&ChatVal, ActiveCamera, &PlayerVal, WorldVal);
-    HandlePlayerInteraction(&PlayerVal, ActiveCamera, WorldVal, HasControl);
+    PlayerView InteractView = PlayerViewFromCamera(*ActiveCamera);
+    HandlePlayerInteraction(&PlayerVal, WorldVal, InteractView, Input);
 
     UpdateWorldChunks(WorldVal);
     BuildMeshes(WorldVal);

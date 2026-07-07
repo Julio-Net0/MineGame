@@ -1,8 +1,8 @@
 #ifndef PLAYER_H
 #define PLAYER_H
 
-#include "raylib.h"
 #include "world/world.h"
+#include "core/vecmath.h"
 
 #define PLAYER_GRAVITY 20.0F
 #define PLAYER_TERMINAL_VELOCITY 50.0F
@@ -47,9 +47,30 @@ typedef struct {
   float Epsilon;
 } PointConfig;
 
+// Abstract player input intent. The client produces it; the simulation
+// consumes it. This is the client->server command contract for multiplayer.
+typedef struct {
+  float MoveX;       // strafe axis: -1 (left/A) .. +1 (right/D)
+  float MoveForward; // forward axis: -1 (back/S) .. +1 (forward/W)
+  bool Jump;         // edge: jump requested this tick
+  bool AscendHeld;   // held: noclip ascend
+  bool DescendHeld;  // held: noclip descend
+  int HotbarSelect;  // -1 = none, else 0..HOTBAR_SIZE-1 (edge)
+  int HotbarScroll;  // hotbar scroll delta this tick
+  bool Break;        // edge: break targeted block
+  bool Place;        // edge: place block
+} PlayerInput;
+
+// Abstract view the simulation uses for movement basis and the interaction
+// ray, replacing a renderer Camera3D.
+typedef struct {
+  Vec3 EyePosition;
+  Vec3 Forward;
+} PlayerView;
+
 Player InitPlayer(Vec3 SpawnPos);
-void UpdatePlayer(Player *PlayerVal, Camera3D *CameraVal, World *WorldVal, float Dt, bool HasControl);
-void HandlePlayerInteraction(Player *PlayerVal, Camera3D *CameraVal, World *WorldVal, bool HasControl);
+void UpdatePlayer(Player *PlayerVal, World *WorldVal, PlayerView View, PlayerInput Input, float Dt);
+void HandlePlayerInteraction(Player *PlayerVal, World *WorldVal, PlayerView View, PlayerInput Input);
 bool IsPointSolid(World *WorldVal, Vec3 Pos);
 void GetPlayerPoints(Player *PlayerVal, PointConfig Config, Vec3 OutPoints[COLLISION_POINTS]);
 void SetHotbarSlot(Player *PlayerVal, int Slot, unsigned char BlockId);
