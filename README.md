@@ -12,7 +12,7 @@ Goal: Evolve the engine into a portable, backend-agnostic platform and bring the
 - [ ] **In-Game Prefab Capture:** Add commands to select a block volume and export it directly to a JSON prefab file, round-tripping with the loader so external tools can edit the same files.
 - [ ] **Prefab Rotation & Variety:** Support rotation and mirroring when stamping prefabs, multiplying visual variety from a small set of source models.
 - [ ] **Flora Decoration Pass:** Scatter single-block features (tall grass, flowers, mushrooms) through the feature-placement pipeline as a lightweight precursor to multi-block structures.
-- [ ] **Fixed-Tick Simulation Loop:** Run world logic at a fixed tick rate (e.g. 20 TPS) decoupled from render framerate with interpolation, forming the backbone for growth, fluids, and multiplayer.
+- [X] **Fixed-Tick Simulation Loop:** Run world logic at a fixed tick rate (e.g. 20 TPS) decoupled from render framerate with interpolation, forming the backbone for growth, fluids, and multiplayer.
 - [ ] **Biomes:** Use noise to select block and prefab palettes per region, driving forests, plains, and terrain-appropriate structure sets.
 
 

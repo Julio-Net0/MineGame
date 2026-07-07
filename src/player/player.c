@@ -25,6 +25,7 @@ Player InitPlayer(Vec3 SpawnPos) {
 
   PlayerObj.Id = 0;
   PlayerObj.Position = SpawnPos;
+  PlayerObj.PrevPosition = SpawnPos;
   PlayerObj.Velocity = (Vec3){0.0F, 0.0F, 0.0F};
   PlayerObj.Size = PLAYER_SIZE;
   PlayerObj.Radius = PLAYER_RADIUS;

@@ -52,4 +52,9 @@ static inline Vec3 Vec3Cross(Vec3 A, Vec3 B) {
                 (A.x * B.y) - (A.y * B.x)};
 }
 
+static inline Vec3 Vec3Lerp(Vec3 A, Vec3 B, float T) {
+  return (Vec3){A.x + ((B.x - A.x) * T), A.y + ((B.y - A.y) * T),
+                A.z + ((B.z - A.z) * T)};
+}
+
 #endif

@@ -23,6 +23,10 @@
 #define PLAYER_SPAWN_Y 25.0F
 #define PLAYER_SPAWN_Z 0.0F
 
+#define TICK_RATE 20
+#define TICK_DT (1.0F / (float)TICK_RATE)
+#define MAX_TICKS_PER_FRAME 5
+
 static void InitGame(World **WorldVal, Player *PlayerVal, Camera3D *PlayerCamera,
                      ChatState *ChatVal, Camera3D *FreeCamera) {
   SetTraceLogLevel(LOG_WARNING);
@@ -155,6 +159,33 @@ static void RenderGame(World *WorldVal, Player *PlayerVal, Camera3D *ActiveCamer
   RenderEndFrame();
 }
 
+// Fold a per-frame poll into the pending intent: held axes take the latest
+// value, edge actions latch until consumed, scroll accumulates.
+static PlayerInput AccumulateInput(PlayerInput Pending, PlayerInput Frame) {
+  Pending.MoveX = Frame.MoveX;
+  Pending.MoveForward = Frame.MoveForward;
+  Pending.AscendHeld = Frame.AscendHeld;
+  Pending.DescendHeld = Frame.DescendHeld;
+  Pending.Jump = Pending.Jump || Frame.Jump;
+  Pending.Break = Pending.Break || Frame.Break;
+  Pending.Place = Pending.Place || Frame.Place;
+  if (Frame.HotbarSelect >= 0) {
+    Pending.HotbarSelect = Frame.HotbarSelect;
+  }
+  Pending.HotbarScroll += Frame.HotbarScroll;
+  return Pending;
+}
+
+// Clear edge/scroll fields after a tick consumes the intent (keep held axes).
+static PlayerInput ClearInputEdges(PlayerInput Pending) {
+  Pending.Jump = false;
+  Pending.Break = false;
+  Pending.Place = false;
+  Pending.HotbarSelect = -1;
+  Pending.HotbarScroll = 0;
+  return Pending;
+}
+
 int main(void) {
   World *WorldVal = (World *)0;
   Player PlayerVal;
@@ -166,30 +197,55 @@ int main(void) {
 
   InitGame(&WorldVal, &PlayerVal, &PlayerCamera, &ChatVal, &FreeCamera);
 
-  while (!WindowShouldClose()) {
-    float Dt = GetFrameTime();
+  PlayerInput PendingInput = {0};
+  PendingInput.HotbarSelect = -1;
+  float Accumulator = 0.0F;
 
+  while (!WindowShouldClose()) {
     UpdateSystemInputs(&ShowDebug);
 
-    Vec3 LoadCenter =
-        (GetDebugState()->Freecam && WasFreecam) ? Vec3FromRL(FreeCamera.position) : PlayerVal.Position;
-    UpdateWorld(WorldVal, LoadCenter, MAX_RENDER_DISTANCE);
-
     bool HasControl = (!ChatVal.IsActive) != 0;
-    PlayerInput Input = PollPlayerInput(HasControl);
-    PlayerView MoveView = PlayerViewFromCamera(PlayerCamera);
-    UpdatePlayer(&PlayerVal, WorldVal, MoveView, Input, Dt);
-    if (!GetDebugState()->Freecam) {
-      CameraFollowTarget(&PlayerCamera, PlayerVal.Position, PlayerVal.HeadOffset);
-    }
+    PendingInput = AccumulateInput(PendingInput, PollPlayerInput(HasControl));
 
+    // Mouse-look and active-camera selection run per frame for responsiveness.
     Camera3D *ActiveCamera = (Camera3D *)0;
     UpdateCameras(&PlayerCamera, &FreeCamera, &WasFreecam, HasControl,
                   &ActiveCamera);
 
+    // Fixed-timestep simulation: step the world at a constant rate regardless
+    // of framerate, catching up via an accumulator (capped to avoid spiral).
+    Accumulator += GetFrameTime();
+    int Ticks = 0;
+    while (Accumulator >= TICK_DT && Ticks < MAX_TICKS_PER_FRAME) {
+      Vec3 LoadCenter = (GetDebugState()->Freecam && WasFreecam)
+                            ? Vec3FromRL(FreeCamera.position)
+                            : PlayerVal.Position;
+      UpdateWorld(WorldVal, LoadCenter, MAX_RENDER_DISTANCE);
+
+      PlayerVal.PrevPosition = PlayerVal.Position;
+      PlayerView MoveView = PlayerViewFromCamera(PlayerCamera);
+      UpdatePlayer(&PlayerVal, WorldVal, MoveView, PendingInput, TICK_DT);
+
+      PlayerView InteractView = PlayerViewFromCamera(*ActiveCamera);
+      HandlePlayerInteraction(&PlayerVal, WorldVal, InteractView, PendingInput);
+
+      PendingInput = ClearInputEdges(PendingInput);
+      Accumulator -= TICK_DT;
+      Ticks++;
+    }
+    if (Ticks >= MAX_TICKS_PER_FRAME) {
+      Accumulator = 0.0F;
+    }
+
     UpdateChat(&ChatVal, ActiveCamera, &PlayerVal, WorldVal);
-    PlayerView InteractView = PlayerViewFromCamera(*ActiveCamera);
-    HandlePlayerInteraction(&PlayerVal, WorldVal, InteractView, Input);
+
+    // Render interpolation: the camera follows the player position interpolated
+    // between the previous and current tick, for smooth motion above tick rate.
+    float Alpha = Accumulator / TICK_DT;
+    Vec3 RenderPos = Vec3Lerp(PlayerVal.PrevPosition, PlayerVal.Position, Alpha);
+    if (!GetDebugState()->Freecam) {
+      CameraFollowTarget(&PlayerCamera, RenderPos, PlayerVal.HeadOffset);
+    }
 
     UpdateWorldChunks(WorldVal);
     BuildMeshes(WorldVal);

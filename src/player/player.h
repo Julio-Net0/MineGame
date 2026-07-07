@@ -26,6 +26,7 @@ typedef struct {
   RaycastResult TargetBlock;
 
   Vec3 Position;
+  Vec3 PrevPosition; // tick position before the current tick, for render interpolation
   Vec3 Velocity;
   Vec3 Size;
 
