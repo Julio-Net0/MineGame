@@ -27,8 +27,14 @@
 #define TICK_DT (1.0F / (float)TICK_RATE)
 #define MAX_TICKS_PER_FRAME 5
 // Mesh-build budget per simulation tick. Throughput = MESHES_PER_TICK * TICK_RATE
-// (~120/s at 20 TPS), constant regardless of render framerate.
-#define MESHES_PER_TICK 6
+// (~960/s at 20 TPS), constant regardless of render framerate.
+#define MESHES_PER_TICK 48
+// Hard ceiling on chunk meshes built (and GPU-uploaded) in a single frame.
+// A slow frame runs several ticks, each with its own MESHES_PER_TICK budget; on
+// a teleport that burst can be hundreds of synchronous uploads, hanging the GPU
+// long enough to trigger a Windows TDR driver reset (crash). This cap bounds the
+// per-frame upload burst without changing the steady tick-paced throughput.
+#define MAX_MESHES_PER_FRAME 96
 
 static void InitGame(World **WorldVal, Player *PlayerVal, Camera3D *PlayerCamera,
                      ChatState *ChatVal, Camera3D *FreeCamera) {
@@ -114,8 +120,12 @@ static void UpdateWorldChunks(World *WorldVal) {
   }
 }
 
-static void BuildMeshes(World *WorldVal) {
-  int MeshesBuiltThisTick = 0;
+// Build up to Budget chunk meshes; returns how many were built.
+static int BuildMeshes(World *WorldVal, int Budget) {
+  int MeshesBuilt = 0;
+  if (Budget <= 0) {
+    return 0;
+  }
 
   #pragma unroll 4
   for (int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++) {
@@ -124,13 +134,15 @@ static void BuildMeshes(World *WorldVal) {
     if (ChunkVal->IsGenerated && ChunkVal->IsDirty && !ChunkVal->IsGenerating &&
         AreNeighborsGenerated(WorldVal, ChunkVal)) {
       BuildChunkMesh(WorldVal, ChunkVal);
-      MeshesBuiltThisTick++;
+      MeshesBuilt++;
 
-      if (MeshesBuiltThisTick >= MESHES_PER_TICK) {
+      if (MeshesBuilt >= Budget) {
         break;
       }
     }
   }
+
+  return MeshesBuilt;
 }
 
 static void RenderGame(World *WorldVal, Player *PlayerVal, Camera3D *ActiveCamera,
@@ -218,6 +230,7 @@ int main(void) {
     // of framerate, catching up via an accumulator (capped to avoid spiral).
     Accumulator += GetFrameTime();
     int Ticks = 0;
+    int MeshesThisFrame = 0;
     while (Accumulator >= TICK_DT && Ticks < MAX_TICKS_PER_FRAME) {
       Vec3 LoadCenter = (GetDebugState()->Freecam && WasFreecam)
                             ? Vec3FromRL(FreeCamera.position)
@@ -234,9 +247,15 @@ int main(void) {
       PendingInput = ClearInputEdges(PendingInput);
 
       // Chunk bookkeeping and mesh building are tick-paced (bookkeeping first)
-      // so loading throughput is independent of render framerate.
+      // so loading throughput is independent of render framerate. The per-frame
+      // ceiling clamps the per-tick budget during catch-up bursts (e.g. after a
+      // teleport) so a slow frame never issues a GPU-hanging upload storm.
       UpdateWorldChunks(WorldVal);
-      BuildMeshes(WorldVal);
+      int MeshBudget = MAX_MESHES_PER_FRAME - MeshesThisFrame;
+      if (MeshBudget > MESHES_PER_TICK) {
+        MeshBudget = MESHES_PER_TICK;
+      }
+      MeshesThisFrame += BuildMeshes(WorldVal, MeshBudget);
 
       Accumulator -= TICK_DT;
       Ticks++;
