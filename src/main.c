@@ -26,6 +26,9 @@
 #define TICK_RATE 20
 #define TICK_DT (1.0F / (float)TICK_RATE)
 #define MAX_TICKS_PER_FRAME 5
+// Mesh-build budget per simulation tick. Throughput = MESHES_PER_TICK * TICK_RATE
+// (~120/s at 20 TPS), constant regardless of render framerate.
+#define MESHES_PER_TICK 6
 
 static void InitGame(World **WorldVal, Player *PlayerVal, Camera3D *PlayerCamera,
                      ChatState *ChatVal, Camera3D *FreeCamera) {
@@ -112,8 +115,7 @@ static void UpdateWorldChunks(World *WorldVal) {
 }
 
 static void BuildMeshes(World *WorldVal) {
-  int MeshesBuiltThisFrame = 0;
-  int MaxMeshesPerFrame = 2;
+  int MeshesBuiltThisTick = 0;
 
   #pragma unroll 4
   for (int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++) {
@@ -122,9 +124,9 @@ static void BuildMeshes(World *WorldVal) {
     if (ChunkVal->IsGenerated && ChunkVal->IsDirty && !ChunkVal->IsGenerating &&
         AreNeighborsGenerated(WorldVal, ChunkVal)) {
       BuildChunkMesh(WorldVal, ChunkVal);
-      MeshesBuiltThisFrame++;
+      MeshesBuiltThisTick++;
 
-      if (MeshesBuiltThisFrame >= MaxMeshesPerFrame) {
+      if (MeshesBuiltThisTick >= MESHES_PER_TICK) {
         break;
       }
     }
@@ -230,6 +232,12 @@ int main(void) {
       HandlePlayerInteraction(&PlayerVal, WorldVal, InteractView, PendingInput);
 
       PendingInput = ClearInputEdges(PendingInput);
+
+      // Chunk bookkeeping and mesh building are tick-paced (bookkeeping first)
+      // so loading throughput is independent of render framerate.
+      UpdateWorldChunks(WorldVal);
+      BuildMeshes(WorldVal);
+
       Accumulator -= TICK_DT;
       Ticks++;
     }
@@ -246,9 +254,6 @@ int main(void) {
     if (!GetDebugState()->Freecam) {
       CameraFollowTarget(&PlayerCamera, RenderPos, PlayerVal.HeadOffset);
     }
-
-    UpdateWorldChunks(WorldVal);
-    BuildMeshes(WorldVal);
 
     RenderGame(WorldVal, &PlayerVal, ActiveCamera, &ChatVal, ShowDebug);
   }
