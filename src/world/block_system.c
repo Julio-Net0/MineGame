@@ -1,7 +1,9 @@
 #include "world/block_system.h"
 #include "third_party/cJSON.h"
-#include "raylib.h"
+#include "core/fileio.h"
 #include "core/utils.h"
+#include <stdio.h>
+#include <stdlib.h>
 
 enum {
   MAX_FILES_LIMIT = 1024
@@ -45,38 +47,38 @@ BlockType *GetBlockDef(int BlockId) {
 }
 
 void ParseBlockFile(const char *FilePath) {
-  char *FileContent = LoadFileText(FilePath);
+  char *FileContent = ReadTextFile(FilePath);
   if (FileContent == (void*)0) {
-    TraceLog(LOG_WARNING, "BLOCK_SYSTEM: Failed to read file: %s", FilePath);
+    fprintf(stderr, "BLOCK_SYSTEM: Failed to read file: %s\n", FilePath);
     return;
   }
 
   cJSON *Json = cJSON_Parse(FileContent);
   if (Json == (void*)0) {
     const char *ErrorPtr = cJSON_GetErrorPtr();
-    TraceLog(LOG_WARNING, "BLOCK_SYSTEM: JSON syntax error %s before: %s",
-             FilePath, ErrorPtr);
-    UnloadFileText(FileContent);
+    fprintf(stderr, "BLOCK_SYSTEM: JSON syntax error %s before: %s\n",
+            FilePath, ErrorPtr);
+    free(FileContent);
     return;
   }
 
   cJSON *IdItem = cJSON_GetObjectItemCaseSensitive(Json, "id");
   if (cJSON_IsNumber(IdItem) == 0) {
-    TraceLog(LOG_WARNING, "BLOCK_SYSTEM: FILE %s does not have a valid id",
-             FilePath);
+    fprintf(stderr, "BLOCK_SYSTEM: FILE %s does not have a valid id\n",
+            FilePath);
     cJSON_Delete(Json);
-    UnloadFileText(FileContent);
+    free(FileContent);
     return;
   }
 
   int ParsedId = IdItem->valueint;
   if (ParsedId < 0 || ParsedId >= BLOCK_REGISTRY_SIZE) {
-    TraceLog(
-        LOG_WARNING,
-        "BLOCK_SYSTEM: id %d from file %s is out of the allowed range (0-%d)",
+    fprintf(
+        stderr,
+        "BLOCK_SYSTEM: id %d from file %s is out of the allowed range (0-%d)\n",
         ParsedId, FilePath, BLOCK_REGISTRY_SIZE - 1);
     cJSON_Delete(Json);
-    UnloadFileText(FileContent);
+    free(FileContent);
     return;
   }
 
@@ -125,50 +127,41 @@ void ParseBlockFile(const char *FilePath) {
     Block->IsSolid = true;
   }
 
-  TraceLog(LOG_INFO, "BLOCK_SYSTEM: Loaded [%d] %s", ParsedId, Block->Name);
+  fprintf(stderr, "BLOCK_SYSTEM: Loaded [%d] %s\n", ParsedId, Block->Name);
 
   cJSON_Delete(Json);
-  UnloadFileText(FileContent);
+  free(FileContent);
 }
 
 void LoadAllBlockDefinitions(const char *DirectoryPath) {
-  const char *Path = TextFormat("./%s", DirectoryPath);
+  char Path[FILEIO_MAX_PATH];
+  snprintf(Path, sizeof(Path), "./%s", DirectoryPath);
 
-  TraceLog(LOG_INFO, "BLOCK_SYSTEM: Attempting to load from: %s%s",
-           GetWorkingDirectory(), Path);
+  fprintf(stderr, "BLOCK_SYSTEM: Attempting to load from: %s\n", Path);
 
-  if (!DirectoryExists(Path)) {
-    TraceLog(LOG_WARNING, "BLOCK_SYSTEM: Directory not found %s", Path);
+  static char FilePaths[MAX_FILES_LIMIT][FILEIO_MAX_PATH];
+  int FilesCount = ListDirectoryFiles(Path, FilePaths, MAX_FILES_LIMIT);
+  if (FilesCount == 0) {
+    fprintf(stderr, "BLOCK_SYSTEM: Directory not found or empty %s\n", Path);
     return;
   }
 
-  FilePathList Files = LoadDirectoryFiles(Path);
   int LoadedCount = 0;
 
-  TraceLog(LOG_INFO, "BLOCK_SYSTEM: Initializing blocks in: %s", Path);
-
-  int FilesCount = (int)Files.count;
-  int TargetCount = FilesCount < MAX_FILES_LIMIT ? FilesCount : MAX_FILES_LIMIT;
-
   #pragma unroll 4
-  for (int Idx = 0; Idx < MAX_FILES_LIMIT; Idx++) {
-    if (Idx >= TargetCount) {
-      break;
-    }
-    if (IsFileExtension(Files.paths[Idx], ".json")) {
-      ParseBlockFile(Files.paths[Idx]);
+  for (int Idx = 0; Idx < FilesCount; Idx++) {
+    if (HasFileExtension(FilePaths[Idx], ".json")) {
+      ParseBlockFile(FilePaths[Idx]);
       LoadedCount++;
     }
   }
 
   *GetLoadedBlocksCountPtr() = LoadedCount;
-  UnloadDirectoryFiles(Files);
 
   if (LoadedCount == 0) {
-    TraceLog(LOG_WARNING, "BLOCK_SYSTEM: No .json file found in %s", Path);
+    fprintf(stderr, "BLOCK_SYSTEM: No .json file found in %s\n", Path);
   } else {
-    TraceLog(LOG_INFO, "BLOCK_SYSTEM: Loaded %d block definitions",
-             LoadedCount);
+    fprintf(stderr, "BLOCK_SYSTEM: Loaded %d block definitions\n", LoadedCount);
   }
 }
 
