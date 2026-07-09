@@ -75,5 +75,6 @@ void HandlePlayerInteraction(Player *PlayerVal, World *WorldVal, PlayerView View
 bool IsPointSolid(World *WorldVal, Vec3 Pos);
 void GetPlayerPoints(Player *PlayerVal, PointConfig Config, Vec3 OutPoints[COLLISION_POINTS]);
 void SetHotbarSlot(Player *PlayerVal, int Slot, unsigned char BlockId);
+void SetPlayerPosition(Player *PlayerVal, Vec3 Pos);
 
 #endif

@@ -53,6 +53,13 @@ void SetHotbarSlot(Player *PlayerVal, int Slot, unsigned char BlockId) {
   }
 }
 
+// Discontinuous move (teleport, respawn): set position and collapse the
+// render-interpolation baseline so the camera does not smear across the jump.
+void SetPlayerPosition(Player *PlayerVal, Vec3 Pos) {
+  PlayerVal->Position = Pos;
+  PlayerVal->PrevPosition = Pos;
+}
+
 bool IsPointSolid(World *WorldVal, Vec3 Pos) {
   Vec3 BlockPos = {__builtin_floorf(Pos.x + BLOCK_HALF_SIZE),
                       __builtin_floorf(Pos.y + BLOCK_HALF_SIZE),

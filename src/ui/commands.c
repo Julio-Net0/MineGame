@@ -143,7 +143,7 @@ static void CommandTP(const char *Args, CommandContext *Ctx) {
       return;
     }
 
-    Ctx->Player->Position = (Vec3){ValX, ValY, ValZ};
+    SetPlayerPosition(Ctx->Player, (Vec3){ValX, ValY, ValZ});
     Ctx->Player->Velocity = (Vec3){0.0F, 0.0F, 0.0F};
 
     ReturnCommand(Ctx->Chat, LOG_INFO, TextFormat("Tp to X:%.1f Y:%.1f Z:%.1f", ValX, ValY, ValZ));
