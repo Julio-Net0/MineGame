@@ -73,7 +73,7 @@ static void UpdateChatInput(ChatState *Chat) {
   }
 }
 
-static void HandleChatActions(ChatState *Chat, Camera3D *Camera, Player *Player, World *World) {
+static void HandleChatActions(ChatState *Chat, GameCamera *Camera, Player *Player, World *World) {
   if (IsKeyPressed(KEY_DELETE)) {
     Chat->ScrollOffset = 0;
     Chat->IsActive = false;
@@ -96,7 +96,7 @@ static void HandleChatActions(ChatState *Chat, Camera3D *Camera, Player *Player,
   }
 }
 
-void UpdateChat(ChatState *Chat, Camera3D *Camera, Player *Player, World *World) {
+void UpdateChat(ChatState *Chat, GameCamera *Camera, Player *Player, World *World) {
   if (!Chat->IsActive) {
     if (IsKeyPressed(KEY_T)) {
       Chat->IsActive = true;

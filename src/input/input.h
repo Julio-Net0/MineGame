@@ -2,7 +2,7 @@
 #define INPUT_H
 
 #include <stdbool.h>
-#include "raylib.h"
+#include "core/camera.h"
 #include "core/vecmath.h"
 #include "player/player.h"
 
@@ -19,6 +19,6 @@ typedef struct {
 PlayerInput PollPlayerInput(bool HasControl);
 SystemInput PollSystemInput(void);
 Vec2 InputGetLookDelta(void);
-PlayerView PlayerViewFromCamera(Camera3D Camera);
+PlayerView PlayerViewFromCamera(GameCamera Camera);
 
 #endif

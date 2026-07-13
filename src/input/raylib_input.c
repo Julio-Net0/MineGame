@@ -45,11 +45,3 @@ SystemInput PollSystemInput(void) {
 Vec2 InputGetLookDelta(void) {
   return Vec2FromRL(GetMouseDelta());
 }
-
-PlayerView PlayerViewFromCamera(Camera3D Camera) {
-  PlayerView View;
-  View.EyePosition = Vec3FromRL(Camera.position);
-  Vec3 Target = Vec3FromRL(Camera.target);
-  View.Forward = Vec3Normalize(Vec3Sub(Target, View.EyePosition));
-  return View;
-}

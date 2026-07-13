@@ -2,6 +2,7 @@
 #define CHAT_H
 
 #include "player/player.h"
+#include "core/camera.h"
 #include "raylib.h"
 #include "world/world.h"
 #include <stdbool.h>
@@ -44,7 +45,7 @@ typedef struct {
 } ChatState;
 
 void InitChat(ChatState *Chat);
-void UpdateChat(ChatState *Chat, Camera3D *Camera, Player *Player,
+void UpdateChat(ChatState *Chat, GameCamera *Camera, Player *Player,
                 World *World);
 void DrawChat(ChatState *Chat);
 void AddChatHistory(ChatState *Chat, const char *Message);

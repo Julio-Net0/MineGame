@@ -3,7 +3,6 @@
 #include "raylib.h"
 #include "render/renderer.h"
 #include "render/backend.h"
-#include "render/rl_compat.h"
 #include "world/world.h"
 
 enum {
@@ -74,7 +73,7 @@ static void DrawCrosshair(void) {
                 CROSSHAIR_SIZE, Fade(WHITE, CROSSHAIR_TRANSPARENCY));
 }
 
-static void DrawDebugScreen(Player *PlayerVal, World *WorldVal, Camera3D Camera) {
+static void DrawDebugScreen(Player *PlayerVal, World *WorldVal, GameCamera Camera) {
   DrawFPS(DEBUG_FPS_X, DEBUG_FPS_Y);
 
   DrawText(TextFormat("XYZ: %.3f / %.5f / %.3f", PlayerVal->Position.x,
@@ -99,10 +98,10 @@ static void DrawDebugScreen(Player *PlayerVal, World *WorldVal, Camera3D Camera)
       DEBUG_ACTIVE_CHUNKS_X, DEBUG_ACTIVE_CHUNKS_Y, DEBUG_FONT_SIZE, RAYWHITE);
 
   RenderCamera RCam = {
-      .Position = Vec3FromRL(Camera.position),
-      .Target = Vec3FromRL(Camera.target),
-      .Up = Vec3FromRL(Camera.up),
-      .FovY = Camera.fovy,
+      .Position = Camera.Position,
+      .Target = Camera.Target,
+      .Up = Camera.Up,
+      .FovY = Camera.FovY,
   };
 
   int RenderedChunks = 0;
@@ -122,7 +121,7 @@ static void DrawDebugScreen(Player *PlayerVal, World *WorldVal, Camera3D Camera)
       RAYWHITE);
 }
 
-void DrawHUD(Player *PlayerVal, World *WorldVal, Camera3D Camera, bool ShowDebugF3) {
+void DrawHUD(Player *PlayerVal, World *WorldVal, GameCamera Camera, bool ShowDebugF3) {
   DrawHotbar(PlayerVal);
   if (ShowDebugF3) {
     DrawDebugScreen(PlayerVal, WorldVal, Camera);

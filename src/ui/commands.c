@@ -2,15 +2,16 @@
 #include "world/block_system.h"
 #include "ui/chat.h"
 #include "ui/debug.h"
-#include "raylib.h"
 #include "core/log.h"
 #include "core/utils.h"
 #include "world/world.h"
 #include "persistence/world_save.h"
+#include <stdio.h>
 
 enum {
   DEBUG_HELP_LINE_SIZE = 128,
-  DEBUG_STATUS_MSG_SIZE = 64
+  DEBUG_STATUS_MSG_SIZE = 64,
+  MSG_BUFFER_SIZE = 256
 };
 
 static void CommandHelp(const char *Args, CommandContext *Ctx);
@@ -157,7 +158,10 @@ static void CommandTP(const char *Args, CommandContext *Ctx) {
     SetPlayerPosition(Ctx->Player, (Vec3){ValX, ValY, ValZ});
     Ctx->Player->Velocity = (Vec3){0.0F, 0.0F, 0.0F};
 
-    ReturnCommand(Ctx->Chat, LOG_INFO, TextFormat("Tp to X:%.1f Y:%.1f Z:%.1f", ValX, ValY, ValZ));
+    char Msg[MSG_BUFFER_SIZE];
+    snprintf(Msg, sizeof(Msg), "Tp to X:%.1f Y:%.1f Z:%.1f", (double)ValX,
+             (double)ValY, (double)ValZ);
+    ReturnCommand(Ctx->Chat, LOG_INFO, Msg);
 
   } else {
     ReturnCommand(Ctx->Chat, LOG_ERROR,
@@ -170,9 +174,10 @@ static void CommandHelp(const char *Args, CommandContext *Ctx) {
 
   #pragma unroll
   for (int Index = 0; Index < AVAILABLECOMMANDSCOUNT; Index++) {
-    AddChatHistory(Ctx->Chat, TextFormat("%s | %s | %s", AVAILABLECOMMANDS[Index].Name,
-                   AVAILABLECOMMANDS[Index].Use,
-                   AVAILABLECOMMANDS[Index].Description));
+    char Msg[MSG_BUFFER_SIZE];
+    snprintf(Msg, sizeof(Msg), "%s | %s | %s", AVAILABLECOMMANDS[Index].Name,
+             AVAILABLECOMMANDS[Index].Use, AVAILABLECOMMANDS[Index].Description);
+    AddChatHistory(Ctx->Chat, Msg);
   }
 }
 
@@ -183,13 +188,18 @@ static void CommandPos(const char *Args, CommandContext *Ctx) {
   float PosY = Ctx->Player->Position.y;
   float PosZ = Ctx->Player->Position.z;
 
-  ReturnCommand(Ctx->Chat, LOG_INFO, TextFormat("X:%.1f Y:%.1f Z:%.1f", PosX, PosY, PosZ));
+  char Msg[MSG_BUFFER_SIZE];
+  snprintf(Msg, sizeof(Msg), "X:%.1f Y:%.1f Z:%.1f", (double)PosX, (double)PosY,
+           (double)PosZ);
+  ReturnCommand(Ctx->Chat, LOG_INFO, Msg);
 }
 
 static void CommandSeed(const char *Args, CommandContext *Ctx) {
   (void)Args;
-  ReturnCommand(Ctx->Chat, LOG_INFO, TextFormat("World Seed: %llu",
-                (unsigned long long)GetWorldSeed()));
+  char Msg[MSG_BUFFER_SIZE];
+  snprintf(Msg, sizeof(Msg), "World Seed: %llu",
+           (unsigned long long)GetWorldSeed());
+  ReturnCommand(Ctx->Chat, LOG_INFO, Msg);
 }
 
 static void CommandSave(const char *Args, CommandContext *Ctx) {
@@ -208,8 +218,10 @@ static void CommandSave(const char *Args, CommandContext *Ctx) {
       SavedCount++;
     }
   }
-  ReturnCommand(Ctx->Chat, LOG_INFO,
-                TextFormat("World saved successfully! (%d chunks saved)", SavedCount));
+  char Msg[MSG_BUFFER_SIZE];
+  snprintf(Msg, sizeof(Msg), "World saved successfully! (%d chunks saved)",
+           SavedCount);
+  ReturnCommand(Ctx->Chat, LOG_INFO, Msg);
 }
 
 static void CommandList(const char *Args, CommandContext *Ctx) {
@@ -224,12 +236,16 @@ static void CommandList(const char *Args, CommandContext *Ctx) {
   #pragma unroll 4
   for (int Index = 0; Index < BLOCK_REGISTRY_SIZE; Index++) {
     if (Ctx->BlockRegistry[Index].Id != -1) {
-      AddChatHistory(Ctx->Chat, TextFormat("[ID: %d] %s", Ctx->BlockRegistry[Index].Id,
-                     Ctx->BlockRegistry[Index].Name));
+      char Msg[MSG_BUFFER_SIZE];
+      snprintf(Msg, sizeof(Msg), "[ID: %d] %s", Ctx->BlockRegistry[Index].Id,
+               Ctx->BlockRegistry[Index].Name);
+      AddChatHistory(Ctx->Chat, Msg);
       Printed++;
     }
   }
-  ReturnCommand(Ctx->Chat, LOG_INFO, TextFormat("Listed %d blocks", Printed));
+  char Msg[MSG_BUFFER_SIZE];
+  snprintf(Msg, sizeof(Msg), "Listed %d blocks", Printed);
+  ReturnCommand(Ctx->Chat, LOG_INFO, Msg);
 }
 
 static void CommandNoclip(const char *Args, CommandContext *Ctx) {
@@ -304,9 +320,10 @@ static void CommandDebug(const char *Args, CommandContext *Ctx) {
     ReturnCommand(Ctx->Chat, LOG_INFO, "===DEBUG COMMANDS===");
     #pragma unroll
     for (int Index = 0; Index < AVAILABLEDEBUGSCOUNT; Index++) {
-      ReturnCommand(Ctx->Chat, LOG_INFO, TextFormat("/debug %s %s",
-                     AVAILABLEDEBUGS[Index].Name,
-                     AVAILABLEDEBUGS[Index].Description));
+      char Msg[MSG_BUFFER_SIZE];
+      snprintf(Msg, sizeof(Msg), "/debug %s %s", AVAILABLEDEBUGS[Index].Name,
+               AVAILABLEDEBUGS[Index].Description);
+      ReturnCommand(Ctx->Chat, LOG_INFO, Msg);
     }
     return;
   }
@@ -323,8 +340,10 @@ static void CommandDebug(const char *Args, CommandContext *Ctx) {
   for (int Index = 0; Index < AVAILABLEDEBUGSCOUNT; Index++) {
     if (CompareString(DebugStr, AVAILABLEDEBUGS[Index].Name) == 0) {
       AVAILABLEDEBUGS[Index].Func(Ctx, State);
-      ReturnCommand(Ctx->Chat, LOG_INFO, TextFormat("Debug %s %s", DebugStr,
-                     (int)State == 1 ? "activated" : "deactivated"));
+      char Msg[MSG_BUFFER_SIZE];
+      snprintf(Msg, sizeof(Msg), "Debug %s %s", DebugStr,
+               (int)State == 1 ? "activated" : "deactivated");
+      ReturnCommand(Ctx->Chat, LOG_INFO, Msg);
       return;
     }
   }
@@ -333,7 +352,7 @@ static void CommandDebug(const char *Args, CommandContext *Ctx) {
                 "Incorrect Format. try: /debug <command> <1/0> or /debug help");
 }
 
-void CommandHandler(char *Command, ChatState *Chat, Camera3D *Camera,
+void CommandHandler(char *Command, ChatState *Chat, GameCamera *Camera,
                     Player *Player, World *World) {
   CommandContext Ctx = {
       .Chat = Chat,
@@ -363,6 +382,7 @@ void CommandHandler(char *Command, ChatState *Chat, Camera3D *Camera,
       return;
     }
   }
-  ReturnCommand(Chat, LOG_WARNING, TextFormat("Unknown command: %s. Type /help",
-                CommandName));
+  char Msg[MSG_BUFFER_SIZE];
+  snprintf(Msg, sizeof(Msg), "Unknown command: %s. Type /help", CommandName);
+  ReturnCommand(Chat, LOG_WARNING, Msg);
 }

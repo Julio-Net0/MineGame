@@ -9,9 +9,7 @@
 #include "platform/platform.h"
 #include "player/player.h"
 #include "pthread.h"
-#include "raylib.h"
 #include "render/renderer.h"
-#include "render/rl_compat.h"
 #include "core/log.h"
 #include "world/world.h"
 #include "persistence/world_save.h"
@@ -38,8 +36,8 @@
 // per-frame upload burst without changing the steady tick-paced throughput.
 #define MAX_MESHES_PER_FRAME 96
 
-static void InitGame(World **WorldVal, Player *PlayerVal, Camera3D *PlayerCamera,
-                     ChatState *ChatVal, Camera3D *FreeCamera) {
+static void InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCamera,
+                     ChatState *ChatVal, GameCamera *FreeCamera) {
   PlatformInit(INITIAL_WIDTH, INITIAL_HEIGHT, "MineGame Beta 4");
   PlatformSetCursorDisabled(true);
   PlatformToggleFullscreen();
@@ -91,19 +89,20 @@ static void UpdateSystemInputs(bool *ShowDebug) {
   }
 }
 
-static void UpdateCameras(Camera3D *PlayerCamera, Camera3D *FreeCamera,
+static void UpdateCameras(GameCamera *PlayerCamera, GameCamera *FreeCamera,
                            bool *WasFreecam, bool HasControl,
-                           Camera3D **ActiveCamera) {
+                           GameCamera **ActiveCamera, PlayerInput Move) {
   *ActiveCamera = PlayerCamera;
 
   if (GetDebugState()->Freecam) {
     if (!*WasFreecam) {
       *FreeCamera = *PlayerCamera;
     }
-    UpdateCamera(FreeCamera, CAMERA_FREE);
+    UpdateFreeCamera(FreeCamera, InputGetLookDelta(), Move,
+                     PlatformGetFrameTime());
     *ActiveCamera = FreeCamera;
   } else if (HasControl) {
-    UpdateGameCamera(PlayerCamera, Vec2ToRL(InputGetLookDelta()));
+    UpdateGameCamera(PlayerCamera, InputGetLookDelta());
   }
 
   *WasFreecam = GetDebugState()->Freecam;
@@ -145,13 +144,13 @@ static int BuildMeshes(World *WorldVal, int Budget) {
   return MeshesBuilt;
 }
 
-static void RenderGame(World *WorldVal, Player *PlayerVal, Camera3D *ActiveCamera,
+static void RenderGame(World *WorldVal, Player *PlayerVal, GameCamera *ActiveCamera,
                        ChatState *ChatVal, bool ShowDebug) {
   RenderCamera Cam = {
-      .Position = Vec3FromRL(ActiveCamera->position),
-      .Target = Vec3FromRL(ActiveCamera->target),
-      .Up = Vec3FromRL(ActiveCamera->up),
-      .FovY = ActiveCamera->fovy,
+      .Position = ActiveCamera->Position,
+      .Target = ActiveCamera->Target,
+      .Up = ActiveCamera->Up,
+      .FovY = ActiveCamera->FovY,
   };
 
   RenderBeginFrame(Cam);
@@ -203,8 +202,8 @@ static PlayerInput ClearInputEdges(PlayerInput Pending) {
 int main(void) {
   World *WorldVal = (World *)0;
   Player PlayerVal;
-  Camera3D PlayerCamera;
-  Camera3D FreeCamera;
+  GameCamera PlayerCamera;
+  GameCamera FreeCamera;
   bool WasFreecam = false;
   ChatState ChatVal;
   bool ShowDebug = false;
@@ -222,9 +221,9 @@ int main(void) {
     PendingInput = AccumulateInput(PendingInput, PollPlayerInput(HasControl));
 
     // Mouse-look and active-camera selection run per frame for responsiveness.
-    Camera3D *ActiveCamera = (Camera3D *)0;
+    GameCamera *ActiveCamera = (GameCamera *)0;
     UpdateCameras(&PlayerCamera, &FreeCamera, &WasFreecam, HasControl,
-                  &ActiveCamera);
+                  &ActiveCamera, PendingInput);
 
     // Fixed-timestep simulation: step the world at a constant rate regardless
     // of framerate, catching up via an accumulator (capped to avoid spiral).
@@ -233,7 +232,7 @@ int main(void) {
     int MeshesThisFrame = 0;
     while (Accumulator >= TICK_DT && Ticks < MAX_TICKS_PER_FRAME) {
       Vec3 LoadCenter = (GetDebugState()->Freecam && WasFreecam)
-                            ? Vec3FromRL(FreeCamera.position)
+                            ? FreeCamera.Position
                             : PlayerVal.Position;
       UpdateWorld(WorldVal, LoadCenter, MAX_RENDER_DISTANCE);
 

@@ -3,13 +3,13 @@
 
 #include "world/block_system.h"
 #include "ui/chat.h"
-#include "raylib.h"
+#include "core/camera.h"
 #include "player/player.h"
 #include "world/world.h"
 
 typedef struct {
   ChatState *Chat;
-  Camera3D *Camera;
+  GameCamera *Camera;
   BlockType *BlockRegistry;
   int BlockCount;
   Player *Player;
@@ -33,6 +33,6 @@ typedef struct {
   DebugFunc Func;
 } DebugToggle;
 
-void CommandHandler(char *Command, ChatState *Chat, Camera3D *Camera, Player *Player, World *World);
+void CommandHandler(char *Command, ChatState *Chat, GameCamera *Camera, Player *Player, World *World);
 
 #endif
