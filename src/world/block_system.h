@@ -24,6 +24,7 @@ void InitBlockRegistry(void);
 void LoadAllBlockDefinitions(const char *DirectoryPath);
 void ParseBlockFile(const char *FilePath);
 BlockType *GetBlockDef(int Id);
+int GetBlockIdByName(const char *Name);
 int GetLoadedBlocksCount(void);
 
 #endif

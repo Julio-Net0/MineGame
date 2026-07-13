@@ -21,6 +21,7 @@ add_executable(${PROJECT_NAME}
   src/world/chunk.c
   src/world/chunk_worker.c
   src/world/block_system.c
+  src/world/prefab.c
   src/persistence/world_save.c
   src/persistence/chunk_serial.c
   src/player/player.c

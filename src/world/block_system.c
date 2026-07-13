@@ -2,6 +2,7 @@
 #include "third_party/cJSON.h"
 #include "core/fileio.h"
 #include "core/utils.h"
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -44,6 +45,23 @@ BlockType *GetBlockDef(int BlockId) {
   }
 
   return &BlockRegistry[BlockId];
+}
+
+int GetBlockIdByName(const char *Name) {
+  if (Name == NULL) {
+    return -1;
+  }
+
+  BlockType *BlockRegistry = GetBlockRegistry();
+  #pragma unroll 4
+  for (int Idx = 0; Idx < BLOCK_REGISTRY_SIZE; Idx++) {
+    if (BlockRegistry[Idx].Id != -1 &&
+        CompareString(BlockRegistry[Idx].Name, Name) == 0) {
+      return BlockRegistry[Idx].Id;
+    }
+  }
+
+  return -1;
 }
 
 void ParseBlockFile(const char *FilePath) {

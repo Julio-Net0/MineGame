@@ -1,5 +1,6 @@
 #include "ui/commands.h"
 #include "world/block_system.h"
+#include "world/prefab.h"
 #include "ui/chat.h"
 #include "ui/debug.h"
 #include "core/log.h"
@@ -22,6 +23,7 @@ static void CommandNoclip(const char *Args, CommandContext *Ctx);
 static void CommandDebug(const char *Args, CommandContext *Ctx);
 static void CommandSeed(const char *Args, CommandContext *Ctx);
 static void CommandSave(const char *Args, CommandContext *Ctx);
+static void CommandPrefab(const char *Args, CommandContext *Ctx);
 
 static const CommandInfo AVAILABLECOMMANDS[] = {
     {"/help", "Use: /help",
@@ -36,6 +38,8 @@ static const CommandInfo AVAILABLECOMMANDS[] = {
      "Activate or deactivate debugs overlay", CommandDebug},
     {"/seed", "Use: /seed", "Returns the world seed", CommandSeed},
     {"/save", "Use: /save", "Saves all modified chunks to disk", CommandSave},
+    {"/prefab", "Use: /prefab <list | stamp <name>>",
+     "Lists loaded prefabs or stamps one at your target", CommandPrefab},
 };
 
 static const int AVAILABLECOMMANDSCOUNT =
@@ -222,6 +226,94 @@ static void CommandSave(const char *Args, CommandContext *Ctx) {
   snprintf(Msg, sizeof(Msg), "World saved successfully! (%d chunks saved)",
            SavedCount);
   ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
+}
+
+static void PrefabList(CommandContext *Ctx) {
+  int Count = GetLoadedPrefabsCount();
+  if (Count == 0) {
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_WARN, "No prefab loaded");
+    return;
+  }
+
+  #pragma unroll 4
+  for (int Index = 0; Index < Count; Index++) {
+    const Prefab *Entry = GetPrefabByIndex(Index);
+    if (Entry == (void*)0) {
+      continue;
+    }
+    char Msg[MSG_BUFFER_SIZE];
+    snprintf(Msg, sizeof(Msg), "%s (%dx%dx%d, %d cells)", Entry->Name,
+             Entry->SizeX, Entry->SizeY, Entry->SizeZ, Entry->CellCount);
+    AddChatHistory(Ctx->Chat, Msg);
+  }
+
+  char Msg[MSG_BUFFER_SIZE];
+  snprintf(Msg, sizeof(Msg), "Listed %d prefabs", Count);
+  ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
+}
+
+static void PrefabStamp(const char *Name, CommandContext *Ctx) {
+  if (Name == (void*)0) {
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR,
+                  "Missing prefab name. try: /prefab stamp <name>");
+    return;
+  }
+
+  const Prefab *Entry = GetPrefab(Name);
+  if (Entry == (void*)0) {
+    char Msg[MSG_BUFFER_SIZE];
+    snprintf(Msg, sizeof(Msg), "Prefab not found: %s", Name);
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR, Msg);
+    return;
+  }
+
+  RaycastResult Target = Ctx->Player->TargetBlock;
+  if (Target.Hit == false) {
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_WARN, "No block targeted");
+    return;
+  }
+
+  // Center the prefab horizontally on the targeted block and rest its base on
+  // the face the player is looking at (origin along the hit normal).
+  int HalfX = Entry->SizeX / 2;
+  int HalfZ = Entry->SizeZ / 2;
+  Vec3 Origin = {Target.BlockPos.x + Target.Normal.x - (float)HalfX,
+                 Target.BlockPos.y + Target.Normal.y,
+                 Target.BlockPos.z + Target.Normal.z - (float)HalfZ};
+  StampPrefab(Ctx->World, Entry, Origin);
+
+  char Msg[MSG_BUFFER_SIZE];
+  snprintf(Msg, sizeof(Msg), "Stamped '%s' at X:%.0f Y:%.0f Z:%.0f", Entry->Name,
+           (double)Origin.x, (double)Origin.y, (double)Origin.z);
+  ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
+}
+
+static void CommandPrefab(const char *Args, CommandContext *Ctx) {
+  if (Args == (void*)0) {
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR,
+                  "Incorrect Format. try: /prefab <list | stamp <name>>");
+    return;
+  }
+
+  char ArgsCopy[CHAT_MAX_INPUT_CHARS];
+  SafeStrncpy(ArgsCopy, Args, (int)sizeof(ArgsCopy));
+
+  char *SavePtr = ArgsCopy;
+  char *SubCmd = TokenizeSpace(&SavePtr);
+
+  if (SubCmd != (void*)0 && CompareString(SubCmd, "list") == 0) {
+    PrefabList(Ctx);
+    return;
+  }
+
+  if (SubCmd != (void*)0 && CompareString(SubCmd, "stamp") == 0) {
+    char *Name = TokenizeSpace(&SavePtr);
+    PrefabStamp(Name, Ctx);
+    return;
+  }
+
+  ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR,
+                "Incorrect Format. try: /prefab <list | stamp <name>>");
 }
 
 static void CommandList(const char *Args, CommandContext *Ctx) {

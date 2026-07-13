@@ -1,4 +1,5 @@
 #include "world/block_system.h"
+#include "world/prefab.h"
 #include "render/camera.h"
 #include "ui/chat.h"
 #include "world/chunk.h"
@@ -46,6 +47,9 @@ static void InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
 
   InitBlockRegistry();
   LoadAllBlockDefinitions("assets/blocks");
+
+  InitPrefabRegistry();
+  LoadAllPrefabs("assets/prefabs");
 
   *WorldVal = (World *)malloc(sizeof(World));
   InitWorldSave();

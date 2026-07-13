@@ -7,7 +7,7 @@ Goal: Evolve the engine into a portable, backend-agnostic platform and bring the
 - [X] **Renderer Decoupling (Backend Abstraction):** Isolate all Raylib calls behind a render backend interface so the engine speaks only abstract mesh and draw commands, paving the way for alternative rendering backends (e.g. Vulkan) and a clean client/server split.
 - [X] **Engine Math Types:** Replace leaked Raylib math types (`Vector3`, etc.) in the simulation layer with engine-owned vector and matrix types, removing the renderer dependency from world, physics, and persistence code.
 - [X] **Input Intent System:** Decouple player input from simulation by capturing raw input into an abstract intent struct, enabling remappable controls and forming the client→server command seam for future multiplayer.
-- [ ] **Prefab System (JSON):** Introduce a simple, sparse, palette-based JSON prefab format — human-readable and friendly to external editing tools — compiled into a packed in-memory structure at load time.
+- [X] **Prefab System (JSON):** Introduce a simple, sparse, palette-based JSON prefab format — human-readable and friendly to external editing tools — compiled into a packed in-memory structure at load time.
 - [ ] **Procedural Tree Generation:** Stamp tree prefabs during terrain generation using seed-deterministic placement and a deferred cross-chunk edit queue so structures spanning chunk borders resolve correctly.
 - [ ] **In-Game Prefab Capture:** Add commands to select a block volume and export it directly to a JSON prefab file, round-tripping with the loader so external tools can edit the same files.
 - [ ] **Prefab Rotation & Variety:** Support rotation and mirroring when stamping prefabs, multiplying visual variety from a small set of source models.
