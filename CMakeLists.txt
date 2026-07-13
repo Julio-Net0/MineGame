@@ -34,6 +34,7 @@ add_executable(${PROJECT_NAME}
   src/ui/debug.c
   src/core/utils.c
   src/core/fileio.c
+  src/core/log.c
   src/third_party/cJSON.c
   src/third_party/stb_perlin.c
 )

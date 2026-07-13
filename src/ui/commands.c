@@ -3,6 +3,7 @@
 #include "ui/chat.h"
 #include "ui/debug.h"
 #include "raylib.h"
+#include "core/log.h"
 #include "core/utils.h"
 #include "world/world.h"
 #include "persistence/world_save.h"
@@ -109,7 +110,17 @@ static char *GetRemainingString(char **Context) {
 
 static void ReturnCommand(ChatState *Chat, int LogLevel, const char *Message) {
   AddChatHistory(Chat, Message);
-  TraceLog(LogLevel, "%s", Message);
+  switch (LogLevel) {
+  case LOG_WARNING:
+    LogWarn("%s", Message);
+    break;
+  case LOG_ERROR:
+    LogError("%s", Message);
+    break;
+  default:
+    LogInfo("%s", Message);
+    break;
+  }
 }
 
 static void CommandTP(const char *Args, CommandContext *Ctx) {

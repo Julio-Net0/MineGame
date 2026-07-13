@@ -1,5 +1,5 @@
 #include "persistence/world_save.h"
-#include "raylib.h"
+#include "core/log.h"
 #include "world/chunk.h"
 #include "persistence/chunk_serial.h"
 #include <stdio.h>
@@ -14,6 +14,7 @@
 #ifdef _WIN32
 #include <direct.h>
 #include <intrin.h>
+#include <windows.h>
 #define make_dir(path) _mkdir(path)
 #else
 #include <sys/stat.h>
@@ -21,6 +22,18 @@
 #include <sys/time.h>
 #define make_dir(path) mkdir(path, 0777)
 #endif
+
+// Renderer-free millisecond sleep, replacing Raylib's WaitTime for the
+// region-file open retry back-off.
+static void SleepMillis(unsigned Millis) {
+#ifdef _WIN32
+  Sleep(Millis);
+#else
+  struct timespec Req = {.tv_sec = Millis / 1000,
+                         .tv_nsec = (long)(Millis % 1000) * 1000000L};
+  nanosleep(&Req, (struct timespec *)0);
+#endif
+}
 
 typedef struct {
   char Magic[4];
@@ -43,7 +56,7 @@ typedef struct {
 #define REGION_COORD_SHIFT_TOP 40
 #define REGION_LCG_MULTIPLIER  6364136223846793005ULL
 #define REGION_OPEN_RETRIES    5
-#define REGION_WAIT_ON_BUSY    0.001
+#define REGION_WAIT_ON_BUSY_MS 1
 #define REGION_HALF_FULL_LIMIT (REGION_MUTEX_BUCKETS / 2)
 
 typedef struct {
@@ -84,7 +97,7 @@ static pthread_mutex_t* GetOrCreateRegionMutex(int Rx, int Ry, int Rz) {
     }
     if (State->RegionMutexTable[Idx].Key == 0) {
       if (State->RegionMutexCount >= REGION_HALF_FULL_LIMIT) {
-        TraceLog(LOG_FATAL, "WORLD_SAVE: Region mutex table full, cannot lock region (%d,%d,%d)", Rx, Ry, Rz);
+        LogFatal("WORLD_SAVE: Region mutex table full, cannot lock region (%d,%d,%d)", Rx, Ry, Rz);
         pthread_mutex_unlock(&State->TableMutex);
         return (pthread_mutex_t *)0;
       }
@@ -95,7 +108,7 @@ static pthread_mutex_t* GetOrCreateRegionMutex(int Rx, int Ry, int Rz) {
       return &State->RegionMutexTable[Idx].Mutex;
     }
   }
-  TraceLog(LOG_FATAL, "WORLD_SAVE: Region mutex table probe exhausted for region (%d,%d,%d)", Rx, Ry, Rz);
+  LogFatal("WORLD_SAVE: Region mutex table probe exhausted for region (%d,%d,%d)", Rx, Ry, Rz);
   pthread_mutex_unlock(&State->TableMutex);
   return (pthread_mutex_t *)0;
 }
@@ -137,19 +150,19 @@ void InitWorldSave(void) {
       if (MagicMatch) {
         State->WorldSeed = Meta.Seed;
         Loaded = true;
-        TraceLog(LOG_INFO, "WORLD_SAVE: Loaded existing world seed: %llu", (unsigned long long)State->WorldSeed);
+        LogInfo("WORLD_SAVE: Loaded existing world seed: %llu", (unsigned long long)State->WorldSeed);
       } else {
-        TraceLog(LOG_WARNING, "WORLD_SAVE: Invalid magic in level.bin");
+        LogWarn("WORLD_SAVE: Invalid magic in level.bin");
       }
     } else {
-      TraceLog(LOG_WARNING, "WORLD_SAVE: Failed to read level.bin");
+      LogWarn("WORLD_SAVE: Failed to read level.bin");
     }
     fclose(FileVal);
   }
 
   if (!Loaded) {
     State->WorldSeed = GenerateRandomSeed();
-    TraceLog(LOG_INFO, "WORLD_SAVE: Generated new random world seed: %llu", (unsigned long long)State->WorldSeed);
+    LogInfo("WORLD_SAVE: Generated new random world seed: %llu", (unsigned long long)State->WorldSeed);
 
     FileVal = fopen("world/level.bin", "wb");
     if (FileVal != (FILE *)0) {
@@ -160,11 +173,11 @@ void InitWorldSave(void) {
       Meta.Version = 1;
       Meta.Seed = State->WorldSeed;
       if (fwrite(&Meta, sizeof(LevelMetadata), 1, FileVal) != 1) {
-        TraceLog(LOG_WARNING, "WORLD_SAVE: Failed to write level.bin");
+        LogWarn("WORLD_SAVE: Failed to write level.bin");
       }
       fclose(FileVal);
     } else {
-      TraceLog(LOG_WARNING, "WORLD_SAVE: Failed to create level.bin");
+      LogWarn("WORLD_SAVE: Failed to create level.bin");
     }
   }
 }
@@ -177,7 +190,7 @@ void CloseWorldSave(void) {
       pthread_mutex_destroy(&State->RegionMutexTable[IdxI].Mutex);
     }
   }
-  TraceLog(LOG_INFO, "WORLD_SAVE: Closed save system.");
+  LogInfo("WORLD_SAVE: Closed save system.");
 }
 
 uint64_t GetWorldSeed(void) {
@@ -209,7 +222,7 @@ static FILE* OpenFileWithRetry(const char *Path, const char *Mode) {
     if (errno == ENOENT) {
       break;
     }
-    WaitTime(REGION_WAIT_ON_BUSY);
+    SleepMillis(REGION_WAIT_ON_BUSY_MS);
   }
   return FileVal;
 }
@@ -234,7 +247,7 @@ void SaveChunkToDisk(Chunk *ChunkVal) {
   if (FileVal == (FILE *)0) {
     FileVal = OpenFileWithRetry(Path, "w+b");
     if (FileVal == (FILE *)0) {
-      TraceLog(LOG_WARNING, "WORLD_SAVE: Failed to create region file %s", Path);
+      LogWarn("WORLD_SAVE: Failed to create region file %s", Path);
       pthread_mutex_unlock(RegionMutex);
       return;
     }
@@ -244,7 +257,7 @@ void SaveChunkToDisk(Chunk *ChunkVal) {
       EmptyHeader[IdxI] = 0;
     }
     if (fwrite(EmptyHeader, 1, sizeof(EmptyHeader), FileVal) != sizeof(EmptyHeader)) {
-      TraceLog(LOG_WARNING, "WORLD_SAVE: Failed to write empty header to %s", Path);
+      LogWarn("WORLD_SAVE: Failed to write empty header to %s", Path);
       fclose(FileVal);
       pthread_mutex_unlock(RegionMutex);
       return;
@@ -264,13 +277,13 @@ void SaveChunkToDisk(Chunk *ChunkVal) {
   Entry[2] = (uint8_t)((DataSize >> BYTE_SHIFT) & BYTE_MASK);
 
   if (fseek(FileVal, Idx * REGION_HEADER_ENTRY_BYTES, SEEK_SET) != 0) {
-    TraceLog(LOG_WARNING, "WORLD_SAVE: Failed to seek header entry in %s", Path);
+    LogWarn("WORLD_SAVE: Failed to seek header entry in %s", Path);
     fclose(FileVal);
     pthread_mutex_unlock(RegionMutex);
     return;
   }
   if (fwrite(Entry, 1, REGION_HEADER_ENTRY_BYTES, FileVal) != REGION_HEADER_ENTRY_BYTES) {
-    TraceLog(LOG_WARNING, "WORLD_SAVE: Failed to write header entry in %s", Path);
+    LogWarn("WORLD_SAVE: Failed to write header entry in %s", Path);
     fclose(FileVal);
     pthread_mutex_unlock(RegionMutex);
     return;
@@ -278,13 +291,13 @@ void SaveChunkToDisk(Chunk *ChunkVal) {
 
   long SlotOffset = REGION_HEADER_SIZE + ((long)Idx * REGION_SLOT_SIZE);
   if (fseek(FileVal, SlotOffset, SEEK_SET) != 0) {
-    TraceLog(LOG_WARNING, "WORLD_SAVE: Failed to seek body slot in %s", Path);
+    LogWarn("WORLD_SAVE: Failed to seek body slot in %s", Path);
     fclose(FileVal);
     pthread_mutex_unlock(RegionMutex);
     return;
   }
   if (fwrite(TempBuffer, 1, DataSize, FileVal) != DataSize) {
-    TraceLog(LOG_WARNING, "WORLD_SAVE: Failed to write body slot in %s", Path);
+    LogWarn("WORLD_SAVE: Failed to write body slot in %s", Path);
     fclose(FileVal);
     pthread_mutex_unlock(RegionMutex);
     return;

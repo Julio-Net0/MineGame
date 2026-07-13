@@ -2,6 +2,7 @@
 #include "ui/commands.h"
 #include "player/player.h"
 #include "raylib.h"
+#include "core/log.h"
 #include "core/utils.h"
 
 void InitChat(ChatState *Chat) {
@@ -83,7 +84,7 @@ static void HandleChatActions(ChatState *Chat, Camera3D *Camera, Player *Player,
     if (Chat->InputText[0] == '/') {
       CommandHandler(Chat->InputText, Chat, Camera, Player, World);
     } else {
-      TraceLog(LOG_NONE, "%s", Chat->InputText);
+      LogInfo("%s", Chat->InputText);
       AddChatHistory(Chat, Chat->InputText);
     }
 

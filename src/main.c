@@ -11,10 +11,11 @@
 #include "raylib.h"
 #include "render/renderer.h"
 #include "render/rl_compat.h"
-#include "rlgl.h"
+#include "core/log.h"
 #include "world/world.h"
 #include "persistence/world_save.h"
 #include <stdbool.h>
+#include <stdlib.h>
 
 #define INITIAL_WIDTH 1280
 #define INITIAL_HEIGHT 720
@@ -50,11 +51,10 @@ static void InitGame(World **WorldVal, Player *PlayerVal, Camera3D *PlayerCamera
   InitBlockRegistry();
   LoadAllBlockDefinitions("assets/blocks");
 
-  *WorldVal = (World *)MemAlloc(sizeof(World));
+  *WorldVal = (World *)malloc(sizeof(World));
   InitWorldSave();
   InitWorld(*WorldVal);
-  TraceLog(LOG_INFO, "MAIN THREAD ID: %llu",
-           (unsigned long long)pthread_self());
+  LogInfo("MAIN THREAD ID: %llu", (unsigned long long)pthread_self());
   InitChunkWorker();
 
   *PlayerVal =
@@ -76,7 +76,7 @@ static void CleanupGame(World *WorldVal) {
   }
 
   CloseWorldSave();
-  MemFree(WorldVal);
+  free(WorldVal);
   CloseRenderer();
   CloseWindow();
 }
