@@ -6,6 +6,7 @@
 #include "ui/debug.h"
 #include "render/hud.h"
 #include "input/input.h"
+#include "platform/platform.h"
 #include "player/player.h"
 #include "pthread.h"
 #include "raylib.h"
@@ -39,12 +40,9 @@
 
 static void InitGame(World **WorldVal, Player *PlayerVal, Camera3D *PlayerCamera,
                      ChatState *ChatVal, Camera3D *FreeCamera) {
-  SetTraceLogLevel(LOG_WARNING);
-  ChangeDirectory(GetApplicationDirectory());
-
-  InitWindow(INITIAL_WIDTH, INITIAL_HEIGHT, "MineGame Beta 3");
-  ToggleBorderlessWindowed();
-  DisableCursor();
+  PlatformInit(INITIAL_WIDTH, INITIAL_HEIGHT, "MineGame Beta 4");
+  PlatformSetCursorDisabled(true);
+  PlatformToggleFullscreen();
 
   InitRenderer();
 
@@ -78,14 +76,14 @@ static void CleanupGame(World *WorldVal) {
   CloseWorldSave();
   free(WorldVal);
   CloseRenderer();
-  CloseWindow();
+  PlatformShutdown();
 }
 
 static void UpdateSystemInputs(bool *ShowDebug) {
   SystemInput System = PollSystemInput();
 
   if (System.FullscreenToggle) {
-    ToggleBorderlessWindowed();
+    PlatformToggleFullscreen();
   }
 
   if (System.DebugToggle) {
@@ -217,7 +215,7 @@ int main(void) {
   PendingInput.HotbarSelect = -1;
   float Accumulator = 0.0F;
 
-  while (!WindowShouldClose()) {
+  while (!PlatformShouldClose()) {
     UpdateSystemInputs(&ShowDebug);
 
     bool HasControl = (!ChatVal.IsActive) != 0;
@@ -230,7 +228,7 @@ int main(void) {
 
     // Fixed-timestep simulation: step the world at a constant rate regardless
     // of framerate, catching up via an accumulator (capped to avoid spiral).
-    Accumulator += GetFrameTime();
+    Accumulator += PlatformGetFrameTime();
     int Ticks = 0;
     int MeshesThisFrame = 0;
     while (Accumulator >= TICK_DT && Ticks < MAX_TICKS_PER_FRAME) {
