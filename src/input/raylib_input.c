@@ -35,6 +35,17 @@ PlayerInput PollPlayerInput(bool HasControl) {
   return Input;
 }
 
+SystemInput PollSystemInput(void) {
+  SystemInput System = {0};
+  System.FullscreenToggle = IsKeyPressed(KEY_F11);
+  System.DebugToggle = IsKeyPressed(KEY_F3);
+  return System;
+}
+
+Vec2 InputGetLookDelta(void) {
+  return Vec2FromRL(GetMouseDelta());
+}
+
 PlayerView PlayerViewFromCamera(Camera3D Camera) {
   PlayerView View;
   View.EyePosition = Vec3FromRL(Camera.position);

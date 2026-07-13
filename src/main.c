@@ -82,11 +82,13 @@ static void CleanupGame(World *WorldVal) {
 }
 
 static void UpdateSystemInputs(bool *ShowDebug) {
-  if (IsKeyPressed(KEY_F11)) {
+  SystemInput System = PollSystemInput();
+
+  if (System.FullscreenToggle) {
     ToggleBorderlessWindowed();
   }
 
-  if (IsKeyPressed(KEY_F3)) {
+  if (System.DebugToggle) {
     *ShowDebug = ((!*ShowDebug) != 0);
   }
 }
@@ -103,7 +105,7 @@ static void UpdateCameras(Camera3D *PlayerCamera, Camera3D *FreeCamera,
     UpdateCamera(FreeCamera, CAMERA_FREE);
     *ActiveCamera = FreeCamera;
   } else if (HasControl) {
-    UpdateGameCamera(PlayerCamera, GetMouseDelta());
+    UpdateGameCamera(PlayerCamera, Vec2ToRL(InputGetLookDelta()));
   }
 
   *WasFreecam = GetDebugState()->Freecam;

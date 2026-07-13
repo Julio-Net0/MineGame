@@ -24,7 +24,7 @@ add_executable(${PROJECT_NAME}
   src/persistence/world_save.c
   src/persistence/chunk_serial.c
   src/player/player.c
-  src/input/input.c
+  src/input/raylib_input.c
   src/render/renderer.c
   src/render/raylib_backend.c
   src/render/camera.c
