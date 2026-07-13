@@ -345,3 +345,31 @@ void RenderDrawBlockIcon(int BlockId, int X, int Y, int Size) {
   rlEnd();
   rlSetTexture(0);
 }
+
+// ---------------------------------------------------------------------------
+// 2D drawing layer (rects, text, measure)
+// ---------------------------------------------------------------------------
+
+static Color Color8ToRL(Color8 C) { return (Color){C.R, C.G, C.B, C.A}; }
+
+void RenderDrawRect(int X, int Y, int W, int H, Color8 Color) {
+  DrawRectangle(X, Y, W, H, Color8ToRL(Color));
+}
+
+void RenderDrawRectLines(int X, int Y, int W, int H, Color8 Color) {
+  DrawRectangleLines(X, Y, W, H, Color8ToRL(Color));
+}
+
+void RenderDrawRectLinesEx(int X, int Y, int W, int H, float Thick, Color8 Color) {
+  DrawRectangleLinesEx(
+      (Rectangle){(float)X, (float)Y, (float)W, (float)H}, Thick,
+      Color8ToRL(Color));
+}
+
+void RenderDrawText(const char *Text, int X, int Y, int Size, Color8 Color) {
+  DrawText(Text, X, Y, Size, Color8ToRL(Color));
+}
+
+int RenderMeasureText(const char *Text, int Size) {
+  return MeasureText(Text, Size);
+}

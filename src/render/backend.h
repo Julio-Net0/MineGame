@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include "core/vecmath.h"
 #include "core/mesh_handle.h"
+#include "core/color.h"
 
 // Abstract render backend interface. The engine issues backend-agnostic mesh,
 // draw, and frame commands; a single backend implementation TU (currently
@@ -60,5 +61,14 @@ void RenderDrawDebugCube(Vec3 Pos, float Size, bool Wire, bool Solid);
 
 // 2D helper (deferred HUD layer; backend-owned).
 void RenderDrawBlockIcon(int BlockId, int X, int Y, int Size);
+
+// 2D drawing layer (deferred HUD layer). Renderer-agnostic: all color via
+// Color8, geometry via plain ints, text via C strings. HUD and chat draw
+// through these instead of calling the renderer directly.
+void RenderDrawRect(int X, int Y, int W, int H, Color8 Color);
+void RenderDrawRectLines(int X, int Y, int W, int H, Color8 Color);
+void RenderDrawRectLinesEx(int X, int Y, int W, int H, float Thick, Color8 Color);
+void RenderDrawText(const char *Text, int X, int Y, int Size, Color8 Color);
+int RenderMeasureText(const char *Text, int Size);
 
 #endif

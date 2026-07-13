@@ -1,9 +1,11 @@
 #include "render/hud.h"
 #include "player/player.h"
-#include "raylib.h"
+#include "core/color.h"
+#include "platform/platform.h"
 #include "render/renderer.h"
 #include "render/backend.h"
 #include "world/world.h"
+#include <stdio.h>
 
 enum {
   HOTBAR_SLOT_SIZE = 50,
@@ -21,7 +23,8 @@ enum {
   DEBUG_ACTIVE_CHUNKS_X = 10,
   DEBUG_ACTIVE_CHUNKS_Y = 50,
   DEBUG_RENDERED_CHUNKS_X = 10,
-  DEBUG_RENDERED_CHUNKS_Y = 70
+  DEBUG_RENDERED_CHUNKS_Y = 70,
+  DEBUG_TEXT_CAPACITY = 64
 };
 
 #define HOTBAR_SELECTED_BOX_THICKNESS 3.0F
@@ -31,16 +34,16 @@ enum {
 #define CROSSHAIR_TRANSPARENCY 0.8F
 
 static void DrawHotbar(Player *PlayerVal) {
-  int StartX = (GetScreenWidth() - HOTBAR_TOTAL_WIDTH) / 2;
-  int StartY = GetScreenHeight() - HOTBAR_SLOT_SIZE - HOTBAR_BOTTOM_MARGIN;
+  int StartX = (PlatformGetScreenWidth() - HOTBAR_TOTAL_WIDTH) / 2;
+  int StartY = PlatformGetScreenHeight() - HOTBAR_SLOT_SIZE - HOTBAR_BOTTOM_MARGIN;
 
-  Color SlotBgColor = Fade(BLACK, HOTBAR_TRANSPARENCY);
+  Color8 SlotBgColor = Color8Alpha(COLOR_BLACK, HOTBAR_TRANSPARENCY);
 
   #pragma unroll
   for (int Idx = 0; Idx < HOTBAR_SIZE; Idx++) {
     int XPos = StartX + (Idx * (HOTBAR_SLOT_SIZE + HOTBAR_PADDING));
 
-    DrawRectangle(XPos, StartY, HOTBAR_SLOT_SIZE, HOTBAR_SLOT_SIZE, SlotBgColor);
+    RenderDrawRect(XPos, StartY, HOTBAR_SLOT_SIZE, HOTBAR_SLOT_SIZE, SlotBgColor);
 
     unsigned char BlockId = PlayerVal->Hotbar[Idx];
     if (BlockId != 0) {
@@ -49,36 +52,40 @@ static void DrawHotbar(Player *PlayerVal) {
     }
 
     if (Idx == PlayerVal->SelectedHotbarSlot) {
-      DrawRectangleLinesEx((Rectangle){(float)XPos, (float)StartY,
-                                       (float)HOTBAR_SLOT_SIZE,
-                                       (float)HOTBAR_SLOT_SIZE},
-                           HOTBAR_SELECTED_BOX_THICKNESS, WHITE);
+      RenderDrawRectLinesEx(XPos, StartY, HOTBAR_SLOT_SIZE, HOTBAR_SLOT_SIZE,
+                            HOTBAR_SELECTED_BOX_THICKNESS, COLOR_WHITE);
     } else {
-      DrawRectangleLines(XPos, StartY, HOTBAR_SLOT_SIZE, HOTBAR_SLOT_SIZE,
-                         DARKGRAY);
+      RenderDrawRectLines(XPos, StartY, HOTBAR_SLOT_SIZE, HOTBAR_SLOT_SIZE,
+                          COLOR_DARKGRAY);
     }
   }
 }
 
 static void DrawCrosshair(void) {
-  int CenterX = GetScreenWidth() / 2;
-  int CenterY = GetScreenHeight() / 2;
+  int CenterX = PlatformGetScreenWidth() / 2;
+  int CenterY = PlatformGetScreenHeight() / 2;
 
   int HalfSize = CROSSHAIR_SIZE / 2;
   int HalfThick = CROSSHAIR_THICKNESS / 2;
 
-  DrawRectangle(CenterX - HalfSize, CenterY - HalfThick, CROSSHAIR_SIZE,
-                CROSSHAIR_THICKNESS, Fade(WHITE, CROSSHAIR_TRANSPARENCY));
-  DrawRectangle(CenterX - HalfThick, CenterY - HalfSize, CROSSHAIR_THICKNESS,
-                CROSSHAIR_SIZE, Fade(WHITE, CROSSHAIR_TRANSPARENCY));
+  Color8 CrosshairColor = Color8Alpha(COLOR_WHITE, CROSSHAIR_TRANSPARENCY);
+  RenderDrawRect(CenterX - HalfSize, CenterY - HalfThick, CROSSHAIR_SIZE,
+                 CROSSHAIR_THICKNESS, CrosshairColor);
+  RenderDrawRect(CenterX - HalfThick, CenterY - HalfSize, CROSSHAIR_THICKNESS,
+                 CROSSHAIR_SIZE, CrosshairColor);
 }
 
 static void DrawDebugScreen(Player *PlayerVal, World *WorldVal, GameCamera Camera) {
-  DrawFPS(DEBUG_FPS_X, DEBUG_FPS_Y);
+  char DebugText[DEBUG_TEXT_CAPACITY];
 
-  DrawText(TextFormat("XYZ: %.3f / %.5f / %.3f", PlayerVal->Position.x,
-                      PlayerVal->Position.y, PlayerVal->Position.z),
-           DEBUG_COORDS_X, DEBUG_COORDS_Y, DEBUG_FONT_SIZE, RAYWHITE);
+  int Fps = (int)(1.0F / PlatformGetFrameTime());
+  snprintf(DebugText, sizeof(DebugText), "%d FPS", Fps);
+  RenderDrawText(DebugText, DEBUG_FPS_X, DEBUG_FPS_Y, DEBUG_FONT_SIZE, COLOR_RAYWHITE);
+
+  snprintf(DebugText, sizeof(DebugText), "XYZ: %.3f / %.5f / %.3f",
+           PlayerVal->Position.x, PlayerVal->Position.y, PlayerVal->Position.z);
+  RenderDrawText(DebugText, DEBUG_COORDS_X, DEBUG_COORDS_Y, DEBUG_FONT_SIZE,
+                 COLOR_RAYWHITE);
 
   int ActiveChunks = 0;
   int WorldChunkCount = WorldVal->ChunkCount;
@@ -93,9 +100,10 @@ static void DrawDebugScreen(Player *PlayerVal, World *WorldVal, GameCamera Camer
       ActiveChunks++;
     }
   }
-  DrawText(
-      TextFormat("Active Chunks: %d / %d", ActiveChunks, MAX_ACTIVE_CHUNKS),
-      DEBUG_ACTIVE_CHUNKS_X, DEBUG_ACTIVE_CHUNKS_Y, DEBUG_FONT_SIZE, RAYWHITE);
+  snprintf(DebugText, sizeof(DebugText), "Active Chunks: %d / %d", ActiveChunks,
+           MAX_ACTIVE_CHUNKS);
+  RenderDrawText(DebugText, DEBUG_ACTIVE_CHUNKS_X, DEBUG_ACTIVE_CHUNKS_Y,
+                 DEBUG_FONT_SIZE, COLOR_RAYWHITE);
 
   RenderCamera RCam = {
       .Position = Camera.Position,
@@ -115,10 +123,10 @@ static void DrawDebugScreen(Player *PlayerVal, World *WorldVal, GameCamera Camer
       RenderedChunks++;
     }
   }
-  DrawText(
-      TextFormat("Rendered Chunks: %d / %d", RenderedChunks, MAX_ACTIVE_CHUNKS),
-      DEBUG_RENDERED_CHUNKS_X, DEBUG_RENDERED_CHUNKS_Y, DEBUG_FONT_SIZE,
-      RAYWHITE);
+  snprintf(DebugText, sizeof(DebugText), "Rendered Chunks: %d / %d",
+           RenderedChunks, MAX_ACTIVE_CHUNKS);
+  RenderDrawText(DebugText, DEBUG_RENDERED_CHUNKS_X, DEBUG_RENDERED_CHUNKS_Y,
+                 DEBUG_FONT_SIZE, COLOR_RAYWHITE);
 }
 
 void DrawHUD(Player *PlayerVal, World *WorldVal, GameCamera Camera, bool ShowDebugF3) {

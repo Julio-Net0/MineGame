@@ -112,10 +112,10 @@ static char *GetRemainingString(char **Context) {
 static void ReturnCommand(ChatState *Chat, int LogLevel, const char *Message) {
   AddChatHistory(Chat, Message);
   switch (LogLevel) {
-  case LOG_WARNING:
+  case LOG_LEVEL_WARN:
     LogWarn("%s", Message);
     break;
-  case LOG_ERROR:
+  case LOG_LEVEL_ERROR:
     LogError("%s", Message);
     break;
   default:
@@ -126,7 +126,7 @@ static void ReturnCommand(ChatState *Chat, int LogLevel, const char *Message) {
 
 static void CommandTP(const char *Args, CommandContext *Ctx) {
   if (Args == (void*)0) {
-    ReturnCommand(Ctx->Chat, LOG_ERROR,
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR,
                   "Incorrect Format. try: /tp <x> <y> <z>");
     return;
   }
@@ -150,7 +150,7 @@ static void CommandTP(const char *Args, CommandContext *Ctx) {
 
     if (EndX == XStr || *EndX != '\0' || EndY == YStr || *EndY != '\0' ||
         EndZ == ZStr || *EndZ != '\0') {
-      ReturnCommand(Ctx->Chat, LOG_ERROR,
+      ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR,
                     "Invalid coordinates. Must be numeric values.");
       return;
     }
@@ -161,10 +161,10 @@ static void CommandTP(const char *Args, CommandContext *Ctx) {
     char Msg[MSG_BUFFER_SIZE];
     snprintf(Msg, sizeof(Msg), "Tp to X:%.1f Y:%.1f Z:%.1f", (double)ValX,
              (double)ValY, (double)ValZ);
-    ReturnCommand(Ctx->Chat, LOG_INFO, Msg);
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
 
   } else {
-    ReturnCommand(Ctx->Chat, LOG_ERROR,
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR,
                   "Incorrect Format. try: /tp <x> <y> <z>");
   }
 }
@@ -191,7 +191,7 @@ static void CommandPos(const char *Args, CommandContext *Ctx) {
   char Msg[MSG_BUFFER_SIZE];
   snprintf(Msg, sizeof(Msg), "X:%.1f Y:%.1f Z:%.1f", (double)PosX, (double)PosY,
            (double)PosZ);
-  ReturnCommand(Ctx->Chat, LOG_INFO, Msg);
+  ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
 }
 
 static void CommandSeed(const char *Args, CommandContext *Ctx) {
@@ -199,7 +199,7 @@ static void CommandSeed(const char *Args, CommandContext *Ctx) {
   char Msg[MSG_BUFFER_SIZE];
   snprintf(Msg, sizeof(Msg), "World Seed: %llu",
            (unsigned long long)GetWorldSeed());
-  ReturnCommand(Ctx->Chat, LOG_INFO, Msg);
+  ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
 }
 
 static void CommandSave(const char *Args, CommandContext *Ctx) {
@@ -221,14 +221,14 @@ static void CommandSave(const char *Args, CommandContext *Ctx) {
   char Msg[MSG_BUFFER_SIZE];
   snprintf(Msg, sizeof(Msg), "World saved successfully! (%d chunks saved)",
            SavedCount);
-  ReturnCommand(Ctx->Chat, LOG_INFO, Msg);
+  ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
 }
 
 static void CommandList(const char *Args, CommandContext *Ctx) {
   (void)Args;
 
   if (Ctx->BlockRegistry == (void*)0 || Ctx->BlockCount == 0) {
-    ReturnCommand(Ctx->Chat, LOG_WARNING, "No block asset loaded");
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_WARN, "No block asset loaded");
     return;
   }
 
@@ -245,12 +245,12 @@ static void CommandList(const char *Args, CommandContext *Ctx) {
   }
   char Msg[MSG_BUFFER_SIZE];
   snprintf(Msg, sizeof(Msg), "Listed %d blocks", Printed);
-  ReturnCommand(Ctx->Chat, LOG_INFO, Msg);
+  ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
 }
 
 static void CommandNoclip(const char *Args, CommandContext *Ctx) {
   if (Args == (void*)0) {
-    ReturnCommand(Ctx->Chat, LOG_ERROR, "Incorrect Format. try: /noclip <1/0>");
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR, "Incorrect Format. try: /noclip <1/0>");
     return;
   }
 
@@ -264,13 +264,13 @@ static void CommandNoclip(const char *Args, CommandContext *Ctx) {
     int Opt = ParseInt(OptStr, (char **)0);
     if (Opt == 1) {
       Ctx->Player->Noclip = true;
-      ReturnCommand(Ctx->Chat, LOG_INFO, "Noclip activated");
+      ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, "Noclip activated");
     } else {
       Ctx->Player->Noclip = false;
-      ReturnCommand(Ctx->Chat, LOG_INFO, "Noclip deactivated");
+      ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, "Noclip deactivated");
     }
   } else {
-    ReturnCommand(Ctx->Chat, LOG_ERROR, "Incorrect Format. try: /noclip <1/0>");
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR, "Incorrect Format. try: /noclip <1/0>");
   }
 }
 
@@ -297,7 +297,7 @@ static void DebugFreeCam(CommandContext *Ctx, bool State) {
 static void CommandDebug(const char *Args, CommandContext *Ctx) {
   if (Args == (void*)0) {
     ReturnCommand(
-        Ctx->Chat, LOG_ERROR,
+        Ctx->Chat, LOG_LEVEL_ERROR,
         "Incorrect Format. try: /debug <command> <1/0> or /debug help");
     return;
   }
@@ -311,25 +311,25 @@ static void CommandDebug(const char *Args, CommandContext *Ctx) {
 
   if (DebugStr == (void*)0) {
     ReturnCommand(
-        Ctx->Chat, LOG_ERROR,
+        Ctx->Chat, LOG_LEVEL_ERROR,
         "Incorrect Format. try: /debug <command> <1/0> or /debug help");
     return;
   }
 
   if (CompareString(DebugStr, "help") == 0) {
-    ReturnCommand(Ctx->Chat, LOG_INFO, "===DEBUG COMMANDS===");
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, "===DEBUG COMMANDS===");
     #pragma unroll
     for (int Index = 0; Index < AVAILABLEDEBUGSCOUNT; Index++) {
       char Msg[MSG_BUFFER_SIZE];
       snprintf(Msg, sizeof(Msg), "/debug %s %s", AVAILABLEDEBUGS[Index].Name,
                AVAILABLEDEBUGS[Index].Description);
-      ReturnCommand(Ctx->Chat, LOG_INFO, Msg);
+      ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
     }
     return;
   }
 
   if (OptStr == (void*)0) {
-    ReturnCommand(Ctx->Chat, LOG_ERROR,
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR,
                   "Missing state (1 or 0). Ex: /debug wireframe 1");
     return;
   }
@@ -343,12 +343,12 @@ static void CommandDebug(const char *Args, CommandContext *Ctx) {
       char Msg[MSG_BUFFER_SIZE];
       snprintf(Msg, sizeof(Msg), "Debug %s %s", DebugStr,
                (int)State == 1 ? "activated" : "deactivated");
-      ReturnCommand(Ctx->Chat, LOG_INFO, Msg);
+      ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
       return;
     }
   }
 
-  ReturnCommand(Ctx->Chat, LOG_ERROR,
+  ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR,
                 "Incorrect Format. try: /debug <command> <1/0> or /debug help");
 }
 
@@ -384,5 +384,5 @@ void CommandHandler(char *Command, ChatState *Chat, GameCamera *Camera,
   }
   char Msg[MSG_BUFFER_SIZE];
   snprintf(Msg, sizeof(Msg), "Unknown command: %s. Type /help", CommandName);
-  ReturnCommand(Chat, LOG_WARNING, Msg);
+  ReturnCommand(Chat, LOG_LEVEL_WARN, Msg);
 }

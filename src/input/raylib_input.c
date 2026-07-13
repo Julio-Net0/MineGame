@@ -39,7 +39,34 @@ SystemInput PollSystemInput(void) {
   SystemInput System = {0};
   System.FullscreenToggle = IsKeyPressed(KEY_F11);
   System.DebugToggle = IsKeyPressed(KEY_F3);
+  System.ChatOpen = IsKeyPressed(KEY_T);
   return System;
+}
+
+TextInput PollTextInput(void) {
+  TextInput Text = {0};
+
+  int Key = GetCharPressed();
+  #pragma unroll 4
+  for (int LoopIdx = 0; LoopIdx < CHAT_MAX_INPUT_CHARS; LoopIdx++) {
+    if (Key <= 0) {
+      break;
+    }
+    if ((Key >= ' ') && (Key <= '~') && (Text.Count < CHAT_MAX_INPUT_CHARS)) {
+      Text.Chars[Text.Count] = (char)Key;
+      Text.Count++;
+    }
+    Key = GetCharPressed();
+  }
+
+  Text.Backspace = IsKeyPressed(KEY_BACKSPACE) || IsKeyPressedRepeat(KEY_BACKSPACE);
+  Text.Submit = IsKeyPressed(KEY_ENTER);
+  Text.Cancel = IsKeyPressed(KEY_DELETE);
+  return Text;
+}
+
+int InputGetScrollDelta(void) {
+  return (int)GetMouseWheelMove();
 }
 
 Vec2 InputGetLookDelta(void) {

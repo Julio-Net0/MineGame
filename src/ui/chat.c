@@ -1,7 +1,10 @@
 #include "ui/chat.h"
 #include "ui/commands.h"
 #include "player/player.h"
-#include "raylib.h"
+#include "input/input.h"
+#include "platform/platform.h"
+#include "render/backend.h"
+#include "core/color.h"
 #include "core/log.h"
 #include "core/utils.h"
 
@@ -16,7 +19,7 @@ void InitChat(ChatState *Chat) {
 void AddChatHistory(ChatState *Chat, const char *Message) {
   if (Chat->HistoryCount < CHAT_MAX_HISTORY) {
     SafeStrncpy(Chat->History[Chat->HistoryCount].Text, Message, CHAT_MAX_INPUT_CHARS);
-    Chat->History[Chat->HistoryCount].TimeCreated = GetTime();
+    Chat->History[Chat->HistoryCount].TimeCreated = PlatformGetTime();
     Chat->HistoryCount++;
   } else {
     #pragma unroll 4
@@ -24,14 +27,13 @@ void AddChatHistory(ChatState *Chat, const char *Message) {
       Chat->History[Idx] = Chat->History[Idx + 1];
     }
     SafeStrncpy(Chat->History[CHAT_MAX_HISTORY - 1].Text, Message, CHAT_MAX_INPUT_CHARS);
-    Chat->History[CHAT_MAX_HISTORY - 1].TimeCreated = GetTime();
+    Chat->History[CHAT_MAX_HISTORY - 1].TimeCreated = PlatformGetTime();
   }
 }
 
-static void UpdateChatScroll(ChatState *Chat) {
-  float Wheel = GetMouseWheelMove();
-  if (Wheel != 0.0F) {
-    Chat->ScrollOffset += (int)Wheel;
+static void UpdateChatScroll(ChatState *Chat, int Delta) {
+  if (Delta != 0) {
+    Chat->ScrollOffset += Delta;
 
     int MaxVisible = (CHAT_POSITION_Y - CHAT_HISTORY_LIMIT_Y) / CHAT_FONT_SIZE;
     int MaxScroll = Chat->HistoryCount - MaxVisible + 1;
@@ -48,23 +50,17 @@ static void UpdateChatScroll(ChatState *Chat) {
   }
 }
 
-static void UpdateChatInput(ChatState *Chat) {
-  int Key = GetCharPressed();
+static void ApplyTextInput(ChatState *Chat, const TextInput *Text) {
   #pragma unroll 4
-  for (int LoopIdx = 0; LoopIdx < CHAT_MAX_INPUT_CHARS; LoopIdx++) {
-    if (Key > 0) {
-      if ((Key >= ' ') && (Key <= '~') && (Chat->LetterCount < CHAT_MAX_INPUT_CHARS)) {
-        Chat->InputText[Chat->LetterCount] = (char)Key;
-        Chat->InputText[Chat->LetterCount + 1] = '\0';
-        Chat->LetterCount++;
-      }
-      Key = GetCharPressed();
-    } else {
-      break;
+  for (int Idx = 0; Idx < Text->Count; Idx++) {
+    if (Chat->LetterCount < CHAT_MAX_INPUT_CHARS) {
+      Chat->InputText[Chat->LetterCount] = Text->Chars[Idx];
+      Chat->InputText[Chat->LetterCount + 1] = '\0';
+      Chat->LetterCount++;
     }
   }
 
-  if (IsKeyPressed(KEY_BACKSPACE) || IsKeyPressedRepeat(KEY_BACKSPACE)) {
+  if (Text->Backspace) {
     Chat->LetterCount--;
     if (Chat->LetterCount < 0) {
       Chat->LetterCount = 0;
@@ -73,14 +69,15 @@ static void UpdateChatInput(ChatState *Chat) {
   }
 }
 
-static void HandleChatActions(ChatState *Chat, GameCamera *Camera, Player *Player, World *World) {
-  if (IsKeyPressed(KEY_DELETE)) {
+static void HandleChatActions(ChatState *Chat, const TextInput *Text,
+                              GameCamera *Camera, Player *Player, World *World) {
+  if (Text->Cancel) {
     Chat->ScrollOffset = 0;
     Chat->IsActive = false;
-    DisableCursor();
+    PlatformSetCursorDisabled(true);
   }
 
-  if (IsKeyPressed(KEY_ENTER)) {
+  if (Text->Submit) {
     if (Chat->InputText[0] == '/') {
       CommandHandler(Chat->InputText, Chat, Camera, Player, World);
     } else {
@@ -92,36 +89,31 @@ static void HandleChatActions(ChatState *Chat, GameCamera *Camera, Player *Playe
     Chat->InputText[0] = '\0';
     Chat->ScrollOffset = 0;
     Chat->IsActive = false;
-    DisableCursor();
+    PlatformSetCursorDisabled(true);
   }
 }
 
 void UpdateChat(ChatState *Chat, GameCamera *Camera, Player *Player, World *World) {
   if (!Chat->IsActive) {
-    if (IsKeyPressed(KEY_T)) {
+    if (PollSystemInput().ChatOpen) {
       Chat->IsActive = true;
-      EnableCursor();
-      int Key = GetCharPressed();
-      #pragma unroll 4
-      for (int LoopIdx = 0; LoopIdx < CHAT_MAX_INPUT_CHARS; LoopIdx++) {
-        if (Key > 0) {
-          Key = GetCharPressed();
-        } else {
-          break;
-        }
-      }
+      PlatformSetCursorDisabled(false);
+      // Drain the frame's typed characters so the chat-open key is not entered.
+      PollTextInput();
     }
     return;
   }
 
-  UpdateChatScroll(Chat);
-  UpdateChatInput(Chat);
-  HandleChatActions(Chat, Camera, Player, World);
+  UpdateChatScroll(Chat, InputGetScrollDelta());
+
+  TextInput Text = PollTextInput();
+  ApplyTextInput(Chat, &Text);
+  HandleChatActions(Chat, &Text, Camera, Player, World);
 }
 
 void DrawChat(ChatState *Chat) {
   int HistoryBaseY = CHAT_POSITION_Y - CHAT_Y_MARGIN;
-  double CurrentTime = GetTime();
+  double CurrentTime = PlatformGetTime();
 
   int HistoryLimit = Chat->HistoryCount;
   #pragma unroll 4
@@ -149,21 +141,27 @@ void DrawChat(ChatState *Chat) {
     }
 
     if (Alpha > 0.0F) {
-      DrawRectangle(CHAT_POSITION_X, MsgY, (int)CHAT_HISTORY_WIDTH, CHAT_FONT_SIZE, Fade(BLACK, CHAT_HISTORY_BG_ALPHA * Alpha));
-      DrawText(Chat->History[Idx].Text, CHAT_POSITION_X + CHAT_TEXT_PADDING, MsgY, CHAT_FONT_SIZE, Fade(WHITE, Alpha));
+      RenderDrawRect(CHAT_POSITION_X, MsgY, (int)CHAT_HISTORY_WIDTH, CHAT_FONT_SIZE,
+                     Color8Alpha(COLOR_BLACK, CHAT_HISTORY_BG_ALPHA * Alpha));
+      RenderDrawText(Chat->History[Idx].Text, CHAT_POSITION_X + CHAT_TEXT_PADDING,
+                     MsgY, CHAT_FONT_SIZE, Color8Alpha(COLOR_WHITE, Alpha));
     }
   }
 
   if (Chat->IsActive) {
-    DrawRectangle(CHAT_POSITION_X, CHAT_POSITION_Y, CHAT_WIDTH, CHAT_HEIGHT, Fade(BLACK, CHAT_BG_ALPHA));
-    DrawRectangleLines(CHAT_POSITION_X, CHAT_POSITION_Y, CHAT_WIDTH, CHAT_HEIGHT, DARKGRAY);
+    RenderDrawRect(CHAT_POSITION_X, CHAT_POSITION_Y, CHAT_WIDTH, CHAT_HEIGHT,
+                   Color8Alpha(COLOR_BLACK, CHAT_BG_ALPHA));
+    RenderDrawRectLines(CHAT_POSITION_X, CHAT_POSITION_Y, CHAT_WIDTH, CHAT_HEIGHT,
+                        COLOR_DARKGRAY);
 
     int TextY = CHAT_POSITION_Y + (CHAT_HEIGHT / 2) - (CHAT_FONT_SIZE / 2);
-    DrawText(Chat->InputText, CHAT_POSITION_X + CHAT_TEXT_PADDING, TextY, CHAT_FONT_SIZE, WHITE);
+    RenderDrawText(Chat->InputText, CHAT_POSITION_X + CHAT_TEXT_PADDING, TextY,
+                   CHAT_FONT_SIZE, COLOR_WHITE);
 
-    if (((int)(GetTime() * 2)) % 2 == 0) {
-      int TextWidth = MeasureText(Chat->InputText, CHAT_FONT_SIZE);
-      DrawText("|", CHAT_POSITION_X + CHAT_TEXT_PADDING + TextWidth, TextY, CHAT_FONT_SIZE, WHITE);
+    if (((int)(PlatformGetTime() * 2)) % 2 == 0) {
+      int TextWidth = RenderMeasureText(Chat->InputText, CHAT_FONT_SIZE);
+      RenderDrawText("|", CHAT_POSITION_X + CHAT_TEXT_PADDING + TextWidth, TextY,
+                     CHAT_FONT_SIZE, COLOR_WHITE);
     }
   }
 }
