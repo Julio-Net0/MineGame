@@ -9,7 +9,7 @@ Goal: Evolve the engine into a portable, backend-agnostic platform and bring the
 - [X] **Input Intent System:** Decouple player input from simulation by capturing raw input into an abstract intent struct, enabling remappable controls and forming the client→server command seam for future multiplayer.
 - [X] **Prefab System (JSON):** Introduce a simple, sparse, palette-based JSON prefab format — human-readable and friendly to external editing tools — compiled into a packed in-memory structure at load time.
 - [ ] **Procedural Tree Generation:** Stamp tree prefabs during terrain generation using seed-deterministic placement and a deferred cross-chunk edit queue so structures spanning chunk borders resolve correctly.
-- [ ] **In-Game Prefab Capture:** Add commands to select a block volume and export it directly to a JSON prefab file, round-tripping with the loader so external tools can edit the same files.
+- [X] **In-Game Prefab Capture:** Add commands to select a block volume and export it directly to a JSON prefab file, round-tripping with the loader so external tools can edit the same files.
 - [ ] **Prefab Rotation & Variety:** Support rotation and mirroring when stamping prefabs, multiplying visual variety from a small set of source models.
 - [ ] **Flora Decoration Pass:** Scatter single-block features (tall grass, flowers, mushrooms) through the feature-placement pipeline as a lightweight precursor to multi-block structures.
 - [X] **Fixed-Tick Simulation Loop:** Run world logic at a fixed tick rate (e.g. 20 TPS) decoupled from render framerate with interpolation, forming the backbone for growth, fluids, and multiplayer.
