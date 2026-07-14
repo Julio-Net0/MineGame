@@ -35,6 +35,9 @@ Player InitPlayer(Vec3 SpawnPos) {
   PlayerObj.HeadOffset = PLAYER_HEAD_OFFSET;
   PlayerObj.IsGrounded = false;
   PlayerObj.Noclip = false;
+  PlayerObj.HasSelectionA = false;
+  PlayerObj.HasSelectionB = false;
+  PlayerObj.HasSelectionOffset = false;
 
   SetHotbarSlot(&PlayerObj, INIT_SLOT_0, INIT_BLOCK_1);
   SetHotbarSlot(&PlayerObj, INIT_SLOT_1, INIT_BLOCK_2);

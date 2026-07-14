@@ -10,6 +10,9 @@ enum {
 // Read an entire text file into a heap buffer (caller frees). Null on error.
 char *ReadTextFile(const char *Path);
 
+// Write Content to Path, truncating any existing file. Returns true on success.
+bool WriteTextFile(const char *Path, const char *Content);
+
 // Enumerate directory entries into OutPaths, each a full "DirPath/name" up to
 // FILEIO_MAX_PATH chars. Returns the number written (capped at MaxFiles);
 // skips "." and "..". Caller filters by extension as needed.

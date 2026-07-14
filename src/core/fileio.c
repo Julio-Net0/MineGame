@@ -41,6 +41,24 @@ char *ReadTextFile(const char *Path) {
   return Buffer;
 }
 
+bool WriteTextFile(const char *Path, const char *Content) {
+  if (Path == (void *)0 || Content == (void *)0) {
+    return false;
+  }
+
+  FILE *File = fopen(Path, "wb");
+  if (File == (void *)0) {
+    return false;
+  }
+
+  size_t Length = strlen(Content);
+  size_t Written = fwrite(Content, 1, Length, File);
+  if (fclose(File) != 0) {
+    return false;
+  }
+  return Written == Length;
+}
+
 int ListDirectoryFiles(const char *DirPath, char OutPaths[][FILEIO_MAX_PATH],
                        int MaxFiles) {
   if (DirPath == (void *)0 || OutPaths == (void *)0 || MaxFiles <= 0) {

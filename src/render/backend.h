@@ -58,6 +58,9 @@ void RenderDrawChunkBorder(Vec3 Center, float Size);
 // Debug marker cube: Wire selects wireframe vs solid; Solid tints it as a
 // "hit"/solid sample vs a "miss"/empty sample.
 void RenderDrawDebugCube(Vec3 Pos, float Size, bool Wire, bool Solid);
+// Colored wireframe box centered at Center with the given per-axis Size. When
+// XRay is true it is drawn without depth testing so it shows through blocks.
+void RenderDrawWireBox(Vec3 Center, Vec3 Size, Color8 Color, bool XRay);
 
 // 2D helper (deferred HUD layer; backend-owned).
 void RenderDrawBlockIcon(int BlockId, int X, int Y, int Size);

@@ -352,6 +352,22 @@ void RenderDrawBlockIcon(int BlockId, int X, int Y, int Size) {
 
 static Color Color8ToRL(Color8 C) { return (Color){C.R, C.G, C.B, C.A}; }
 
+void RenderDrawWireBox(Vec3 Center, Vec3 Size, Color8 Color, bool XRay) {
+  Vector3 RlCenter = Vec3ToRL(Center);
+  Vector3 RlSize = Vec3ToRL(Size);
+  if (XRay) {
+    // Flush pending geometry, then draw with depth testing off so the box shows
+    // through solid blocks (mirrors the translucent-pass flush pattern).
+    rlDrawRenderBatchActive();
+    rlDisableDepthTest();
+    DrawCubeWiresV(RlCenter, RlSize, Color8ToRL(Color));
+    rlDrawRenderBatchActive();
+    rlEnableDepthTest();
+  } else {
+    DrawCubeWiresV(RlCenter, RlSize, Color8ToRL(Color));
+  }
+}
+
 void RenderDrawRect(int X, int Y, int W, int H, Color8 Color) {
   DrawRectangle(X, Y, W, H, Color8ToRL(Color));
 }

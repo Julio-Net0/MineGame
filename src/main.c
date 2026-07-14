@@ -165,6 +165,7 @@ static void RenderGame(World *WorldVal, Player *PlayerVal, GameCamera *ActiveCam
       RenderDrawBlockHighlight(PlayerVal->TargetBlock.BlockPos);
     }
 
+    DrawPrefabSelection(PlayerVal);
     DrawAABBDebug(WorldVal, PlayerVal);
   }
   RenderEnd3D();

@@ -1,6 +1,7 @@
 #include "ui/commands.h"
 #include "world/block_system.h"
 #include "world/prefab.h"
+#include "world/prefab_capture.h"
 #include "ui/chat.h"
 #include "ui/debug.h"
 #include "core/log.h"
@@ -38,8 +39,10 @@ static const CommandInfo AVAILABLECOMMANDS[] = {
      "Activate or deactivate debugs overlay", CommandDebug},
     {"/seed", "Use: /seed", "Returns the world seed", CommandSeed},
     {"/save", "Use: /save", "Saves all modified chunks to disk", CommandSave},
-    {"/prefab", "Use: /prefab <list | stamp <name>>",
-     "Lists loaded prefabs or stamps one at your target", CommandPrefab},
+    {"/prefab",
+     "Use: /prefab <list | stamp <name> | pos1 | pos2 | offset | save <name>>",
+     "Lists/stamps prefabs, sets selection corners/offset, or saves a selection",
+     CommandPrefab},
 };
 
 static const int AVAILABLECOMMANDSCOUNT =
@@ -273,13 +276,24 @@ static void PrefabStamp(const char *Name, CommandContext *Ctx) {
     return;
   }
 
-  // Center the prefab horizontally on the targeted block and rest its base on
-  // the face the player is looking at (origin along the hit normal).
-  int HalfX = Entry->SizeX / 2;
-  int HalfZ = Entry->SizeZ / 2;
-  Vec3 Origin = {Target.BlockPos.x + Target.Normal.x - (float)HalfX,
-                 Target.BlockPos.y + Target.Normal.y,
-                 Target.BlockPos.z + Target.Normal.z - (float)HalfZ};
+  // Placement cell: the block adjacent to the targeted face.
+  Vec3 Placement = {Target.BlockPos.x + Target.Normal.x,
+                    Target.BlockPos.y + Target.Normal.y,
+                    Target.BlockPos.z + Target.Normal.z};
+
+  Vec3 Origin;
+  if (Entry->HasOrigin) {
+    // Anchor the prefab so its origin cell lands on the placement cell.
+    Origin = (Vec3){Placement.x - (float)Entry->OriginX,
+                    Placement.y - (float)Entry->OriginY,
+                    Placement.z - (float)Entry->OriginZ};
+  } else {
+    // Default: center horizontally on the target and rest the base on the face.
+    int HalfX = Entry->SizeX / 2;
+    int HalfZ = Entry->SizeZ / 2;
+    Origin = (Vec3){Placement.x - (float)HalfX, Placement.y,
+                    Placement.z - (float)HalfZ};
+  }
   StampPrefab(Ctx->World, Entry, Origin);
 
   char Msg[MSG_BUFFER_SIZE];
@@ -288,10 +302,121 @@ static void PrefabStamp(const char *Name, CommandContext *Ctx) {
   ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
 }
 
+// True when both corners are set and Point falls inside the inclusive selection
+// box.
+static bool IsPointInSelection(const Player *PlayerVal, Vec3 Point) {
+  if (PlayerVal->HasSelectionA == false || PlayerVal->HasSelectionB == false) {
+    return false;
+  }
+  Vec3 CornerA = PlayerVal->SelectionA;
+  Vec3 CornerB = PlayerVal->SelectionB;
+  float MinX = CornerA.x < CornerB.x ? CornerA.x : CornerB.x;
+  float MinY = CornerA.y < CornerB.y ? CornerA.y : CornerB.y;
+  float MinZ = CornerA.z < CornerB.z ? CornerA.z : CornerB.z;
+  float MaxX = CornerA.x > CornerB.x ? CornerA.x : CornerB.x;
+  float MaxY = CornerA.y > CornerB.y ? CornerA.y : CornerB.y;
+  float MaxZ = CornerA.z > CornerB.z ? CornerA.z : CornerB.z;
+  return Point.x >= MinX && Point.x <= MaxX && Point.y >= MinY &&
+         Point.y <= MaxY && Point.z >= MinZ && Point.z <= MaxZ;
+}
+
+static void PrefabSetCorner(CommandContext *Ctx, bool IsFirst) {
+  RaycastResult Target = Ctx->Player->TargetBlock;
+  if (Target.Hit == false) {
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_WARN, "No block targeted");
+    return;
+  }
+
+  if (IsFirst) {
+    Ctx->Player->SelectionA = Target.BlockPos;
+    Ctx->Player->HasSelectionA = true;
+  } else {
+    Ctx->Player->SelectionB = Target.BlockPos;
+    Ctx->Player->HasSelectionB = true;
+  }
+
+  // Drop a stale anchor that no longer lies within the redefined selection.
+  if (Ctx->Player->HasSelectionOffset &&
+      IsPointInSelection(Ctx->Player, Ctx->Player->SelectionOffset) == false) {
+    Ctx->Player->HasSelectionOffset = false;
+  }
+
+  char Msg[MSG_BUFFER_SIZE];
+  snprintf(Msg, sizeof(Msg), "Set pos%d to X:%.0f Y:%.0f Z:%.0f",
+           IsFirst ? 1 : 2, (double)Target.BlockPos.x, (double)Target.BlockPos.y,
+           (double)Target.BlockPos.z);
+  ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
+}
+
+static void PrefabOffset(CommandContext *Ctx) {
+  if (Ctx->Player->HasSelectionA == false ||
+      Ctx->Player->HasSelectionB == false) {
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_WARN,
+                  "Selection incomplete. Set pos1 and pos2 first");
+    return;
+  }
+
+  RaycastResult Target = Ctx->Player->TargetBlock;
+  if (Target.Hit == false) {
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_WARN, "No block targeted");
+    return;
+  }
+
+  if (IsPointInSelection(Ctx->Player, Target.BlockPos) == false) {
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_WARN,
+                  "Target is outside the selection box");
+    return;
+  }
+
+  Ctx->Player->SelectionOffset = Target.BlockPos;
+  Ctx->Player->HasSelectionOffset = true;
+
+  char Msg[MSG_BUFFER_SIZE];
+  snprintf(Msg, sizeof(Msg), "Set offset to X:%.0f Y:%.0f Z:%.0f",
+           (double)Target.BlockPos.x, (double)Target.BlockPos.y,
+           (double)Target.BlockPos.z);
+  ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
+}
+
+static void PrefabSave(const char *Name, CommandContext *Ctx) {
+  if (Name == (void*)0) {
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR,
+                  "Missing prefab name. try: /prefab save <name>");
+    return;
+  }
+
+  if (Ctx->Player->HasSelectionA == false ||
+      Ctx->Player->HasSelectionB == false) {
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_WARN,
+                  "Selection incomplete. Set pos1 and pos2 first");
+    return;
+  }
+
+  char ErrorBuf[MSG_BUFFER_SIZE];
+  ErrorBuf[0] = '\0';
+  const Vec3 *Offset =
+      Ctx->Player->HasSelectionOffset ? &Ctx->Player->SelectionOffset : NULL;
+  bool Ok = CaptureSelectionToPrefab(Ctx->World, Ctx->Player->SelectionA,
+                                     Ctx->Player->SelectionB, Offset, Name,
+                                     ErrorBuf, (int)sizeof(ErrorBuf));
+  if (Ok == false) {
+    char Msg[MSG_BUFFER_SIZE];
+    snprintf(Msg, sizeof(Msg), "Save failed: %s", ErrorBuf);
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR, Msg);
+    return;
+  }
+
+  char Msg[MSG_BUFFER_SIZE];
+  snprintf(Msg, sizeof(Msg), "Saved prefab '%s'", Name);
+  ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
+}
+
 static void CommandPrefab(const char *Args, CommandContext *Ctx) {
   if (Args == (void*)0) {
-    ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR,
-                  "Incorrect Format. try: /prefab <list | stamp <name>>");
+    ReturnCommand(
+        Ctx->Chat, LOG_LEVEL_ERROR,
+        "Incorrect Format. try: /prefab <list | stamp <name> | pos1 | pos2 | "
+        "offset | save <name>>");
     return;
   }
 
@@ -312,8 +437,31 @@ static void CommandPrefab(const char *Args, CommandContext *Ctx) {
     return;
   }
 
-  ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR,
-                "Incorrect Format. try: /prefab <list | stamp <name>>");
+  if (SubCmd != (void*)0 && CompareString(SubCmd, "pos1") == 0) {
+    PrefabSetCorner(Ctx, true);
+    return;
+  }
+
+  if (SubCmd != (void*)0 && CompareString(SubCmd, "pos2") == 0) {
+    PrefabSetCorner(Ctx, false);
+    return;
+  }
+
+  if (SubCmd != (void*)0 && CompareString(SubCmd, "offset") == 0) {
+    PrefabOffset(Ctx);
+    return;
+  }
+
+  if (SubCmd != (void*)0 && CompareString(SubCmd, "save") == 0) {
+    char *Name = TokenizeSpace(&SavePtr);
+    PrefabSave(Name, Ctx);
+    return;
+  }
+
+  ReturnCommand(
+      Ctx->Chat, LOG_LEVEL_ERROR,
+      "Incorrect Format. try: /prefab <list | stamp <name> | pos1 | pos2 | "
+      "save <name>>");
 }
 
 static void CommandList(const char *Args, CommandContext *Ctx) {

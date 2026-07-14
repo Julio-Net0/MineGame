@@ -30,6 +30,13 @@ typedef struct {
   Vec3 Velocity;
   Vec3 Size;
 
+  // Prefab-capture selection corners, in world block coordinates. Each is valid
+  // only when its Has* flag is set. Kept per player so future sessions can hold
+  // independent selections.
+  Vec3 SelectionA;
+  Vec3 SelectionB;
+  Vec3 SelectionOffset; // stamp anchor, valid only when HasSelectionOffset
+
   float ReachDistance;
   float Radius;
   float Speed;
@@ -40,6 +47,9 @@ typedef struct {
   unsigned char Hotbar[HOTBAR_SIZE];
   bool IsGrounded;
   bool Noclip;
+  bool HasSelectionA;
+  bool HasSelectionB;
+  bool HasSelectionOffset;
 } Player;
 
 typedef struct {

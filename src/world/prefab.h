@@ -2,6 +2,7 @@
 #define PREFAB_H
 
 #include "core/vecmath.h"
+#include <stdbool.h>
 
 struct World;
 
@@ -29,12 +30,23 @@ typedef struct {
   int SizeX;
   int SizeY;
   int SizeZ;
+  // Optional stamp anchor, local to the prefab. Valid only when HasOrigin is
+  // set; otherwise stamping uses the default horizontal-center / base placement.
+  int OriginX;
+  int OriginY;
+  int OriginZ;
   PrefabCell *Cells;
   int CellCount;
+  bool HasOrigin;
 } Prefab;
 
 void InitPrefabRegistry(void);
 void LoadAllPrefabs(const char *DirectoryPath);
+
+// Parse, compile, and register a single prefab JSON file into the runtime
+// registry. Replaces an existing prefab of the same name in place, otherwise
+// appends a new entry. Returns true on success.
+bool RegisterPrefabFile(const char *FilePath);
 const Prefab *GetPrefab(const char *Name);
 const Prefab *GetPrefabByIndex(int Index);
 int GetLoadedPrefabsCount(void);

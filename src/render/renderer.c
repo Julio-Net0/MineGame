@@ -6,6 +6,7 @@
 #include "core/vecmath.h"
 #include <stddef.h>
 #include <stdbool.h>
+#include <math.h>
 
 #define VERTICES_PER_FACE 4
 #define FLOATS_PER_VERTEX 3
@@ -681,5 +682,47 @@ void DrawAABBDebug(World *WorldVal, Player *PlayerVal) {
         RenderDrawDebugCube(TopPoints[IdxI], Sz, false, IsPointSolid(WorldVal, TopPoints[IdxI]));
         RenderDrawDebugCube(ShinPoints[IdxI], Wz, true, IsPointSolid(WorldVal, ShinPoints[IdxI]));
         RenderDrawDebugCube(FacePoints[IdxI], Wz, true, IsPointSolid(WorldVal, FacePoints[IdxI]));
+    }
+}
+
+#define SELECTION_MARKER_SIZE (BLOCK_SIZE + 0.02F)
+#define SELECTION_BOX_MIDPOINT 0.5F
+
+static const Color8 SELECTION_CORNER_A_COLOR = {230, 40, 40, 255};
+static const Color8 SELECTION_CORNER_B_COLOR = {40, 90, 230, 255};
+static const Color8 SELECTION_BOX_COLOR = {40, 210, 70, 255};
+static const Color8 SELECTION_OFFSET_COLOR = {235, 215, 40, 255};
+
+// Draw the live prefab-capture selection: corner A (red), corner B (blue), the
+// full bounding box (green) once both are set, and the stamp anchor (yellow).
+// All markers are drawn x-ray so they stay visible through solid blocks.
+void DrawPrefabSelection(Player *PlayerVal) {
+    Vec3 MarkerSize = {SELECTION_MARKER_SIZE, SELECTION_MARKER_SIZE,
+                       SELECTION_MARKER_SIZE};
+
+    if (PlayerVal->HasSelectionA) {
+        RenderDrawWireBox(PlayerVal->SelectionA, MarkerSize,
+                          SELECTION_CORNER_A_COLOR, true);
+    }
+    if (PlayerVal->HasSelectionB) {
+        RenderDrawWireBox(PlayerVal->SelectionB, MarkerSize,
+                          SELECTION_CORNER_B_COLOR, true);
+    }
+
+    if (PlayerVal->HasSelectionA && PlayerVal->HasSelectionB) {
+        Vec3 CornerA = PlayerVal->SelectionA;
+        Vec3 CornerB = PlayerVal->SelectionB;
+        Vec3 BoxCenter = {(CornerA.x + CornerB.x) * SELECTION_BOX_MIDPOINT,
+                          (CornerA.y + CornerB.y) * SELECTION_BOX_MIDPOINT,
+                          (CornerA.z + CornerB.z) * SELECTION_BOX_MIDPOINT};
+        Vec3 BoxSize = {fabsf(CornerA.x - CornerB.x) + BLOCK_SIZE,
+                        fabsf(CornerA.y - CornerB.y) + BLOCK_SIZE,
+                        fabsf(CornerA.z - CornerB.z) + BLOCK_SIZE};
+        RenderDrawWireBox(BoxCenter, BoxSize, SELECTION_BOX_COLOR, true);
+    }
+
+    if (PlayerVal->HasSelectionOffset) {
+        RenderDrawWireBox(PlayerVal->SelectionOffset, MarkerSize,
+                          SELECTION_OFFSET_COLOR, true);
     }
 }

@@ -38,8 +38,12 @@ void InitPrefabRegistry(void) {
     Registry[Idx].SizeX = 0;
     Registry[Idx].SizeY = 0;
     Registry[Idx].SizeZ = 0;
+    Registry[Idx].OriginX = 0;
+    Registry[Idx].OriginY = 0;
+    Registry[Idx].OriginZ = 0;
     Registry[Idx].Cells = NULL;
     Registry[Idx].CellCount = 0;
+    Registry[Idx].HasOrigin = false;
   }
   *GetPrefabCountPtr() = 0;
 }
@@ -174,17 +178,52 @@ static bool ParseCell(const cJSON *CellItem, int SizeX, int SizeY, int SizeZ,
   return true;
 }
 
-static void ParsePrefabFile(const char *FilePath) {
-  int *CountPtr = GetPrefabCountPtr();
-  if (*CountPtr >= MAX_PREFABS) {
-    LogWarn("PREFAB: registry full, skipping %s", FilePath);
-    return;
+// Read an optional [ox, oy, oz] anchor, requiring each value to fall within the
+// declared size. Returns false when present but malformed or out of range.
+static bool ParseOrigin(const cJSON *OriginItem, int SizeX, int SizeY,
+                        int SizeZ, int *OutX, int *OutY, int *OutZ) {
+  if (cJSON_IsArray(OriginItem) == 0 || cJSON_GetArraySize(OriginItem) != 3) {
+    return false;
   }
 
+  int Coords[3];
+  int Bounds[3] = {SizeX, SizeY, SizeZ};
+  #pragma unroll
+  for (int Idx = 0; Idx < 3; Idx++) {
+    const cJSON *Item = cJSON_GetArrayItem(OriginItem, Idx);
+    if (cJSON_IsNumber(Item) == 0) {
+      return false;
+    }
+    int Value = Item->valueint;
+    if (Value < 0 || Value >= Bounds[Idx]) {
+      return false;
+    }
+    Coords[Idx] = Value;
+  }
+
+  *OutX = Coords[0];
+  *OutY = Coords[1];
+  *OutZ = Coords[2];
+  return true;
+}
+
+// Locate a registered prefab slot by name. Returns its index, or -1 if absent.
+static int FindPrefabSlot(const char *Name) {
+  Prefab *Registry = GetPrefabRegistry();
+  int Count = *GetPrefabCountPtr();
+  for (int Idx = 0; Idx < Count; Idx++) {
+    if (CompareString(Registry[Idx].Name, Name) == 0) {
+      return Idx;
+    }
+  }
+  return -1;
+}
+
+bool RegisterPrefabFile(const char *FilePath) {
   char *FileContent = ReadTextFile(FilePath);
   if (FileContent == NULL) {
     LogError("PREFAB: failed to read file: %s", FilePath);
-    return;
+    return false;
   }
 
   cJSON *Json = cJSON_Parse(FileContent);
@@ -192,13 +231,14 @@ static void ParsePrefabFile(const char *FilePath) {
     LogError("PREFAB: JSON syntax error in %s before: %s", FilePath,
              cJSON_GetErrorPtr());
     free(FileContent);
-    return;
+    return false;
   }
 
   const cJSON *NameItem = cJSON_GetObjectItemCaseSensitive(Json, "name");
   const cJSON *SizeItem = cJSON_GetObjectItemCaseSensitive(Json, "size");
   const cJSON *PaletteItem = cJSON_GetObjectItemCaseSensitive(Json, "palette");
   const cJSON *BlocksItem = cJSON_GetObjectItemCaseSensitive(Json, "blocks");
+  const cJSON *OriginItem = cJSON_GetObjectItemCaseSensitive(Json, "origin");
 
   int SizeX = 0;
   int SizeY = 0;
@@ -209,26 +249,26 @@ static void ParsePrefabFile(const char *FilePath) {
     LogError("PREFAB: %s missing a valid 'name'", FilePath);
     cJSON_Delete(Json);
     free(FileContent);
-    return;
+    return false;
   }
   if (ParseSize(SizeItem, &SizeX, &SizeY, &SizeZ) == false) {
     LogError("PREFAB: %s has an invalid 'size'", FilePath);
     cJSON_Delete(Json);
     free(FileContent);
-    return;
+    return false;
   }
   int PaletteSize = ResolvePalette(PaletteItem, PaletteIds, FilePath);
   if (PaletteSize < 0) {
     LogError("PREFAB: %s has an invalid 'palette'", FilePath);
     cJSON_Delete(Json);
     free(FileContent);
-    return;
+    return false;
   }
   if (cJSON_IsArray(BlocksItem) == 0) {
     LogError("PREFAB: %s has an invalid 'blocks' array", FilePath);
     cJSON_Delete(Json);
     free(FileContent);
-    return;
+    return false;
   }
 
   int BlockEntries = cJSON_GetArraySize(BlocksItem);
@@ -239,7 +279,7 @@ static void ParsePrefabFile(const char *FilePath) {
       LogError("PREFAB: out of memory compiling %s", FilePath);
       cJSON_Delete(Json);
       free(FileContent);
-      return;
+      return false;
     }
   }
 
@@ -256,21 +296,62 @@ static void ParsePrefabFile(const char *FilePath) {
     }
   }
 
+  int OriginX = 0;
+  int OriginY = 0;
+  int OriginZ = 0;
+  bool HasOrigin = false;
+  if (OriginItem != NULL) {
+    if (ParseOrigin(OriginItem, SizeX, SizeY, SizeZ, &OriginX, &OriginY,
+                    &OriginZ)) {
+      HasOrigin = true;
+    } else {
+      LogWarn("PREFAB: %s has an invalid 'origin', ignoring it", FilePath);
+    }
+  }
+
+  // Replace an existing prefab of the same name in place, otherwise append a
+  // new slot. Replacing frees the old cell array first.
   Prefab *Registry = GetPrefabRegistry();
-  Prefab *Slot = &Registry[*CountPtr];
+  int *CountPtr = GetPrefabCountPtr();
+  int SlotIndex = FindPrefabSlot(NameItem->valuestring);
+  bool Replacing = (SlotIndex >= 0);
+
+  if (Replacing == false) {
+    if (*CountPtr >= MAX_PREFABS) {
+      LogWarn("PREFAB: registry full, skipping %s", FilePath);
+      free(Cells);
+      cJSON_Delete(Json);
+      free(FileContent);
+      return false;
+    }
+    SlotIndex = *CountPtr;
+  }
+
+  Prefab *Slot = &Registry[SlotIndex];
+  if (Replacing && Slot->Cells != NULL) {
+    free(Slot->Cells);
+  }
   SafeStrncpy(Slot->Name, NameItem->valuestring, MAX_PREFAB_NAME_SIZE);
   Slot->SizeX = SizeX;
   Slot->SizeY = SizeY;
   Slot->SizeZ = SizeZ;
+  Slot->OriginX = OriginX;
+  Slot->OriginY = OriginY;
+  Slot->OriginZ = OriginZ;
   Slot->Cells = Cells;
   Slot->CellCount = CellCount;
-  (*CountPtr)++;
+  Slot->HasOrigin = HasOrigin;
+  if (Replacing == false) {
+    (*CountPtr)++;
+  }
 
-  LogInfo("PREFAB: Loaded '%s' (%dx%dx%d, %d cells)", Slot->Name, SizeX, SizeY,
-          SizeZ, CellCount);
+  LogInfo("PREFAB: %s '%s' (%dx%dx%d, %d cells)",
+          Replacing ? "Replaced" : "Loaded", Slot->Name, SizeX, SizeY, SizeZ,
+          CellCount);
 
   cJSON_Delete(Json);
   free(FileContent);
+  return true;
 }
 
 void StampPrefab(struct World *WorldVal, const Prefab *PrefabVal, Vec3 Origin) {
@@ -302,7 +383,7 @@ void LoadAllPrefabs(const char *DirectoryPath) {
   #pragma unroll 4
   for (int Idx = 0; Idx < FilesCount; Idx++) {
     if (HasFileExtension(FilePaths[Idx], ".json")) {
-      ParsePrefabFile(FilePaths[Idx]);
+      RegisterPrefabFile(FilePaths[Idx]);
     }
   }
 
