@@ -1,7 +1,7 @@
 #include "world/biome.h"
 #include "world/block_system.h"
 #include "third_party/cJSON.h"
-#include "third_party/stb_perlin.h"
+#include "core/noise.h"
 #include "core/fileio.h"
 #include "core/log.h"
 #include "core/utils.h"
@@ -133,9 +133,9 @@ static void GetAxisOffsets(uint64_t Seed, int Axis, float *OffX, float *OffZ) {
   *OffZ = OffsetFromHash(SplitMix64(Base + SALT_Z));
 }
 
-// stb_perlin_fbm_noise3 sums octaves without normalizing, so its range grows
-// with octave count and gain. Dividing by the amplitude sum brings it back to
-// roughly [-1, 1] regardless of how the params are tuned.
+// NoiseFbm3 sums octaves without normalizing, so its range grows with octave
+// count and gain. Dividing by the amplitude sum brings it back to roughly
+// [-1, 1] regardless of how the params are tuned.
 static float NoiseAmplitudeSum(const BiomeNoiseParams *Params) {
   float Amplitude = 1.0F;
   float Sum = 0.0F;
@@ -164,11 +164,9 @@ static float SampleClimateAxis(int GlobalX, int GlobalZ, int Axis,
   float OffZ = 0.0F;
   GetAxisOffsets(Seed, Axis, &OffX, &OffZ);
 
-  float Raw = stb_perlin_fbm_noise3(((float)GlobalX + OffX) * Params->Scale,
-                                    0.0F,
-                                    ((float)GlobalZ + OffZ) * Params->Scale,
-                                    Params->Lacunarity, Params->Gain,
-                                    Params->Octaves);
+  float Raw = NoiseFbm3(((float)GlobalX + OffX) * Params->Scale, 0.0F,
+                        ((float)GlobalZ + OffZ) * Params->Scale,
+                        Params->Lacunarity, Params->Gain, Params->Octaves);
 
   float Normalized = ((Raw / NoiseAmplitudeSum(Params)) + UNIT_MAX) * NOISE_MIDPOINT;
   return ClampUnit(Normalized);

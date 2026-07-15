@@ -10,7 +10,7 @@
 // This header deliberately includes no chunk, world, or render header, and the
 // sampling functions below are pure: they depend only on their arguments and on
 // the biome registry, which is read-only once loaded. Compiling biome.c against
-// only stb_perlin, cJSON, core/fileio, and the block registry is therefore
+// only core/noise, cJSON, core/fileio, and the block registry is therefore
 // enough to sample the exact biome function the game uses, which is what lets an
 // external biome visualizer/editor reuse it without linking the engine.
 //

@@ -1,5 +1,5 @@
 #include "world/chunk.h"
-#include "third_party/stb_perlin.h"
+#include "core/noise.h"
 #include "persistence/world_save.h"
 #include <stdint.h>
 
@@ -43,10 +43,9 @@ static void GetTerrainNoiseOffsets(uint64_t SeedVal, float *OffsetX,
 // generating a chunk still derives them once rather than once per column.
 static int TerrainHeightFromOffsets(int GlobalX, int GlobalZ, float OffsetX,
                                     float OffsetZ) {
-  float NoiseVal = stb_perlin_fbm_noise3(
-      ((float)GlobalX + OffsetX) * NOISE_SCALE, 0.0F,
-      ((float)GlobalZ + OffsetZ) * NOISE_SCALE, NOISE_LACUNARITY, NOISE_GAIN,
-      NOISE_OCTAVES);
+  float NoiseVal = NoiseFbm3(((float)GlobalX + OffsetX) * NOISE_SCALE, 0.0F,
+                             ((float)GlobalZ + OffsetZ) * NOISE_SCALE,
+                             NOISE_LACUNARITY, NOISE_GAIN, NOISE_OCTAVES);
   return BASE_HEIGHT + (int)(NoiseVal * HEIGHT_VARIANCE);
 }
 

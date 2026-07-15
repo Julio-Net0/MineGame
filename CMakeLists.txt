@@ -40,7 +40,7 @@ add_executable(${PROJECT_NAME}
   src/core/utils.c
   src/core/fileio.c
   src/core/log.c
-  src/third_party/stb_perlin.c
+  src/core/noise.c
   src/third_party/cJSON.c
 )
 
