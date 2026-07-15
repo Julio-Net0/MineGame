@@ -22,8 +22,42 @@ enum {
 #define NOISE_GAIN 0.5F
 #define HEIGHT_VARIANCE 16.0F
 
+enum {
+  SEA_LEVEL = 18
+};
+
+static void GetTerrainNoiseOffsets(uint64_t SeedVal, float *OffsetX,
+                                   float *OffsetZ) {
+  const int SEED_OFFSET_RANGE = 100000;
+  const int SEED_OFFSET_HALF = 50000;
+  const unsigned int SEED_SHIFT_UPPER = 32U;
+
+  *OffsetX =
+      (float)((int)(SeedVal % (uint64_t)SEED_OFFSET_RANGE) - SEED_OFFSET_HALF);
+  *OffsetZ = (float)((int)((SeedVal >> SEED_SHIFT_UPPER) %
+                           (uint64_t)SEED_OFFSET_RANGE) -
+                     SEED_OFFSET_HALF);
+}
+
+// Hot path: takes the offsets already hoisted out of the caller's loop, so
+// generating a chunk still derives them once rather than once per column.
+static int TerrainHeightFromOffsets(int GlobalX, int GlobalZ, float OffsetX,
+                                    float OffsetZ) {
+  float NoiseVal = stb_perlin_fbm_noise3(
+      ((float)GlobalX + OffsetX) * NOISE_SCALE, 0.0F,
+      ((float)GlobalZ + OffsetZ) * NOISE_SCALE, NOISE_LACUNARITY, NOISE_GAIN,
+      NOISE_OCTAVES);
+  return BASE_HEIGHT + (int)(NoiseVal * HEIGHT_VARIANCE);
+}
+
+int GetTerrainHeightAt(int GlobalX, int GlobalZ, uint64_t SeedVal) {
+  float OffsetX = 0.0F;
+  float OffsetZ = 0.0F;
+  GetTerrainNoiseOffsets(SeedVal, &OffsetX, &OffsetZ);
+  return TerrainHeightFromOffsets(GlobalX, GlobalZ, OffsetX, OffsetZ);
+}
+
 static unsigned char DetermineBlockId(int GlobalY, int TerrainHeight) {
-  const int SEA_LEVEL = 18;
   if (GlobalY > TerrainHeight) {
     return (GlobalY <= SEA_LEVEL) ? BLOCK_WATER : BLOCK_AIR;
   }
@@ -41,13 +75,9 @@ void GenerateChunkTerrain(Chunk *ChunkVal) {
   int SolidCount = 0;
 
   uint64_t SeedVal = GetWorldSeed();
-  const int SEED_OFFSET_RANGE = 100000;
-  const int SEED_OFFSET_HALF = 50000;
-  const unsigned int SEED_SHIFT_UPPER = 32U;
-  float OffsetX = (float)((int)(SeedVal % (uint64_t)SEED_OFFSET_RANGE) - SEED_OFFSET_HALF);
-  float OffsetZ =
-      (float)((int)((SeedVal >> SEED_SHIFT_UPPER) % (uint64_t)SEED_OFFSET_RANGE) -
-              SEED_OFFSET_HALF);
+  float OffsetX = 0.0F;
+  float OffsetZ = 0.0F;
+  GetTerrainNoiseOffsets(SeedVal, &OffsetX, &OffsetZ);
 
   #pragma unroll 4
   for (int IdxX = 0; IdxX < CHUNK_SIZE; IdxX++) {
@@ -67,12 +97,8 @@ void GenerateChunkTerrain(Chunk *ChunkVal) {
       int GlobalX = (ChunkVal->ChunkX * CHUNK_SIZE) + IdxX;
       int GlobalZ = (ChunkVal->ChunkZ * CHUNK_SIZE) + IdxZ;
 
-      float NoiseVal = stb_perlin_fbm_noise3(
-          ((float)GlobalX + OffsetX) * NOISE_SCALE, 0.0F,
-          ((float)GlobalZ + OffsetZ) * NOISE_SCALE, NOISE_LACUNARITY,
-          NOISE_GAIN, NOISE_OCTAVES);
-
-      int TerrainHeight = BASE_HEIGHT + (int)(NoiseVal * HEIGHT_VARIANCE);
+      int TerrainHeight =
+          TerrainHeightFromOffsets(GlobalX, GlobalZ, OffsetX, OffsetZ);
 
       #pragma unroll 4
       for (int IdxY = 0; IdxY < CHUNK_SIZE; IdxY++) {

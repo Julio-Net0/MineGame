@@ -1,5 +1,7 @@
 #include "ui/commands.h"
 #include "world/block_system.h"
+#include "world/biome.h"
+#include "world/chunk.h"
 #include "world/prefab.h"
 #include "world/prefab_capture.h"
 #include "ui/chat.h"
@@ -8,6 +10,7 @@
 #include "core/utils.h"
 #include "world/world.h"
 #include "persistence/world_save.h"
+#include <stdint.h>
 #include <stdio.h>
 
 enum {
@@ -25,6 +28,7 @@ static void CommandDebug(const char *Args, CommandContext *Ctx);
 static void CommandSeed(const char *Args, CommandContext *Ctx);
 static void CommandSave(const char *Args, CommandContext *Ctx);
 static void CommandPrefab(const char *Args, CommandContext *Ctx);
+static void CommandBiome(const char *Args, CommandContext *Ctx);
 
 static const CommandInfo AVAILABLECOMMANDS[] = {
     {"/help", "Use: /help",
@@ -43,6 +47,9 @@ static const CommandInfo AVAILABLECOMMANDS[] = {
      "Use: /prefab <list | stamp <name> | pos1 | pos2 | offset | save <name>>",
      "Lists/stamps prefabs, sets selection corners/offset, or saves a selection",
      CommandPrefab},
+    {"/biome", "Use: /biome",
+     "Returns the biome and its raw climate values at your position",
+     CommandBiome},
 };
 
 static const int AVAILABLECOMMANDSCOUNT =
@@ -206,6 +213,40 @@ static void CommandSeed(const char *Args, CommandContext *Ctx) {
   char Msg[MSG_BUFFER_SIZE];
   snprintf(Msg, sizeof(Msg), "World Seed: %llu",
            (unsigned long long)GetWorldSeed());
+  ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
+}
+
+static void CommandBiome(const char *Args, CommandContext *Ctx) {
+  (void)Args;
+
+  int PosX = (int)__builtin_floorf(Ctx->Player->Position.x);
+  int PosY = (int)__builtin_floorf(Ctx->Player->Position.y);
+  int PosZ = (int)__builtin_floorf(Ctx->Player->Position.z);
+
+  uint64_t SeedVal = GetWorldSeed();
+  // The Depth axis is measured against the terrain surface, so the height must
+  // come from the same field generation used, not from the player's own Y.
+  int TerrainHeight = GetTerrainHeightAt(PosX, PosZ, SeedVal);
+
+  BiomeClimate Climate =
+      SampleBiomeClimate(PosX, PosY, PosZ, TerrainHeight, SeedVal);
+  int BiomeId = ResolveBiome(Climate);
+  const BiomeType *Biome = GetBiomeDef(BiomeId);
+
+  char Msg[MSG_BUFFER_SIZE];
+  if (Biome->Id < 0) {
+    snprintf(Msg, sizeof(Msg),
+             "No biomes loaded | T:%.3f H:%.3f D:%.0f (surface Y:%d)",
+             (double)Climate.Temperature, (double)Climate.Humidity,
+             (double)Climate.Depth, TerrainHeight);
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_WARN, Msg);
+    return;
+  }
+
+  snprintf(Msg, sizeof(Msg),
+           "Biome: %s [%d] | T:%.3f H:%.3f D:%.0f (surface Y:%d)", Biome->Name,
+           BiomeId, (double)Climate.Temperature, (double)Climate.Humidity,
+           (double)Climate.Depth, TerrainHeight);
   ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
 }
 

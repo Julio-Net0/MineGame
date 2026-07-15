@@ -21,6 +21,7 @@ add_executable(${PROJECT_NAME}
   src/world/chunk.c
   src/world/chunk_worker.c
   src/world/block_system.c
+  src/world/biome.c
   src/world/prefab.c
   src/world/prefab_capture.c
   src/persistence/world_save.c
@@ -39,8 +40,8 @@ add_executable(${PROJECT_NAME}
   src/core/utils.c
   src/core/fileio.c
   src/core/log.c
-  src/third_party/cJSON.c
   src/third_party/stb_perlin.c
+  src/third_party/cJSON.c
 )
 
 target_link_libraries(${PROJECT_NAME} raylib)

@@ -1,0 +1,14 @@
+{
+  "id": 0,
+  "name": "Plains",
+  "temperature": [0.0, 1.0],
+  "humidity": [0.0, 0.52],
+  "depth": [-1000.0, 1000000.0],
+  "priority": 0,
+  "surfaceBlock": "Grass",
+  "subsurfaceBlock": "Dirt",
+  "underwaterBlock": "Sand",
+  "subsurfaceDepth": 3,
+  "grassTint": [141, 179, 96],
+  "foliageTint": [119, 171, 47]
+}

@@ -1,0 +1,14 @@
+{
+  "id": 2,
+  "name": "Desert",
+  "temperature": [0.56, 1.0],
+  "humidity": [0.0, 0.44],
+  "depth": [-1000.0, 1000000.0],
+  "priority": 2,
+  "surfaceBlock": "Sand",
+  "subsurfaceBlock": "Sand",
+  "underwaterBlock": "Sand",
+  "subsurfaceDepth": 4,
+  "grassTint": [191, 183, 85],
+  "foliageTint": [174, 164, 42]
+}

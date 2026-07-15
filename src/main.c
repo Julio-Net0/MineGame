@@ -1,4 +1,5 @@
 #include "world/block_system.h"
+#include "world/biome.h"
 #include "world/prefab.h"
 #include "render/camera.h"
 #include "ui/chat.h"
@@ -50,6 +51,13 @@ static void InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
 
   InitPrefabRegistry();
   LoadAllPrefabs("assets/prefabs");
+
+  // After the blocks (biome palettes resolve block names against that registry)
+  // and before InitChunkWorker (the workers sample the registry concurrently and
+  // rely on it never being written again).
+  InitBiomeRegistry();
+  LoadBiomeParams("assets/biome_params.json");
+  LoadAllBiomeDefinitions("assets/biomes");
 
   *WorldVal = (World *)malloc(sizeof(World));
   InitWorldSave();
