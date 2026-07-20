@@ -1,8 +1,10 @@
 #include "render/renderer.h"
 #include "render/backend.h"
+#include "world/biome.h"
 #include "world/block_system.h"
 #include "world/chunk.h"
 #include "ui/debug.h"
+#include "core/tint.h"
 #include "core/vecmath.h"
 #include <stddef.h>
 #include <stdbool.h>
@@ -12,6 +14,13 @@
 #define FLOATS_PER_VERTEX 3
 #define COLOR_CHANNELS 4
 #define OPAQUE_ALPHA_VALUE 255
+#define ROUND_BIAS 0.5F
+
+// Offset from a biome cell's corner to its centre block, resolved here rather
+// than spelled inline so the division stays in integer context at its use sites.
+enum {
+  BIOME_CELL_CENTER = BIOME_CELL_SIZE / 2
+};
 #define CHUNK_CLOSE_DISTANCE_FACTOR 2.0F
 #define INDICES_PER_FACES 6
 #define MAX_FACES (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE * INDICES_PER_FACES)
@@ -49,6 +58,101 @@ static MesherState *GetMesherState(void) {
 void InitRenderer(void) { RenderBackendInit(); }
 
 void CloseRenderer(void) { RenderBackendShutdown(); }
+
+// ---------------------------------------------------------------------------
+// Biome tint
+// ---------------------------------------------------------------------------
+
+static int FloorDivCells(int Value, int Divisor) {
+    int Quotient = Value / Divisor;
+    if ((Value % Divisor != 0) && ((Value < 0) != (Divisor < 0))) {
+        Quotient--;
+    }
+    return Quotient;
+}
+
+static Color8 BilinearTint(Color8 T00, Color8 T10, Color8 T01, Color8 T11,
+                            float Fx, float Fz) {
+    float W00 = (1.0F - Fx) * (1.0F - Fz);
+    float W10 = Fx * (1.0F - Fz);
+    float W01 = (1.0F - Fx) * Fz;
+    float W11 = Fx * Fz;
+
+    Color8 Out;
+    Out.R = (unsigned char)(((float)T00.R * W00) + ((float)T10.R * W10) +
+                            ((float)T01.R * W01) + ((float)T11.R * W11) + ROUND_BIAS);
+    Out.G = (unsigned char)(((float)T00.G * W00) + ((float)T10.G * W10) +
+                            ((float)T01.G * W01) + ((float)T11.G * W11) + ROUND_BIAS);
+    Out.B = (unsigned char)(((float)T00.B * W00) + ((float)T10.B * W10) +
+                            ((float)T01.B * W01) + ((float)T11.B * W11) + ROUND_BIAS);
+    Out.A = OPAQUE_ALPHA_VALUE;
+    return Out;
+}
+
+// Tint for one block, interpolated across the four horizontal biome cells around
+// it. No vertical interpolation: tint does not need it and it would triple the
+// lookups.
+//
+// The interpolation weights need no explicit quantization. Cell centres sit at
+// global block 4c+2, so an integer block position always lands on an exact
+// quarter-step between two centres, and Fx/Fz can only ever be 0, 0.25, 0.5 or
+// 0.75. Tint therefore takes a bounded set of values across a border by
+// construction, which is what keeps greedy merging alive there, while inside a
+// biome every block still resolves to the palette's exact declared colour.
+static Color8 ComputeBlockTint(World *WorldVal, Chunk *ChunkVal, int Wx, int Wy,
+                                int Wz, TintSource Source) {
+    if (Source == TINT_NONE) {
+        return COLOR_WHITE;
+    }
+
+    // The block's own cell, used as the fallback when a neighbouring chunk is
+    // absent, so the edge of the loaded world fades to the local colour instead
+    // of snapping to a default biome.
+    unsigned char LocalBiome = GetChunkBiomeAtLocal(
+        ChunkVal, Wx - (ChunkVal->ChunkX * CHUNK_SIZE),
+        Wy - (ChunkVal->ChunkY * CHUNK_SIZE),
+        Wz - (ChunkVal->ChunkZ * CHUNK_SIZE));
+
+    int CellY = FloorDivCells(Wy, BIOME_CELL_SIZE);
+    int LatX = FloorDivCells(Wx - BIOME_CELL_CENTER, BIOME_CELL_SIZE);
+    int LatZ = FloorDivCells(Wz - BIOME_CELL_CENTER, BIOME_CELL_SIZE);
+
+    unsigned char B00 = GetBiomeCellFromWorld(WorldVal, LatX, CellY, LatZ, LocalBiome);
+    unsigned char B10 = GetBiomeCellFromWorld(WorldVal, LatX + 1, CellY, LatZ, LocalBiome);
+    unsigned char B01 = GetBiomeCellFromWorld(WorldVal, LatX, CellY, LatZ + 1, LocalBiome);
+    unsigned char B11 = GetBiomeCellFromWorld(WorldVal, LatX + 1, CellY, LatZ + 1, LocalBiome);
+
+    // Interior fast path: one biome under all four corners makes the
+    // interpolation an identity, so return the declared colour directly rather
+    // than trusting float arithmetic to reproduce it byte-for-byte.
+    if (B00 == B10 && B00 == B01 && B00 == B11) {
+        return GetBiomeTint(B00, Source);
+    }
+
+    float Fx = (float)(Wx - BIOME_CELL_CENTER - (LatX * BIOME_CELL_SIZE)) /
+               (float)BIOME_CELL_SIZE;
+    float Fz = (float)(Wz - BIOME_CELL_CENTER - (LatZ * BIOME_CELL_SIZE)) /
+               (float)BIOME_CELL_SIZE;
+
+    return BilinearTint(GetBiomeTint(B00, Source), GetBiomeTint(B10, Source),
+                        GetBiomeTint(B01, Source), GetBiomeTint(B11, Source),
+                        Fx, Fz);
+}
+
+// The tint a face carries. What it ends up colouring is the shader's call: on a
+// face naming a side overlay only the overlay's texels take it, otherwise the
+// whole texel does.
+//
+// The bottom face is the exception. It samples the plain dirt tile with no
+// overlay to scope the tint, so the tint would land on the whole face; dirt is
+// not grass, so it gets white instead.
+static Color8 GetFaceTint(World *WorldVal, Chunk *ChunkVal, int Wx, int Wy,
+                           int Wz, const BlockType *Def, BlockFace Face) {
+    if (Def->Tint == TINT_GRASS && Face == FACE_BOTTOM) {
+        return COLOR_WHITE;
+    }
+    return ComputeBlockTint(WorldVal, ChunkVal, Wx, Wy, Wz, Def->Tint);
+}
 
 // ---------------------------------------------------------------------------
 // AO helpers
@@ -192,17 +296,24 @@ static void AddFaceIndices(bool IsTrans, bool FlipQuad) {
     }
 }
 
-static void AddFaceColors(const int Ao[4], bool IsTrans) {
+// Tint and AO travel separately in the vertex colour: RGB carries the face's
+// biome tint, alpha carries per-vertex AO brightness. They are not
+// pre-multiplied here because the tint applies per texel — the shader decides
+// which texels take it — while AO applies to the whole face.
+//
+// The tint is one colour for the face (a merged quad carries a single tint by
+// construction, since MasksCompatible refuses to merge across two) while AO
+// still varies per vertex.
+static void AddFaceColors(const int Ao[4], Color8 Tint, bool IsTrans) {
     MesherState *State = GetMesherState();
     int ColIdx = (IsTrans ? State->TransVCount : State->VCount) * COLOR_CHANNELS;
     unsigned char *ColorsArray = IsTrans ? State->TransColors : State->TempColors;
     #pragma unroll 4
     for (int IdxI = 0; IdxI < 4; IdxI++) {
-        unsigned char B = AO_BRIGHTNESS[Ao[IdxI]];
-        ColorsArray[ColIdx++] = B;
-        ColorsArray[ColIdx++] = B;
-        ColorsArray[ColIdx++] = B;
-        ColorsArray[ColIdx++] = OPAQUE_ALPHA_VALUE;
+        ColorsArray[ColIdx++] = Tint.R;
+        ColorsArray[ColIdx++] = Tint.G;
+        ColorsArray[ColIdx++] = Tint.B;
+        ColorsArray[ColIdx++] = AO_BRIGHTNESS[Ao[IdxI]];
     }
 }
 
@@ -217,14 +328,16 @@ static void AddGreedyFaceTexCoords(float UMax, float VMax, bool IsTrans) {
     UvArray[UvIdx++] = 0.0F; UvArray[UvIdx++] = 0.0F;
 }
 
-static void AddFaceTexLayer(float Layer, bool IsTrans) {
+// texcoords2.x is the base texture array layer; .y is the optional overlay layer
+// composited over it, or NO_TEXTURE_OVERLAY when the face has none.
+static void AddFaceTexLayer(float Layer, float OverlayLayer, bool IsTrans) {
     MesherState *State = GetMesherState();
     int Tc2Idx = (IsTrans ? State->TransVCount : State->VCount) * 2;
     float *Tc2Array = IsTrans ? State->TransTexCoords2 : State->TempTexCoords2;
     #pragma unroll 4
     for (int IdxI = 0; IdxI < 4; IdxI++) {
         Tc2Array[Tc2Idx + (IdxI * 2) + 0] = Layer;
-        Tc2Array[Tc2Idx + (IdxI * 2) + 1] = 0.0F;
+        Tc2Array[Tc2Idx + (IdxI * 2) + 1] = OverlayLayer;
     }
 }
 
@@ -285,13 +398,14 @@ static void AddGreedyFaceVertices(BlockFace Face,
 static void AddGreedyFaceToMeshBuilder(BlockFace Face,
                                         int Wx0, int Wy0, int Wz0,
                                         int W, int H,
-                                        int TexIndex, const int Ao[4],
+                                        int TexIndex, int OverlayIndex,
+                                        const int Ao[4], Color8 Tint,
                                         bool FlipQuad, bool IsTrans) {
     MesherState *State = GetMesherState();
     AddFaceIndices(IsTrans, FlipQuad);
     AddGreedyFaceTexCoords((float)W, (float)H, IsTrans);
-    AddFaceColors(Ao, IsTrans);
-    AddFaceTexLayer((float)TexIndex, IsTrans);
+    AddFaceColors(Ao, Tint, IsTrans);
+    AddFaceTexLayer((float)TexIndex, (float)OverlayIndex, IsTrans);
     AddGreedyFaceVertices(Face, Wx0, Wy0, Wz0, W, H, IsTrans);
 
     if (IsTrans) { State->TransVCount += VERTICES_PER_FACE; }
@@ -305,6 +419,7 @@ static void AddGreedyFaceToMeshBuilder(BlockFace Face,
 typedef struct {
     unsigned char BlockId;
     unsigned char TexIndex;
+    Color8 Tint;
     int Ao[4];
     bool FlipQuad;
     bool Used;
@@ -333,12 +448,26 @@ static int GetFaceTex(BlockType *Def, BlockFace Face) {
     return Def->TexSide;
 }
 
+// The side overlay wraps only the side faces: it is authored as the grass fringe
+// that runs around a block, while the top and bottom sample their own tiles.
+static int GetFaceOverlay(const BlockType *Def, BlockFace Face) {
+    if (Face == FACE_TOP || Face == FACE_BOTTOM) {
+        return NO_TEXTURE_OVERLAY;
+    }
+    return Def->TexSideOverlay;
+}
+
 static bool MasksCompatible(const FaceMaskData *A, const FaceMaskData *B) {
     if (A->BlockId == 0 || B->BlockId == 0) { return false; }
     if (A->Used || B->Used) { return false; }
     if (A->BlockId != B->BlockId) { return false; }
     if (A->TexIndex != B->TexIndex) { return false; }
     if (A->FlipQuad != B->FlipQuad) { return false; }
+    // A merged quad carries one tint, so two faces may only merge when they
+    // already agree on it — otherwise the rectangle would take one block's
+    // colour and paint it across the whole span.
+    if (A->Tint.R != B->Tint.R || A->Tint.G != B->Tint.G ||
+        A->Tint.B != B->Tint.B) { return false; }
     #pragma unroll 4
     for (int IdxI = 0; IdxI < VERTICES_PER_FACE; IdxI++) { if (A->Ao[IdxI] != B->Ao[IdxI]) { return false; } }
     return true;
@@ -379,6 +508,10 @@ static void BuildGreedyFacePass(World *WorldVal, Chunk *ChunkVal, const FaceDir 
                 Mask[U][V].TexIndex  = (unsigned char)GetFaceTex(Def, Fd->Face);
                 Mask[U][V].FlipQuad  = ComputeFaceAO(WorldVal, ChunkVal, Lx, Ly, Lz,
                                                      Fd->Face, Mask[U][V].Ao);
+                Mask[U][V].Tint = GetFaceTint(
+                    WorldVal, ChunkVal, (ChunkVal->ChunkX * CHUNK_SIZE) + Lx,
+                    (ChunkVal->ChunkY * CHUNK_SIZE) + Ly,
+                    (ChunkVal->ChunkZ * CHUNK_SIZE) + Lz, Def, Fd->Face);
             }
         }
 
@@ -419,8 +552,15 @@ static void BuildGreedyFacePass(World *WorldVal, Chunk *ChunkVal, const FaceDir 
                 int Wy0 = (ChunkVal->ChunkY * CHUNK_SIZE) + FirstLpos[1];
                 int Wz0 = (ChunkVal->ChunkZ * CHUNK_SIZE) + FirstLpos[2];
 
+                // Every face in a merged rectangle shares a block id and a face
+                // direction, so its overlay layer is the same throughout and
+                // needs no place in the mask.
+                int OverlayIndex =
+                    GetFaceOverlay(GetBlockDef(Origin->BlockId), Fd->Face);
+
                 AddGreedyFaceToMeshBuilder(Fd->Face, Wx0, Wy0, Wz0, W, H,
-                                           Origin->TexIndex, Origin->Ao,
+                                           Origin->TexIndex, OverlayIndex,
+                                           Origin->Ao, Origin->Tint,
                                            Origin->FlipQuad, false);
 
                 // Mark used
@@ -457,35 +597,53 @@ static void BuildTransparentFacePass(World *WorldVal, Chunk *ChunkVal) {
                 int Wy = (ChunkVal->ChunkY * CHUNK_SIZE) + Y;
                 int Wz = (ChunkVal->ChunkZ * CHUNK_SIZE) + Z;
 
+                // This pass merges nothing, so tint applies straight to each
+                // face with no mask compatibility involved. Computed once per
+                // block: it does not vary by face for a foliage-tinted block.
+                Color8 Tint = ComputeBlockTint(WorldVal, ChunkVal, Wx, Wy, Wz,
+                                               Def->Tint);
+
                 if (IsNeighbourTransparent(WorldVal, ChunkVal, X, Y+1, Z, Id)) {
                     Flip = ComputeFaceAO(WorldVal, ChunkVal, X, Y, Z, FACE_TOP, Ao);
                     AddGreedyFaceToMeshBuilder(FACE_TOP, Wx, Wy, Wz, 1, 1,
-                                               Def->TexTop, Ao, Flip, true);
+                                               Def->TexTop,
+                                               GetFaceOverlay(Def, FACE_TOP),
+                                               Ao, Tint, Flip, true);
                 }
                 if (IsNeighbourTransparent(WorldVal, ChunkVal, X, Y-1, Z, Id)) {
                     Flip = ComputeFaceAO(WorldVal, ChunkVal, X, Y, Z, FACE_BOTTOM, Ao);
                     AddGreedyFaceToMeshBuilder(FACE_BOTTOM, Wx, Wy, Wz, 1, 1,
-                                               Def->TexBottom, Ao, Flip, true);
+                                               Def->TexBottom,
+                                               GetFaceOverlay(Def, FACE_BOTTOM),
+                                               Ao, Tint, Flip, true);
                 }
                 if (IsNeighbourTransparent(WorldVal, ChunkVal, X+1, Y, Z, Id)) {
                     Flip = ComputeFaceAO(WorldVal, ChunkVal, X, Y, Z, FACE_RIGHT, Ao);
                     AddGreedyFaceToMeshBuilder(FACE_RIGHT, Wx, Wy, Wz, 1, 1,
-                                               Def->TexSide, Ao, Flip, true);
+                                               Def->TexSide,
+                                               GetFaceOverlay(Def, FACE_RIGHT),
+                                               Ao, Tint, Flip, true);
                 }
                 if (IsNeighbourTransparent(WorldVal, ChunkVal, X-1, Y, Z, Id)) {
                     Flip = ComputeFaceAO(WorldVal, ChunkVal, X, Y, Z, FACE_LEFT, Ao);
                     AddGreedyFaceToMeshBuilder(FACE_LEFT, Wx, Wy, Wz, 1, 1,
-                                               Def->TexSide, Ao, Flip, true);
+                                               Def->TexSide,
+                                               GetFaceOverlay(Def, FACE_LEFT),
+                                               Ao, Tint, Flip, true);
                 }
                 if (IsNeighbourTransparent(WorldVal, ChunkVal, X, Y, Z+1, Id)) {
                     Flip = ComputeFaceAO(WorldVal, ChunkVal, X, Y, Z, FACE_FRONT, Ao);
                     AddGreedyFaceToMeshBuilder(FACE_FRONT, Wx, Wy, Wz, 1, 1,
-                                               Def->TexSide, Ao, Flip, true);
+                                               Def->TexSide,
+                                               GetFaceOverlay(Def, FACE_FRONT),
+                                               Ao, Tint, Flip, true);
                 }
                 if (IsNeighbourTransparent(WorldVal, ChunkVal, X, Y, Z-1, Id)) {
                     Flip = ComputeFaceAO(WorldVal, ChunkVal, X, Y, Z, FACE_BACK, Ao);
                     AddGreedyFaceToMeshBuilder(FACE_BACK, Wx, Wy, Wz, 1, 1,
-                                               Def->TexSide, Ao, Flip, true);
+                                               Def->TexSide,
+                                               GetFaceOverlay(Def, FACE_BACK),
+                                               Ao, Tint, Flip, true);
                 }
             }
         }

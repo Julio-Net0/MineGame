@@ -4,5 +4,6 @@
   "texTop": 52,
   "texBottom": 52,
   "texSide": 52,
+  "tint": "foliage",
   "isTransparent": true
 }

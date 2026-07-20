@@ -29,9 +29,28 @@ void InitBlockRegistry(void) {
     BlockRegistry[Idx].TexTop = 0;
     BlockRegistry[Idx].TexSide = 0;
     BlockRegistry[Idx].TexBottom = 0;
+    BlockRegistry[Idx].TexSideOverlay = NO_TEXTURE_OVERLAY;
+    BlockRegistry[Idx].Tint = TINT_NONE;
     BlockRegistry[Idx].IsTransparent = true;
     BlockRegistry[Idx].IsSolid = true;
   }
+}
+
+// Optional "tint" property. An absent, non-string, or unrecognized value takes
+// TINT_NONE rather than failing the block: an untinted block is a meaningful
+// default, and the rest of the definition is still worth loading.
+static TintSource ParseTintSource(const cJSON *Json) {
+  cJSON *TintItem = cJSON_GetObjectItemCaseSensitive(Json, "tint");
+  if (cJSON_IsString(TintItem) == 0) {
+    return TINT_NONE;
+  }
+  if (CompareString(TintItem->valuestring, "grass") == 0) {
+    return TINT_GRASS;
+  }
+  if (CompareString(TintItem->valuestring, "foliage") == 0) {
+    return TINT_FOLIAGE;
+  }
+  return TINT_NONE;
 }
 
 BlockType *GetBlockDef(int BlockId) {
@@ -129,6 +148,16 @@ void ParseBlockFile(const char *FilePath) {
   } else {
     Block->TexSide = 0;
   }
+
+  cJSON *TexSideOverlayItem =
+      cJSON_GetObjectItemCaseSensitive(Json, "texSideOverlay");
+  if (cJSON_IsNumber(TexSideOverlayItem) != 0) {
+    Block->TexSideOverlay = TexSideOverlayItem->valueint;
+  } else {
+    Block->TexSideOverlay = NO_TEXTURE_OVERLAY;
+  }
+
+  Block->Tint = ParseTintSource(Json);
 
   cJSON *IsBlockTransparent =
       cJSON_GetObjectItemCaseSensitive(Json, "isTransparent");

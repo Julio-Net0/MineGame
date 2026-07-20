@@ -4,5 +4,7 @@
   "texTop": 0,
   "texBottom": 2,
   "texSide": 3,
+  "texSideOverlay": 180,
+  "tint": "grass",
   "isTransparent": false
 }

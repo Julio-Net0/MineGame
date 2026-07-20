@@ -301,6 +301,34 @@ int GetBlockIDFromWorld(World *WorldVal, Vec3 GlobalPos){
   return 0;
 }
 
+// Floor division, so a negative cell index maps to the chunk below rather than
+// truncating toward zero and landing in the wrong one.
+static int FloorDivCells(int Value, int Divisor) {
+  int Quotient = Value / Divisor;
+  if ((Value % Divisor != 0) && ((Value < 0) != (Divisor < 0))) {
+    Quotient--;
+  }
+  return Quotient;
+}
+
+unsigned char GetBiomeCellFromWorld(World *WorldVal, int CellX, int CellY,
+                                    int CellZ, unsigned char Fallback) {
+  int ChunkX = FloorDivCells(CellX, BIOME_CELLS_PER_CHUNK);
+  int ChunkY = FloorDivCells(CellY, BIOME_CELLS_PER_CHUNK);
+  int ChunkZ = FloorDivCells(CellZ, BIOME_CELLS_PER_CHUNK);
+
+  Chunk *ChunkVal = GetChunkFromWorld(WorldVal, ChunkX, ChunkY, ChunkZ);
+  if (ChunkVal == (Chunk *)0) {
+    return Fallback;
+  }
+
+  int LocalX = CellX - (ChunkX * BIOME_CELLS_PER_CHUNK);
+  int LocalY = CellY - (ChunkY * BIOME_CELLS_PER_CHUNK);
+  int LocalZ = CellZ - (ChunkZ * BIOME_CELLS_PER_CHUNK);
+
+  return ChunkVal->BiomeMap[LocalX][LocalY][LocalZ];
+}
+
 static DdaState InitDDAState(Vec3 RayOrigin, Vec3 RayDir){
   DdaState State = {0};
 
