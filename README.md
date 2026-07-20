@@ -13,7 +13,8 @@ Goal: Evolve the engine into a portable, backend-agnostic platform and bring the
 - [ ] **Prefab Rotation & Variety:** Support rotation and mirroring when stamping prefabs, multiplying visual variety from a small set of source models.
 - [ ] **Flora Decoration Pass:** Scatter single-block features (tall grass, flowers, mushrooms) through the feature-placement pipeline as a lightweight precursor to multi-block structures.
 - [X] **Fixed-Tick Simulation Loop:** Run world logic at a fixed tick rate (e.g. 20 TPS) decoupled from render framerate with interpolation, forming the backbone for growth, fluids, and multiplayer.
-- [ ] **Biomes:** Use noise to select block and prefab palettes per region, driving forests, plains, and terrain-appropriate structure sets.
+- [X] **Biomes (Palettes & Tinting):** Select block palettes per region from a multi-noise climate space — temperature and humidity, plus a `depth` axis derived from the surface so biomes are addressable in X, Y and Z and cave biomes become a data change rather than a rewrite. Biomes are defined in JSON, stored one id per 4×4×4 cell, and tint grass and foliage to their own colours; a per-texel side overlay lets the grass fringe take the biome colour while the dirt behind it keeps its own. See [Asset Formats](docs/asset-formats.md).
+- [ ] **Biome Structure Sets:** Drive terrain-appropriate prefab placement from each biome's palette. Blocked on **Procedural Tree Generation** — it lands the deferred cross-chunk edit queue that feature placement needs.
 
 
 
@@ -24,6 +25,10 @@ Goal: Evolve the engine into a portable, backend-agnostic platform and bring the
 * **cJSON:** [cJSON 1.7.19](https://github.com/DaveGamble/cJSON)
 * **Build System:** CMake (with FetchContent for zero-install dependency management).
 * **Static Analysis:** Clang-Tidy.
+
+## 📚 Documentation
+
+* **[Asset Formats](docs/asset-formats.md)** — the JSON the engine loads at startup: biome definitions, climate tuning, and the block tint property.
 
 ## 🔧 Getting Started
 
