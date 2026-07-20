@@ -59,6 +59,8 @@ static void InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
   LoadBiomeParams("assets/biome_params.json");
   LoadAllBiomeDefinitions("assets/biomes");
 
+  InitTerrainGeneration();
+
   *WorldVal = (World *)malloc(sizeof(World));
   InitWorldSave();
   InitWorld(*WorldVal);

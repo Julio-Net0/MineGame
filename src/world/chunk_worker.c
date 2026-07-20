@@ -50,6 +50,11 @@ static void *WorkerLoop(void *Arg) {
 
     pthread_mutex_unlock(&State->QueueMutex);
 
+    // Before the branch, not after it: generation reads the biome map to choose
+    // its blocks, and a chunk read back from disk needs one just the same. A
+    // single call ahead of both paths is what stops them from drifting apart.
+    FillChunkBiomeMap(Target);
+
     if (!LoadChunkFromDisk(Target)) {
       GenerateChunkTerrain(Target);
     }
