@@ -1,0 +1,9 @@
+{
+  "id": 11,
+  "name": "TallGrass",
+  "texTop": 95,
+  "texBottom": 95,
+  "texSide": 95,
+  "isTransparent": true,
+  "render": "cross"
+}

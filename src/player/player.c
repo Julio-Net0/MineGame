@@ -1,8 +1,8 @@
 #include "player/player.h"
-#include "world/block_system.h"
-#include "ui/debug.h"
-#include "world/world.h"
 #include "core/vecmath.h"
+#include "ui/debug.h"
+#include "world/block_system.h"
+#include "world/world.h"
 
 #define INIT_SLOT_0 0
 #define INIT_SLOT_1 1
@@ -11,6 +11,8 @@
 #define INIT_SLOT_4 4
 #define INIT_SLOT_5 5
 #define INIT_SLOT_6 6
+#define INIT_SLOT_7 7
+#define INIT_SLOT_8 8
 
 #define INIT_BLOCK_1 1
 #define INIT_BLOCK_2 2
@@ -19,6 +21,8 @@
 #define INIT_BLOCK_5 5
 #define INIT_BLOCK_6 6
 #define INIT_BLOCK_7 7
+#define INIT_BLOCK_8 8
+#define INIT_BLOCK_9 9
 
 Player InitPlayer(Vec3 SpawnPos) {
   Player PlayerObj = {0};
@@ -46,6 +50,8 @@ Player InitPlayer(Vec3 SpawnPos) {
   SetHotbarSlot(&PlayerObj, INIT_SLOT_4, INIT_BLOCK_5);
   SetHotbarSlot(&PlayerObj, INIT_SLOT_5, INIT_BLOCK_6);
   SetHotbarSlot(&PlayerObj, INIT_SLOT_6, INIT_BLOCK_7);
+  SetHotbarSlot(&PlayerObj, INIT_SLOT_7, INIT_BLOCK_8);
+  SetHotbarSlot(&PlayerObj, INIT_SLOT_8, INIT_BLOCK_9);
 
   return PlayerObj;
 }
@@ -65,8 +71,8 @@ void SetPlayerPosition(Player *PlayerVal, Vec3 Pos) {
 
 bool IsPointSolid(World *WorldVal, Vec3 Pos) {
   Vec3 BlockPos = {__builtin_floorf(Pos.x + BLOCK_HALF_SIZE),
-                      __builtin_floorf(Pos.y + BLOCK_HALF_SIZE),
-                      __builtin_floorf(Pos.z + BLOCK_HALF_SIZE)};
+                   __builtin_floorf(Pos.y + BLOCK_HALF_SIZE),
+                   __builtin_floorf(Pos.z + BLOCK_HALF_SIZE)};
 
   int BlockId = GetBlockIDFromWorld(WorldVal, BlockPos);
 
@@ -79,17 +85,17 @@ void GetPlayerPoints(Player *PlayerVal, PointConfig Config,
 
   OutPoints[0] = (Vec3){PlayerVal->Position.x, CheckY, PlayerVal->Position.z};
   OutPoints[1] = (Vec3){PlayerVal->Position.x - Config.Radius, CheckY,
-                           PlayerVal->Position.z - Config.Radius};
+                        PlayerVal->Position.z - Config.Radius};
   OutPoints[2] = (Vec3){PlayerVal->Position.x + Config.Radius, CheckY,
-                           PlayerVal->Position.z - Config.Radius};
+                        PlayerVal->Position.z - Config.Radius};
   OutPoints[3] = (Vec3){PlayerVal->Position.x - Config.Radius, CheckY,
-                           PlayerVal->Position.z + Config.Radius};
+                        PlayerVal->Position.z + Config.Radius};
   OutPoints[4] = (Vec3){PlayerVal->Position.x + Config.Radius, CheckY,
-                           PlayerVal->Position.z + Config.Radius};
+                        PlayerVal->Position.z + Config.Radius};
 }
 
 static bool IsAnyPointSolid(World *WorldVal, Vec3 Points[], int PointsLen) {
-  #pragma unroll 4
+#pragma unroll 4
   for (int IdxI = 0; IdxI < PointsLen; IdxI++) {
     if (IsPointSolid(WorldVal, Points[IdxI])) {
       return true;
@@ -110,7 +116,8 @@ static bool IsPlayerOnGround(World *WorldVal, Player *PlayerVal) {
   return IsAnyPointSolid(WorldVal, BottomPoints, COLLISION_POINTS);
 }
 
-static bool VerifyBottomCollision(Player *PlayerVal, World *WorldVal, float NextY) {
+static bool VerifyBottomCollision(Player *PlayerVal, World *WorldVal,
+                                  float NextY) {
   float CurrentY = PlayerVal->Position.y;
   PlayerVal->Position.y = NextY;
   bool HitsGround = IsPlayerOnGround(WorldVal, PlayerVal);
@@ -149,15 +156,18 @@ static bool IsPlayerOnTop(World *WorldVal, Player *PlayerVal, float NextY) {
   return IsAnyPointSolid(WorldVal, TopPoints, COLLISION_POINTS);
 }
 
-static bool VerifyTopCollision(Player *PlayerVal, World *WorldVal, float NextY) {
-  if (PlayerVal->Velocity.y > 0.0F && IsPlayerOnTop(WorldVal, PlayerVal, NextY)) {
+static bool VerifyTopCollision(Player *PlayerVal, World *WorldVal,
+                               float NextY) {
+  if (PlayerVal->Velocity.y > 0.0F &&
+      IsPlayerOnTop(WorldVal, PlayerVal, NextY)) {
     PlayerVal->Velocity.y = 0.0F;
 
     float CheckY = NextY + PlayerVal->Size.y + COLLISION_EPSILON;
     float BlockCenterY = __builtin_floorf(CheckY + BLOCK_HALF_SIZE);
     float CeilingBottom = BlockCenterY - BLOCK_HALF_SIZE;
 
-    PlayerVal->Position.y = CeilingBottom - PlayerVal->Size.y - AABB_OFFSET_MARGIN;
+    PlayerVal->Position.y =
+        CeilingBottom - PlayerVal->Size.y - AABB_OFFSET_MARGIN;
     return true;
   }
   return false;
@@ -206,11 +216,11 @@ static bool VerifyXCollision(Player *PlayerVal, World *WorldVal, float NextX) {
     float BlockCenterX = __builtin_floorf(HitPointX + BLOCK_HALF_SIZE);
 
     if (PlayerVal->Velocity.x > 0.0F) {
-      PlayerVal->Position.x = (BlockCenterX - BLOCK_HALF_SIZE) - PlayerVal->Radius -
-                           AABB_OFFSET_MARGIN;
+      PlayerVal->Position.x = (BlockCenterX - BLOCK_HALF_SIZE) -
+                              PlayerVal->Radius - AABB_OFFSET_MARGIN;
     } else {
-      PlayerVal->Position.x = (BlockCenterX + BLOCK_HALF_SIZE) + PlayerVal->Radius +
-                           AABB_OFFSET_MARGIN;
+      PlayerVal->Position.x = (BlockCenterX + BLOCK_HALF_SIZE) +
+                              PlayerVal->Radius + AABB_OFFSET_MARGIN;
     }
 
     PlayerVal->Velocity.x = 0.0F;
@@ -237,11 +247,11 @@ static bool VerifyZCollision(Player *PlayerVal, World *WorldVal, float NextZ) {
     float BlockCenterZ = __builtin_floorf(HitPointZ + BLOCK_HALF_SIZE);
 
     if (PlayerVal->Velocity.z > 0.0F) {
-      PlayerVal->Position.z = (BlockCenterZ - BLOCK_HALF_SIZE) - PlayerVal->Radius -
-                           AABB_OFFSET_MARGIN;
+      PlayerVal->Position.z = (BlockCenterZ - BLOCK_HALF_SIZE) -
+                              PlayerVal->Radius - AABB_OFFSET_MARGIN;
     } else {
-      PlayerVal->Position.z = (BlockCenterZ + BLOCK_HALF_SIZE) + PlayerVal->Radius +
-                           AABB_OFFSET_MARGIN;
+      PlayerVal->Position.z = (BlockCenterZ + BLOCK_HALF_SIZE) +
+                              PlayerVal->Radius + AABB_OFFSET_MARGIN;
     }
 
     PlayerVal->Velocity.z = 0.0F;
@@ -283,7 +293,8 @@ static void PhysicalMov(Player *PlayerVal, World *WorldVal, float Dt,
   }
 }
 
-static void NoClipMov(Player *PlayerVal, float Dt, bool AscendHeld, bool DescendHeld) {
+static void NoClipMov(Player *PlayerVal, float Dt, bool AscendHeld,
+                      bool DescendHeld) {
   PlayerVal->Velocity.y = 0.0F;
   if (AscendHeld) {
     PlayerVal->Position.y += PlayerVal->Speed * Dt;
@@ -299,8 +310,7 @@ static void NoClipMov(Player *PlayerVal, float Dt, bool AscendHeld, bool Descend
 // Movement basis from the view forward (flattened to the horizontal plane).
 static Vec3 CalculateMoveDir(Vec3 ViewForward, float MoveX, float MoveForward) {
   Vec3 Forward = Vec3Normalize((Vec3){ViewForward.x, 0.0F, ViewForward.z});
-  Vec3 Right =
-      Vec3Normalize(Vec3Cross(Forward, (Vec3){0.0F, 1.0F, 0.0F}));
+  Vec3 Right = Vec3Normalize(Vec3Cross(Forward, (Vec3){0.0F, 1.0F, 0.0F}));
 
   Vec3 MoveDir = {0.0F, 0.0F, 0.0F};
 
@@ -341,11 +351,11 @@ static void RequestBlockPlace(World *WorldVal, Vec3 Pos,
   SetBlockInWorld(WorldVal, Pos, BlockId);
 }
 
-void HandlePlayerInteraction(Player *PlayerVal, World *WorldVal, PlayerView View,
-                             PlayerInput Input) {
+void HandlePlayerInteraction(Player *PlayerVal, World *WorldVal,
+                             PlayerView View, PlayerInput Input) {
   Vec3 RayDir = Vec3Normalize(View.Forward);
-  PlayerVal->TargetBlock =
-      RayCastToWorld(WorldVal, View.EyePosition, RayDir, PlayerVal->ReachDistance);
+  PlayerVal->TargetBlock = RayCastToWorld(WorldVal, View.EyePosition, RayDir,
+                                          PlayerVal->ReachDistance);
 
   if (Input.HotbarSelect >= 0) {
     PlayerVal->SelectedHotbarSlot = Input.HotbarSelect;
@@ -367,10 +377,11 @@ void HandlePlayerInteraction(Player *PlayerVal, World *WorldVal, PlayerView View
     }
 
     if (Input.Place) {
-      unsigned char BlockInHandId = PlayerVal->Hotbar[PlayerVal->SelectedHotbarSlot];
+      unsigned char BlockInHandId =
+          PlayerVal->Hotbar[PlayerVal->SelectedHotbarSlot];
 
-      Vec3 PlacePos =
-          Vec3Add(PlayerVal->TargetBlock.BlockPos, PlayerVal->TargetBlock.Normal);
+      Vec3 PlacePos = Vec3Add(PlayerVal->TargetBlock.BlockPos,
+                              PlayerVal->TargetBlock.Normal);
       RequestBlockPlace(WorldVal, PlacePos, BlockInHandId);
     }
   }

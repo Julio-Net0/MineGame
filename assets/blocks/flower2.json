@@ -1,0 +1,9 @@
+{
+  "id": 10,
+  "name": "Flower2",
+  "texTop": 12,
+  "texBottom": 12,
+  "texSide": 12,
+  "isTransparent": true,
+  "render": "cross"
+}

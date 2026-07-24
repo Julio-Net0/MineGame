@@ -589,6 +589,9 @@ static void BuildTransparentFacePass(World *WorldVal, Chunk *ChunkVal) {
 
                 BlockType *Def = GetBlockDef(Id);
                 if (!Def->IsTransparent) { continue; }
+                // Cross blocks are billboards, not cubes: the dedicated cross
+                // pass emits their geometry, so skip them here.
+                if (Def->RenderType == BLOCK_RENDER_CROSS) { continue; }
 
                 int Ao[4];
                 bool Flip;
@@ -650,6 +653,84 @@ static void BuildTransparentFacePass(World *WorldVal, Chunk *ChunkVal) {
     }
 }
 
+// One flat quad of a cross billboard: four corner positions, full-tile UVs, the
+// block's tint in RGB and full brightness in alpha (cross blocks carry no AO).
+// Emitted into the OPAQUE builder, not the translucent one: flora is an
+// alpha-cutout (the shader discards the transparent texels), so it wants depth
+// writes and depth testing on. Routing it through the blended, depth-write-off
+// translucent pass is what made distant flora draw over near geometry.
+static void AddCrossQuad(const float Verts[4][3], int TexLayer, Color8 Tint) {
+    int AoFull[4] = {0, 0, 0, 0};
+    MesherState *State = GetMesherState();
+
+    AddFaceIndices(false, false);
+    AddGreedyFaceTexCoords(1.0F, 1.0F, false);
+    AddFaceColors(AoFull, Tint, false);
+    AddFaceTexLayer((float)TexLayer, (float)NO_TEXTURE_OVERLAY, false);
+
+    int VIdx = State->VCount * FLOATS_PER_VERTEX;
+    #pragma unroll 4
+    for (int IdxI = 0; IdxI < VERTICES_PER_FACE; IdxI++) {
+        State->TempVertices[VIdx++] = Verts[IdxI][0];
+        State->TempVertices[VIdx++] = Verts[IdxI][1];
+        State->TempVertices[VIdx++] = Verts[IdxI][2];
+    }
+    State->VCount += VERTICES_PER_FACE;
+}
+
+// Per-block pass for cross billboards: two diagonals across the voxel, each
+// emitted front and back so the quads are visible from either side regardless
+// of face-culling state.
+static void BuildCrossPass(World *WorldVal, Chunk *ChunkVal) {
+    #pragma unroll 4
+    for (int X = 0; X < CHUNK_SIZE; X++) {
+        #pragma unroll 4
+        for (int Y = 0; Y < CHUNK_SIZE; Y++) {
+            #pragma unroll 4
+            for (int Z = 0; Z < CHUNK_SIZE; Z++) {
+                unsigned char Id = ChunkVal->Data[X][Y][Z];
+                if (Id == 0) { continue; }
+
+                BlockType *Def = GetBlockDef(Id);
+                if (Def->RenderType != BLOCK_RENDER_CROSS) { continue; }
+
+                int Wx = (ChunkVal->ChunkX * CHUNK_SIZE) + X;
+                int Wy = (ChunkVal->ChunkY * CHUNK_SIZE) + Y;
+                int Wz = (ChunkVal->ChunkZ * CHUNK_SIZE) + Z;
+                Color8 Tint = ComputeBlockTint(WorldVal, ChunkVal, Wx, Wy, Wz,
+                                               Def->Tint);
+                int Layer = Def->TexTop;
+
+                float X0 = (float)Wx - BLOCK_HALF_SIZE;
+                float Y0 = (float)Wy - BLOCK_HALF_SIZE;
+                float Z0 = (float)Wz - BLOCK_HALF_SIZE;
+                float X1 = X0 + 1.0F;
+                float Y1 = Y0 + 1.0F;
+                float Z1 = Z0 + 1.0F;
+
+                // Diagonal A: (X0,Z0) -> (X1,Z1). Diagonal B: (X0,Z1) -> (X1,Z0).
+                float DiagA[4][3] = {
+                    {X0, Y0, Z0}, {X1, Y0, Z1}, {X1, Y1, Z1}, {X0, Y1, Z0}
+                };
+                float DiagArev[4][3] = {
+                    {X1, Y0, Z1}, {X0, Y0, Z0}, {X0, Y1, Z0}, {X1, Y1, Z1}
+                };
+                float DiagB[4][3] = {
+                    {X0, Y0, Z1}, {X1, Y0, Z0}, {X1, Y1, Z0}, {X0, Y1, Z1}
+                };
+                float DiagBrev[4][3] = {
+                    {X1, Y0, Z0}, {X0, Y0, Z1}, {X0, Y1, Z1}, {X1, Y1, Z0}
+                };
+
+                AddCrossQuad(DiagA, Layer, Tint);
+                AddCrossQuad(DiagArev, Layer, Tint);
+                AddCrossQuad(DiagB, Layer, Tint);
+                AddCrossQuad(DiagBrev, Layer, Tint);
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // BuildChunkMesh
 // ---------------------------------------------------------------------------
@@ -685,6 +766,9 @@ void BuildChunkMesh(World *WorldVal, Chunk *ChunkVal) {
 
     // Transparent per-face pass
     BuildTransparentFacePass(WorldVal, ChunkVal);
+
+    // Cross-billboard pass (flora and other non-cube blocks)
+    BuildCrossPass(WorldVal, ChunkVal);
 
     UnloadChunkMesh(ChunkVal);
     ChunkVal->IsDirty = false;

@@ -1,5 +1,6 @@
 #include "world/feature.h"
 #include "world/chunk.h"
+#include "world/biome.h"
 #include "world/prefab.h"
 #include "persistence/world_save.h"
 #include <stdbool.h>
@@ -116,6 +117,85 @@ void PlaceChunkFeatures(Chunk *ChunkVal) {
       }
 
       StampPrefabIntoChunk(ChunkVal, Tree, WorldX, Surface + 1, WorldZ);
+    }
+  }
+}
+
+// Salts keep the flora draws independent of the tree grid and of each other, so
+// a column's existence roll and its kind roll do not correlate.
+#define FLORA_EXIST_SALT 0xF10A0DEC0DE00001ULL
+#define FLORA_KIND_SALT 0xF10A0DEC0DE00002ULL
+
+// Pick a flora block from the biome's weighted set using a hash draw. Assumes
+// FloraCount > 0 and FloraTotalWeight > 0.
+static int PickFloraBlock(const BiomeType *Biome, uint64_t Hash) {
+  int Count = Biome->FloraCount;
+  if (Count > MAX_BIOME_FLORA) {
+    Count = MAX_BIOME_FLORA;
+  }
+  int Roll = (int)(Hash % (uint64_t)Biome->FloraTotalWeight);
+  for (int Idx = 0; Idx < Count; Idx++) {
+    Roll -= Biome->Flora[Idx].Weight;
+    if (Roll < 0) {
+      return Biome->Flora[Idx].BlockId;
+    }
+  }
+  return Biome->Flora[0].BlockId;
+}
+
+void PlaceChunkFlora(Chunk *ChunkVal) {
+  uint64_t Seed = GetWorldSeed();
+  const uint64_t MASK16 = 0xFFFFULL;
+  const float DENSITY_SCALE = 65536.0F;
+
+  for (int Lx = 0; Lx < CHUNK_SIZE; Lx++) {
+    for (int Lz = 0; Lz < CHUNK_SIZE; Lz++) {
+      int WorldX = (ChunkVal->ChunkX * CHUNK_SIZE) + Lx;
+      int WorldZ = (ChunkVal->ChunkZ * CHUNK_SIZE) + Lz;
+
+      int Surface = GetTerrainHeightAt(WorldX, WorldZ, Seed);
+      if (Surface <= SEA_LEVEL) {
+        continue;
+      }
+
+      // Both the surface block and the flora voxel above it must live in this
+      // chunk: the pass writes only this chunk's data and reads the surface
+      // block to check biome support. A column whose surface sits at the very
+      // top of the chunk is left to no one, which is a negligible border gap.
+      int SurfaceLocalY = Surface - (ChunkVal->ChunkY * CHUNK_SIZE);
+      int FloraLocalY = SurfaceLocalY + 1;
+      if (SurfaceLocalY < 0 || FloraLocalY >= CHUNK_SIZE) {
+        continue;
+      }
+
+      unsigned char BiomeId =
+          GetChunkBiomeAtLocal(ChunkVal, Lx, SurfaceLocalY, Lz);
+      const BiomeType *Biome = GetBiomeDef(BiomeId);
+      if (Biome->FloraCount == 0 || Biome->FloraTotalWeight <= 0) {
+        continue;
+      }
+
+      // Flora grows only on the biome's own surface block (grass), never on
+      // exposed stone, sand margins, or an already-occupied voxel.
+      if (ChunkVal->Data[Lx][SurfaceLocalY][Lz] !=
+          (unsigned char)Biome->SurfaceBlockId) {
+        continue;
+      }
+      if (ChunkVal->Data[Lx][FloraLocalY][Lz] != 0) {
+        continue;
+      }
+
+      uint64_t ExistHash = HashCell(WorldX, WorldZ, Seed ^ FLORA_EXIST_SALT);
+      float Roll = (float)(ExistHash & MASK16) / DENSITY_SCALE;
+      if (Roll >= Biome->FloraDensity) {
+        continue;
+      }
+
+      uint64_t KindHash = HashCell(WorldX, WorldZ, Seed ^ FLORA_KIND_SALT);
+      int BlockId = PickFloraBlock(Biome, KindHash);
+
+      ChunkVal->Data[Lx][FloraLocalY][Lz] = (unsigned char)BlockId;
+      ChunkVal->SolidBlockCount++;
     }
   }
 }

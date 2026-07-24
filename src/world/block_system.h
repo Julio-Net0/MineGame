@@ -11,6 +11,14 @@
 // collide with a real texture array layer, and so the shader can test for it.
 #define NO_TEXTURE_OVERLAY (-1)
 
+// How a block's geometry is meshed. CUBE is the default six-faced box; CROSS is
+// a non-cube billboard (two intersecting diagonal quads) used by flora and other
+// thin decorations. A CROSS block is always non-solid and non-occluding.
+typedef enum {
+  BLOCK_RENDER_CUBE = 0,
+  BLOCK_RENDER_CROSS
+} BlockRenderType;
+
 typedef struct {
   int TexTop;
   int TexSide;
@@ -29,6 +37,10 @@ typedef struct {
   // Which biome palette this block's faces are multiplied by, from the optional
   // "tint" property. TINT_NONE leaves the block at its texture's own colors.
   TintSource Tint;
+
+  // Geometry kind, from the optional "render" property. CROSS forces the block
+  // non-solid and non-occluding so it never culls neighbors or casts AO.
+  BlockRenderType RenderType;
 
   bool IsTransparent;
   bool IsSolid;

@@ -10,5 +10,11 @@
   "underwaterBlock": "Sand",
   "subsurfaceDepth": 3,
   "grassTint": [141, 179, 96],
-  "foliageTint": [119, 171, 47]
+  "foliageTint": [119, 171, 47],
+  "floraDensity": 0.28,
+  "flora": [
+    { "block": "TallGrass", "weight": 10 },
+    { "block": "Flower", "weight": 2 },
+    { "block": "Flower2", "weight": 2 }
+  ]
 }

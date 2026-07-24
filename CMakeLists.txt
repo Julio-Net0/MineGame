@@ -49,4 +49,13 @@ target_link_libraries(${PROJECT_NAME} raylib)
 
 target_include_directories(${PROJECT_NAME} PUBLIC src ${raylib_SOURCE_DIR}/src)
 
-file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/assets DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
+# Mirror assets into the build tree on every build. file(COPY) at configure time
+# never prunes, so a renamed or deleted source asset would linger in the build
+# copy and shadow the real one; wiping the destination first keeps them in sync
+# and removes orphans.
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E rm -rf ${CMAKE_CURRENT_BINARY_DIR}/assets
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+          ${CMAKE_CURRENT_SOURCE_DIR}/assets ${CMAKE_CURRENT_BINARY_DIR}/assets
+  COMMENT "Syncing assets to build tree (pruning orphans)"
+  VERBATIM)

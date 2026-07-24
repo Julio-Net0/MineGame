@@ -302,6 +302,26 @@ void RenderDrawBlockIcon(int BlockId, int X, int Y, int Size) {
   }
   BlockType *Def = GetBlockDef(BlockId);
 
+  // Cross blocks (flora) have no cube geometry, so the isometric box icon is
+  // wrong for them: draw their sprite as a flat, front-facing quad instead.
+  if (Def->RenderType == BLOCK_RENDER_CROSS) {
+    Vector2 SpriteMin;
+    Vector2 SpriteMax;
+    GetTextureUV(Def->TexTop, &SpriteMin, &SpriteMax);
+
+    rlSetTexture(State->BlockAtlas.id);
+    rlBegin(RL_QUADS);
+    rlColor4ub(BLOCK_ICON_COLOR_TOP, BLOCK_ICON_COLOR_TOP, BLOCK_ICON_COLOR_TOP,
+               BLOCK_ICON_ALPHA);
+    rlTexCoord2f(SpriteMin.x, SpriteMin.y); rlVertex2f((float)X, (float)Y);
+    rlTexCoord2f(SpriteMin.x, SpriteMax.y); rlVertex2f((float)X, (float)(Y + Size));
+    rlTexCoord2f(SpriteMax.x, SpriteMax.y); rlVertex2f((float)(X + Size), (float)(Y + Size));
+    rlTexCoord2f(SpriteMax.x, SpriteMin.y); rlVertex2f((float)(X + Size), (float)Y);
+    rlEnd();
+    rlSetTexture(0);
+    return;
+  }
+
   Vector2 TopMin;
   Vector2 TopMax;
   Vector2 SideMin;

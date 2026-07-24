@@ -31,6 +31,7 @@ void InitBlockRegistry(void) {
     BlockRegistry[Idx].TexBottom = 0;
     BlockRegistry[Idx].TexSideOverlay = NO_TEXTURE_OVERLAY;
     BlockRegistry[Idx].Tint = TINT_NONE;
+    BlockRegistry[Idx].RenderType = BLOCK_RENDER_CUBE;
     BlockRegistry[Idx].IsTransparent = true;
     BlockRegistry[Idx].IsSolid = true;
   }
@@ -172,6 +173,19 @@ void ParseBlockFile(const char *FilePath) {
     Block->IsSolid = (cJSON_IsTrue(IsBlockSolid) != 0);
   } else {
     Block->IsSolid = true;
+  }
+
+  // Optional "render" geometry kind. A cross block is forced non-solid and
+  // transparent so the mesher never culls its neighbors or merges it, and it
+  // routes through the dedicated cross pass instead of the cube passes.
+  cJSON *RenderItem = cJSON_GetObjectItemCaseSensitive(Json, "render");
+  if (cJSON_IsString(RenderItem) != 0 &&
+      CompareString(RenderItem->valuestring, "cross") == 0) {
+    Block->RenderType = BLOCK_RENDER_CROSS;
+    Block->IsSolid = false;
+    Block->IsTransparent = true;
+  } else {
+    Block->RenderType = BLOCK_RENDER_CUBE;
   }
 
   fprintf(stderr, "BLOCK_SYSTEM: Loaded [%d] %s\n", ParsedId, Block->Name);

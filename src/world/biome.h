@@ -26,6 +26,8 @@
 enum {
   BIOME_REGISTRY_SIZE = 64,
   MAX_BIOME_NAME_SIZE = 32,
+  // Upper bound on distinct flora kinds a single biome can scatter.
+  MAX_BIOME_FLORA = 8,
   // Biome resolution: one biome id per BIOME_CELL_SIZE^3 block cell. Climate is
   // a low-frequency field, so storing one biome per block would cost 64x the
   // memory to record a value that barely changes across a cell.
@@ -46,6 +48,14 @@ typedef struct {
   float Depth;
 } BiomeClimate;
 
+// One flora kind a biome can grow, with its relative selection weight. Block
+// names are resolved to registry ids at load time so placement never compares
+// strings.
+typedef struct {
+  int BlockId;
+  int Weight;
+} BiomeFloraEntry;
+
 // A biome definition with palette block names already resolved to registry ids
 // at load time, so sampling never compares strings.
 typedef struct {
@@ -61,6 +71,13 @@ typedef struct {
   int SubsurfaceDepth;
   // Highest priority wins when a climate point falls inside several biomes.
   int Priority;
+  // Optional flora set: weighted kinds scattered on this biome's surface by the
+  // feature pass. FloraCount 0 leaves the biome bare. FloraDensity is the
+  // fraction of eligible surface columns that receive flora, in [0, 1].
+  BiomeFloraEntry Flora[MAX_BIOME_FLORA];
+  int FloraCount;
+  int FloraTotalWeight;
+  float FloraDensity;
   char Name[MAX_BIOME_NAME_SIZE];
 } BiomeType;
 

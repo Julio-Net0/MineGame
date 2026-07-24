@@ -79,6 +79,9 @@ void InitBiomeRegistry(void) {
     Registry[Idx].UnderwaterBlockId = 0;
     Registry[Idx].SubsurfaceDepth = DEFAULT_SUBSURFACE_DEPTH;
     Registry[Idx].Priority = 0;
+    Registry[Idx].FloraCount = 0;
+    Registry[Idx].FloraTotalWeight = 0;
+    Registry[Idx].FloraDensity = 0.0F;
   }
   *GetLoadedBiomesCountPtr() = 0;
 }
@@ -319,6 +322,60 @@ static int ParseBlockRef(const cJSON *Json, const char *Key,
   return BlockId;
 }
 
+// Optional weighted flora set: "flora": [{ "block": "TallGrass", "weight": N }]
+// plus "floraDensity" in [0, 1]. Unresolved block names and non-positive weights
+// are skipped; an absent set leaves the biome bare.
+static void ParseFlora(const cJSON *Json, const char *FilePath,
+                       BiomeType *Biome) {
+  Biome->FloraCount = 0;
+  Biome->FloraTotalWeight = 0;
+  Biome->FloraDensity = 0.0F;
+
+  cJSON *DensityItem = cJSON_GetObjectItemCaseSensitive(Json, "floraDensity");
+  if (cJSON_IsNumber(DensityItem) != 0) {
+    float Density = (float)DensityItem->valuedouble;
+    if (Density < UNIT_MIN) {
+      Density = UNIT_MIN;
+    }
+    if (Density > UNIT_MAX) {
+      Density = UNIT_MAX;
+    }
+    Biome->FloraDensity = Density;
+  }
+
+  cJSON *FloraItem = cJSON_GetObjectItemCaseSensitive(Json, "flora");
+  if (cJSON_IsArray(FloraItem) == 0) {
+    return;
+  }
+
+  int Count = cJSON_GetArraySize(FloraItem);
+  for (int Idx = 0; Idx < Count && Biome->FloraCount < MAX_BIOME_FLORA; Idx++) {
+    cJSON *Entry = cJSON_GetArrayItem(FloraItem, Idx);
+    cJSON *BlockItem = cJSON_GetObjectItemCaseSensitive(Entry, "block");
+    cJSON *WeightItem = cJSON_GetObjectItemCaseSensitive(Entry, "weight");
+    if (cJSON_IsString(BlockItem) == 0) {
+      continue;
+    }
+
+    int BlockId = GetBlockIdByName(BlockItem->valuestring);
+    if (BlockId < 0) {
+      LogWarn("BIOME: %s flora '%s' is not a loaded block, skipping", FilePath,
+              BlockItem->valuestring);
+      continue;
+    }
+
+    int Weight = (cJSON_IsNumber(WeightItem) != 0) ? WeightItem->valueint : 1;
+    if (Weight <= 0) {
+      continue;
+    }
+
+    Biome->Flora[Biome->FloraCount].BlockId = BlockId;
+    Biome->Flora[Biome->FloraCount].Weight = Weight;
+    Biome->FloraCount++;
+    Biome->FloraTotalWeight += Weight;
+  }
+}
+
 static void ParseBiomeFile(const char *FilePath) {
   char *FileContent = ReadTextFile(FilePath);
   if (FileContent == NULL) {
@@ -391,6 +448,8 @@ static void ParseBiomeFile(const char *FilePath) {
   if (cJSON_IsNumber(PriorityItem) != 0) {
     Biome->Priority = PriorityItem->valueint;
   }
+
+  ParseFlora(Json, FilePath, Biome);
 
   if (IsNewEntry) {
     (*GetLoadedBiomesCountPtr())++;

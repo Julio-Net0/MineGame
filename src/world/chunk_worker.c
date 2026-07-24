@@ -62,6 +62,7 @@ static void *WorkerLoop(void *Arg) {
     if (!LoadChunkFromDisk(Target)) {
       GenerateChunkTerrain(Target);
       PlaceChunkFeatures(Target);
+      PlaceChunkFlora(Target);
     }
 
     Target->TerrainJustGenerated = true;

@@ -37,7 +37,12 @@ One file per biome. Unknown fields are ignored; a malformed file is reported and
   "underwaterBlock": "Sand",
   "subsurfaceDepth": 3,
   "grassTint": [59, 129, 39],
-  "foliageTint": [42, 110, 28]
+  "foliageTint": [42, 110, 28],
+  "floraDensity": 0.16,
+  "flora": [
+    { "block": "TallGrass", "weight": 12 },
+    { "block": "Flower", "weight": 1 }
+  ]
 }
 ```
 
@@ -55,6 +60,14 @@ One file per biome. Unknown fields are ignored; a malformed file is reported and
 | `subsurfaceDepth` | no | How many blocks of `subsurfaceBlock` sit under the surface. Default `3`. |
 | `grassTint` | no | `[R, G, B]` for blocks declaring `"tint": "grass"`. Default white (no tint). |
 | `foliageTint` | no | `[R, G, B]` for blocks declaring `"tint": "foliage"`. Default white. |
+| `floraDensity` | no | Fraction `[0, 1]` of eligible surface columns that grow flora. Default `0` (bare). |
+| `flora` | no | Weighted set of flora block **names** scattered on the surface (see below). Omitted or empty means no flora. |
+
+#### Flora
+
+`flora` is an array of `{ "block": <name>, "weight": <int> }` entries, up to 8. Each names a block (resolved to an id at load; an unresolved name is warned and skipped) and a relative selection weight. The feature pass runs on freshly generated chunks only and, for each eligible column, rolls `floraDensity` for existence and then draws one entry in proportion to its weight, placing that block one voxel above the surface.
+
+A column is eligible only when its surface is **above sea level** and its surface block is the biome's own `surfaceBlock` — flora never grows on exposed stone, sand margins, or underwater. Placement is a pure function of `(worldX, worldZ, seed)`: like trees it is **procedural and not saved**, so a never-edited region regrows identical flora, while flora the player removes in a saved chunk stays removed. Flora blocks are normally `render: "cross"` (see below).
 
 Block fields take **names**, not numeric ids, and are resolved against the block registry when the biome loads. A name that matches no loaded block is an error and the biome is skipped — a biome with a wrong palette is a bug, not something to paper over.
 
@@ -151,6 +164,31 @@ Blocks whose whole texture is tintable — grass top, leaves — declare no over
 The overlay layer index rides the previously unused second component of the `texcoords2` vertex attribute, so it costs no new attribute — only one extra texture fetch on the faces that have one.
 
 Inside a biome, a tinted block renders the palette's declared colour exactly. Across a border the tint is interpolated over about four blocks. Only the transition band splits merged faces; measured cost is about **+0.7% vertices**.
+
+## Cross-billboard blocks
+
+A block may declare `"render": "cross"` to be meshed as two intersecting diagonal quads (an X seen from above) instead of a cube. This is the shape flora and other thin decorations use:
+
+```json
+{
+  "id": 11,
+  "name": "TallGrass",
+  "texTop": 95,
+  "texBottom": 95,
+  "texSide": 95,
+  "isTransparent": true,
+  "render": "cross"
+}
+```
+
+| Value | Geometry |
+|---|---|
+| `"cube"`, absent, or unrecognized | Normal six-faced box. |
+| `"cross"` | Two intersecting diagonal quads, drawn double-sided. |
+
+A cross block's sprite comes from its `texTop` tile; `texBottom`/`texSide` are ignored by the cross geometry but should still be set. Its texture is an **alpha cutout** — the fragment shader discards texels below ~10% alpha, so the background must be transparent, and the block should declare `"isTransparent": true`.
+
+A `render: "cross"` block is forced **non-solid** and **non-occluding**: it never culls the faces of neighboring blocks, is skipped by greedy meshing, and casts no ambient occlusion, so grass never punches a hole in the ground under or beside it. It is drawn in the opaque pass (with depth writes) rather than the translucent one, which is what keeps distant flora from drawing over nearer geometry. A cross block may still declare a `"tint"` and takes the biome colour like any other tinted block.
 
 ## Debugging
 
