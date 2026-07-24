@@ -18,6 +18,7 @@ enum {
 // correlate.
 #define STRUCTURE_EXIST_SALT 0x57A0C7DE00000001ULL
 #define STRUCTURE_KIND_SALT 0x57A0C7DE00000002ULL
+#define STRUCTURE_ORIENT_SALT 0x57A0C7DE00000003ULL
 
 // SplitMix64: one multiply-xor-shift round per stage, enough to turn adjacent
 // seeds and cell indices into uncorrelated bits. Same construction the biome
@@ -89,6 +90,25 @@ static int PickStructurePrefab(const BiomeType *Biome, uint64_t Hash) {
     }
   }
   return Biome->Structures[0].PrefabIndex;
+}
+
+// Draw a 0-7 orientation code from a hash, then clamp it to the orientations
+// the prefab permits: a prefab that forbids rotation keeps the low two bits at
+// 0, and one that forbids mirroring clears the mirror bit. Masking after the
+// draw keeps the roll independent of prefab identity.
+static int PickOrientation(const Prefab *PrefabVal, uint64_t Hash) {
+  const int MIRROR_BIT = 0x4;
+  const int ROTATION_MASK = 0x3;
+  const uint64_t ORIENTATION_COUNT = 8ULL;
+
+  int Code = (int)(Hash % ORIENTATION_COUNT);
+  if (PrefabVal->AllowRotation == false) {
+    Code &= ~ROTATION_MASK;
+  }
+  if (PrefabVal->AllowMirror == false) {
+    Code &= ~MIRROR_BIT;
+  }
+  return Code;
 }
 
 // Widest horizontal reach across every loaded prefab. A candidate's prefab is
@@ -168,7 +188,16 @@ void PlaceChunkFeatures(Chunk *ChunkVal) {
         continue;
       }
 
-      StampPrefabIntoChunk(ChunkVal, Structure, WorldX, Surface + 1, WorldZ);
+      // Orientation rolls on its own salt so it stays independent of the
+      // existence and kind draws, then is masked by the prefab's flags. Keyed on
+      // the anchor column, every chunk re-deriving an overhanging structure
+      // agrees on its orientation.
+      uint64_t OrientHash =
+          HashCell(WorldX, WorldZ, Seed ^ STRUCTURE_ORIENT_SALT);
+      int Orientation = PickOrientation(Structure, OrientHash);
+
+      StampPrefabIntoChunk(ChunkVal, Structure, WorldX, Surface + 1, WorldZ,
+                           Orientation);
     }
   }
 }

@@ -39,6 +39,11 @@ typedef struct {
   PrefabCell *Cells;
   int CellCount;
   bool HasOrigin;
+  // Orientation eligibility for the feature pass, both default true. When
+  // AllowRotation is false the prefab is locked to its canonical Y-axis
+  // rotation; when AllowMirror is false it is never horizontally mirrored.
+  bool AllowRotation;
+  bool AllowMirror;
 } Prefab;
 
 void InitPrefabRegistry(void);
@@ -70,7 +75,16 @@ void StampPrefab(struct World *World, const Prefab *Prefab, Vec3 Origin);
 // the prefab is horizontally centered with its base at Y so the trunk lands on
 // the chosen column. Unlike StampPrefab this never routes through the world or
 // render layers, so it is safe on the chunk a worker thread already owns.
+//
+// Orientation is a 0-7 code applied to each cell's horizontal offset from the
+// anchor column, leaving heights untouched: bits 0-1 select a Y-axis rotation
+// (0/90/180/270 degrees) and bit 2 selects a horizontal mirror applied before
+// the rotation. Code 0 is the canonical, untransformed placement. The anchor
+// column stays fixed under any orientation, so the trunk lands on the chosen
+// column and chunks re-deriving an overhanging structure stamp complementary
+// fragments.
 void StampPrefabIntoChunk(struct Chunk *ChunkVal, const Prefab *PrefabVal,
-                          int WorldOriginX, int WorldOriginY, int WorldOriginZ);
+                          int WorldOriginX, int WorldOriginY, int WorldOriginZ,
+                          int Orientation);
 
 #endif

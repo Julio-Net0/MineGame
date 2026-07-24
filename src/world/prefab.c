@@ -45,6 +45,8 @@ void InitPrefabRegistry(void) {
     Registry[Idx].Cells = NULL;
     Registry[Idx].CellCount = 0;
     Registry[Idx].HasOrigin = false;
+    Registry[Idx].AllowRotation = true;
+    Registry[Idx].AllowMirror = true;
   }
   *GetPrefabCountPtr() = 0;
 }
@@ -208,6 +210,22 @@ static bool ParseOrigin(const cJSON *OriginItem, int SizeX, int SizeY,
   return true;
 }
 
+// Read an optional boolean flag, defaulting to true when absent. A present but
+// non-boolean value is warned about and falls back to the default, mirroring the
+// tolerant parse used for the optional origin.
+static bool ParseOptionalBool(const cJSON *Item, const char *FieldName,
+                              const char *FilePath) {
+  if (Item == NULL) {
+    return true;
+  }
+  if (cJSON_IsBool(Item) == 0) {
+    LogWarn("PREFAB: %s has a non-boolean '%s', defaulting to true", FilePath,
+            FieldName);
+    return true;
+  }
+  return cJSON_IsTrue(Item) != 0;
+}
+
 // Locate a registered prefab slot by name. Returns its index, or -1 if absent.
 static int FindPrefabSlot(const char *Name) {
   Prefab *Registry = GetPrefabRegistry();
@@ -247,6 +265,10 @@ bool RegisterPrefabFile(const char *FilePath) {
   const cJSON *PaletteItem = cJSON_GetObjectItemCaseSensitive(Json, "palette");
   const cJSON *BlocksItem = cJSON_GetObjectItemCaseSensitive(Json, "blocks");
   const cJSON *OriginItem = cJSON_GetObjectItemCaseSensitive(Json, "origin");
+  const cJSON *AllowRotationItem =
+      cJSON_GetObjectItemCaseSensitive(Json, "allowRotation");
+  const cJSON *AllowMirrorItem =
+      cJSON_GetObjectItemCaseSensitive(Json, "allowMirror");
 
   int SizeX = 0;
   int SizeY = 0;
@@ -349,6 +371,9 @@ bool RegisterPrefabFile(const char *FilePath) {
   Slot->Cells = Cells;
   Slot->CellCount = CellCount;
   Slot->HasOrigin = HasOrigin;
+  Slot->AllowRotation =
+      ParseOptionalBool(AllowRotationItem, "allowRotation", FilePath);
+  Slot->AllowMirror = ParseOptionalBool(AllowMirrorItem, "allowMirror", FilePath);
   if (Replacing == false) {
     (*CountPtr)++;
   }
@@ -375,27 +400,61 @@ void StampPrefab(struct World *WorldVal, const Prefab *PrefabVal, Vec3 Origin) {
   }
 }
 
+// Apply an orientation code (bits 0-1 rotation, bit 2 mirror) to a horizontal
+// offset measured from the anchor column. The mirror flips local X first, then
+// the rotation turns the offset about the vertical axis. Heights never pass
+// through here.
+static void OrientOffset(int Orientation, int Dx, int Dz, int *OutDx,
+                         int *OutDz) {
+  const int MIRROR_BIT = 0x4;
+  const int ROTATION_MASK = 0x3;
+
+  if ((Orientation & MIRROR_BIT) != 0) {
+    Dx = -Dx;
+  }
+
+  switch (Orientation & ROTATION_MASK) {
+  case 1: // 90 degrees
+    *OutDx = -Dz;
+    *OutDz = Dx;
+    break;
+  case 2: // 180 degrees
+    *OutDx = -Dx;
+    *OutDz = -Dz;
+    break;
+  case 3: // 270 degrees
+    *OutDx = Dz;
+    *OutDz = -Dx;
+    break;
+  default: // 0 degrees
+    *OutDx = Dx;
+    *OutDz = Dz;
+    break;
+  }
+}
+
 void StampPrefabIntoChunk(struct Chunk *ChunkVal, const Prefab *PrefabVal,
-                          int WorldOriginX, int WorldOriginY,
-                          int WorldOriginZ) {
+                          int WorldOriginX, int WorldOriginY, int WorldOriginZ,
+                          int Orientation) {
   if (ChunkVal == NULL || PrefabVal == NULL) {
     return;
   }
 
-  // Resolve the base corner from the anchor: an explicit origin is subtracted,
-  // otherwise center horizontally with the base at Y so the trunk lands on the
-  // chosen column.
-  int BaseX = 0;
-  int BaseY = 0;
-  int BaseZ = 0;
+  // Resolve the anchor cell inside the prefab: an explicit origin, otherwise the
+  // horizontal center with the base at Y so the trunk lands on the chosen
+  // column. The anchor maps to (WorldOriginX, WorldOriginZ) and is the pivot the
+  // orientation rotates every other cell about.
+  int AnchorX = 0;
+  int AnchorY = 0;
+  int AnchorZ = 0;
   if (PrefabVal->HasOrigin) {
-    BaseX = WorldOriginX - PrefabVal->OriginX;
-    BaseY = WorldOriginY - PrefabVal->OriginY;
-    BaseZ = WorldOriginZ - PrefabVal->OriginZ;
+    AnchorX = PrefabVal->OriginX;
+    AnchorY = PrefabVal->OriginY;
+    AnchorZ = PrefabVal->OriginZ;
   } else {
-    BaseX = WorldOriginX - (PrefabVal->SizeX / 2);
-    BaseY = WorldOriginY;
-    BaseZ = WorldOriginZ - (PrefabVal->SizeZ / 2);
+    AnchorX = PrefabVal->SizeX / 2;
+    AnchorY = 0;
+    AnchorZ = PrefabVal->SizeZ / 2;
   }
 
   int ChunkOriginX = ChunkVal->ChunkX * CHUNK_SIZE;
@@ -404,9 +463,16 @@ void StampPrefabIntoChunk(struct Chunk *ChunkVal, const Prefab *PrefabVal,
 
   for (int Idx = 0; Idx < PrefabVal->CellCount; Idx++) {
     PrefabCell Cell = PrefabVal->Cells[Idx];
-    int LocalX = (BaseX + (int)Cell.X) - ChunkOriginX;
-    int LocalY = (BaseY + (int)Cell.Y) - ChunkOriginY;
-    int LocalZ = (BaseZ + (int)Cell.Z) - ChunkOriginZ;
+
+    // Offset from the anchor, oriented horizontally; Y is unaffected.
+    int Dx = 0;
+    int Dz = 0;
+    OrientOffset(Orientation, (int)Cell.X - AnchorX, (int)Cell.Z - AnchorZ, &Dx,
+                 &Dz);
+
+    int LocalX = (WorldOriginX + Dx) - ChunkOriginX;
+    int LocalY = (WorldOriginY + ((int)Cell.Y - AnchorY)) - ChunkOriginY;
+    int LocalZ = (WorldOriginZ + Dz) - ChunkOriginZ;
 
     if (LocalX < 0 || LocalX >= CHUNK_SIZE || LocalY < 0 ||
         LocalY >= CHUNK_SIZE || LocalZ < 0 || LocalZ >= CHUNK_SIZE) {

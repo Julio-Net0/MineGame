@@ -81,6 +81,19 @@ A column is eligible only when its surface is **above sea level** and its surfac
 
 Candidates below sea level are skipped. The prefab is chosen from the biome resolved at the candidate's **own** surface column through the pure biome sampler, so a structure overhanging into a neighbouring chunk resolves to the same prefab no matter which chunk stamps it. Like trees and flora, structures are **procedural and not saved**. The overlap scan widens each chunk's column range by the largest loaded prefab's footprint, so an oversized structure rooted just outside a chunk still stamps its overhang.
 
+#### Prefab orientation
+
+Each stamped structure is also given a deterministic **orientation** — one of four 90° rotations about the vertical axis, optionally combined with a single horizontal mirror. The orientation is drawn from a salted hash of the structure's own anchor column, independent of the existence and prefab-kind rolls, so a structure overhanging into a neighbour resolves to the same orientation no matter which chunk stamps it. Rotation is horizontal only: every cell keeps its height, and the prefab's anchor column stays fixed so the trunk lands on the chosen column.
+
+A prefab can opt out of this variety with two optional boolean fields, both defaulting to `true`:
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `allowRotation` | no | When `false`, the prefab is locked to its authored rotation and is never turned. Default `true`. |
+| `allowMirror` | no | When `false`, the prefab is never horizontally mirrored (use for directional or asymmetric prefabs that would read wrong flipped). Default `true`. |
+
+A present but non-boolean value is warned about and falls back to `true`.
+
 Block fields take **names**, not numeric ids, and are resolved against the block registry when the biome loads. A name that matches no loaded block is an error and the biome is skipped — a biome with a wrong palette is a bug, not something to paper over.
 
 Air, water, and stone are **not** part of any palette: they are the biome-independent base that generation places above the terrain, up to sea level, and below the subsurface layer.
