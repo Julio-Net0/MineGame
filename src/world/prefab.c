@@ -220,6 +220,13 @@ static int FindPrefabSlot(const char *Name) {
   return -1;
 }
 
+int GetPrefabIndexByName(const char *Name) {
+  if (Name == NULL) {
+    return -1;
+  }
+  return FindPrefabSlot(Name);
+}
+
 bool RegisterPrefabFile(const char *FilePath) {
   char *FileContent = ReadTextFile(FilePath);
   if (FileContent == NULL) {

@@ -8,15 +8,16 @@
 
 enum {
   // World space is tiled into GRID_CELL_SIZE^2 columns; each cell yields at most
-  // one tree candidate, which both spaces trees apart and bounds how many cells
-  // a chunk's scan has to visit.
-  GRID_CELL_SIZE = 6,
-  // A cell carries a tree when the low 16 hash bits fall under this threshold.
-  // 26214 / 65536 ~= 0.4, so roughly two cells in five are wooded.
-  TREE_DENSITY_THRESHOLD = 26214
+  // one structure candidate, which both spaces structures apart and bounds how
+  // many cells a chunk's scan has to visit.
+  GRID_CELL_SIZE = 6
 };
 
-#define TREE_PREFAB_NAME "oak_small"
+// Salts keep the structure grid statistically independent of the flora rolls
+// and of each other, so a column's existence roll and its prefab roll do not
+// correlate.
+#define STRUCTURE_EXIST_SALT 0x57A0C7DE00000001ULL
+#define STRUCTURE_KIND_SALT 0x57A0C7DE00000002ULL
 
 // SplitMix64: one multiply-xor-shift round per stage, enough to turn adjacent
 // seeds and cell indices into uncorrelated bits. Same construction the biome
@@ -58,38 +59,68 @@ static int FloorDiv(int Numerator, int Denominator) {
   return Quotient;
 }
 
-// One candidate per grid cell. Returns false when the cell holds no tree;
-// otherwise writes the candidate's world column into OutX/OutZ.
-static bool CellCandidate(int CellX, int CellZ, uint64_t Seed, int *OutX,
+// One candidate per grid cell: the cell's hash picks a jittered column so
+// structures never land on a fixed lattice. Existence and prefab choice are
+// decided by the column's biome, not here.
+static void CellCandidate(int CellX, int CellZ, uint64_t Seed, int *OutX,
                           int *OutZ) {
   const unsigned int SHIFT_JITTER_X = 16U;
   const unsigned int SHIFT_JITTER_Z = 32U;
-  const uint64_t MASK16 = 0xFFFFULL;
 
   uint64_t Hash = HashCell(CellX, CellZ, Seed);
-  if ((Hash & MASK16) >= (uint64_t)TREE_DENSITY_THRESHOLD) {
-    return false;
-  }
-
   int JitterX = (int)((Hash >> SHIFT_JITTER_X) % (uint64_t)GRID_CELL_SIZE);
   int JitterZ = (int)((Hash >> SHIFT_JITTER_Z) % (uint64_t)GRID_CELL_SIZE);
   *OutX = (CellX * GRID_CELL_SIZE) + JitterX;
   *OutZ = (CellZ * GRID_CELL_SIZE) + JitterZ;
-  return true;
+}
+
+// Pick a structure prefab index from the biome's weighted set using a hash draw.
+// Assumes StructureCount > 0 and StructureTotalWeight > 0.
+static int PickStructurePrefab(const BiomeType *Biome, uint64_t Hash) {
+  int Count = Biome->StructureCount;
+  if (Count > MAX_BIOME_STRUCTURES) {
+    Count = MAX_BIOME_STRUCTURES;
+  }
+  int Roll = (int)(Hash % (uint64_t)Biome->StructureTotalWeight);
+  for (int Idx = 0; Idx < Count; Idx++) {
+    Roll -= Biome->Structures[Idx].Weight;
+    if (Roll < 0) {
+      return Biome->Structures[Idx].PrefabIndex;
+    }
+  }
+  return Biome->Structures[0].PrefabIndex;
+}
+
+// Widest horizontal reach across every loaded prefab. A candidate's prefab is
+// unknown until its biome resolves and different biomes place different sizes,
+// so the overlap scan uses a single upper bound over all prefabs — only ever
+// wider than needed, and the stamp's clip test drops the surplus.
+static int MaxPrefabFootprint(void) {
+  int Max = 0;
+  int Count = GetLoadedPrefabsCount();
+  for (int Idx = 0; Idx < Count; Idx++) {
+    const Prefab *PrefabVal = GetPrefabByIndex(Idx);
+    if (PrefabVal == NULL) {
+      continue;
+    }
+    int Reach = PrefabVal->SizeX > PrefabVal->SizeZ ? PrefabVal->SizeX
+                                                    : PrefabVal->SizeZ;
+    if (Reach > Max) {
+      Max = Reach;
+    }
+  }
+  return Max;
 }
 
 void PlaceChunkFeatures(Chunk *ChunkVal) {
-  const Prefab *Tree = GetPrefab(TREE_PREFAB_NAME);
-  if (Tree == NULL) {
-    return;
-  }
-
   uint64_t Seed = GetWorldSeed();
+  const uint64_t MASK16 = 0xFFFFULL;
+  const float DENSITY_SCALE = 65536.0F;
 
-  // A tree rooted up to its own footprint outside the chunk can still stamp
-  // cells into it, so the scan widens the chunk's column range by that reach on
-  // every side before mapping to grid cells.
-  int Margin = Tree->SizeX > Tree->SizeZ ? Tree->SizeX : Tree->SizeZ;
+  // A structure rooted up to the largest prefab's footprint outside the chunk
+  // can still stamp cells into it, so the scan widens the chunk's column range
+  // by that reach on every side before mapping to grid cells.
+  int Margin = MaxPrefabFootprint();
 
   int MinX = (ChunkVal->ChunkX * CHUNK_SIZE) - Margin;
   int MaxX = (ChunkVal->ChunkX * CHUNK_SIZE) + CHUNK_SIZE - 1 + Margin;
@@ -105,9 +136,7 @@ void PlaceChunkFeatures(Chunk *ChunkVal) {
     for (int CellZ = CellMinZ; CellZ <= CellMaxZ; CellZ++) {
       int WorldX = 0;
       int WorldZ = 0;
-      if (!CellCandidate(CellX, CellZ, Seed, &WorldX, &WorldZ)) {
-        continue;
-      }
+      CellCandidate(CellX, CellZ, Seed, &WorldX, &WorldZ);
 
       // Skip submerged columns using the same threshold generation floods with;
       // the clip test in the stamp then drops any cell outside this chunk.
@@ -116,7 +145,30 @@ void PlaceChunkFeatures(Chunk *ChunkVal) {
         continue;
       }
 
-      StampPrefabIntoChunk(ChunkVal, Tree, WorldX, Surface + 1, WorldZ);
+      // Resolve the biome at this column's surface (Depth ~= 0) through the pure
+      // sampler, so every chunk re-deriving this overhanging structure agrees on
+      // its prefab regardless of load order.
+      int BiomeId = SampleBiomeAt(WorldX, Surface, WorldZ, Surface, Seed);
+      const BiomeType *Biome = GetBiomeDef(BiomeId);
+      if (Biome->StructureCount == 0 || Biome->StructureTotalWeight <= 0) {
+        continue;
+      }
+
+      uint64_t ExistHash =
+          HashCell(WorldX, WorldZ, Seed ^ STRUCTURE_EXIST_SALT);
+      float Roll = (float)(ExistHash & MASK16) / DENSITY_SCALE;
+      if (Roll >= Biome->StructureDensity) {
+        continue;
+      }
+
+      uint64_t KindHash = HashCell(WorldX, WorldZ, Seed ^ STRUCTURE_KIND_SALT);
+      int PrefabIndex = PickStructurePrefab(Biome, KindHash);
+      const Prefab *Structure = GetPrefabByIndex(PrefabIndex);
+      if (Structure == NULL) {
+        continue;
+      }
+
+      StampPrefabIntoChunk(ChunkVal, Structure, WorldX, Surface + 1, WorldZ);
     }
   }
 }

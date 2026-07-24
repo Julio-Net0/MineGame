@@ -1,5 +1,6 @@
 #include "world/biome.h"
 #include "world/block_system.h"
+#include "world/prefab.h"
 #include "third_party/cJSON.h"
 #include "core/noise.h"
 #include "core/fileio.h"
@@ -82,6 +83,9 @@ void InitBiomeRegistry(void) {
     Registry[Idx].FloraCount = 0;
     Registry[Idx].FloraTotalWeight = 0;
     Registry[Idx].FloraDensity = 0.0F;
+    Registry[Idx].StructureCount = 0;
+    Registry[Idx].StructureTotalWeight = 0;
+    Registry[Idx].StructureDensity = 0.0F;
   }
   *GetLoadedBiomesCountPtr() = 0;
 }
@@ -376,6 +380,63 @@ static void ParseFlora(const cJSON *Json, const char *FilePath,
   }
 }
 
+// Optional weighted structure set: "structures": [{ "prefab": "oak_small",
+// "weight": N }] plus "structureDensity" in [0, 1]. Prefab names resolve to
+// registry indices at load; unknown names and non-positive weights are skipped;
+// an absent set leaves the biome bare.
+static void ParseStructures(const cJSON *Json, const char *FilePath,
+                           BiomeType *Biome) {
+  Biome->StructureCount = 0;
+  Biome->StructureTotalWeight = 0;
+  Biome->StructureDensity = 0.0F;
+
+  cJSON *DensityItem =
+      cJSON_GetObjectItemCaseSensitive(Json, "structureDensity");
+  if (cJSON_IsNumber(DensityItem) != 0) {
+    float Density = (float)DensityItem->valuedouble;
+    if (Density < UNIT_MIN) {
+      Density = UNIT_MIN;
+    }
+    if (Density > UNIT_MAX) {
+      Density = UNIT_MAX;
+    }
+    Biome->StructureDensity = Density;
+  }
+
+  cJSON *StructuresItem = cJSON_GetObjectItemCaseSensitive(Json, "structures");
+  if (cJSON_IsArray(StructuresItem) == 0) {
+    return;
+  }
+
+  int Count = cJSON_GetArraySize(StructuresItem);
+  for (int Idx = 0;
+       Idx < Count && Biome->StructureCount < MAX_BIOME_STRUCTURES; Idx++) {
+    cJSON *Entry = cJSON_GetArrayItem(StructuresItem, Idx);
+    cJSON *PrefabItem = cJSON_GetObjectItemCaseSensitive(Entry, "prefab");
+    cJSON *WeightItem = cJSON_GetObjectItemCaseSensitive(Entry, "weight");
+    if (cJSON_IsString(PrefabItem) == 0) {
+      continue;
+    }
+
+    int PrefabIndex = GetPrefabIndexByName(PrefabItem->valuestring);
+    if (PrefabIndex < 0) {
+      LogWarn("BIOME: %s structure '%s' is not a loaded prefab, skipping",
+              FilePath, PrefabItem->valuestring);
+      continue;
+    }
+
+    int Weight = (cJSON_IsNumber(WeightItem) != 0) ? WeightItem->valueint : 1;
+    if (Weight <= 0) {
+      continue;
+    }
+
+    Biome->Structures[Biome->StructureCount].PrefabIndex = PrefabIndex;
+    Biome->Structures[Biome->StructureCount].Weight = Weight;
+    Biome->StructureCount++;
+    Biome->StructureTotalWeight += Weight;
+  }
+}
+
 static void ParseBiomeFile(const char *FilePath) {
   char *FileContent = ReadTextFile(FilePath);
   if (FileContent == NULL) {
@@ -450,6 +511,7 @@ static void ParseBiomeFile(const char *FilePath) {
   }
 
   ParseFlora(Json, FilePath, Biome);
+  ParseStructures(Json, FilePath, Biome);
 
   if (IsNewEntry) {
     (*GetLoadedBiomesCountPtr())++;

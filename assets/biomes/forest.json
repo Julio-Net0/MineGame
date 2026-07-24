@@ -15,5 +15,9 @@
   "flora": [
     { "block": "TallGrass", "weight": 12 },
     { "block": "Flower", "weight": 1 }
+  ],
+  "structureDensity": 0.5,
+  "structures": [
+    { "prefab": "oak_small", "weight": 1 }
   ]
 }

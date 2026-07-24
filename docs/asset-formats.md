@@ -42,6 +42,10 @@ One file per biome. Unknown fields are ignored; a malformed file is reported and
   "flora": [
     { "block": "TallGrass", "weight": 12 },
     { "block": "Flower", "weight": 1 }
+  ],
+  "structureDensity": 0.5,
+  "structures": [
+    { "prefab": "oak_small", "weight": 1 }
   ]
 }
 ```
@@ -62,12 +66,20 @@ One file per biome. Unknown fields are ignored; a malformed file is reported and
 | `foliageTint` | no | `[R, G, B]` for blocks declaring `"tint": "foliage"`. Default white. |
 | `floraDensity` | no | Fraction `[0, 1]` of eligible surface columns that grow flora. Default `0` (bare). |
 | `flora` | no | Weighted set of flora block **names** scattered on the surface (see below). Omitted or empty means no flora. |
+| `structureDensity` | no | Fraction `[0, 1]` of candidate columns that receive a prefab structure. Default `0` (bare). |
+| `structures` | no | Weighted set of prefab **names** stamped on the surface (see below). Omitted or empty means no structures. |
 
 #### Flora
 
 `flora` is an array of `{ "block": <name>, "weight": <int> }` entries, up to 8. Each names a block (resolved to an id at load; an unresolved name is warned and skipped) and a relative selection weight. The feature pass runs on freshly generated chunks only and, for each eligible column, rolls `floraDensity` for existence and then draws one entry in proportion to its weight, placing that block one voxel above the surface.
 
 A column is eligible only when its surface is **above sea level** and its surface block is the biome's own `surfaceBlock` — flora never grows on exposed stone, sand margins, or underwater. Placement is a pure function of `(worldX, worldZ, seed)`: like trees it is **procedural and not saved**, so a never-edited region regrows identical flora, while flora the player removes in a saved chunk stays removed. Flora blocks are normally `render: "cross"` (see below).
+
+#### Structures
+
+`structures` is an array of `{ "prefab": <name>, "weight": <int> }` entries, up to 8. Each names a prefab (resolved to a registry index at load; an unresolved name is warned and skipped) and a relative selection weight. The same feature pass that stamps trees tiles world space into a grid, takes at most one candidate column per cell, and — for a candidate whose surface biome declares a set — rolls `structureDensity` for existence and then draws one prefab in proportion to its weight, stamping it one voxel above the surface. A biome that omits the set places nothing, replacing the old hardcoded `oak_small` behaviour.
+
+Candidates below sea level are skipped. The prefab is chosen from the biome resolved at the candidate's **own** surface column through the pure biome sampler, so a structure overhanging into a neighbouring chunk resolves to the same prefab no matter which chunk stamps it. Like trees and flora, structures are **procedural and not saved**. The overlap scan widens each chunk's column range by the largest loaded prefab's footprint, so an oversized structure rooted just outside a chunk still stamps its overhang.
 
 Block fields take **names**, not numeric ids, and are resolved against the block registry when the biome loads. A name that matches no loaded block is an error and the biome is skipped — a biome with a wrong palette is a bug, not something to paper over.
 

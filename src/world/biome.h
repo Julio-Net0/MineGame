@@ -28,6 +28,8 @@ enum {
   MAX_BIOME_NAME_SIZE = 32,
   // Upper bound on distinct flora kinds a single biome can scatter.
   MAX_BIOME_FLORA = 8,
+  // Upper bound on distinct prefab structures a single biome can place.
+  MAX_BIOME_STRUCTURES = 8,
   // Biome resolution: one biome id per BIOME_CELL_SIZE^3 block cell. Climate is
   // a low-frequency field, so storing one biome per block would cost 64x the
   // memory to record a value that barely changes across a cell.
@@ -56,6 +58,14 @@ typedef struct {
   int Weight;
 } BiomeFloraEntry;
 
+// One prefab structure a biome can place, with its relative selection weight.
+// Prefab names are resolved to registry indices at load time so placement never
+// compares strings.
+typedef struct {
+  int PrefabIndex;
+  int Weight;
+} BiomeStructureEntry;
+
 // A biome definition with palette block names already resolved to registry ids
 // at load time, so sampling never compares strings.
 typedef struct {
@@ -78,6 +88,14 @@ typedef struct {
   int FloraCount;
   int FloraTotalWeight;
   float FloraDensity;
+  // Optional structure set: weighted prefabs stamped on this biome's surface by
+  // the feature pass. StructureCount 0 leaves the biome bare. StructureDensity
+  // is the fraction of eligible candidate columns that receive a structure, in
+  // [0, 1].
+  BiomeStructureEntry Structures[MAX_BIOME_STRUCTURES];
+  int StructureCount;
+  int StructureTotalWeight;
+  float StructureDensity;
   char Name[MAX_BIOME_NAME_SIZE];
 } BiomeType;
 

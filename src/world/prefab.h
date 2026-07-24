@@ -50,6 +50,12 @@ void LoadAllPrefabs(const char *DirectoryPath);
 bool RegisterPrefabFile(const char *FilePath);
 const Prefab *GetPrefab(const char *Name);
 const Prefab *GetPrefabByIndex(int Index);
+
+// Resolve a prefab name to its registry index, or -1 when the name is NULL or
+// matches no loaded prefab. Lets data-driven tables (e.g. biome structure sets)
+// store a stable index at load time and skip string compares during generation.
+int GetPrefabIndexByName(const char *Name);
+
 int GetLoadedPrefabsCount(void);
 
 // Write each packed cell of Prefab into the world at Origin plus the cell's
