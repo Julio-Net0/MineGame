@@ -1,4 +1,5 @@
 #include "world/chunk_worker.h"
+#include "world/feature.h"
 #include "persistence/world_save.h"
 #include <pthread.h>
 #include <stdatomic.h>
@@ -55,8 +56,12 @@ static void *WorkerLoop(void *Arg) {
     // single call ahead of both paths is what stops them from drifting apart.
     FillChunkBiomeMap(Target);
 
+    // Trees are procedural, not persisted: stamp them only on the fresh-
+    // generation path, never after a disk load, so player edits (a chopped
+    // tree) survive and the save format stays untouched.
     if (!LoadChunkFromDisk(Target)) {
       GenerateChunkTerrain(Target);
+      PlaceChunkFeatures(Target);
     }
 
     Target->TerrainJustGenerated = true;

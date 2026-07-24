@@ -5,6 +5,7 @@
 #include <stdbool.h>
 
 struct World;
+struct Chunk;
 
 enum {
   MAX_PREFAB_NAME_SIZE = 32,
@@ -55,5 +56,15 @@ int GetLoadedPrefabsCount(void);
 // local offset, routing through SetBlockInWorld so affected chunks are marked
 // dirty for remeshing.
 void StampPrefab(struct World *World, const Prefab *Prefab, Vec3 Origin);
+
+// Write Prefab into a single chunk's block data at the given world origin,
+// clipped to that chunk: cells mapping outside the chunk are skipped, and a cell
+// is written only over air, updating SolidBlockCount. The world origin is the
+// stamp anchor — the prefab's declared origin is subtracted when set, otherwise
+// the prefab is horizontally centered with its base at Y so the trunk lands on
+// the chosen column. Unlike StampPrefab this never routes through the world or
+// render layers, so it is safe on the chunk a worker thread already owns.
+void StampPrefabIntoChunk(struct Chunk *ChunkVal, const Prefab *PrefabVal,
+                          int WorldOriginX, int WorldOriginY, int WorldOriginZ);
 
 #endif

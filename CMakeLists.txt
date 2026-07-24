@@ -24,6 +24,7 @@ add_executable(${PROJECT_NAME}
   src/world/biome.c
   src/world/prefab.c
   src/world/prefab_capture.c
+  src/world/feature.c
   src/persistence/world_save.c
   src/persistence/chunk_serial.c
   src/player/player.c

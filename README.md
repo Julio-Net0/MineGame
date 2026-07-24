@@ -8,13 +8,13 @@ Goal: Evolve the engine into a portable, backend-agnostic platform and bring the
 - [X] **Engine Math Types:** Replace leaked Raylib math types (`Vector3`, etc.) in the simulation layer with engine-owned vector and matrix types, removing the renderer dependency from world, physics, and persistence code.
 - [X] **Input Intent System:** Decouple player input from simulation by capturing raw input into an abstract intent struct, enabling remappable controls and forming the client→server command seam for future multiplayer.
 - [X] **Prefab System (JSON):** Introduce a simple, sparse, palette-based JSON prefab format — human-readable and friendly to external editing tools — compiled into a packed in-memory structure at load time.
-- [ ] **Procedural Tree Generation:** Stamp tree prefabs during terrain generation using seed-deterministic placement and a deferred cross-chunk edit queue so structures spanning chunk borders resolve correctly.
+- [X] **Procedural Tree Generation:** Stamp tree prefabs during terrain generation using seed-deterministic placement and an overlap-scan so structures spanning chunk borders resolve correctly: each chunk independently re-derives every tree whose bounding box reaches into it and clips the stamp to its own bounds, needing no cross-chunk writes, shared queue, or locks.
 - [X] **In-Game Prefab Capture:** Add commands to select a block volume and export it directly to a JSON prefab file, round-tripping with the loader so external tools can edit the same files.
 - [ ] **Prefab Rotation & Variety:** Support rotation and mirroring when stamping prefabs, multiplying visual variety from a small set of source models.
 - [ ] **Flora Decoration Pass:** Scatter single-block features (tall grass, flowers, mushrooms) through the feature-placement pipeline as a lightweight precursor to multi-block structures.
 - [X] **Fixed-Tick Simulation Loop:** Run world logic at a fixed tick rate (e.g. 20 TPS) decoupled from render framerate with interpolation, forming the backbone for growth, fluids, and multiplayer.
 - [X] **Biomes (Palettes & Tinting):** Select block palettes per region from a multi-noise climate space — temperature and humidity, plus a `depth` axis derived from the surface so biomes are addressable in X, Y and Z and cave biomes become a data change rather than a rewrite. Biomes are defined in JSON, stored one id per 4×4×4 cell, and tint grass and foliage to their own colours; a per-texel side overlay lets the grass fringe take the biome colour while the dirt behind it keeps its own. See [Asset Formats](docs/asset-formats.md).
-- [ ] **Biome Structure Sets:** Drive terrain-appropriate prefab placement from each biome's palette. Blocked on **Procedural Tree Generation** — it lands the deferred cross-chunk edit queue that feature placement needs.
+- [ ] **Biome Structure Sets:** Drive terrain-appropriate prefab placement from each biome's palette, reusing the feature-placement pass from **Procedural Tree Generation** — biome-driven prefab selection in place of the hardcoded `oak_small`.
 
 
 

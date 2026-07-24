@@ -1,5 +1,6 @@
 #include "world/prefab.h"
 #include "world/block_system.h"
+#include "world/chunk.h"
 #include "world/world.h"
 #include "third_party/cJSON.h"
 #include "core/fileio.h"
@@ -364,6 +365,54 @@ void StampPrefab(struct World *WorldVal, const Prefab *PrefabVal, Vec3 Origin) {
     Vec3 Pos = {Origin.x + (float)Cell.X, Origin.y + (float)Cell.Y,
                 Origin.z + (float)Cell.Z};
     SetBlockInWorld(WorldVal, Pos, Cell.BlockId);
+  }
+}
+
+void StampPrefabIntoChunk(struct Chunk *ChunkVal, const Prefab *PrefabVal,
+                          int WorldOriginX, int WorldOriginY,
+                          int WorldOriginZ) {
+  if (ChunkVal == NULL || PrefabVal == NULL) {
+    return;
+  }
+
+  // Resolve the base corner from the anchor: an explicit origin is subtracted,
+  // otherwise center horizontally with the base at Y so the trunk lands on the
+  // chosen column.
+  int BaseX = 0;
+  int BaseY = 0;
+  int BaseZ = 0;
+  if (PrefabVal->HasOrigin) {
+    BaseX = WorldOriginX - PrefabVal->OriginX;
+    BaseY = WorldOriginY - PrefabVal->OriginY;
+    BaseZ = WorldOriginZ - PrefabVal->OriginZ;
+  } else {
+    BaseX = WorldOriginX - (PrefabVal->SizeX / 2);
+    BaseY = WorldOriginY;
+    BaseZ = WorldOriginZ - (PrefabVal->SizeZ / 2);
+  }
+
+  int ChunkOriginX = ChunkVal->ChunkX * CHUNK_SIZE;
+  int ChunkOriginY = ChunkVal->ChunkY * CHUNK_SIZE;
+  int ChunkOriginZ = ChunkVal->ChunkZ * CHUNK_SIZE;
+
+  for (int Idx = 0; Idx < PrefabVal->CellCount; Idx++) {
+    PrefabCell Cell = PrefabVal->Cells[Idx];
+    int LocalX = (BaseX + (int)Cell.X) - ChunkOriginX;
+    int LocalY = (BaseY + (int)Cell.Y) - ChunkOriginY;
+    int LocalZ = (BaseZ + (int)Cell.Z) - ChunkOriginZ;
+
+    if (LocalX < 0 || LocalX >= CHUNK_SIZE || LocalY < 0 ||
+        LocalY >= CHUNK_SIZE || LocalZ < 0 || LocalZ >= CHUNK_SIZE) {
+      continue;
+    }
+
+    // Air is structurally 0; keep any terrain block already occupying the cell.
+    if (ChunkVal->Data[LocalX][LocalY][LocalZ] != 0) {
+      continue;
+    }
+
+    ChunkVal->Data[LocalX][LocalY][LocalZ] = Cell.BlockId;
+    ChunkVal->SolidBlockCount++;
   }
 }
 

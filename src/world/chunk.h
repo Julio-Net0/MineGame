@@ -21,6 +21,12 @@
 // sampling generation has to do by the same factor.
 #define BIOME_CELLS_PER_CHUNK (CHUNK_SIZE / BIOME_CELL_SIZE)
 
+// Highest Y filled with water during generation. Shared so the feature pass can
+// keep trees off submerged columns using the same threshold terrain uses.
+enum {
+  SEA_LEVEL = 18
+};
+
 typedef struct Chunk {
   MeshHandle ChunkMesh;
   MeshHandle TranslucentMesh;

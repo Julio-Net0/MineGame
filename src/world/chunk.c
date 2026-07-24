@@ -24,9 +24,7 @@ enum {
 #define NOISE_GAIN 0.5F
 #define HEIGHT_VARIANCE 16.0F
 
-enum {
-  SEA_LEVEL = 18
-};
+// SEA_LEVEL is declared in chunk.h so the feature pass shares one threshold.
 
 // Base blocks no biome owns, resolved once from the registry by name. Written
 // only by InitTerrainGeneration, before the workers start, and read-only after.
