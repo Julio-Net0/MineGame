@@ -16,8 +16,6 @@ Goal: Evolve the engine into a portable, backend-agnostic platform and bring the
 - [X] **Biomes (Palettes & Tinting):** Select block palettes per region from a multi-noise climate space — temperature and humidity, plus a `depth` axis derived from the surface so biomes are addressable in X, Y and Z and cave biomes become a data change rather than a rewrite. Biomes are defined in JSON, stored one id per 4×4×4 cell, and tint grass and foliage to their own colours; a per-texel side overlay lets the grass fringe take the biome colour while the dirt behind it keeps its own. See [Asset Formats](docs/asset-formats.md).
 - [X] **Biome Structure Sets:** Drive terrain-appropriate prefab placement from each biome's palette, reusing the feature-placement pass from **Procedural Tree Generation** — biome-driven prefab selection in place of the hardcoded `oak_small`.
 
-
-
 ## 🤓 Tech Stack
 
 * **Language:** C17
