@@ -50,6 +50,13 @@ find_package(Threads REQUIRED)
 # Turning it off becomes interesting when the game ships for real.
 option(MINEGAME_PROFILE "Build with frame profiling instrumentation" ON)
 
+# Off by default: this cross-checks every cell of every chunk snapshot against
+# the live world lookup it replaced, which costs far more than the meshing it
+# guards. It exists to prove the invariant the threaded mesher rests on -- that
+# a snapshot returns exactly what reading the world returned -- and is worth
+# turning on after any change to what the mesher reads.
+option(MINEGAME_SNAPSHOT_VERIFY "Cross-check chunk snapshots against live world reads" OFF)
+
 include(FetchContent)
 FetchContent_Declare(
   raylib
@@ -66,6 +73,7 @@ add_executable(${PROJECT_NAME}
   src/world/world.c
   src/world/chunk.c
   src/world/chunk_worker.c
+  src/world/chunk_snapshot.c
   src/world/block_system.c
   src/world/biome.c
   src/world/prefab.c
@@ -107,6 +115,10 @@ target_include_directories(${PROJECT_NAME} PUBLIC src ${raylib_SOURCE_DIR}/src)
 
 if(MINEGAME_PROFILE)
   target_compile_definitions(${PROJECT_NAME} PRIVATE MINEGAME_PROFILE)
+endif()
+
+if(MINEGAME_SNAPSHOT_VERIFY)
+  target_compile_definitions(${PROJECT_NAME} PRIVATE MINEGAME_SNAPSHOT_VERIFY)
 endif()
 
 # Mirror assets into the build tree on every build. file(COPY) at configure time

@@ -22,11 +22,17 @@
 // mesh build that is noise, against a per-face or per-block loop it would be
 // the measurement. Scopes belong around whole subsystem operations only.
 
-// Scopes must not nest. The frame total minus the sum of the main-thread scopes
+// Scopes must not nest. The frame total minus the sum of the MAIN-THREAD scopes
 // is read as "time in no scope at all", which is how an unaccounted stall gets
 // found; a nested scope would be counted twice and make that remainder lie.
+//
+// Which side a scope runs on is data, not a name to recognise. Mesh building
+// moved from the main thread to the workers, and anything that had hardcoded
+// which scope was worker-side silently started reporting a worker's CPU time as
+// a share of the frame -- which made the remainder read negative.
 typedef enum {
   PROFILE_MESH_BUILD = 0,
+  PROFILE_MESH_SNAPSHOT,
   PROFILE_MESH_UPLOAD,
   PROFILE_WORLD_DRAW,
   PROFILE_WORLD_UPDATE,
@@ -49,6 +55,11 @@ typedef struct {
 } ProfileStats;
 
 const char *GetProfileScopeName(ProfileScope Scope);
+
+// True when the scope is recorded on worker threads. Such a scope measures CPU
+// time summed across those threads, so it can exceed the frame's own duration
+// and must be excluded from the frame-remainder arithmetic.
+bool IsProfileScopeWorkerSide(ProfileScope Scope);
 
 #ifdef MINEGAME_PROFILE
 

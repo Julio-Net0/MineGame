@@ -51,6 +51,17 @@ typedef struct Chunk {
   atomic_bool IsGenerating;
   atomic_bool IsGenerated;
   atomic_bool TerrainJustGenerated;
+
+  // Mesh work is outstanding for this chunk on a worker thread. Eviction must
+  // not recycle the slot while it is set: the worker holds a snapshot, not a
+  // pointer, so it is not a memory-safety fault, but the returning mesh would
+  // describe a position the chunk no longer occupies.
+  atomic_bool IsMeshing;
+
+  // Set when the chunk is edited after its snapshot was captured. The mesh in
+  // flight is then stale, so completion leaves the chunk dirty and it is queued
+  // again rather than the edit staying invisible.
+  atomic_bool DirtiedWhileMeshing;
 } Chunk;
 
 // Resolve the base blocks that are not part of any biome palette (stone, water)

@@ -127,7 +127,8 @@ void UpdateNeighborsDirtyFlag(World *WorldVal, int Cx, int Cy, int Cz){
 
 static void EvictUnneededChunks(World *WorldVal, bool *KeepChunk){
   for(int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++){
-    if(KeepChunk[IdxI] || WorldVal->Chunks[IdxI].IsGenerating){
+    if(KeepChunk[IdxI] || WorldVal->Chunks[IdxI].IsGenerating ||
+       WorldVal->Chunks[IdxI].IsMeshing){
       continue;
     }
 
@@ -253,6 +254,9 @@ void SetBlockInWorld(World *WorldVal, Vec3 Pos, unsigned char BlockId){
 
   SetBlockInChunk(ChunkVal, (Vec3){(float)LocalX, (float)LocalY, (float)LocalZ}, BlockId);
   ChunkVal->IsDirty = true;
+  // A mesh already in flight was built from a snapshot taken before this edit,
+  // so it is stale. Completion checks this rather than clearing IsDirty blindly.
+  if (ChunkVal->IsMeshing) { ChunkVal->DirtiedWhileMeshing = true; }
 
   if (LocalX == 0) {
     Chunk *Neighbor = GetChunkFromWorld(WorldVal, ChunkVal->ChunkX - 1, ChunkVal->ChunkY, ChunkVal->ChunkZ);

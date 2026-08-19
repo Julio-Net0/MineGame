@@ -3,12 +3,18 @@
 #include "world/biome.h"
 #include "world/block_system.h"
 #include "world/chunk.h"
+#include "world/chunk_snapshot.h"
 #include "ui/debug.h"
+#include "core/log.h"
 #include "core/profiler.h"
 #include "core/tint.h"
 #include "core/vecmath.h"
+#include "world/chunk_worker.h"
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
 #include <math.h>
 
 #define VERTICES_PER_FACE 4
@@ -24,7 +30,15 @@ enum {
 };
 #define CHUNK_CLOSE_DISTANCE_FACTOR 2.0F
 #define INDICES_PER_FACES 6
-#define MAX_FACES (CHUNK_SIZE * CHUNK_SIZE * CHUNK_SIZE * INDICES_PER_FACES)
+
+// Sized to what the index type can address, not to the theoretical face count.
+// Indices are unsigned short, so no vertex beyond 65535 is referenceable; the
+// buffers previously held 98304, roughly half of which could never be reached.
+// That waste was tolerable as one global buffer and is not once there is one per
+// meshing thread.
+#define MAX_MESH_QUADS 16383
+#define MAX_MESH_VERTICES (MAX_MESH_QUADS * VERTICES_PER_FACE)
+#define MAX_MESH_INDICES (MAX_MESH_QUADS * INDICES_PER_FACES)
 
 #define CHUNK_SPHERE_RADIUS 14.0F
 #define FRUSTUM_DOT_THRESHOLD 0.4F
@@ -32,28 +46,51 @@ enum {
 // Backend-agnostic mesh-builder scratch. Filled per chunk, then handed to the
 // render backend as MeshData. Holds no renderer (Raylib) types.
 typedef struct {
-  float TempTexCoords[MAX_FACES * VERTICES_PER_FACE * 2];
-  float TempVertices[MAX_FACES * VERTICES_PER_FACE * FLOATS_PER_VERTEX];
-  unsigned short TempIndices[MAX_FACES * INDICES_PER_FACES];
-  unsigned char TempColors[MAX_FACES * VERTICES_PER_FACE * COLOR_CHANNELS];
-  float TempTexCoords2[MAX_FACES * VERTICES_PER_FACE * 2];
+  float TempTexCoords[MAX_MESH_VERTICES * 2];
+  float TempVertices[MAX_MESH_VERTICES * FLOATS_PER_VERTEX];
+  unsigned short TempIndices[MAX_MESH_INDICES];
+  unsigned char TempColors[MAX_MESH_VERTICES * COLOR_CHANNELS];
+  float TempTexCoords2[MAX_MESH_VERTICES * 2];
 
   int VCount;
   int ICount;
 
-  float TransTexCoords[MAX_FACES * VERTICES_PER_FACE * 2];
-  float TransVertices[MAX_FACES * VERTICES_PER_FACE * FLOATS_PER_VERTEX];
-  unsigned short TransIndices[MAX_FACES * INDICES_PER_FACES];
-  unsigned char TransColors[MAX_FACES * VERTICES_PER_FACE * COLOR_CHANNELS];
-  float TransTexCoords2[MAX_FACES * VERTICES_PER_FACE * 2];
+  float TransTexCoords[MAX_MESH_VERTICES * 2];
+  float TransVertices[MAX_MESH_VERTICES * FLOATS_PER_VERTEX];
+  unsigned short TransIndices[MAX_MESH_INDICES];
+  unsigned char TransColors[MAX_MESH_VERTICES * COLOR_CHANNELS];
+  float TransTexCoords2[MAX_MESH_VERTICES * 2];
 
   int TransVCount;
   int TransICount;
+
+  // Everything the passes read. Held here so it travels with the scratch when
+  // meshing moves to the worker threads.
+  ChunkSnapshot Snapshot;
 } MesherState;
 
-static MesherState *GetMesherState(void) {
-  static MesherState State;
-  return &State;
+// Indexed per meshing thread. One slot today; the workers claim their own once
+// meshing leaves the main thread, which is what the snapshot design exists to
+// allow.
+enum {
+  MESHER_SLOT_COUNT = CHUNK_WORKER_THREAD_COUNT
+};
+
+static MesherState *GetMesherStateSlot(int Slot) {
+  static MesherState States[MESHER_SLOT_COUNT];
+  if (Slot < 0 || Slot >= MESHER_SLOT_COUNT) {
+    Slot = 0;
+  }
+  return &States[Slot];
+}
+
+// Emitting past the buffer would wrap the 16-bit indices and produce garbage
+// geometry silently. A chunk dense enough to reach this is pathological, so a
+// truncated mesh is the right degradation — but it must be bounded rather than
+// left to corrupt.
+static bool MesherHasRoom(const MesherState *State, bool IsTrans) {
+  int Used = IsTrans ? State->TransVCount : State->VCount;
+  return (Used + VERTICES_PER_FACE) <= MAX_MESH_VERTICES;
 }
 
 void InitRenderer(void) { RenderBackendInit(); }
@@ -100,7 +137,7 @@ static Color8 BilinearTint(Color8 T00, Color8 T10, Color8 T01, Color8 T11,
 // 0.75. Tint therefore takes a bounded set of values across a border by
 // construction, which is what keeps greedy merging alive there, while inside a
 // biome every block still resolves to the palette's exact declared colour.
-static Color8 ComputeBlockTint(World *WorldVal, Chunk *ChunkVal, int Wx, int Wy,
+static Color8 ComputeBlockTint(const ChunkSnapshot *Snap, int Wx, int Wy,
                                 int Wz, TintSource Source) {
     if (Source == TINT_NONE) {
         return COLOR_WHITE;
@@ -109,19 +146,19 @@ static Color8 ComputeBlockTint(World *WorldVal, Chunk *ChunkVal, int Wx, int Wy,
     // The block's own cell, used as the fallback when a neighbouring chunk is
     // absent, so the edge of the loaded world fades to the local colour instead
     // of snapping to a default biome.
-    unsigned char LocalBiome = GetChunkBiomeAtLocal(
-        ChunkVal, Wx - (ChunkVal->ChunkX * CHUNK_SIZE),
-        Wy - (ChunkVal->ChunkY * CHUNK_SIZE),
-        Wz - (ChunkVal->ChunkZ * CHUNK_SIZE));
+    unsigned char LocalBiome = SnapshotLocalBiome(
+        Snap, Wx - (Snap->ChunkX * CHUNK_SIZE),
+        Wy - (Snap->ChunkY * CHUNK_SIZE),
+        Wz - (Snap->ChunkZ * CHUNK_SIZE));
 
     int CellY = FloorDivCells(Wy, BIOME_CELL_SIZE);
     int LatX = FloorDivCells(Wx - BIOME_CELL_CENTER, BIOME_CELL_SIZE);
     int LatZ = FloorDivCells(Wz - BIOME_CELL_CENTER, BIOME_CELL_SIZE);
 
-    unsigned char B00 = GetBiomeCellFromWorld(WorldVal, LatX, CellY, LatZ, LocalBiome);
-    unsigned char B10 = GetBiomeCellFromWorld(WorldVal, LatX + 1, CellY, LatZ, LocalBiome);
-    unsigned char B01 = GetBiomeCellFromWorld(WorldVal, LatX, CellY, LatZ + 1, LocalBiome);
-    unsigned char B11 = GetBiomeCellFromWorld(WorldVal, LatX + 1, CellY, LatZ + 1, LocalBiome);
+    unsigned char B00 = SnapshotBiomeCell(Snap, LatX, CellY, LatZ, LocalBiome);
+    unsigned char B10 = SnapshotBiomeCell(Snap, LatX + 1, CellY, LatZ, LocalBiome);
+    unsigned char B01 = SnapshotBiomeCell(Snap, LatX, CellY, LatZ + 1, LocalBiome);
+    unsigned char B11 = SnapshotBiomeCell(Snap, LatX + 1, CellY, LatZ + 1, LocalBiome);
 
     // Interior fast path: one biome under all four corners makes the
     // interpolation an identity, so return the declared colour directly rather
@@ -147,41 +184,29 @@ static Color8 ComputeBlockTint(World *WorldVal, Chunk *ChunkVal, int Wx, int Wy,
 // The bottom face is the exception. It samples the plain dirt tile with no
 // overlay to scope the tint, so the tint would land on the whole face; dirt is
 // not grass, so it gets white instead.
-static Color8 GetFaceTint(World *WorldVal, Chunk *ChunkVal, int Wx, int Wy,
+static Color8 GetFaceTint(const ChunkSnapshot *Snap, int Wx, int Wy,
                            int Wz, const BlockType *Def, BlockFace Face) {
     if (Def->Tint == TINT_GRASS && Face == FACE_BOTTOM) {
         return COLOR_WHITE;
     }
-    return ComputeBlockTint(WorldVal, ChunkVal, Wx, Wy, Wz, Def->Tint);
+    return ComputeBlockTint(Snap, Wx, Wy, Wz, Def->Tint);
 }
 
 // ---------------------------------------------------------------------------
 // AO helpers
 // ---------------------------------------------------------------------------
 
-static unsigned char GetBlockIDAtLocal(World *WorldVal, Chunk *ChunkVal, int LocalX, int LocalY, int LocalZ) {
-    if (LocalX >= 0 && LocalX < CHUNK_SIZE &&
-        LocalY >= 0 && LocalY < CHUNK_SIZE &&
-        LocalZ >= 0 && LocalZ < CHUNK_SIZE) {
-        return ChunkVal->Data[LocalX][LocalY][LocalZ];
-    }
-    int Gx = (ChunkVal->ChunkX * CHUNK_SIZE) + LocalX;
-    int Gy = (ChunkVal->ChunkY * CHUNK_SIZE) + LocalY;
-    int Gz = (ChunkVal->ChunkZ * CHUNK_SIZE) + LocalZ;
-    return (unsigned char)GetBlockIDFromWorld(WorldVal, (Vec3){(float)Gx, (float)Gy, (float)Gz});
-}
-
-static bool IsNeighbourTransparent(World *WorldVal, Chunk *ChunkVal,
+static bool IsNeighbourTransparent(const ChunkSnapshot *Snap,
                                    int LocalX, int LocalY, int LocalZ,
                                    unsigned char SelfId) {
-    unsigned char Id = GetBlockIDAtLocal(WorldVal, ChunkVal, LocalX, LocalY, LocalZ);
+    unsigned char Id = SnapshotBlockAt(Snap, LocalX, LocalY, LocalZ);
     if (Id == 0) { return true; }
     if (Id == SelfId && GetBlockDef(SelfId)->IsTransparent) { return false; }
     return GetBlockDef(Id)->IsTransparent;
 }
 
-static bool IsSolidForAO(World *WorldVal, Chunk *ChunkVal, int LocalX, int LocalY, int LocalZ) {
-    unsigned char Id = GetBlockIDAtLocal(WorldVal, ChunkVal, LocalX, LocalY, LocalZ);
+static bool IsSolidForAO(const ChunkSnapshot *Snap, int LocalX, int LocalY, int LocalZ) {
+    unsigned char Id = SnapshotBlockAt(Snap, LocalX, LocalY, LocalZ);
     if (Id == 0) { return false; }
     return GetBlockDef(Id)->IsSolid;
 }
@@ -233,7 +258,7 @@ static const int AO_OFFSETS[6][4][3][3] = {
 
 static const unsigned char AO_BRIGHTNESS[4] = {255, 210, 165, 120};
 
-static bool ComputeFaceAO(World *WorldVal, Chunk *ChunkVal,
+static bool ComputeFaceAO(const ChunkSnapshot *Snap,
                            int LocalX, int LocalY, int LocalZ, BlockFace Face, int Ao[4]) {
     for (int V = 0; V < 4; V++) {
         int S1x = LocalX + AO_OFFSETS[Face][V][0][0];
@@ -246,9 +271,9 @@ static bool ComputeFaceAO(World *WorldVal, Chunk *ChunkVal,
         int Cy  = LocalY + AO_OFFSETS[Face][V][2][1];
         int Cz  = LocalZ + AO_OFFSETS[Face][V][2][2];
 
-        bool S1 = IsSolidForAO(WorldVal, ChunkVal, S1x, S1y, S1z);
-        bool S2 = IsSolidForAO(WorldVal, ChunkVal, S2x, S2y, S2z);
-        bool Corner = IsSolidForAO(WorldVal, ChunkVal, Cx, Cy, Cz);
+        bool S1 = IsSolidForAO(Snap, S1x, S1y, S1z);
+        bool S2 = IsSolidForAO(Snap, S2x, S2y, S2z);
+        bool Corner = IsSolidForAO(Snap, Cx, Cy, Cz);
 
         if (S1 && S2) { Ao[V] = 3; }
         else { Ao[V] = ((int)S1 + (int)S2 + (int)Corner); }
@@ -260,8 +285,7 @@ static bool ComputeFaceAO(World *WorldVal, Chunk *ChunkVal,
 // Mesh builder primitives
 // ---------------------------------------------------------------------------
 
-static void AddFaceIndices(bool IsTrans, bool FlipQuad) {
-    MesherState *State = GetMesherState();
+static void AddFaceIndices(MesherState *State, bool IsTrans, bool FlipQuad) {
     if (IsTrans) {
         if (FlipQuad) {
             State->TransIndices[State->TransICount++] = State->TransVCount + 0;
@@ -305,8 +329,7 @@ static void AddFaceIndices(bool IsTrans, bool FlipQuad) {
 // The tint is one colour for the face (a merged quad carries a single tint by
 // construction, since MasksCompatible refuses to merge across two) while AO
 // still varies per vertex.
-static void AddFaceColors(const int Ao[4], Color8 Tint, bool IsTrans) {
-    MesherState *State = GetMesherState();
+static void AddFaceColors(MesherState *State, const int Ao[4], Color8 Tint, bool IsTrans) {
     int ColIdx = (IsTrans ? State->TransVCount : State->VCount) * COLOR_CHANNELS;
     unsigned char *ColorsArray = IsTrans ? State->TransColors : State->TempColors;
     for (int IdxI = 0; IdxI < 4; IdxI++) {
@@ -318,8 +341,7 @@ static void AddFaceColors(const int Ao[4], Color8 Tint, bool IsTrans) {
 }
 
 // UV: raw tile-count coords [0..W, 0..H] — shader + array texture handles tiling
-static void AddGreedyFaceTexCoords(float UMax, float VMax, bool IsTrans) {
-    MesherState *State = GetMesherState();
+static void AddGreedyFaceTexCoords(MesherState *State, float UMax, float VMax, bool IsTrans) {
     int UvIdx = (IsTrans ? State->TransVCount : State->VCount) * 2;
     float *UvArray = IsTrans ? State->TransTexCoords : State->TempTexCoords;
     UvArray[UvIdx++] = 0.0F; UvArray[UvIdx++] = VMax;
@@ -330,8 +352,7 @@ static void AddGreedyFaceTexCoords(float UMax, float VMax, bool IsTrans) {
 
 // texcoords2.x is the base texture array layer; .y is the optional overlay layer
 // composited over it, or NO_TEXTURE_OVERLAY when the face has none.
-static void AddFaceTexLayer(float Layer, float OverlayLayer, bool IsTrans) {
-    MesherState *State = GetMesherState();
+static void AddFaceTexLayer(MesherState *State, float Layer, float OverlayLayer, bool IsTrans) {
     int Tc2Idx = (IsTrans ? State->TransVCount : State->VCount) * 2;
     float *Tc2Array = IsTrans ? State->TransTexCoords2 : State->TempTexCoords2;
     for (int IdxI = 0; IdxI < 4; IdxI++) {
@@ -341,10 +362,9 @@ static void AddFaceTexLayer(float Layer, float OverlayLayer, bool IsTrans) {
 }
 
 // Greedy quad vertices for a W×H merged face.
-static void AddGreedyFaceVertices(BlockFace Face,
+static void AddGreedyFaceVertices(MesherState *State, BlockFace Face,
                                    int Wx0, int Wy0, int Wz0,
                                    int W, int H, bool IsTrans) {
-    MesherState *State = GetMesherState();
     float *VArray = IsTrans ? State->TransVertices : State->TempVertices;
     int VIdx = (IsTrans ? State->TransVCount : State->VCount) * FLOATS_PER_VERTEX;
 
@@ -394,18 +414,18 @@ static void AddGreedyFaceVertices(BlockFace Face,
     }
 }
 
-static void AddGreedyFaceToMeshBuilder(BlockFace Face,
+static void AddGreedyFaceToMeshBuilder(MesherState *State, BlockFace Face,
                                         int Wx0, int Wy0, int Wz0,
                                         int W, int H,
                                         int TexIndex, int OverlayIndex,
                                         const int Ao[4], Color8 Tint,
                                         bool FlipQuad, bool IsTrans) {
-    MesherState *State = GetMesherState();
-    AddFaceIndices(IsTrans, FlipQuad);
-    AddGreedyFaceTexCoords((float)W, (float)H, IsTrans);
-    AddFaceColors(Ao, Tint, IsTrans);
-    AddFaceTexLayer((float)TexIndex, (float)OverlayIndex, IsTrans);
-    AddGreedyFaceVertices(Face, Wx0, Wy0, Wz0, W, H, IsTrans);
+    if (!MesherHasRoom(State, IsTrans)) { return; }
+    AddFaceIndices(State, IsTrans, FlipQuad);
+    AddGreedyFaceTexCoords(State, (float)W, (float)H, IsTrans);
+    AddFaceColors(State, Ao, Tint, IsTrans);
+    AddFaceTexLayer(State, (float)TexIndex, (float)OverlayIndex, IsTrans);
+    AddGreedyFaceVertices(State, Face, Wx0, Wy0, Wz0, W, H, IsTrans);
 
     if (IsTrans) { State->TransVCount += VERTICES_PER_FACE; }
     else { State->VCount += VERTICES_PER_FACE; }
@@ -471,7 +491,7 @@ static bool MasksCompatible(const FaceMaskData *A, const FaceMaskData *B) {
     return true;
 }
 
-static void BuildGreedyFacePass(World *WorldVal, Chunk *ChunkVal, const FaceDir *Fd) {
+static void BuildGreedyFacePass(const ChunkSnapshot *Snap, const FaceDir *Fd, MesherState *State) {
     for (int Slice = 0; Slice < CHUNK_SIZE; Slice++) {
         FaceMaskData Mask[CHUNK_SIZE][CHUNK_SIZE];
 
@@ -489,7 +509,7 @@ static void BuildGreedyFacePass(World *WorldVal, Chunk *ChunkVal, const FaceDir 
                 int Ly = Lpos[1];
                 int Lz = Lpos[2];
 
-                unsigned char Id = ChunkVal->Data[Lx][Ly][Lz];
+                unsigned char Id = SnapshotBlockAt(Snap, Lx, Ly, Lz);
                 if (Id == 0) { continue; }
 
                 BlockType *Def = GetBlockDef(Id);
@@ -497,17 +517,17 @@ static void BuildGreedyFacePass(World *WorldVal, Chunk *ChunkVal, const FaceDir 
 
                 int Nlpos[3] = { Lpos[0], Lpos[1], Lpos[2] };
                 Nlpos[Fd->NormalAxis] += Fd->NormalDir;
-                if (!IsNeighbourTransparent(WorldVal, ChunkVal,
+                if (!IsNeighbourTransparent(Snap,
                                             Nlpos[0], Nlpos[1], Nlpos[2], Id)) { continue; }
 
                 Mask[U][V].BlockId   = Id;
                 Mask[U][V].TexIndex  = (unsigned char)GetFaceTex(Def, Fd->Face);
-                Mask[U][V].FlipQuad  = ComputeFaceAO(WorldVal, ChunkVal, Lx, Ly, Lz,
+                Mask[U][V].FlipQuad  = ComputeFaceAO(Snap, Lx, Ly, Lz,
                                                      Fd->Face, Mask[U][V].Ao);
                 Mask[U][V].Tint = GetFaceTint(
-                    WorldVal, ChunkVal, (ChunkVal->ChunkX * CHUNK_SIZE) + Lx,
-                    (ChunkVal->ChunkY * CHUNK_SIZE) + Ly,
-                    (ChunkVal->ChunkZ * CHUNK_SIZE) + Lz, Def, Fd->Face);
+                    Snap, (Snap->ChunkX * CHUNK_SIZE) + Lx,
+                    (Snap->ChunkY * CHUNK_SIZE) + Ly,
+                    (Snap->ChunkZ * CHUNK_SIZE) + Lz, Def, Fd->Face);
             }
         }
 
@@ -543,9 +563,9 @@ static void BuildGreedyFacePass(World *WorldVal, Chunk *ChunkVal, const FaceDir 
                 FirstLpos[Fd->NormalAxis] = Slice;
                 FirstLpos[Fd->UAxis] = U0;
                 FirstLpos[Fd->VAxis] = V0;
-                int Wx0 = (ChunkVal->ChunkX * CHUNK_SIZE) + FirstLpos[0];
-                int Wy0 = (ChunkVal->ChunkY * CHUNK_SIZE) + FirstLpos[1];
-                int Wz0 = (ChunkVal->ChunkZ * CHUNK_SIZE) + FirstLpos[2];
+                int Wx0 = (Snap->ChunkX * CHUNK_SIZE) + FirstLpos[0];
+                int Wy0 = (Snap->ChunkY * CHUNK_SIZE) + FirstLpos[1];
+                int Wz0 = (Snap->ChunkZ * CHUNK_SIZE) + FirstLpos[2];
 
                 // Every face in a merged rectangle shares a block id and a face
                 // direction, so its overlay layer is the same throughout and
@@ -553,7 +573,7 @@ static void BuildGreedyFacePass(World *WorldVal, Chunk *ChunkVal, const FaceDir 
                 int OverlayIndex =
                     GetFaceOverlay(GetBlockDef(Origin->BlockId), Fd->Face);
 
-                AddGreedyFaceToMeshBuilder(Fd->Face, Wx0, Wy0, Wz0, W, H,
+                AddGreedyFaceToMeshBuilder(State, Fd->Face, Wx0, Wy0, Wz0, W, H,
                                            Origin->TexIndex, OverlayIndex,
                                            Origin->Ao, Origin->Tint,
                                            Origin->FlipQuad, false);
@@ -570,11 +590,11 @@ static void BuildGreedyFacePass(World *WorldVal, Chunk *ChunkVal, const FaceDir 
 }
 
 // Per-face pass for transparent blocks (no greedy merging)
-static void BuildTransparentFacePass(World *WorldVal, Chunk *ChunkVal) {
+static void BuildTransparentFacePass(const ChunkSnapshot *Snap, MesherState *State) {
     for (int X = 0; X < CHUNK_SIZE; X++) {
         for (int Y = 0; Y < CHUNK_SIZE; Y++) {
             for (int Z = 0; Z < CHUNK_SIZE; Z++) {
-                unsigned char Id = ChunkVal->Data[X][Y][Z];
+                unsigned char Id = SnapshotBlockAt(Snap, X, Y, Z);
                 if (Id == 0) { continue; }
 
                 BlockType *Def = GetBlockDef(Id);
@@ -586,54 +606,54 @@ static void BuildTransparentFacePass(World *WorldVal, Chunk *ChunkVal) {
                 int Ao[4];
                 bool Flip;
 
-                int Wx = (ChunkVal->ChunkX * CHUNK_SIZE) + X;
-                int Wy = (ChunkVal->ChunkY * CHUNK_SIZE) + Y;
-                int Wz = (ChunkVal->ChunkZ * CHUNK_SIZE) + Z;
+                int Wx = (Snap->ChunkX * CHUNK_SIZE) + X;
+                int Wy = (Snap->ChunkY * CHUNK_SIZE) + Y;
+                int Wz = (Snap->ChunkZ * CHUNK_SIZE) + Z;
 
                 // This pass merges nothing, so tint applies straight to each
                 // face with no mask compatibility involved. Computed once per
                 // block: it does not vary by face for a foliage-tinted block.
-                Color8 Tint = ComputeBlockTint(WorldVal, ChunkVal, Wx, Wy, Wz,
+                Color8 Tint = ComputeBlockTint(Snap, Wx, Wy, Wz,
                                                Def->Tint);
 
-                if (IsNeighbourTransparent(WorldVal, ChunkVal, X, Y+1, Z, Id)) {
-                    Flip = ComputeFaceAO(WorldVal, ChunkVal, X, Y, Z, FACE_TOP, Ao);
-                    AddGreedyFaceToMeshBuilder(FACE_TOP, Wx, Wy, Wz, 1, 1,
+                if (IsNeighbourTransparent(Snap, X, Y+1, Z, Id)) {
+                    Flip = ComputeFaceAO(Snap, X, Y, Z, FACE_TOP, Ao);
+                    AddGreedyFaceToMeshBuilder(State, FACE_TOP, Wx, Wy, Wz, 1, 1,
                                                Def->TexTop,
                                                GetFaceOverlay(Def, FACE_TOP),
                                                Ao, Tint, Flip, true);
                 }
-                if (IsNeighbourTransparent(WorldVal, ChunkVal, X, Y-1, Z, Id)) {
-                    Flip = ComputeFaceAO(WorldVal, ChunkVal, X, Y, Z, FACE_BOTTOM, Ao);
-                    AddGreedyFaceToMeshBuilder(FACE_BOTTOM, Wx, Wy, Wz, 1, 1,
+                if (IsNeighbourTransparent(Snap, X, Y-1, Z, Id)) {
+                    Flip = ComputeFaceAO(Snap, X, Y, Z, FACE_BOTTOM, Ao);
+                    AddGreedyFaceToMeshBuilder(State, FACE_BOTTOM, Wx, Wy, Wz, 1, 1,
                                                Def->TexBottom,
                                                GetFaceOverlay(Def, FACE_BOTTOM),
                                                Ao, Tint, Flip, true);
                 }
-                if (IsNeighbourTransparent(WorldVal, ChunkVal, X+1, Y, Z, Id)) {
-                    Flip = ComputeFaceAO(WorldVal, ChunkVal, X, Y, Z, FACE_RIGHT, Ao);
-                    AddGreedyFaceToMeshBuilder(FACE_RIGHT, Wx, Wy, Wz, 1, 1,
+                if (IsNeighbourTransparent(Snap, X+1, Y, Z, Id)) {
+                    Flip = ComputeFaceAO(Snap, X, Y, Z, FACE_RIGHT, Ao);
+                    AddGreedyFaceToMeshBuilder(State, FACE_RIGHT, Wx, Wy, Wz, 1, 1,
                                                Def->TexSide,
                                                GetFaceOverlay(Def, FACE_RIGHT),
                                                Ao, Tint, Flip, true);
                 }
-                if (IsNeighbourTransparent(WorldVal, ChunkVal, X-1, Y, Z, Id)) {
-                    Flip = ComputeFaceAO(WorldVal, ChunkVal, X, Y, Z, FACE_LEFT, Ao);
-                    AddGreedyFaceToMeshBuilder(FACE_LEFT, Wx, Wy, Wz, 1, 1,
+                if (IsNeighbourTransparent(Snap, X-1, Y, Z, Id)) {
+                    Flip = ComputeFaceAO(Snap, X, Y, Z, FACE_LEFT, Ao);
+                    AddGreedyFaceToMeshBuilder(State, FACE_LEFT, Wx, Wy, Wz, 1, 1,
                                                Def->TexSide,
                                                GetFaceOverlay(Def, FACE_LEFT),
                                                Ao, Tint, Flip, true);
                 }
-                if (IsNeighbourTransparent(WorldVal, ChunkVal, X, Y, Z+1, Id)) {
-                    Flip = ComputeFaceAO(WorldVal, ChunkVal, X, Y, Z, FACE_FRONT, Ao);
-                    AddGreedyFaceToMeshBuilder(FACE_FRONT, Wx, Wy, Wz, 1, 1,
+                if (IsNeighbourTransparent(Snap, X, Y, Z+1, Id)) {
+                    Flip = ComputeFaceAO(Snap, X, Y, Z, FACE_FRONT, Ao);
+                    AddGreedyFaceToMeshBuilder(State, FACE_FRONT, Wx, Wy, Wz, 1, 1,
                                                Def->TexSide,
                                                GetFaceOverlay(Def, FACE_FRONT),
                                                Ao, Tint, Flip, true);
                 }
-                if (IsNeighbourTransparent(WorldVal, ChunkVal, X, Y, Z-1, Id)) {
-                    Flip = ComputeFaceAO(WorldVal, ChunkVal, X, Y, Z, FACE_BACK, Ao);
-                    AddGreedyFaceToMeshBuilder(FACE_BACK, Wx, Wy, Wz, 1, 1,
+                if (IsNeighbourTransparent(Snap, X, Y, Z-1, Id)) {
+                    Flip = ComputeFaceAO(Snap, X, Y, Z, FACE_BACK, Ao);
+                    AddGreedyFaceToMeshBuilder(State, FACE_BACK, Wx, Wy, Wz, 1, 1,
                                                Def->TexSide,
                                                GetFaceOverlay(Def, FACE_BACK),
                                                Ao, Tint, Flip, true);
@@ -649,14 +669,14 @@ static void BuildTransparentFacePass(World *WorldVal, Chunk *ChunkVal) {
 // alpha-cutout (the shader discards the transparent texels), so it wants depth
 // writes and depth testing on. Routing it through the blended, depth-write-off
 // translucent pass is what made distant flora draw over near geometry.
-static void AddCrossQuad(const float Verts[4][3], int TexLayer, Color8 Tint) {
+static void AddCrossQuad(MesherState *State, const float Verts[4][3], int TexLayer, Color8 Tint) {
     int AoFull[4] = {0, 0, 0, 0};
-    MesherState *State = GetMesherState();
+    if (!MesherHasRoom(State, false)) { return; }
 
-    AddFaceIndices(false, false);
-    AddGreedyFaceTexCoords(1.0F, 1.0F, false);
-    AddFaceColors(AoFull, Tint, false);
-    AddFaceTexLayer((float)TexLayer, (float)NO_TEXTURE_OVERLAY, false);
+    AddFaceIndices(State, false, false);
+    AddGreedyFaceTexCoords(State, 1.0F, 1.0F, false);
+    AddFaceColors(State, AoFull, Tint, false);
+    AddFaceTexLayer(State, (float)TexLayer, (float)NO_TEXTURE_OVERLAY, false);
 
     int VIdx = State->VCount * FLOATS_PER_VERTEX;
     for (int IdxI = 0; IdxI < VERTICES_PER_FACE; IdxI++) {
@@ -670,20 +690,20 @@ static void AddCrossQuad(const float Verts[4][3], int TexLayer, Color8 Tint) {
 // Per-block pass for cross billboards: two diagonals across the voxel, each
 // emitted front and back so the quads are visible from either side regardless
 // of face-culling state.
-static void BuildCrossPass(World *WorldVal, Chunk *ChunkVal) {
+static void BuildCrossPass(const ChunkSnapshot *Snap, MesherState *State) {
     for (int X = 0; X < CHUNK_SIZE; X++) {
         for (int Y = 0; Y < CHUNK_SIZE; Y++) {
             for (int Z = 0; Z < CHUNK_SIZE; Z++) {
-                unsigned char Id = ChunkVal->Data[X][Y][Z];
+                unsigned char Id = SnapshotBlockAt(Snap, X, Y, Z);
                 if (Id == 0) { continue; }
 
                 BlockType *Def = GetBlockDef(Id);
                 if (Def->RenderType != BLOCK_RENDER_CROSS) { continue; }
 
-                int Wx = (ChunkVal->ChunkX * CHUNK_SIZE) + X;
-                int Wy = (ChunkVal->ChunkY * CHUNK_SIZE) + Y;
-                int Wz = (ChunkVal->ChunkZ * CHUNK_SIZE) + Z;
-                Color8 Tint = ComputeBlockTint(WorldVal, ChunkVal, Wx, Wy, Wz,
+                int Wx = (Snap->ChunkX * CHUNK_SIZE) + X;
+                int Wy = (Snap->ChunkY * CHUNK_SIZE) + Y;
+                int Wz = (Snap->ChunkZ * CHUNK_SIZE) + Z;
+                Color8 Tint = ComputeBlockTint(Snap, Wx, Wy, Wz,
                                                Def->Tint);
                 int Layer = Def->TexTop;
 
@@ -708,10 +728,10 @@ static void BuildCrossPass(World *WorldVal, Chunk *ChunkVal) {
                     {X1, Y0, Z0}, {X0, Y0, Z1}, {X0, Y1, Z1}, {X1, Y1, Z0}
                 };
 
-                AddCrossQuad(DiagA, Layer, Tint);
-                AddCrossQuad(DiagArev, Layer, Tint);
-                AddCrossQuad(DiagB, Layer, Tint);
-                AddCrossQuad(DiagBrev, Layer, Tint);
+                AddCrossQuad(State, DiagA, Layer, Tint);
+                AddCrossQuad(State, DiagArev, Layer, Tint);
+                AddCrossQuad(State, DiagB, Layer, Tint);
+                AddCrossQuad(State, DiagBrev, Layer, Tint);
             }
         }
     }
@@ -720,6 +740,145 @@ static void BuildCrossPass(World *WorldVal, Chunk *ChunkVal) {
 // ---------------------------------------------------------------------------
 // BuildChunkMesh
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Mesh job pool
+// ---------------------------------------------------------------------------
+//
+// A chunk mesh is produced in three steps on two kinds of thread:
+//
+//   main   claim a slot, capture the snapshot, queue the job
+//   worker run the passes into its own scratch, copy the result into the slot
+//   main   upload the result to the GPU, release the slot
+//
+// The snapshot is what makes the middle step safe off the main thread: the
+// worker reads it and nothing else, so no chunk can change underneath it.
+//
+// The pool is bounded. When every slot is taken the main thread simply stops
+// queueing, which throttles the workers to the rate the frame can upload at and
+// keeps memory fixed however far they would otherwise run ahead.
+
+enum {
+  MESH_JOB_SLOT_COUNT = 24,
+
+  MESH_JOB_FREE = 0,
+  MESH_JOB_QUEUED = 1,
+  MESH_JOB_BUILDING = 2,
+  MESH_JOB_READY = 3
+};
+
+// The vertices a finished mesh actually used, copied out of the worker's scratch
+// so the worker can move on to the next chunk instead of waiting for the upload.
+//
+// One allocation per array rather than one block carved into five. Carving would
+// save four calls per mesh on a worker thread, where they cost the frame
+// nothing, in exchange for hand-written offset and alignment arithmetic and a
+// pointer cast the analyser rightly objects to. Not a trade worth making.
+typedef struct {
+  float *Vertices;
+  float *TexCoords;
+  float *TexLayers;
+  unsigned short *Indices;
+  unsigned char *Colors;
+  int VertexCount;
+  int IndexCount;
+} MeshBufferSet;
+
+typedef struct {
+  // The slot the request was made for, plus the coordinate it held at the time.
+  // The chunk is re-checked against the coordinate on completion, so a slot that
+  // turned over despite the in-flight flag yields a discarded mesh rather than
+  // geometry attached to whatever now lives there.
+  Chunk *Target;
+
+  MeshBufferSet Opaque;
+  MeshBufferSet Translucent;
+
+  atomic_int Stage;
+  int ChunkX;
+  int ChunkY;
+  int ChunkZ;
+
+  // Captured before queueing; read only by the worker.
+  ChunkSnapshot Snapshot;
+} MeshJob;
+
+static MeshJob *GetMeshJobs(void) {
+  static MeshJob Jobs[MESH_JOB_SLOT_COUNT];
+  return Jobs;
+}
+
+static void FreeMeshBufferSet(MeshBufferSet *Set) {
+    free(Set->Vertices);
+    free(Set->TexCoords);
+    free(Set->TexLayers);
+    free(Set->Indices);
+    free(Set->Colors);
+    Set->Vertices = NULL;
+    Set->TexCoords = NULL;
+    Set->TexLayers = NULL;
+    Set->Indices = NULL;
+    Set->Colors = NULL;
+    Set->VertexCount = 0;
+    Set->IndexCount = 0;
+}
+
+// Copy the used portion of one scratch set into a fresh allocation. Returns
+// false only when the allocation fails, in which case the set is left empty and
+// the mesh is simply not produced.
+static bool CopyMeshBufferSet(MeshBufferSet *Set, int VertexCount, int IndexCount,
+                              const float *Vertices, const float *TexCoords,
+                              const float *TexLayers,
+                              const unsigned short *Indices,
+                              const unsigned char *Colors) {
+    FreeMeshBufferSet(Set);
+    if (VertexCount <= 0 || IndexCount <= 0) {
+        return true;
+    }
+
+    size_t PositionBytes = (size_t)VertexCount * FLOATS_PER_VERTEX * sizeof(float);
+    size_t PairBytes = (size_t)VertexCount * 2 * sizeof(float);
+    size_t IndexBytes = (size_t)IndexCount * sizeof(unsigned short);
+    size_t ColorBytes = (size_t)VertexCount * COLOR_CHANNELS;
+
+    Set->Vertices = (float *)malloc(PositionBytes);
+    Set->TexCoords = (float *)malloc(PairBytes);
+    Set->TexLayers = (float *)malloc(PairBytes);
+    Set->Indices = (unsigned short *)malloc(IndexBytes);
+    Set->Colors = (unsigned char *)malloc(ColorBytes);
+
+    if (Set->Vertices == NULL || Set->TexCoords == NULL ||
+        Set->TexLayers == NULL || Set->Indices == NULL || Set->Colors == NULL) {
+        FreeMeshBufferSet(Set);
+        return false;
+    }
+
+    memcpy(Set->Vertices, Vertices, PositionBytes);
+    memcpy(Set->TexCoords, TexCoords, PairBytes);
+    memcpy(Set->TexLayers, TexLayers, PairBytes);
+    memcpy(Set->Indices, Indices, IndexBytes);
+    memcpy(Set->Colors, Colors, ColorBytes);
+
+    Set->VertexCount = VertexCount;
+    Set->IndexCount = IndexCount;
+    return true;
+}
+
+static MeshHandle UploadMeshBufferSet(const MeshBufferSet *Set) {
+    if (Set->VertexCount == 0) {
+        return MESH_HANDLE_INVALID;
+    }
+    MeshData Data = {
+        .Vertices = Set->Vertices,
+        .Indices = Set->Indices,
+        .TexCoords = Set->TexCoords,
+        .Colors = Set->Colors,
+        .TexLayers = Set->TexLayers,
+        .VertexCount = Set->VertexCount,
+        .IndexCount = Set->IndexCount,
+    };
+    return RenderUploadMesh(&Data);
+}
 
 void UnloadChunkMesh(Chunk *ChunkVal) {
     if (ChunkVal->HasMesh) {
@@ -734,71 +893,180 @@ void UnloadChunkMesh(Chunk *ChunkVal) {
     }
 }
 
-void BuildChunkMesh(World *WorldVal, Chunk *ChunkVal) {
-    MesherState *State = GetMesherState();
+bool RendererHasMeshJobCapacity(void) {
+    MeshJob *Jobs = GetMeshJobs();
+    for (int Idx = 0; Idx < MESH_JOB_SLOT_COUNT; Idx++) {
+        if (atomic_load_explicit(&Jobs[Idx].Stage, memory_order_acquire) ==
+            MESH_JOB_FREE) {
+            return true;
+        }
+    }
+    return false;
+}
+
+int RendererQueueMeshJob(World *WorldVal, Chunk *ChunkVal) {
+    // An empty chunk needs no mesh at all, so it is resolved here rather than
+    // occupying a slot and a worker to produce nothing.
     if (ChunkVal->SolidBlockCount == 0) {
         UnloadChunkMesh(ChunkVal);
         ChunkVal->IsDirty = false;
+        return -1;
+    }
+
+    MeshJob *Jobs = GetMeshJobs();
+    for (int Idx = 0; Idx < MESH_JOB_SLOT_COUNT; Idx++) {
+        int Expected = MESH_JOB_FREE;
+        if (!atomic_compare_exchange_strong_explicit(
+                &Jobs[Idx].Stage, &Expected, MESH_JOB_BUILDING,
+                memory_order_acq_rel, memory_order_relaxed)) {
+            continue;
+        }
+
+        MeshJob *Job = &Jobs[Idx];
+        Job->Target = ChunkVal;
+        Job->ChunkX = ChunkVal->ChunkX;
+        Job->ChunkY = ChunkVal->ChunkY;
+        Job->ChunkZ = ChunkVal->ChunkZ;
+
+        // Captured here, on the only thread that creates, evicts and edits
+        // chunks, so the gather races nothing and needs no lock.
+        PROFILE_BEGIN(SnapshotStart);
+        CaptureChunkSnapshot(WorldVal, ChunkVal, &Job->Snapshot);
+        PROFILE_END(SnapshotStart, PROFILE_MESH_SNAPSHOT);
+
+#ifdef MINEGAME_SNAPSHOT_VERIFY
+        {
+          int Mismatches = VerifyChunkSnapshot(WorldVal, ChunkVal, &Job->Snapshot);
+          if (Mismatches > 0) {
+            LogError("SNAPSHOT: chunk (%d,%d,%d) had %d mismatching cells",
+                     ChunkVal->ChunkX, ChunkVal->ChunkY, ChunkVal->ChunkZ,
+                     Mismatches);
+          }
+        }
+#endif
+
+        // Cleared only on completion, and only if the chunk was not edited in
+        // the meantime, so an edit landing mid-build is not lost.
+        ChunkVal->IsMeshing = true;
+
+        atomic_store_explicit(&Job->Stage, MESH_JOB_QUEUED, memory_order_release);
+        return Idx;
+    }
+
+    return -1;
+}
+
+// Release a slot claimed by RendererQueueMeshJob that never reached the work
+// queue. Without this the slot would sit occupied forever and the chunk's
+// in-flight flag would keep it from ever being queued again -- the chunk would
+// silently never get a mesh.
+void RendererAbandonMeshJob(int JobId) {
+    if (JobId < 0 || JobId >= MESH_JOB_SLOT_COUNT) {
+        return;
+    }
+    MeshJob *Job = &GetMeshJobs()[JobId];
+    if (Job->Target != NULL) {
+        Job->Target->IsMeshing = false;
+    }
+    Job->Target = NULL;
+    atomic_store_explicit(&Job->Stage, MESH_JOB_FREE, memory_order_release);
+}
+
+// Runs on a worker thread. Touches only the job's own snapshot and the scratch
+// belonging to the mesher slot it was given, so two workers never overlap.
+void RendererBuildMeshJob(int JobId, int MesherSlot) {
+    if (JobId < 0 || JobId >= MESH_JOB_SLOT_COUNT) {
         return;
     }
 
-    // Closed before the uploads below, so this scope covers only the CPU-side
-    // mask scanning and the upload scope covers only the driver handoff. Which
-    // of the two dominates a stall frame is the question this instrument exists
-    // to answer, and a combined scope would leave it unanswered.
+    MeshJob *Job = &GetMeshJobs()[JobId];
+    int Expected = MESH_JOB_QUEUED;
+    if (!atomic_compare_exchange_strong_explicit(&Job->Stage, &Expected,
+                                                 MESH_JOB_BUILDING,
+                                                 memory_order_acq_rel,
+                                                 memory_order_relaxed)) {
+        return;
+    }
+
+    MesherState *State = GetMesherStateSlot(MesherSlot);
+    const ChunkSnapshot *Snap = &Job->Snapshot;
+
     PROFILE_BEGIN(MeshBuildStart);
 
     State->VCount = 0; State->ICount = 0;
     State->TransVCount = 0; State->TransICount = 0;
 
-    // Opaque greedy pass
     static const int FACE_DIRS_COUNT = (int)(sizeof(FACE_DIRS) / sizeof(FACE_DIRS[0]));
-    for (int Fd = 0; Fd < FACE_DIRS_COUNT; Fd++) { BuildGreedyFacePass(WorldVal, ChunkVal, &FACE_DIRS[Fd]); }
-
-    // Transparent per-face pass
-    BuildTransparentFacePass(WorldVal, ChunkVal);
-
-    // Cross-billboard pass (flora and other non-cube blocks)
-    BuildCrossPass(WorldVal, ChunkVal);
+    for (int Fd = 0; Fd < FACE_DIRS_COUNT; Fd++) {
+        BuildGreedyFacePass(Snap, &FACE_DIRS[Fd], State);
+    }
+    BuildTransparentFacePass(Snap, State);
+    BuildCrossPass(Snap, State);
 
     PROFILE_END(MeshBuildStart, PROFILE_MESH_BUILD);
 
-    UnloadChunkMesh(ChunkVal);
-    ChunkVal->IsDirty = false;
+    // Copied out so the worker can take the next chunk instead of waiting for
+    // the main thread to consume its scratch.
+    (void)CopyMeshBufferSet(&Job->Opaque, State->VCount, State->ICount,
+                            State->TempVertices, State->TempTexCoords,
+                            State->TempTexCoords2, State->TempIndices,
+                            State->TempColors);
+    (void)CopyMeshBufferSet(&Job->Translucent, State->TransVCount,
+                            State->TransICount, State->TransVertices,
+                            State->TransTexCoords, State->TransTexCoords2,
+                            State->TransIndices, State->TransColors);
 
-    // Upload opaque mesh
-    if (State->VCount == 0) {
-        ChunkVal->HasMesh = false;
-    } else {
-        MeshData Data = {
-            .Vertices = State->TempVertices,
-            .Indices = State->TempIndices,
-            .TexCoords = State->TempTexCoords,
-            .Colors = State->TempColors,
-            .TexLayers = State->TempTexCoords2,
-            .VertexCount = State->VCount,
-            .IndexCount = State->ICount,
-        };
-        ChunkVal->ChunkMesh = RenderUploadMesh(&Data);
-        ChunkVal->HasMesh = (ChunkVal->ChunkMesh != MESH_HANDLE_INVALID);
+    atomic_store_explicit(&Job->Stage, MESH_JOB_READY, memory_order_release);
+}
+
+// Main thread. Uploads one finished mesh and releases its slot; returns false
+// when nothing is ready.
+bool RendererUploadFinishedMesh(void) {
+    MeshJob *Jobs = GetMeshJobs();
+    for (int Idx = 0; Idx < MESH_JOB_SLOT_COUNT; Idx++) {
+        MeshJob *Job = &Jobs[Idx];
+        if (atomic_load_explicit(&Job->Stage, memory_order_acquire) !=
+            MESH_JOB_READY) {
+            continue;
+        }
+
+        Chunk *ChunkVal = Job->Target;
+
+        // The in-flight flag should have kept the slot, but a mesh describing a
+        // position the chunk no longer occupies must never be uploaded onto
+        // whatever took its place.
+        bool StillOurs = (ChunkVal != NULL) && (ChunkVal->ChunkX == Job->ChunkX) &&
+                         (ChunkVal->ChunkY == Job->ChunkY) &&
+                         (ChunkVal->ChunkZ == Job->ChunkZ);
+
+        if (StillOurs) {
+            UnloadChunkMesh(ChunkVal);
+
+            ChunkVal->ChunkMesh = UploadMeshBufferSet(&Job->Opaque);
+            ChunkVal->HasMesh = (ChunkVal->ChunkMesh != MESH_HANDLE_INVALID);
+
+            ChunkVal->TranslucentMesh = UploadMeshBufferSet(&Job->Translucent);
+            ChunkVal->HasTranslucentMesh =
+                (ChunkVal->TranslucentMesh != MESH_HANDLE_INVALID);
+
+            // Only now, and only if nothing edited the chunk after the snapshot
+            // was taken. Clearing unconditionally would leave a block the player
+            // placed mid-build invisible until something else dirtied the chunk.
+            if (!ChunkVal->DirtiedWhileMeshing) {
+                ChunkVal->IsDirty = false;
+            }
+            ChunkVal->DirtiedWhileMeshing = false;
+            ChunkVal->IsMeshing = false;
+        }
+
+        FreeMeshBufferSet(&Job->Opaque);
+        FreeMeshBufferSet(&Job->Translucent);
+        Job->Target = NULL;
+        atomic_store_explicit(&Job->Stage, MESH_JOB_FREE, memory_order_release);
+        return true;
     }
 
-    // Upload translucent mesh
-    if (State->TransVCount == 0) {
-        ChunkVal->HasTranslucentMesh = false;
-    } else {
-        MeshData Data = {
-            .Vertices = State->TransVertices,
-            .Indices = State->TransIndices,
-            .TexCoords = State->TransTexCoords,
-            .Colors = State->TransColors,
-            .TexLayers = State->TransTexCoords2,
-            .VertexCount = State->TransVCount,
-            .IndexCount = State->TransICount,
-        };
-        ChunkVal->TranslucentMesh = RenderUploadMesh(&Data);
-        ChunkVal->HasTranslucentMesh = (ChunkVal->TranslucentMesh != MESH_HANDLE_INVALID);
-    }
+    return false;
 }
 
 // ---------------------------------------------------------------------------

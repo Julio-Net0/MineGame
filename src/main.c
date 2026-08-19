@@ -97,6 +97,7 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
   InitWorldSave();
   InitWorld(*WorldVal);
   LogInfo("MAIN THREAD ID: %llu", (unsigned long long)pthread_self());
+  SetChunkWorkerMeshRunner(RendererBuildMeshJob);
   InitChunkWorker();
 
   *PlayerVal =
@@ -165,37 +166,64 @@ static void UpdateWorldChunks(World *WorldVal) {
   }
 }
 
-// Build chunk meshes until the time budget is spent or the count allowance is
-// used, whichever comes first. Called exactly once per rendered frame, which is
-// what makes the minimum-one-build guarantee frame-scoped without needing to be
-// tracked: this call is the frame's only one.
-static void BuildMeshes(World *WorldVal, int CountAllowance, double Deadline) {
-  int MeshesBuilt = 0;
+// Hand dirty chunks to the workers. Capturing the snapshot is the only cost the
+// frame pays here; the mask scanning it feeds happens off-thread.
+static void QueueMeshWork(World *WorldVal) {
+  for (int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++) {
+    Chunk *ChunkVal = &WorldVal->Chunks[IdxI];
+
+    // Already in flight: queueing it again would build the same chunk twice and
+    // race two results onto one slot.
+    if (ChunkVal->IsMeshing) {
+      continue;
+    }
+
+    if (ChunkVal->IsGenerated && ChunkVal->IsDirty && !ChunkVal->IsGenerating &&
+        AreNeighborsGenerated(WorldVal, ChunkVal)) {
+      // The pool being full is the back-pressure that keeps the workers from
+      // running arbitrarily far ahead of what the frame can upload.
+      if (!RendererHasMeshJobCapacity()) {
+        return;
+      }
+
+      int JobId = RendererQueueMeshJob(WorldVal, ChunkVal);
+      if (JobId < 0) {
+        continue;
+      }
+      if (!EnqueueChunkMeshJob(JobId)) {
+        // The work queue refused it, so the slot must go back. Leaving it
+        // claimed would strand it and leave the chunk's in-flight flag set,
+        // which would keep it from ever being queued again.
+        RendererAbandonMeshJob(JobId);
+        return;
+      }
+    }
+  }
+}
+
+// Upload finished meshes until the time budget is spent or the count allowance
+// is used, whichever comes first. Called exactly once per rendered frame, which
+// is what makes the minimum-one guarantee frame-scoped without tracking it: this
+// call is the frame's only one.
+static void UploadFinishedMeshes(int CountAllowance, double Deadline) {
+  int Uploaded = 0;
   if (CountAllowance <= 0) {
     return;
   }
 
-  for (int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++) {
-    Chunk *ChunkVal = &WorldVal->Chunks[IdxI];
+  while (RendererUploadFinishedMesh()) {
+    Uploaded++;
 
-    if (ChunkVal->IsGenerated && ChunkVal->IsDirty && !ChunkVal->IsGenerating &&
-        AreNeighborsGenerated(WorldVal, ChunkVal)) {
-      BuildChunkMesh(WorldVal, ChunkVal);
-      MeshesBuilt++;
+    if (Uploaded >= CountAllowance) {
+      break;
+    }
 
-      if (MeshesBuilt >= CountAllowance) {
-        break;
-      }
-
-      // Checked only after a chunk is built, never before the first one. A
-      // chunk is not interruptible, so the budget can overrun by one chunk's
-      // cost; that is deliberate. On hardware where a single chunk costs more
-      // than the whole budget, testing first would build nothing at all and the
-      // world would never finish loading. Overrunning by one chunk degrades
-      // gracefully, building nothing does not.
-      if (PlatformGetTime() >= Deadline) {
-        break;
-      }
+    // Checked only after an upload, never before the first one. An upload is not
+    // interruptible, so the budget can overrun by one; that is deliberate. On
+    // hardware where a single upload costs more than the whole budget, testing
+    // first would upload nothing and the world would never finish loading.
+    if (PlatformGetTime() >= Deadline) {
+      break;
     }
   }
 }
@@ -320,11 +348,13 @@ int main(void) {
       Accumulator = 0.0F;
     }
 
-    // Once per frame, after the ticks so it sees this frame's bookkeeping. The
-    // deadline is taken here rather than before the tick loop so the budget
-    // measures meshing alone and is not eaten by the simulation ahead of it.
-    BuildMeshes(WorldVal, MAX_MESHES_PER_FRAME,
-                PlatformGetTime() + MESH_BUDGET_SECONDS);
+    // Once per frame, after the ticks so it sees this frame's bookkeeping.
+    // Queueing costs the frame only the snapshot captures; the mask scanning
+    // runs on the workers. The budget now bounds the GPU uploads, which are the
+    // only part that must stay on this thread.
+    QueueMeshWork(WorldVal);
+    UploadFinishedMeshes(MAX_MESHES_PER_FRAME,
+                         PlatformGetTime() + MESH_BUDGET_SECONDS);
 
     UpdateChat(&ChatVal, ActiveCamera, &PlayerVal, WorldVal);
 

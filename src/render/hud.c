@@ -134,10 +134,13 @@ static void DrawTimingPanel(void) {
 
   for (int Scope = 0; Scope < PROFILE_SCOPE_COUNT; Scope++) {
     const ProfileStats *Stats = &Panel->Stats[Scope];
-    // Worker generation is summed across four threads, so it can legitimately
-    // exceed the frame's own wall-clock duration. Marked so that reading it as
-    // a share of the frame is not the obvious interpretation.
-    const char *Suffix = (Scope == PROFILE_WORKER_GENERATION) ? " (4T sum)" : "";
+    // A worker-side scope is summed across those threads, so it can legitimately
+    // exceed the frame's own duration. Marked so that reading it as a share of
+    // the frame is not the obvious interpretation. Asked of the profiler rather
+    // than hardcoded: mesh building moved to the workers, and a hardcoded test
+    // would have kept labelling it as main-thread time.
+    const char *Suffix =
+        IsProfileScopeWorkerSide((ProfileScope)Scope) ? " (worker)" : "";
     snprintf(Line, sizeof(Line), "%-12s %8u %8u %8u %6u%s",
              GetProfileScopeName((ProfileScope)Scope), Stats->AverageUs,
              Stats->MaxUs, Stats->OnePercentLowUs, Stats->AverageEntries,

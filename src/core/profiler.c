@@ -11,8 +11,31 @@
 // Kept within twelve characters: the overlay lays the panel out in fixed
 // columns and a longer name would push the numbers out of alignment.
 static const char *const SCOPE_NAMES[PROFILE_SCOPE_COUNT] = {
-    "Mesh build", "Mesh upload", "World draw", "World update", "Frame setup",
-    "HUD 2D",     "Present",     "Player",     "Worker gen"};
+    "Mesh build", "Mesh snap",  "Mesh upload", "World draw",  "World update",
+    "Frame setup", "HUD 2D",    "Present",     "Player",      "Worker gen"};
+
+// Kept beside the names so the two cannot drift: a scope that changes threads
+// has to be updated here, and the overlay and any analysis read it rather than
+// recognising a name.
+static const bool SCOPE_IS_WORKER_SIDE[PROFILE_SCOPE_COUNT] = {
+    true,  /* Mesh build   */
+    false, /* Mesh snap    */
+    false, /* Mesh upload  */
+    false, /* World draw   */
+    false, /* World update */
+    false, /* Frame setup  */
+    false, /* HUD 2D       */
+    false, /* Present      */
+    false, /* Player       */
+    true   /* Worker gen   */
+};
+
+bool IsProfileScopeWorkerSide(ProfileScope Scope) {
+  if (Scope < 0 || Scope >= PROFILE_SCOPE_COUNT) {
+    return false;
+  }
+  return SCOPE_IS_WORKER_SIDE[Scope];
+}
 
 const char *GetProfileScopeName(ProfileScope Scope) {
   if (Scope < 0 || Scope >= PROFILE_SCOPE_COUNT) {
