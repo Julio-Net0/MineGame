@@ -11,6 +11,10 @@
 #define BYTE_MASK 0xFF
 #define BYTE_SHIFT 8
 
+#define MILLIS_PER_SECOND 1000U
+#define NANOS_PER_MILLI   1000000L
+#define MICROS_PER_SECOND 1000000ULL
+
 #ifdef _WIN32
 #include <direct.h>
 #include <intrin.h>
@@ -29,8 +33,8 @@ static void SleepMillis(unsigned Millis) {
 #ifdef _WIN32
   Sleep(Millis);
 #else
-  struct timespec Req = {.tv_sec = Millis / 1000,
-                         .tv_nsec = (long)(Millis % 1000) * 1000000L};
+  struct timespec Req = {.tv_sec = Millis / MILLIS_PER_SECOND,
+                         .tv_nsec = (long)(Millis % MILLIS_PER_SECOND) * NANOS_PER_MILLI};
   nanosleep(&Req, (struct timespec *)0);
 #endif
 }
@@ -47,7 +51,9 @@ typedef struct {
 #define REGION_LOCAL_SLICE     (REGION_AXIS_SIZE * REGION_AXIS_SIZE)
 #define REGION_TOTAL_CHUNKS    (REGION_AXIS_SIZE * REGION_AXIS_SIZE * REGION_AXIS_SIZE)
 #define REGION_HEADER_ENTRY_BYTES 3
-#define REGION_HEADER_SIZE     (REGION_TOTAL_CHUNKS * REGION_HEADER_ENTRY_BYTES)
+// Long-typed so the header offsets it feeds are computed in the width fseek
+// takes, rather than multiplied as int and widened afterwards.
+#define REGION_HEADER_SIZE     ((long)REGION_TOTAL_CHUNKS * REGION_HEADER_ENTRY_BYTES)
 #define REGION_SLOT_SIZE       4096
 #define REGION_PATH_BUF_SIZE   256
 #define REGION_COORD_BITS      20
@@ -119,7 +125,7 @@ static uint64_t GenerateRandomSeed(void) {
 #else
   struct timeval Tv;
   gettimeofday(&Tv, NULL);
-  uint64_t Hires = (uint64_t)Tv.tv_sec * 1000000ULL + (uint64_t)Tv.tv_usec;
+  uint64_t Hires = ((uint64_t)Tv.tv_sec * MICROS_PER_SECOND) + (uint64_t)Tv.tv_usec;
 #endif
   return Hires ^ ((uint64_t)time((time_t *)0) * REGION_LCG_MULTIPLIER);
 }
@@ -276,7 +282,7 @@ void SaveChunkToDisk(Chunk *ChunkVal) {
   Entry[1] = (uint8_t)(DataSize & BYTE_MASK);
   Entry[2] = (uint8_t)((DataSize >> BYTE_SHIFT) & BYTE_MASK);
 
-  if (fseek(FileVal, Idx * REGION_HEADER_ENTRY_BYTES, SEEK_SET) != 0) {
+  if (fseek(FileVal, (long)Idx * REGION_HEADER_ENTRY_BYTES, SEEK_SET) != 0) {
     LogWarn("WORLD_SAVE: Failed to seek header entry in %s", Path);
     fclose(FileVal);
     pthread_mutex_unlock(RegionMutex);
@@ -327,7 +333,7 @@ bool LoadChunkFromDisk(Chunk *ChunkVal) {
 
   int Idx = LocalIndex(ChunkVal->ChunkX, ChunkVal->ChunkY, ChunkVal->ChunkZ);
 
-  if (fseek(FileVal, Idx * REGION_HEADER_ENTRY_BYTES, SEEK_SET) != 0) {
+  if (fseek(FileVal, (long)Idx * REGION_HEADER_ENTRY_BYTES, SEEK_SET) != 0) {
     fclose(FileVal);
     pthread_mutex_unlock(RegionMutex);
     return false;

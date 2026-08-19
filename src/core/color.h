@@ -9,6 +9,8 @@ typedef struct {
   unsigned char R, G, B, A;
 } Color8;
 
+#define COLOR8_CHANNEL_MAX 255.0F
+
 // Named constants used by the UI (values mirror the Raylib colors they replace).
 #define COLOR_BLACK ((Color8){0, 0, 0, 255})
 #define COLOR_WHITE ((Color8){255, 255, 255, 255})
@@ -17,7 +19,7 @@ typedef struct {
 
 // Returns Color with its alpha replaced by Factor in [0, 1] (replaces Fade).
 static inline Color8 Color8Alpha(Color8 Color, float Factor) {
-  Color.A = (unsigned char)(Factor * 255.0F);
+  Color.A = (unsigned char)(Factor * COLOR8_CHANNEL_MAX);
   return Color;
 }
 
