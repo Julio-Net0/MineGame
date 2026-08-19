@@ -1,6 +1,17 @@
 # MineGame: Voxel Engine Experiment
 
+[![CI](https://github.com/Julio-Net0/MineGame/actions/workflows/ci.yml/badge.svg)](https://github.com/Julio-Net0/MineGame/actions/workflows/ci.yml)
+
 A minimalist Minecraft-inspired voxel engine built from scratch in **C17** using the **Raylib** library. This project focuses on learning game engine fundamentals, memory management, and clean code practices.
+
+## ⬇️ Downloads
+
+Every push to `master` is built for both platforms automatically.
+
+* **[Latest release](https://github.com/Julio-Net0/MineGame/releases/latest)** — a published version, kept forever.
+* **[Nightly build](https://github.com/Julio-Net0/MineGame/releases/tag/nightly)** — the newest `master` commit, replaced on every push.
+
+Extract the archive and run the executable from inside the extracted folder. See **[Releases](docs/releases.md)** for platform requirements and the release process.
 
 ## 🌱 Roadmap to Beta 4
 Goal: Evolve the engine into a portable, backend-agnostic platform and bring the world to life with prefab-driven structures and vegetation.
@@ -27,6 +38,7 @@ Goal: Evolve the engine into a portable, backend-agnostic platform and bring the
 ## 📚 Documentation
 
 * **[Asset Formats](docs/asset-formats.md)** — the JSON the engine loads at startup: biome definitions, climate tuning, and the block tint property.
+* **[Releases](docs/releases.md)** — the nightly build versus versioned releases, what each archive contains, how to cut a release, and what a failed build means.
 
 ## 🔧 Getting Started
 
