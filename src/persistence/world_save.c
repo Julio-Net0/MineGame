@@ -45,7 +45,16 @@ typedef struct {
   uint64_t Seed;
 } LevelMetadata;
 
-#define REGION_MUTEX_BUCKETS 64
+// Region file locks are striped, not keyed: a fixed set of mutexes, all
+// initialised at startup, chosen by hashing the region coordinate. Two regions
+// may share a stripe, which only means their file operations serialise against
+// each other — the work under the lock is disk I/O either way.
+//
+// This count is not a capacity. It trades memory against collision probability
+// and nothing else; five threads contend (four workers plus the main thread
+// saving during eviction), so 64 makes an incidental collision rare. Raising or
+// lowering it cannot break correctness.
+#define REGION_MUTEX_STRIPES 64
 
 #define REGION_AXIS_SIZE       8
 #define REGION_LOCAL_SLICE     (REGION_AXIS_SIZE * REGION_AXIS_SIZE)
@@ -63,60 +72,50 @@ typedef struct {
 #define REGION_LCG_MULTIPLIER  6364136223846793005ULL
 #define REGION_OPEN_RETRIES    5
 #define REGION_WAIT_ON_BUSY_MS 1
-#define REGION_HALF_FULL_LIMIT (REGION_MUTEX_BUCKETS / 2)
+
+// SplitMix64 finalizer constants, the same construction world/feature.c uses for
+// its cell hashing.
+#define REGION_MIX_A 0xBF58476D1CE4E5B9ULL
+#define REGION_MIX_B 0x94D049BB133111EBULL
+#define REGION_MIX_SHIFT_A 30U
+#define REGION_MIX_SHIFT_B 27U
+#define REGION_MIX_SHIFT_C 31U
 
 typedef struct {
-  int64_t Key;
-  pthread_mutex_t Mutex;
-} RegionMutexEntry;
-
-typedef struct {
-  RegionMutexEntry RegionMutexTable[REGION_MUTEX_BUCKETS];
-  int RegionMutexCount;
-  pthread_mutex_t TableMutex;
+  pthread_mutex_t RegionMutexes[REGION_MUTEX_STRIPES];
   uint64_t WorldSeed;
 } WorldSaveState;
 
 static WorldSaveState *GetWorldSaveState(void) {
-  static WorldSaveState State = {
-    .RegionMutexCount = 0,
-    .TableMutex = PTHREAD_MUTEX_INITIALIZER,
-    .WorldSeed = 0
-  };
+  static WorldSaveState State = { .WorldSeed = 0 };
   return &State;
 }
 
-static pthread_mutex_t* GetOrCreateRegionMutex(int Rx, int Ry, int Rz) {
+// All three axes are mixed, not truncated. The previous derivation packed the
+// coordinate as Rx<<40 | Ry<<20 | Rz and took it modulo the bucket count, which
+// kept only the low bits — those come entirely from Rz, so Rx and Ry never
+// affected the slot and sixteen regions differing only in those two axes landed
+// on one bucket.
+static int RegionStripeIndex(int Rx, int Ry, int Rz) {
+  uint64_t Hash = ((uint64_t)(uint32_t)Rx << REGION_COORD_SHIFT_TOP) ^
+                  ((uint64_t)(uint32_t)Ry << REGION_COORD_SHIFT_MID) ^
+                  (uint64_t)(uint32_t)Rz;
+
+  Hash = (Hash ^ (Hash >> REGION_MIX_SHIFT_A)) * REGION_MIX_A;
+  Hash = (Hash ^ (Hash >> REGION_MIX_SHIFT_B)) * REGION_MIX_B;
+  Hash = Hash ^ (Hash >> REGION_MIX_SHIFT_C);
+
+  // Unsigned throughout, so a negative region coordinate cannot produce a
+  // negative index.
+  return (int)(Hash % (uint64_t)REGION_MUTEX_STRIPES);
+}
+
+// Always returns a usable lock. Every mutex is initialised before any worker
+// thread exists, so this reads no shared mutable state and can neither fail nor
+// need a lock of its own.
+static pthread_mutex_t *GetRegionMutex(int Rx, int Ry, int Rz) {
   WorldSaveState *State = GetWorldSaveState();
-  pthread_mutex_lock(&State->TableMutex);
-
-  int64_t Key = ((int64_t)Rx << REGION_COORD_SHIFT_TOP) | ((int64_t)(Ry & REGION_COORD_MASK) << REGION_COORD_SHIFT_MID) | (int64_t)(Rz & REGION_COORD_MASK);
-  if (Key == 0) { Key = INT64_MIN; }
-
-  int Slot = (int)((uint64_t)Key % REGION_MUTEX_BUCKETS);
-  #pragma unroll 4
-  for (int IdxI = 0; IdxI < REGION_MUTEX_BUCKETS; IdxI++) {
-    int Idx = (Slot + IdxI) % REGION_MUTEX_BUCKETS;
-    if (State->RegionMutexTable[Idx].Key == Key) {
-      pthread_mutex_unlock(&State->TableMutex);
-      return &State->RegionMutexTable[Idx].Mutex;
-    }
-    if (State->RegionMutexTable[Idx].Key == 0) {
-      if (State->RegionMutexCount >= REGION_HALF_FULL_LIMIT) {
-        LogFatal("WORLD_SAVE: Region mutex table full, cannot lock region (%d,%d,%d)", Rx, Ry, Rz);
-        pthread_mutex_unlock(&State->TableMutex);
-        return (pthread_mutex_t *)0;
-      }
-      State->RegionMutexTable[Idx].Key = Key;
-      pthread_mutex_init(&State->RegionMutexTable[Idx].Mutex, (const pthread_mutexattr_t *)0);
-      State->RegionMutexCount++;
-      pthread_mutex_unlock(&State->TableMutex);
-      return &State->RegionMutexTable[Idx].Mutex;
-    }
-  }
-  LogFatal("WORLD_SAVE: Region mutex table probe exhausted for region (%d,%d,%d)", Rx, Ry, Rz);
-  pthread_mutex_unlock(&State->TableMutex);
-  return (pthread_mutex_t *)0;
+  return &State->RegionMutexes[RegionStripeIndex(Rx, Ry, Rz)];
 }
 
 static uint64_t GenerateRandomSeed(void) {
@@ -132,11 +131,11 @@ static uint64_t GenerateRandomSeed(void) {
 
 void InitWorldSave(void) {
   WorldSaveState *State = GetWorldSaveState();
-  #pragma unroll 4
-  for (int IdxI = 0; IdxI < REGION_MUTEX_BUCKETS; IdxI++) {
-    State->RegionMutexTable[IdxI].Key = 0;
+  // Before InitChunkWorker creates any thread, so no lookup ever initialises.
+  for (int IdxI = 0; IdxI < REGION_MUTEX_STRIPES; IdxI++) {
+    pthread_mutex_init(&State->RegionMutexes[IdxI],
+                       (const pthread_mutexattr_t *)0);
   }
-  State->RegionMutexCount = 0;
 
   make_dir("world");
 
@@ -147,7 +146,6 @@ void InitWorldSave(void) {
   if (FileVal != (FILE *)0) {
     if (fread(&Meta, sizeof(LevelMetadata), 1, FileVal) == 1) {
       bool MagicMatch = true;
-      #pragma unroll 4
       for (int IdxI = 0; IdxI < 4; IdxI++) {
         if (Meta.Magic[IdxI] != "MGWL"[IdxI]) {
           MagicMatch = false;
@@ -172,7 +170,6 @@ void InitWorldSave(void) {
 
     FileVal = fopen("world/level.bin", "wb");
     if (FileVal != (FILE *)0) {
-      #pragma unroll 4
       for (int IdxI = 0; IdxI < 4; IdxI++) {
         Meta.Magic[IdxI] = "MGWL"[IdxI];
       }
@@ -190,11 +187,8 @@ void InitWorldSave(void) {
 
 void CloseWorldSave(void) {
   WorldSaveState *State = GetWorldSaveState();
-  #pragma unroll 4
-  for (int IdxI = 0; IdxI < REGION_MUTEX_BUCKETS; IdxI++) {
-    if (State->RegionMutexTable[IdxI].Key != 0) {
-      pthread_mutex_destroy(&State->RegionMutexTable[IdxI].Mutex);
-    }
+  for (int IdxI = 0; IdxI < REGION_MUTEX_STRIPES; IdxI++) {
+    pthread_mutex_destroy(&State->RegionMutexes[IdxI]);
   }
   LogInfo("WORLD_SAVE: Closed save system.");
 }
@@ -242,8 +236,7 @@ void SaveChunkToDisk(Chunk *ChunkVal) {
   int Ry = FloorDiv8(ChunkVal->ChunkY);
   int Rz = FloorDiv8(ChunkVal->ChunkZ);
 
-  pthread_mutex_t *RegionMutex = GetOrCreateRegionMutex(Rx, Ry, Rz);
-  if (RegionMutex == (pthread_mutex_t *)0) { return; }
+  pthread_mutex_t *RegionMutex = GetRegionMutex(Rx, Ry, Rz);
   pthread_mutex_lock(RegionMutex);
 
   char Path[REGION_PATH_BUF_SIZE];
@@ -258,7 +251,6 @@ void SaveChunkToDisk(Chunk *ChunkVal) {
       return;
     }
     uint8_t EmptyHeader[REGION_HEADER_SIZE];
-    #pragma unroll 4
     for (int IdxI = 0; IdxI < REGION_HEADER_SIZE; IdxI++) {
       EmptyHeader[IdxI] = 0;
     }
@@ -318,8 +310,7 @@ bool LoadChunkFromDisk(Chunk *ChunkVal) {
   int Ry = FloorDiv8(ChunkVal->ChunkY);
   int Rz = FloorDiv8(ChunkVal->ChunkZ);
 
-  pthread_mutex_t *RegionMutex = GetOrCreateRegionMutex(Rx, Ry, Rz);
-  if (RegionMutex == (pthread_mutex_t *)0) { return false; }
+  pthread_mutex_t *RegionMutex = GetRegionMutex(Rx, Ry, Rz);
   pthread_mutex_lock(RegionMutex);
 
   char Path[REGION_PATH_BUF_SIZE];
