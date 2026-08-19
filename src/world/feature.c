@@ -5,6 +5,7 @@
 #include "persistence/world_save.h"
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 
 enum {
   // World space is tiled into GRID_CELL_SIZE^2 columns; each cell yields at most
