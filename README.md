@@ -25,7 +25,7 @@ Every push to `master` is built for Linux and Windows automatically. Pick a perm
 
 **Rendering.** Chunk meshes are built with greedy meshing — adjacent faces of the same block merge into single quads, cutting vertex count by up to 80% — with per-vertex ambient occlusion for soft contact shadows, and split into opaque and translucent passes so glass and water sort correctly. Everything draws from a single texture atlas through VBOs, with view-frustum culling skipping whatever is behind the camera. Biome tint rides the vertex colour channel and is composited per texel in the shader, which lets a grass block's side fringe take the biome colour while the dirt behind it keeps its own.
 
-**Gameplay.** A physics-driven player with AABB collision, gravity and jumping walks the world, breaks and places blocks through a DDA raycast, and picks materials from a hotbar. An in-game console (`T`) provides `/help`, `/tp`, `/pos`, `/seed`, `/save`, `/list`, `/noclip`, `/biome`, `/debug` and `/prefab` — the last of which selects a volume of blocks and exports it straight to a JSON prefab file the generator can then use. Modified chunks are serialised to disk with run-length encoding and loaded back seamlessly, so player creations survive.
+**Gameplay.** A physics-driven player with AABB collision, gravity and jumping walks the world, breaks and places blocks through a DDA raycast, and picks materials from a hotbar. An in-game console (`T`) provides `/help`, `/tp`, `/pos`, `/seed`, `/save`, `/list`, `/noclip`, `/biome`, `/debug`, `/profile` and `/prefab` — the last of which selects a volume of blocks and exports it straight to a JSON prefab file the generator can then use. Modified chunks are serialised to disk with run-length encoding and loaded back seamlessly, so player creations survive.
 
 **Architecture.** Simulation runs on a fixed 20 TPS tick with render interpolation, independent of framerate, while four worker threads generate and load chunks in the background and a time-sliced budget caps how many meshes are built per tick. Raylib is confined to four translation units behind platform, input, and render-backend interfaces; the world, physics, persistence and generation code uses engine-owned math types and knows nothing about the renderer — which keeps the door open for a different graphics backend and for a dedicated-server split later.
 
@@ -77,7 +77,7 @@ Or build it manually:
 #### 🪟 Windows
 
 ```powershell
-cmake -S . -B build -G "Ninja" -DCMAKE_C_COMPILER=gcc
+cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=gcc
 cmake --build build
 ./build/MineGame.exe
 ```
@@ -85,10 +85,41 @@ cmake --build build
 #### 🐧 Linux
 
 ```bash
-cmake -S . -B build -G "Ninja" -DCMAKE_C_COMPILER=gcc
+cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=gcc
 cmake --build build
 ./build/MineGame
 ```
+
+### Build options
+
+| Option | Default | What it does |
+|---|---|---|
+| `CMAKE_BUILD_TYPE` | `Release` | `Release` is `-O3` plus link-time optimization. `Debug` is `-g` with no optimization and no LTO. |
+| `MINEGAME_PROFILE` | `ON` | Frame profiler: per-subsystem timings in the F3 overlay and the `/profile` command. `OFF` removes it entirely — no timing calls, no storage, nothing left in the binary. |
+
+`CMAKE_BUILD_TYPE` is defaulted by the project rather than left empty. CMake contributes no optimization flags when it is unset, so an unconfigured tree would compile at GCC's `-O0` default — which for this engine is several times slower and would make any profiling measurement misleading. Building unoptimized is still available, it just has to be asked for:
+
+```bash
+cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_COMPILER=gcc
+```
+
+No `-march` or `-mtune` is set, deliberately. The lowest-end machine this engine targets is an AMD Phenom II (K10), which has SSE3 and SSE4a but not SSSE3 or SSE4.1/4.2 — so a binary built for the common `x86-64-v2` level would fault with an illegal instruction on it, and `-march=native` would bake the build machine's instruction set into a binary meant to run elsewhere. The plain `x86-64` baseline is the target.
+
+### Profiling
+
+With `MINEGAME_PROFILE=ON` (the default), **F3** shows per-subsystem wall-clock timings in microseconds — average, peak and 1% low over a rolling window — alongside the whole-frame total, so the share the subsystems do not account for is visible rather than guessed.
+
+Microseconds rather than milliseconds, and per subsystem rather than one frame total, because FPS is useless as an optimization signal: on a fast machine the entire frame costs a fraction of a millisecond, while the ratio between a subsystem's cost before and after a change holds across machines even when the absolute framerate does not.
+
+For a capture that outlives the window:
+
+```
+/profile start     # one CSV row per frame, no length limit
+/profile stop
+/profile dump      # snapshot of the rolling window instead
+```
+
+Files land next to the executable as `profile_NNN.csv`, never overwriting a previous capture.
 
 ### ❗Known Issues/Limitations
 * **WSL Compatibility:** The cursor might not be disabled as expected when running this project on Windows Subsystem for Linux (WSL).
