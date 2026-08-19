@@ -67,6 +67,25 @@ jobs:
       - name: Build
         run: cmake --build build
 
+      # The build tree is already the shipping layout: CMake's POST_BUILD step
+      # mirrors assets/ next to the executable, so packaging is a straight copy.
+      # Everything lives under one top-level directory so extracting does not
+      # scatter files across the user's download folder.
+      - name: Package
+        run: |
+          STAGE=dist/MineGame-linux-x86_64
+          mkdir -p "$STAGE"
+          cp build/MineGame "$STAGE/"
+          cp -r build/assets "$STAGE/assets"
+          (cd dist && zip -r MineGame-linux-x86_64.zip MineGame-linux-x86_64)
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: MineGame-linux-x86_64
+          path: dist/MineGame-linux-x86_64.zip
+          if-no-files-found: error
+
   lint:
     name: Clang-Tidy
     runs-on: ubuntu-24.04
@@ -116,15 +135,24 @@ jobs:
       # report; third-party sources vendored inside src/ are excluded explicitly.
       # The project rules forbid NOLINT, so any diagnostic must be fixed, and
       # every warning is promoted to an error to enforce that.
+      # Output is buffered rather than streamed: clang-tidy prints a per-file
+      # "N warnings generated" tally that counts diagnostics the header filter
+      # suppressed, so a clean run still scrolls past thousands of raylib
+      # warnings that were never reported. Only a failing run prints anything.
       - name: Run Clang-Tidy
         run: |
           mapfile -t SOURCES < <(find src -name '*.c' -not -path 'src/third_party/*' | sort)
           printf 'Analysing %d translation units\n' "${#SOURCES[@]}"
-          clang-tidy-19 -p build --quiet \
-            --header-filter="^${GITHUB_WORKSPACE}/src/" \
-            --exclude-header-filter=".*/src/third_party/.*" \
-            --warnings-as-errors='*' \
-            "${SOURCES[@]}"
+          if clang-tidy-19 -p build --quiet \
+               --header-filter="^${GITHUB_WORKSPACE}/src/" \
+               --exclude-header-filter=".*/src/third_party/.*" \
+               --warnings-as-errors='*' \
+               "${SOURCES[@]}" > clang-tidy.log 2>&1; then
+            echo 'Clang-Tidy: clean'
+          else
+            grep -v -e 'warnings generated' -e 'Processing file' clang-tidy.log
+            exit 1
+          fi
 
   build-windows:
     name: Build (Windows)
@@ -148,6 +176,7 @@ jobs:
           update: false
           cache: true
           install: >-
+            zip
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-cmake
             mingw-w64-x86_64-ninja
@@ -159,11 +188,37 @@ jobs:
           key: deps-windows-${{ hashFiles('CMakeLists.txt') }}
           restore-keys: deps-windows-
 
+      # -static is what makes the archive self-contained: MinGW otherwise links
+      # libwinpthread and libgcc as DLLs, which a player's machine will not have.
       - name: Configure
         run: >
           cmake -S . -B build -G Ninja
           -DCMAKE_C_COMPILER=gcc
           -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          -DCMAKE_EXE_LINKER_FLAGS=-static
 
       - name: Build
         run: cmake --build build
+
+      - name: Verify no toolchain DLL dependencies
+        run: |
+          objdump -p build/MineGame.exe | grep 'DLL Name' | sort
+          if objdump -p build/MineGame.exe | grep -qiE 'lib(gcc|winpthread|stdc\+\+)'; then
+            echo 'Binary links a MinGW runtime DLL that players will not have.'
+            exit 1
+          fi
+
+      - name: Package
+        run: |
+          STAGE=dist/MineGame-windows-x86_64
+          mkdir -p "$STAGE"
+          cp build/MineGame.exe "$STAGE/"
+          cp -r build/assets "$STAGE/assets"
+          (cd dist && zip -r MineGame-windows-x86_64.zip MineGame-windows-x86_64)
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: MineGame-windows-x86_64
+          path: dist/MineGame-windows-x86_64.zip
+          if-no-files-found: error
