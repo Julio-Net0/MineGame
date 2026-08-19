@@ -1,5 +1,9 @@
 ---
 HeaderFilterRegex: 'src/.*'
+# raylib keeps its public headers in a directory also named src/, so the filter
+# above matches the fetched dependency tree and buries the project's own
+# diagnostics. Requires clang-tidy 19 or newer.
+ExcludeHeaderFilterRegex: '.*_deps.*'
 
 Checks: >
   bugprone-*,

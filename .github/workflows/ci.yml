@@ -67,6 +67,65 @@ jobs:
       - name: Build
         run: cmake --build build
 
+  lint:
+    name: Clang-Tidy
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Version-pinned on purpose: an unpinned clang-tidy gains checks over time
+      # and would fail a build with no source change. 19 is the oldest release
+      # carrying --exclude-header-filter, which is what keeps vendored code out.
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build \
+            clang-tidy-19 \
+            libasound2-dev \
+            libx11-dev \
+            libxrandr-dev \
+            libxi-dev \
+            libgl1-mesa-dev \
+            libglu1-mesa-dev \
+            libxcursor-dev \
+            libxinerama-dev \
+            libwayland-dev \
+            libxkbcommon-dev
+
+      # Separate key from build-linux: this job only populates the dependency
+      # sources, so sharing a key would let a half-built tree poison that cache.
+      - name: Cache fetched dependencies
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: deps-lint-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: deps-lint-
+
+      # Configure alone emits compile_commands.json and populates the raylib
+      # headers the analysis needs; no compilation step is required.
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_C_COMPILER=gcc
+          -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      # The header filter is anchored at the checkout's own src/ so raylib's
+      # headers, which also live under a directory named src/, stay out of the
+      # report; third-party sources vendored inside src/ are excluded explicitly.
+      # The project rules forbid NOLINT, so any diagnostic must be fixed, and
+      # every warning is promoted to an error to enforce that.
+      - name: Run Clang-Tidy
+        run: |
+          mapfile -t SOURCES < <(find src -name '*.c' -not -path 'src/third_party/*' | sort)
+          printf 'Analysing %d translation units\n' "${#SOURCES[@]}"
+          clang-tidy-19 -p build --quiet \
+            --header-filter="^${GITHUB_WORKSPACE}/src/" \
+            --exclude-header-filter=".*/src/third_party/.*" \
+            --warnings-as-errors='*' \
+            "${SOURCES[@]}"
+
   build-windows:
     name: Build (Windows)
     runs-on: windows-2022
