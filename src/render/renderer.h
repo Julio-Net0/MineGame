@@ -37,6 +37,10 @@ void UnloadChunkMesh(Chunk *ChunkVal);
 void DrawWorld(World *WorldVal, RenderCamera CameraVal);
 void DrawAABBDebug(World *WorldVal, Player *PlayerVal);
 void DrawPrefabSelection(Player *PlayerVal);
-bool IsChunkInFrustum(RenderCamera CameraVal, Chunk *ChunkVal);
+// How many chunk meshes the last DrawWorld actually submitted. Reported by the
+// debug overlay, which used to re-run the visibility test over every chunk to
+// find out -- a second full scan to recompute something the draw loop had just
+// finished counting.
+int GetLastRenderedChunkCount(void);
 
 #endif

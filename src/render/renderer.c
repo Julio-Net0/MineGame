@@ -43,26 +43,39 @@ enum {
 #define CHUNK_SPHERE_RADIUS 14.0F
 #define FRUSTUM_DOT_THRESHOLD 0.4F
 
-// Backend-agnostic mesh-builder scratch. Filled per chunk, then handed to the
-// render backend as MeshData. Holds no renderer (Raylib) types.
+// Which of a chunk's three meshes a face belongs to.
+//
+// Solid cube faces and alpha-cutout flora used to share one buffer, because both
+// want depth writes and depth testing on. They are separated because they want
+// different fragment shaders: a shader containing `discard` costs the hardware
+// its early depth rejection for the whole draw, and only the cutout geometry
+// needs the test. Merged, every chunk carrying a single flower would forfeit
+// early-Z across all of its solid geometry.
+typedef enum {
+  MESH_TARGET_OPAQUE = 0,
+  MESH_TARGET_CUTOUT,
+  MESH_TARGET_TRANSLUCENT,
+  MESH_TARGET_COUNT
+} MeshTarget;
+
+// Backend-agnostic mesh-builder scratch for one target. Filled per chunk, then
+// handed to the render backend as MeshData. Holds no renderer (Raylib) types.
 typedef struct {
-  float TempTexCoords[MAX_MESH_VERTICES * 2];
-  float TempVertices[MAX_MESH_VERTICES * FLOATS_PER_VERTEX];
-  unsigned short TempIndices[MAX_MESH_INDICES];
-  unsigned char TempColors[MAX_MESH_VERTICES * COLOR_CHANNELS];
-  float TempTexCoords2[MAX_MESH_VERTICES * 2];
+  float TexCoords[MAX_MESH_VERTICES * 2];
+  float Vertices[MAX_MESH_VERTICES * FLOATS_PER_VERTEX];
+  unsigned short Indices[MAX_MESH_INDICES];
+  unsigned char Colors[MAX_MESH_VERTICES * COLOR_CHANNELS];
+  float TexLayers[MAX_MESH_VERTICES * 2];
 
   int VCount;
   int ICount;
+} MeshScratch;
 
-  float TransTexCoords[MAX_MESH_VERTICES * 2];
-  float TransVertices[MAX_MESH_VERTICES * FLOATS_PER_VERTEX];
-  unsigned short TransIndices[MAX_MESH_INDICES];
-  unsigned char TransColors[MAX_MESH_VERTICES * COLOR_CHANNELS];
-  float TransTexCoords2[MAX_MESH_VERTICES * 2];
-
-  int TransVCount;
-  int TransICount;
+typedef struct {
+  // All three sized alike. The cutout set will hold far less than the others in
+  // practice, but a shared size keeps every emit path identical and removes a
+  // class of bug where a helper indexes the wrong capacity.
+  MeshScratch Sets[MESH_TARGET_COUNT];
 
   // Everything the passes read. Held here so it travels with the scratch when
   // meshing moves to the worker threads.
@@ -88,9 +101,8 @@ static MesherState *GetMesherStateSlot(int Slot) {
 // geometry silently. A chunk dense enough to reach this is pathological, so a
 // truncated mesh is the right degradation — but it must be bounded rather than
 // left to corrupt.
-static bool MesherHasRoom(const MesherState *State, bool IsTrans) {
-  int Used = IsTrans ? State->TransVCount : State->VCount;
-  return (Used + VERTICES_PER_FACE) <= MAX_MESH_VERTICES;
+static bool MesherHasRoom(const MesherState *State, MeshTarget Target) {
+  return (State->Sets[Target].VCount + VERTICES_PER_FACE) <= MAX_MESH_VERTICES;
 }
 
 void InitRenderer(void) { RenderBackendInit(); }
@@ -285,39 +297,24 @@ static bool ComputeFaceAO(const ChunkSnapshot *Snap,
 // Mesh builder primitives
 // ---------------------------------------------------------------------------
 
-static void AddFaceIndices(MesherState *State, bool IsTrans, bool FlipQuad) {
-    if (IsTrans) {
-        if (FlipQuad) {
-            State->TransIndices[State->TransICount++] = State->TransVCount + 0;
-            State->TransIndices[State->TransICount++] = State->TransVCount + 1;
-            State->TransIndices[State->TransICount++] = State->TransVCount + 3;
-            State->TransIndices[State->TransICount++] = State->TransVCount + 1;
-            State->TransIndices[State->TransICount++] = State->TransVCount + 2;
-            State->TransIndices[State->TransICount++] = State->TransVCount + 3;
-        } else {
-            State->TransIndices[State->TransICount++] = State->TransVCount + 0;
-            State->TransIndices[State->TransICount++] = State->TransVCount + 1;
-            State->TransIndices[State->TransICount++] = State->TransVCount + 2;
-            State->TransIndices[State->TransICount++] = State->TransVCount + 0;
-            State->TransIndices[State->TransICount++] = State->TransVCount + 2;
-            State->TransIndices[State->TransICount++] = State->TransVCount + 3;
-        }
+static void AddFaceIndices(MesherState *State, MeshTarget Target, bool FlipQuad) {
+    MeshScratch *Set = &State->Sets[Target];
+    unsigned short Base = (unsigned short)Set->VCount;
+
+    if (FlipQuad) {
+        Set->Indices[Set->ICount++] = Base + 0;
+        Set->Indices[Set->ICount++] = Base + 1;
+        Set->Indices[Set->ICount++] = Base + 3;
+        Set->Indices[Set->ICount++] = Base + 1;
+        Set->Indices[Set->ICount++] = Base + 2;
+        Set->Indices[Set->ICount++] = Base + 3;
     } else {
-        if (FlipQuad) {
-            State->TempIndices[State->ICount++] = State->VCount + 0;
-            State->TempIndices[State->ICount++] = State->VCount + 1;
-            State->TempIndices[State->ICount++] = State->VCount + 3;
-            State->TempIndices[State->ICount++] = State->VCount + 1;
-            State->TempIndices[State->ICount++] = State->VCount + 2;
-            State->TempIndices[State->ICount++] = State->VCount + 3;
-        } else {
-            State->TempIndices[State->ICount++] = State->VCount + 0;
-            State->TempIndices[State->ICount++] = State->VCount + 1;
-            State->TempIndices[State->ICount++] = State->VCount + 2;
-            State->TempIndices[State->ICount++] = State->VCount + 0;
-            State->TempIndices[State->ICount++] = State->VCount + 2;
-            State->TempIndices[State->ICount++] = State->VCount + 3;
-        }
+        Set->Indices[Set->ICount++] = Base + 0;
+        Set->Indices[Set->ICount++] = Base + 1;
+        Set->Indices[Set->ICount++] = Base + 2;
+        Set->Indices[Set->ICount++] = Base + 0;
+        Set->Indices[Set->ICount++] = Base + 2;
+        Set->Indices[Set->ICount++] = Base + 3;
     }
 }
 
@@ -329,44 +326,49 @@ static void AddFaceIndices(MesherState *State, bool IsTrans, bool FlipQuad) {
 // The tint is one colour for the face (a merged quad carries a single tint by
 // construction, since MasksCompatible refuses to merge across two) while AO
 // still varies per vertex.
-static void AddFaceColors(MesherState *State, const int Ao[4], Color8 Tint, bool IsTrans) {
-    int ColIdx = (IsTrans ? State->TransVCount : State->VCount) * COLOR_CHANNELS;
-    unsigned char *ColorsArray = IsTrans ? State->TransColors : State->TempColors;
+static void AddFaceColors(MesherState *State, MeshTarget Target, const int Ao[4],
+                          Color8 Tint) {
+    MeshScratch *Set = &State->Sets[Target];
+    int ColIdx = Set->VCount * COLOR_CHANNELS;
     for (int IdxI = 0; IdxI < 4; IdxI++) {
-        ColorsArray[ColIdx++] = Tint.R;
-        ColorsArray[ColIdx++] = Tint.G;
-        ColorsArray[ColIdx++] = Tint.B;
-        ColorsArray[ColIdx++] = AO_BRIGHTNESS[Ao[IdxI]];
+        Set->Colors[ColIdx++] = Tint.R;
+        Set->Colors[ColIdx++] = Tint.G;
+        Set->Colors[ColIdx++] = Tint.B;
+        Set->Colors[ColIdx++] = AO_BRIGHTNESS[Ao[IdxI]];
     }
 }
 
 // UV: raw tile-count coords [0..W, 0..H] — shader + array texture handles tiling
-static void AddGreedyFaceTexCoords(MesherState *State, float UMax, float VMax, bool IsTrans) {
-    int UvIdx = (IsTrans ? State->TransVCount : State->VCount) * 2;
-    float *UvArray = IsTrans ? State->TransTexCoords : State->TempTexCoords;
-    UvArray[UvIdx++] = 0.0F; UvArray[UvIdx++] = VMax;
-    UvArray[UvIdx++] = UMax; UvArray[UvIdx++] = VMax;
-    UvArray[UvIdx++] = UMax; UvArray[UvIdx++] = 0.0F;
-    UvArray[UvIdx++] = 0.0F; UvArray[UvIdx++] = 0.0F;
+static void AddGreedyFaceTexCoords(MesherState *State, MeshTarget Target,
+                                   float UMax, float VMax) {
+    MeshScratch *Set = &State->Sets[Target];
+    int UvIdx = Set->VCount * 2;
+    Set->TexCoords[UvIdx++] = 0.0F; Set->TexCoords[UvIdx++] = VMax;
+    Set->TexCoords[UvIdx++] = UMax; Set->TexCoords[UvIdx++] = VMax;
+    Set->TexCoords[UvIdx++] = UMax; Set->TexCoords[UvIdx++] = 0.0F;
+    Set->TexCoords[UvIdx++] = 0.0F; Set->TexCoords[UvIdx++] = 0.0F;
 }
 
 // texcoords2.x is the base texture array layer; .y is the optional overlay layer
 // composited over it, or NO_TEXTURE_OVERLAY when the face has none.
-static void AddFaceTexLayer(MesherState *State, float Layer, float OverlayLayer, bool IsTrans) {
-    int Tc2Idx = (IsTrans ? State->TransVCount : State->VCount) * 2;
-    float *Tc2Array = IsTrans ? State->TransTexCoords2 : State->TempTexCoords2;
+static void AddFaceTexLayer(MesherState *State, MeshTarget Target, float Layer,
+                            float OverlayLayer) {
+    MeshScratch *Set = &State->Sets[Target];
+    int Tc2Idx = Set->VCount * 2;
     for (int IdxI = 0; IdxI < 4; IdxI++) {
-        Tc2Array[Tc2Idx + (IdxI * 2) + 0] = Layer;
-        Tc2Array[Tc2Idx + (IdxI * 2) + 1] = OverlayLayer;
+        Set->TexLayers[Tc2Idx + (IdxI * 2) + 0] = Layer;
+        Set->TexLayers[Tc2Idx + (IdxI * 2) + 1] = OverlayLayer;
     }
 }
 
 // Greedy quad vertices for a W×H merged face.
-static void AddGreedyFaceVertices(MesherState *State, BlockFace Face,
+static void AddGreedyFaceVertices(MesherState *State, MeshTarget Target,
+                                   BlockFace Face,
                                    int Wx0, int Wy0, int Wz0,
-                                   int W, int H, bool IsTrans) {
-    float *VArray = IsTrans ? State->TransVertices : State->TempVertices;
-    int VIdx = (IsTrans ? State->TransVCount : State->VCount) * FLOATS_PER_VERTEX;
+                                   int W, int H) {
+    MeshScratch *Set = &State->Sets[Target];
+    float *VArray = Set->Vertices;
+    int VIdx = Set->VCount * FLOATS_PER_VERTEX;
 
     float X0 = (float)Wx0 - BLOCK_HALF_SIZE;
     float Y0 = (float)Wy0 - BLOCK_HALF_SIZE;
@@ -414,21 +416,21 @@ static void AddGreedyFaceVertices(MesherState *State, BlockFace Face,
     }
 }
 
-static void AddGreedyFaceToMeshBuilder(MesherState *State, BlockFace Face,
+static void AddGreedyFaceToMeshBuilder(MesherState *State, MeshTarget Target,
+                                        BlockFace Face,
                                         int Wx0, int Wy0, int Wz0,
                                         int W, int H,
                                         int TexIndex, int OverlayIndex,
                                         const int Ao[4], Color8 Tint,
-                                        bool FlipQuad, bool IsTrans) {
-    if (!MesherHasRoom(State, IsTrans)) { return; }
-    AddFaceIndices(State, IsTrans, FlipQuad);
-    AddGreedyFaceTexCoords(State, (float)W, (float)H, IsTrans);
-    AddFaceColors(State, Ao, Tint, IsTrans);
-    AddFaceTexLayer(State, (float)TexIndex, (float)OverlayIndex, IsTrans);
-    AddGreedyFaceVertices(State, Face, Wx0, Wy0, Wz0, W, H, IsTrans);
+                                        bool FlipQuad) {
+    if (!MesherHasRoom(State, Target)) { return; }
+    AddFaceIndices(State, Target, FlipQuad);
+    AddGreedyFaceTexCoords(State, Target, (float)W, (float)H);
+    AddFaceColors(State, Target, Ao, Tint);
+    AddFaceTexLayer(State, Target, (float)TexIndex, (float)OverlayIndex);
+    AddGreedyFaceVertices(State, Target, Face, Wx0, Wy0, Wz0, W, H);
 
-    if (IsTrans) { State->TransVCount += VERTICES_PER_FACE; }
-    else { State->VCount += VERTICES_PER_FACE; }
+    State->Sets[Target].VCount += VERTICES_PER_FACE;
 }
 
 // ---------------------------------------------------------------------------
@@ -573,10 +575,11 @@ static void BuildGreedyFacePass(const ChunkSnapshot *Snap, const FaceDir *Fd, Me
                 int OverlayIndex =
                     GetFaceOverlay(GetBlockDef(Origin->BlockId), Fd->Face);
 
-                AddGreedyFaceToMeshBuilder(State, Fd->Face, Wx0, Wy0, Wz0, W, H,
+                AddGreedyFaceToMeshBuilder(State, MESH_TARGET_OPAQUE, Fd->Face,
+                                           Wx0, Wy0, Wz0, W, H,
                                            Origin->TexIndex, OverlayIndex,
                                            Origin->Ao, Origin->Tint,
-                                           Origin->FlipQuad, false);
+                                           Origin->FlipQuad);
 
                 // Mark used
                 for (int Ku = 0; Ku < W; Ku++) {
@@ -618,45 +621,45 @@ static void BuildTransparentFacePass(const ChunkSnapshot *Snap, MesherState *Sta
 
                 if (IsNeighbourTransparent(Snap, X, Y+1, Z, Id)) {
                     Flip = ComputeFaceAO(Snap, X, Y, Z, FACE_TOP, Ao);
-                    AddGreedyFaceToMeshBuilder(State, FACE_TOP, Wx, Wy, Wz, 1, 1,
-                                               Def->TexTop,
+                    AddGreedyFaceToMeshBuilder(State, MESH_TARGET_TRANSLUCENT, FACE_TOP,
+                                               Wx, Wy, Wz, 1, 1, Def->TexTop,
                                                GetFaceOverlay(Def, FACE_TOP),
-                                               Ao, Tint, Flip, true);
+                                               Ao, Tint, Flip);
                 }
                 if (IsNeighbourTransparent(Snap, X, Y-1, Z, Id)) {
                     Flip = ComputeFaceAO(Snap, X, Y, Z, FACE_BOTTOM, Ao);
-                    AddGreedyFaceToMeshBuilder(State, FACE_BOTTOM, Wx, Wy, Wz, 1, 1,
-                                               Def->TexBottom,
+                    AddGreedyFaceToMeshBuilder(State, MESH_TARGET_TRANSLUCENT, FACE_BOTTOM,
+                                               Wx, Wy, Wz, 1, 1, Def->TexBottom,
                                                GetFaceOverlay(Def, FACE_BOTTOM),
-                                               Ao, Tint, Flip, true);
+                                               Ao, Tint, Flip);
                 }
                 if (IsNeighbourTransparent(Snap, X+1, Y, Z, Id)) {
                     Flip = ComputeFaceAO(Snap, X, Y, Z, FACE_RIGHT, Ao);
-                    AddGreedyFaceToMeshBuilder(State, FACE_RIGHT, Wx, Wy, Wz, 1, 1,
-                                               Def->TexSide,
+                    AddGreedyFaceToMeshBuilder(State, MESH_TARGET_TRANSLUCENT, FACE_RIGHT,
+                                               Wx, Wy, Wz, 1, 1, Def->TexSide,
                                                GetFaceOverlay(Def, FACE_RIGHT),
-                                               Ao, Tint, Flip, true);
+                                               Ao, Tint, Flip);
                 }
                 if (IsNeighbourTransparent(Snap, X-1, Y, Z, Id)) {
                     Flip = ComputeFaceAO(Snap, X, Y, Z, FACE_LEFT, Ao);
-                    AddGreedyFaceToMeshBuilder(State, FACE_LEFT, Wx, Wy, Wz, 1, 1,
-                                               Def->TexSide,
+                    AddGreedyFaceToMeshBuilder(State, MESH_TARGET_TRANSLUCENT, FACE_LEFT,
+                                               Wx, Wy, Wz, 1, 1, Def->TexSide,
                                                GetFaceOverlay(Def, FACE_LEFT),
-                                               Ao, Tint, Flip, true);
+                                               Ao, Tint, Flip);
                 }
                 if (IsNeighbourTransparent(Snap, X, Y, Z+1, Id)) {
                     Flip = ComputeFaceAO(Snap, X, Y, Z, FACE_FRONT, Ao);
-                    AddGreedyFaceToMeshBuilder(State, FACE_FRONT, Wx, Wy, Wz, 1, 1,
-                                               Def->TexSide,
+                    AddGreedyFaceToMeshBuilder(State, MESH_TARGET_TRANSLUCENT, FACE_FRONT,
+                                               Wx, Wy, Wz, 1, 1, Def->TexSide,
                                                GetFaceOverlay(Def, FACE_FRONT),
-                                               Ao, Tint, Flip, true);
+                                               Ao, Tint, Flip);
                 }
                 if (IsNeighbourTransparent(Snap, X, Y, Z-1, Id)) {
                     Flip = ComputeFaceAO(Snap, X, Y, Z, FACE_BACK, Ao);
-                    AddGreedyFaceToMeshBuilder(State, FACE_BACK, Wx, Wy, Wz, 1, 1,
-                                               Def->TexSide,
+                    AddGreedyFaceToMeshBuilder(State, MESH_TARGET_TRANSLUCENT, FACE_BACK,
+                                               Wx, Wy, Wz, 1, 1, Def->TexSide,
                                                GetFaceOverlay(Def, FACE_BACK),
-                                               Ao, Tint, Flip, true);
+                                               Ao, Tint, Flip);
                 }
             }
         }
@@ -671,20 +674,22 @@ static void BuildTransparentFacePass(const ChunkSnapshot *Snap, MesherState *Sta
 // translucent pass is what made distant flora draw over near geometry.
 static void AddCrossQuad(MesherState *State, const float Verts[4][3], int TexLayer, Color8 Tint) {
     int AoFull[4] = {0, 0, 0, 0};
-    if (!MesherHasRoom(State, false)) { return; }
+    if (!MesherHasRoom(State, MESH_TARGET_CUTOUT)) { return; }
 
-    AddFaceIndices(State, false, false);
-    AddGreedyFaceTexCoords(State, 1.0F, 1.0F, false);
-    AddFaceColors(State, AoFull, Tint, false);
-    AddFaceTexLayer(State, (float)TexLayer, (float)NO_TEXTURE_OVERLAY, false);
+    MeshScratch *Set = &State->Sets[MESH_TARGET_CUTOUT];
+    AddFaceIndices(State, MESH_TARGET_CUTOUT, false);
+    AddGreedyFaceTexCoords(State, MESH_TARGET_CUTOUT, 1.0F, 1.0F);
+    AddFaceColors(State, MESH_TARGET_CUTOUT, AoFull, Tint);
+    AddFaceTexLayer(State, MESH_TARGET_CUTOUT, (float)TexLayer,
+                    (float)NO_TEXTURE_OVERLAY);
 
-    int VIdx = State->VCount * FLOATS_PER_VERTEX;
+    int VIdx = Set->VCount * FLOATS_PER_VERTEX;
     for (int IdxI = 0; IdxI < VERTICES_PER_FACE; IdxI++) {
-        State->TempVertices[VIdx++] = Verts[IdxI][0];
-        State->TempVertices[VIdx++] = Verts[IdxI][1];
-        State->TempVertices[VIdx++] = Verts[IdxI][2];
+        Set->Vertices[VIdx++] = Verts[IdxI][0];
+        Set->Vertices[VIdx++] = Verts[IdxI][1];
+        Set->Vertices[VIdx++] = Verts[IdxI][2];
     }
-    State->VCount += VERTICES_PER_FACE;
+    Set->VCount += VERTICES_PER_FACE;
 }
 
 // Per-block pass for cross billboards: two diagonals across the voxel, each
@@ -791,8 +796,7 @@ typedef struct {
   // geometry attached to whatever now lives there.
   Chunk *Target;
 
-  MeshBufferSet Opaque;
-  MeshBufferSet Translucent;
+  MeshBufferSet Sets[MESH_TARGET_COUNT];
 
   atomic_int Stage;
   int ChunkX;
@@ -885,6 +889,11 @@ void UnloadChunkMesh(Chunk *ChunkVal) {
         RenderFreeMesh(ChunkVal->ChunkMesh);
         ChunkVal->ChunkMesh = MESH_HANDLE_INVALID;
         ChunkVal->HasMesh = false;
+    }
+    if (ChunkVal->HasCutoutMesh) {
+        RenderFreeMesh(ChunkVal->CutoutMesh);
+        ChunkVal->CutoutMesh = MESH_HANDLE_INVALID;
+        ChunkVal->HasCutoutMesh = false;
     }
     if (ChunkVal->HasTranslucentMesh) {
         RenderFreeMesh(ChunkVal->TranslucentMesh);
@@ -993,8 +1002,10 @@ void RendererBuildMeshJob(int JobId, int MesherSlot) {
 
     PROFILE_BEGIN(MeshBuildStart);
 
-    State->VCount = 0; State->ICount = 0;
-    State->TransVCount = 0; State->TransICount = 0;
+    for (int Target = 0; Target < MESH_TARGET_COUNT; Target++) {
+        State->Sets[Target].VCount = 0;
+        State->Sets[Target].ICount = 0;
+    }
 
     static const int FACE_DIRS_COUNT = (int)(sizeof(FACE_DIRS) / sizeof(FACE_DIRS[0]));
     for (int Fd = 0; Fd < FACE_DIRS_COUNT; Fd++) {
@@ -1007,14 +1018,12 @@ void RendererBuildMeshJob(int JobId, int MesherSlot) {
 
     // Copied out so the worker can take the next chunk instead of waiting for
     // the main thread to consume its scratch.
-    (void)CopyMeshBufferSet(&Job->Opaque, State->VCount, State->ICount,
-                            State->TempVertices, State->TempTexCoords,
-                            State->TempTexCoords2, State->TempIndices,
-                            State->TempColors);
-    (void)CopyMeshBufferSet(&Job->Translucent, State->TransVCount,
-                            State->TransICount, State->TransVertices,
-                            State->TransTexCoords, State->TransTexCoords2,
-                            State->TransIndices, State->TransColors);
+    for (int Target = 0; Target < MESH_TARGET_COUNT; Target++) {
+        const MeshScratch *Set = &State->Sets[Target];
+        (void)CopyMeshBufferSet(&Job->Sets[Target], Set->VCount, Set->ICount,
+                                Set->Vertices, Set->TexCoords, Set->TexLayers,
+                                Set->Indices, Set->Colors);
+    }
 
     atomic_store_explicit(&Job->Stage, MESH_JOB_READY, memory_order_release);
 }
@@ -1042,10 +1051,17 @@ bool RendererUploadFinishedMesh(void) {
         if (StillOurs) {
             UnloadChunkMesh(ChunkVal);
 
-            ChunkVal->ChunkMesh = UploadMeshBufferSet(&Job->Opaque);
+            ChunkVal->ChunkMesh =
+                UploadMeshBufferSet(&Job->Sets[MESH_TARGET_OPAQUE]);
             ChunkVal->HasMesh = (ChunkVal->ChunkMesh != MESH_HANDLE_INVALID);
 
-            ChunkVal->TranslucentMesh = UploadMeshBufferSet(&Job->Translucent);
+            ChunkVal->CutoutMesh =
+                UploadMeshBufferSet(&Job->Sets[MESH_TARGET_CUTOUT]);
+            ChunkVal->HasCutoutMesh =
+                (ChunkVal->CutoutMesh != MESH_HANDLE_INVALID);
+
+            ChunkVal->TranslucentMesh =
+                UploadMeshBufferSet(&Job->Sets[MESH_TARGET_TRANSLUCENT]);
             ChunkVal->HasTranslucentMesh =
                 (ChunkVal->TranslucentMesh != MESH_HANDLE_INVALID);
 
@@ -1059,8 +1075,9 @@ bool RendererUploadFinishedMesh(void) {
             ChunkVal->IsMeshing = false;
         }
 
-        FreeMeshBufferSet(&Job->Opaque);
-        FreeMeshBufferSet(&Job->Translucent);
+        for (int Target = 0; Target < MESH_TARGET_COUNT; Target++) {
+            FreeMeshBufferSet(&Job->Sets[Target]);
+        }
         Job->Target = NULL;
         atomic_store_explicit(&Job->Stage, MESH_JOB_FREE, memory_order_release);
         return true;
@@ -1073,51 +1090,165 @@ bool RendererUploadFinishedMesh(void) {
 // Frustum culling + world draw
 // ---------------------------------------------------------------------------
 
-bool IsChunkInFrustum(RenderCamera CameraVal, Chunk *ChunkVal) {
-    float const HALFCHUNKSIZE = CHUNK_SIZE / 2.0F;
-    Vec3 ChunkCenter = {
-        (float)(ChunkVal->ChunkX * CHUNK_SIZE) + HALFCHUNKSIZE,
-        (float)(ChunkVal->ChunkY * CHUNK_SIZE) + HALFCHUNKSIZE,
-        (float)(ChunkVal->ChunkZ * CHUNK_SIZE) + HALFCHUNKSIZE,
-    };
-    Vec3 VecToChunk = Vec3Sub(ChunkCenter, CameraVal.Position);
-    float Distance = Vec3Length(VecToChunk);
-    if (Distance < CHUNK_SPHERE_RADIUS * CHUNK_CLOSE_DISTANCE_FACTOR) { return true; }
-    Vec3 DirToChunk = Vec3Scale(VecToChunk, 1.0F / Distance);
-    Vec3 CamForward = Vec3Normalize(Vec3Sub(CameraVal.Target, CameraVal.Position));
-    float DotProduct = Vec3Dot(CamForward, DirToChunk);
-    float SafeMargin = CHUNK_SPHERE_RADIUS / Distance;
-    return DotProduct >= (FRUSTUM_DOT_THRESHOLD - SafeMargin);
+// The six planes of the view frustum, each (a, b, c, d) with the interior on the
+// positive side.
+enum {
+    FRUSTUM_PLANE_COUNT = 6,
+    // A plane is (a, b, c, d); a matrix row is four elements. Same width, and
+    // the extraction below relies on that.
+    PLANE_COMPONENTS = 4,
+    MATRIX_ROWS = 4
+};
+
+typedef struct {
+    float Planes[FRUSTUM_PLANE_COUNT][PLANE_COMPONENTS];
+} RenderFrustum;
+
+// Gribb-Hartmann: each plane is a sum or difference of two rows of the combined
+// view-projection matrix. The matrix arrives column-major, so row i is elements
+// i, 4+i, 8+i, 12+i.
+//
+// This replaces a dot product against a fixed threshold, which approximated a
+// cone of roughly 66 degrees half-angle. That is both wider than the real
+// frustum and the wrong shape for it -- a cone cannot represent a rectangular
+// cross-section -- so chunks off the sides of the screen were being drawn.
+static void BuildRenderFrustum(RenderFrustum *Out) {
+    float M[RENDER_MATRIX_ELEMENTS];
+    RenderGetViewProjection(M);
+
+    // Column-major input, so element (Row, Column) sits at Column * MATRIX_ROWS
+    // + Row. Transposed out here once rather than indexed that way six times.
+    float Row[MATRIX_ROWS][PLANE_COMPONENTS];
+    for (int R = 0; R < MATRIX_ROWS; R++) {
+        for (int C = 0; C < PLANE_COMPONENTS; C++) {
+            Row[R][C] = M[(C * MATRIX_ROWS) + R];
+        }
+    }
+
+    // left, right, bottom, top, near, far. The last row plus or minus one of
+    // the first three.
+    static const int AXIS[FRUSTUM_PLANE_COUNT] = {0, 0, 1, 1, 2, 2};
+    static const float SIGN[FRUSTUM_PLANE_COUNT] = {1.0F, -1.0F, 1.0F,
+                                                    -1.0F, 1.0F, -1.0F};
+    const int LAST_ROW = MATRIX_ROWS - 1;
+
+    for (int P = 0; P < FRUSTUM_PLANE_COUNT; P++) {
+        int A = AXIS[P];
+        for (int C = 0; C < PLANE_COMPONENTS; C++) {
+            Out->Planes[P][C] = Row[LAST_ROW][C] + (SIGN[P] * Row[A][C]);
+        }
+
+        // Normalised so the plane equation yields a true distance, which is what
+        // lets the sphere test compare against the radius directly.
+        float Nx = Out->Planes[P][0];
+        float Ny = Out->Planes[P][1];
+        float Nz = Out->Planes[P][2];
+        float Len = sqrtf((Nx * Nx) + (Ny * Ny) + (Nz * Nz));
+        if (Len > 0.0F) {
+            for (int C = 0; C < PLANE_COMPONENTS; C++) {
+                Out->Planes[P][C] /= Len;
+            }
+        }
+    }
 }
+
+// Conservative: a chunk touching the frustum is drawn. The bounding sphere is
+// kept rather than an axis-aligned box because a chunk is a cube of known size,
+// the test is four multiplies per plane, and the few extra chunks a tighter box
+// would reject are nothing beside the ones the cone was admitting.
+static bool IsChunkVisible(const RenderFrustum *Frustum, const Chunk *ChunkVal) {
+    float const HALFCHUNKSIZE = CHUNK_SIZE / 2.0F;
+    float Cx = (float)(ChunkVal->ChunkX * CHUNK_SIZE) + HALFCHUNKSIZE;
+    float Cy = (float)(ChunkVal->ChunkY * CHUNK_SIZE) + HALFCHUNKSIZE;
+    float Cz = (float)(ChunkVal->ChunkZ * CHUNK_SIZE) + HALFCHUNKSIZE;
+
+    for (int P = 0; P < FRUSTUM_PLANE_COUNT; P++) {
+        float Distance = (Frustum->Planes[P][0] * Cx) +
+                         (Frustum->Planes[P][1] * Cy) +
+                         (Frustum->Planes[P][2] * Cz) + Frustum->Planes[P][3];
+        if (Distance < -CHUNK_SPHERE_RADIUS) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static int *GetRenderedChunkCounter(void) {
+    static int Count = 0;
+    return &Count;
+}
+
+int GetLastRenderedChunkCount(void) { return *GetRenderedChunkCounter(); }
+
+// Back-to-front ordering for the translucent pass.
+//
+// Alpha blending needs approximate depth ordering, not an exact one, and the
+// distances fall in a range bounded by the render distance. Bucketing by
+// quantised distance is linear, where the comparison sort it replaces was
+// superlinear over as many as MAX_ACTIVE_CHUNKS entries every frame. Two chunks
+// close enough to share a bucket are not distinguishable by their draw order.
+enum {
+    TRANSLUCENT_BUCKETS = 64
+};
 
 typedef struct {
     int Index;
-    float DistanceSq;
-} ChunkDistance;
+    int Bucket;
+} TranslucentEntry;
 
-static void ShellSortChunks(ChunkDistance Array[], int Len) {
-    for (int Gap = Len / 2; Gap > 0; Gap /= 2) {
-        for (int IdxI = Gap; IdxI < Len; IdxI++) {
-            ChunkDistance Temp = Array[IdxI];
-            int IdxJ;
-            for (IdxJ = IdxI; IdxJ >= Gap && Array[IdxJ - Gap].DistanceSq < Temp.DistanceSq; IdxJ -= Gap) {
-                Array[IdxJ] = Array[IdxJ - Gap];
-            }
-            Array[IdxJ] = Temp;
-        }
-    }
+static int DistanceBucket(float DistanceSq) {
+    // One bucket per chunk-width of distance, clamped. Beyond the last bucket
+    // everything is far enough that relative order stops mattering.
+    float Distance = sqrtf(DistanceSq);
+    int Bucket = (int)(Distance / (float)CHUNK_SIZE);
+    if (Bucket < 0) { Bucket = 0; }
+    if (Bucket >= TRANSLUCENT_BUCKETS) { Bucket = TRANSLUCENT_BUCKETS - 1; }
+    return Bucket;
 }
 
 void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
     PROFILE_BEGIN(DrawStart);
     if (GetDebugState()->Wireframe) { RenderSetWireframe(true); }
 
-    // Opaque pass
-    for (int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++) {
+    // Once per frame rather than once per chunk. The previous test normalised
+    // the camera forward vector inside itself, so it was recomputed for every
+    // chunk on every pass.
+    RenderFrustum Frustum;
+    BuildRenderFrustum(&Frustum);
+
+    static bool Visible[MAX_ACTIVE_CHUNKS];
+    int ChunkCount = WorldVal->ChunkCount;
+    for (int IdxI = 0; IdxI < ChunkCount; IdxI++) {
+        Visible[IdxI] = IsChunkVisible(&Frustum, &WorldVal->Chunks[IdxI]);
+    }
+
+    int Rendered = 0;
+
+    // Solid faces, with the shader that keeps early depth rejection.
+    RenderBeginChunkPass(CHUNK_PASS_OPAQUE);
+    for (int IdxI = 0; IdxI < ChunkCount; IdxI++) {
         Chunk *ChunkVal = &WorldVal->Chunks[IdxI];
-        if (!IsChunkInFrustum(CameraVal, ChunkVal)) { continue; }
-        if (ChunkVal->HasMesh) { RenderDrawMesh(ChunkVal->ChunkMesh); }
-        if (GetDebugState()->ChunkBorders) {
+        if (!Visible[IdxI] || !ChunkVal->HasMesh) { continue; }
+        RenderDrawMesh(ChunkVal->ChunkMesh);
+        Rendered++;
+    }
+    RenderEndChunkPass();
+
+    // Alpha-cutout flora, which needs the test the opaque shader drops.
+    RenderBeginChunkPass(CHUNK_PASS_CUTOUT);
+    for (int IdxI = 0; IdxI < ChunkCount; IdxI++) {
+        Chunk *ChunkVal = &WorldVal->Chunks[IdxI];
+        if (!Visible[IdxI] || !ChunkVal->HasCutoutMesh) { continue; }
+        RenderDrawMesh(ChunkVal->CutoutMesh);
+    }
+    RenderEndChunkPass();
+
+    // Immediate-mode, and it binds its own shader and texture, so it stays
+    // outside the chunk passes rather than being interleaved with them.
+    if (GetDebugState()->ChunkBorders) {
+        for (int IdxI = 0; IdxI < ChunkCount; IdxI++) {
+            if (!Visible[IdxI]) { continue; }
+            Chunk *ChunkVal = &WorldVal->Chunks[IdxI];
             Vec3 Center = {
                 (float)(ChunkVal->ChunkX * CHUNK_SIZE) + CHUNK_HALF_SIZE,
                 (float)(ChunkVal->ChunkY * CHUNK_SIZE) + CHUNK_HALF_SIZE,
@@ -1127,16 +1258,17 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
         }
     }
 
-    // Translucent pass (back-to-front)
+    // Translucent pass, back to front.
     RenderBeginTranslucentPass();
 
-    static ChunkDistance VisibleChunks[MAX_ACTIVE_CHUNKS];
+    static TranslucentEntry VisibleChunks[MAX_ACTIVE_CHUNKS];
+    int BucketCounts[TRANSLUCENT_BUCKETS] = {0};
     int VisibleCount = 0;
 
-    for (int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++) {
+    for (int IdxI = 0; IdxI < ChunkCount; IdxI++) {
         Chunk *ChunkVal = &WorldVal->Chunks[IdxI];
-        if (!ChunkVal->HasTranslucentMesh) { continue; }
-        if (!IsChunkInFrustum(CameraVal, ChunkVal)) { continue; }
+        if (!ChunkVal->HasTranslucentMesh || !Visible[IdxI]) { continue; }
+
         float const H = CHUNK_SIZE / 2.0F;
         Vec3 Center = {
             (float)(ChunkVal->ChunkX * CHUNK_SIZE) + H,
@@ -1144,17 +1276,35 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
             (float)(ChunkVal->ChunkZ * CHUNK_SIZE) + H,
         };
         Vec3 V = Vec3Sub(Center, CameraVal.Position);
+
         VisibleChunks[VisibleCount].Index = IdxI;
-        VisibleChunks[VisibleCount].DistanceSq = Vec3Dot(V, V);
+        VisibleChunks[VisibleCount].Bucket = DistanceBucket(Vec3Dot(V, V));
+        BucketCounts[VisibleChunks[VisibleCount].Bucket]++;
         VisibleCount++;
     }
 
-    ShellSortChunks(VisibleChunks, VisibleCount);
+    // Counting sort, walked from the far bucket down so the output is ordered
+    // back to front.
+    static int Ordered[MAX_ACTIVE_CHUNKS];
+    int Offsets[TRANSLUCENT_BUCKETS];
+    int Running = 0;
+    for (int B = TRANSLUCENT_BUCKETS - 1; B >= 0; B--) {
+        Offsets[B] = Running;
+        Running += BucketCounts[B];
+    }
     for (int IdxI = 0; IdxI < VisibleCount; IdxI++) {
-        RenderDrawMesh(WorldVal->Chunks[VisibleChunks[IdxI].Index].TranslucentMesh);
+        Ordered[Offsets[VisibleChunks[IdxI].Bucket]++] = VisibleChunks[IdxI].Index;
     }
 
+    RenderBeginChunkPass(CHUNK_PASS_CUTOUT);
+    for (int IdxI = 0; IdxI < VisibleCount; IdxI++) {
+        RenderDrawMesh(WorldVal->Chunks[Ordered[IdxI]].TranslucentMesh);
+    }
+    RenderEndChunkPass();
+
     RenderEndTranslucentPass();
+
+    *GetRenderedChunkCounter() = Rendered;
 
     if (GetDebugState()->Wireframe) { RenderSetWireframe(false); }
     PROFILE_END(DrawStart, PROFILE_WORLD_DRAW);

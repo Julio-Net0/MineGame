@@ -146,6 +146,11 @@ static void EvictUnneededChunks(World *WorldVal, bool *KeepChunk){
       Evicted->ChunkMesh = MESH_HANDLE_INVALID;
       Evicted->HasMesh = false;
     }
+    if(Evicted->HasCutoutMesh){
+      RenderFreeMesh(Evicted->CutoutMesh);
+      Evicted->CutoutMesh = MESH_HANDLE_INVALID;
+      Evicted->HasCutoutMesh = false;
+    }
     if(Evicted->HasTranslucentMesh){
       RenderFreeMesh(Evicted->TranslucentMesh);
       Evicted->TranslucentMesh = MESH_HANDLE_INVALID;

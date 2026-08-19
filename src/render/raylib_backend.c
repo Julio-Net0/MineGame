@@ -19,13 +19,19 @@
 
 #define BLOCK_HIGHLIGHT_SCALE (BLOCK_SIZE + 0.01F)
 
-// Two meshes (opaque + translucent) per active chunk at most.
-#define MESH_POOL_CAPACITY (MAX_ACTIVE_CHUNKS * 2)
+// Three meshes per active chunk at most: solid faces, alpha-cutout flora, and
+// translucent blocks. Flora was split out of the solid mesh so the two could use
+// fragment shaders that differ on the alpha test.
+#define MESHES_PER_CHUNK 3
+#define MESH_POOL_CAPACITY (MAX_ACTIVE_CHUNKS * MESHES_PER_CHUNK)
 
 typedef struct {
   Texture2D BlockAtlas;
   unsigned int BlockArrayTexID;
-  Shader ChunkShader;
+
+  // Same vertex shader, two fragment shaders differing only by the alpha test.
+  Shader ChunkShaderOpaque;
+  Shader ChunkShaderCutout;
 
   Mesh MeshPool[MESH_POOL_CAPACITY];
   bool MeshSlotUsed[MESH_POOL_CAPACITY];
@@ -98,10 +104,18 @@ void RenderBackendInit(void) {
 
   LoadBlockTextureArray();
 
-  State->ChunkShader = LoadShader("assets/shaders/chunk.vert", "assets/shaders/chunk.frag");
-  int BlockArrayLoc = GetShaderLocation(State->ChunkShader, "uBlockArray");
+  State->ChunkShaderOpaque = LoadShader("assets/shaders/chunk.vert",
+                                        "assets/shaders/chunk_opaque.frag");
+  State->ChunkShaderCutout = LoadShader("assets/shaders/chunk.vert",
+                                        "assets/shaders/chunk_cutout.frag");
+
   int Unit = 0;
-  SetShaderValue(State->ChunkShader, BlockArrayLoc, &Unit, SHADER_UNIFORM_INT);
+  SetShaderValue(State->ChunkShaderOpaque,
+                 GetShaderLocation(State->ChunkShaderOpaque, "uBlockArray"),
+                 &Unit, SHADER_UNIFORM_INT);
+  SetShaderValue(State->ChunkShaderCutout,
+                 GetShaderLocation(State->ChunkShaderCutout, "uBlockArray"),
+                 &Unit, SHADER_UNIFORM_INT);
 
   State->FreeCount = MESH_POOL_CAPACITY;
   for (int IdxI = 0; IdxI < MESH_POOL_CAPACITY; IdxI++) {
@@ -119,7 +133,8 @@ void RenderBackendShutdown(void) {
       State->MeshSlotUsed[IdxI] = false;
     }
   }
-  UnloadShader(State->ChunkShader);
+  UnloadShader(State->ChunkShaderOpaque);
+  UnloadShader(State->ChunkShaderCutout);
   UnloadTexture(State->BlockAtlas);
   glDeleteTextures(1, &State->BlockArrayTexID);
 }
@@ -187,6 +202,44 @@ void RenderFreeMesh(MeshHandle Handle) {
 // Custom draw — bypasses Raylib material/texture binding
 // ---------------------------------------------------------------------------
 
+// Everything shared by the chunks in a pass, bound once. What is left per chunk
+// is the vertex array and the draw -- the only two things that differ.
+void RenderBeginChunkPass(ChunkPassKind Kind) {
+  BackendState *State = GetBackendState();
+  Shader *Active = (Kind == CHUNK_PASS_CUTOUT) ? &State->ChunkShaderCutout
+                                               : &State->ChunkShaderOpaque;
+
+  // Raylib batches its own immediate-mode geometry and flushes it lazily. Left
+  // pending, it would be drawn later under this pass's shader.
+  rlDrawRenderBatchActive();
+
+  rlEnableShader(Active->id);
+
+  Matrix MatMVP = MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection());
+  rlSetUniformMatrix(Active->locs[SHADER_LOC_MATRIX_MVP], MatMVP);
+
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D_ARRAY, State->BlockArrayTexID);
+}
+
+void RenderEndChunkPass(void) {
+  rlDisableShader();
+  glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+}
+
+void RenderGetViewProjection(float OutMatrix[RENDER_MATRIX_ELEMENTS]) {
+  Matrix M = MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection());
+
+  // Listed by field name rather than copied over the struct, so the layout is
+  // stated here instead of depending on how the backend's matrix type happens to
+  // be ordered in memory. Column-major: element[Column * 4 + Row].
+  float Source[RENDER_MATRIX_ELEMENTS] = {
+      M.m0, M.m1, M.m2,  M.m3,  M.m4,  M.m5,  M.m6,  M.m7,
+      M.m8, M.m9, M.m10, M.m11, M.m12, M.m13, M.m14, M.m15};
+
+  memcpy(OutMatrix, Source, sizeof(Source));
+}
+
 void RenderDrawMesh(MeshHandle Handle) {
   BackendState *State = GetBackendState();
   if (Handle == MESH_HANDLE_INVALID || Handle >= (MeshHandle)MESH_POOL_CAPACITY) {
@@ -200,22 +253,9 @@ void RenderDrawMesh(MeshHandle Handle) {
     return;
   }
 
-  rlEnableShader(State->ChunkShader.id);
-
-  Matrix MatView = rlGetMatrixModelview();
-  Matrix MatProj = rlGetMatrixProjection();
-  Matrix MatMVP = MatrixMultiply(MatView, MatProj);
-  rlSetUniformMatrix(State->ChunkShader.locs[SHADER_LOC_MATRIX_MVP], MatMVP);
-
-  glActiveTexture(GL_TEXTURE0);
-  glBindTexture(GL_TEXTURE_2D_ARRAY, State->BlockArrayTexID);
-
   rlEnableVertexArray(MeshVal->vaoId);
   rlDrawVertexArrayElements(0, MeshVal->triangleCount * 3, 0);
   rlDisableVertexArray();
-
-  rlDisableShader();
-  glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
 }
 
 // ---------------------------------------------------------------------------

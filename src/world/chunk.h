@@ -29,6 +29,13 @@ enum {
 
 typedef struct Chunk {
   MeshHandle ChunkMesh;
+
+  // Alpha-cutout geometry (flora) kept apart from the solid faces. Both want
+  // depth writes, so they shared one mesh; they are split because a fragment
+  // shader containing `discard` costs the hardware early depth rejection for the
+  // whole draw, and only this geometry needs the test.
+  MeshHandle CutoutMesh;
+
   MeshHandle TranslucentMesh;
 
   unsigned char Data[CHUNK_SIZE][CHUNK_SIZE][CHUNK_SIZE];
@@ -45,6 +52,7 @@ typedef struct Chunk {
 
   atomic_bool IsDirty;
   bool HasMesh;
+  bool HasCutoutMesh;
   bool HasTranslucentMesh;
   bool IsModified;
 

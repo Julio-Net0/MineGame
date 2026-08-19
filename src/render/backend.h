@@ -38,7 +38,37 @@ void RenderBackendShutdown(void);
 // Mesh pool.
 MeshHandle RenderUploadMesh(const MeshData *Data);
 void RenderFreeMesh(MeshHandle Handle);
+
+// Draws one chunk mesh. Valid only between RenderBeginChunkPass and
+// RenderEndChunkPass, which establish the shader, texture and matrix every chunk
+// shares.
 void RenderDrawMesh(MeshHandle Handle);
+
+// Which fragment shader a chunk pass binds. The opaque variant omits the alpha
+// test so the hardware keeps early depth rejection; the cutout variant keeps it
+// for geometry that genuinely discards texels.
+typedef enum {
+  CHUNK_PASS_OPAQUE,
+  CHUNK_PASS_CUTOUT
+} ChunkPassKind;
+
+// Bind the state every chunk draw in the pass shares: shader, block texture
+// array, and view-projection matrix. Setting these per chunk instead set
+// identical values hundreds of times a frame.
+//
+// Nothing between begin and end may issue a draw that rebinds the shader, the
+// texture unit or the matrix uniform. The immediate-mode helpers below all do,
+// so they belong outside the pass -- or the pass must be re-established after
+// them.
+void RenderBeginChunkPass(ChunkPassKind Kind);
+void RenderEndChunkPass(void);
+
+// Combined view-projection for the current frame, column-major, so the engine
+// can derive frustum planes without knowing the backend's matrix type.
+enum {
+  RENDER_MATRIX_ELEMENTS = 16
+};
+void RenderGetViewProjection(float OutMatrix[RENDER_MATRIX_ELEMENTS]);
 
 // Frame lifecycle. 3D content is drawn between BeginFrame and End3D; 2D content
 // (deferred HUD layer) between End3D and EndFrame.

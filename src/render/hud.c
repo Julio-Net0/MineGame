@@ -181,25 +181,10 @@ static void DrawDebugScreen(Player *PlayerVal, World *WorldVal, GameCamera Camer
   RenderDrawText(DebugText, DEBUG_ACTIVE_CHUNKS_X, DEBUG_ACTIVE_CHUNKS_Y,
                  DEBUG_FONT_SIZE, COLOR_RAYWHITE);
 
-  RenderCamera RCam = {
-      .Position = Camera.Position,
-      .Target = Camera.Target,
-      .Up = Camera.Up,
-      .FovY = Camera.FovY,
-  };
-
-  int RenderedChunks = 0;
-  for (int Idx = 0; Idx < MAX_ACTIVE_CHUNKS; Idx++) {
-    if (Idx >= TargetCount) {
-      break;
-    }
-    if (WorldVal->Chunks[Idx].HasMesh &&
-        IsChunkInFrustum(RCam, &WorldVal->Chunks[Idx])) {
-      RenderedChunks++;
-    }
-  }
+  // Taken from the draw loop rather than recomputed: it already counted, and
+  // re-running the visibility test here was a second full scan over every chunk.
   snprintf(DebugText, sizeof(DebugText), "Rendered Chunks: %d / %d",
-           RenderedChunks, MAX_ACTIVE_CHUNKS);
+           GetLastRenderedChunkCount(), MAX_ACTIVE_CHUNKS);
   RenderDrawText(DebugText, DEBUG_RENDERED_CHUNKS_X, DEBUG_RENDERED_CHUNKS_Y,
                  DEBUG_FONT_SIZE, COLOR_RAYWHITE);
 

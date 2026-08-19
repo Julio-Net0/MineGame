@@ -1,5 +1,16 @@
 #version 330
 
+// Shared with the cutout variant: only the alpha test differs. Any change to the
+// sampling, tint, overlay composite or ambient-occlusion handling has to be made
+// in both, or opaque and cutout geometry will stop matching.
+
+// CUTOUT variant: keeps the alpha test.
+//
+// Used by alpha-cutout geometry (flora billboards) and by the translucent pass.
+// These genuinely need texels discarded, and give up early depth rejection to
+// get it -- which is why they are meshed apart from the solid faces rather than
+// dragging them into the same draw.
+
 in vec2 fragTexCoord;
 in vec4 fragColor;
 in float fragLayer;
