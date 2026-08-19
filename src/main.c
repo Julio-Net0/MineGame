@@ -38,8 +38,18 @@
 // per-frame upload burst without changing the steady tick-paced throughput.
 #define MAX_MESHES_PER_FRAME 96
 
-static void InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCamera,
+// Returns false when startup could not complete; nothing is initialised in that
+// case, so the caller has nothing to tear down.
+static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCamera,
                      ChatState *ChatVal, GameCamera *FreeCamera) {
+  // First, before the window and the registries: a failure here then costs no
+  // teardown of a live GL context and no unloading of already-parsed assets.
+  *WorldVal = (World *)malloc(sizeof(World));
+  if (*WorldVal == (World *)0) {
+    LogError("MAIN: out of memory allocating the world (%zu bytes)", sizeof(World));
+    return false;
+  }
+
   PlatformInit(INITIAL_WIDTH, INITIAL_HEIGHT, "MineGame Beta 4");
   PlatformSetCursorDisabled(true);
   PlatformToggleFullscreen();
@@ -61,7 +71,6 @@ static void InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
 
   InitTerrainGeneration();
 
-  *WorldVal = (World *)malloc(sizeof(World));
   InitWorldSave();
   InitWorld(*WorldVal);
   LogInfo("MAIN THREAD ID: %llu", (unsigned long long)pthread_self());
@@ -72,6 +81,8 @@ static void InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
   *PlayerCamera = CreateGameCamera();
   *FreeCamera = CreateGameCamera();
   InitChat(ChatVal);
+
+  return true;
 }
 
 static void CleanupGame(World *WorldVal) {
@@ -223,7 +234,9 @@ int main(void) {
   ChatState ChatVal;
   bool ShowDebug = false;
 
-  InitGame(&WorldVal, &PlayerVal, &PlayerCamera, &ChatVal, &FreeCamera);
+  if (!InitGame(&WorldVal, &PlayerVal, &PlayerCamera, &ChatVal, &FreeCamera)) {
+    return EXIT_FAILURE;
+  }
 
   PlayerInput PendingInput = {0};
   PendingInput.HotbarSelect = -1;
