@@ -29,11 +29,21 @@
 #define TICK_RATE 20
 #define TICK_DT (1.0F / (float)TICK_RATE)
 #define MAX_TICKS_PER_FRAME 5
-// Wall-clock budget for mesh building in one frame, shared across every tick
-// that frame runs. A chunk count is not a budget: it bounds work only in units
-// of "chunks", and a chunk costs whatever the hardware makes it cost. Measured,
-// a chunk mesh is ~660 us on the development machine and ~2250 us on the
-// low-end target, so the count that fit one frame on the first machine took
+// Wall-clock budget for mesh building, spent once per rendered frame.
+//
+// Measured on the low-end target: at 152 FPS with a 20 Hz tick, running this
+// inside the tick loop meant mesh building happened on 13% of frames, capping
+// loading at ~30 chunks/s and taking 44 s to fill the render distance. The
+// budget is expressed per frame, so it is spent per frame; that alone took the
+// same hardware to ~160 chunks/s and ~8 s, at 80 FPS while loading instead of
+// 170 idle. Loading throughput therefore scales with framerate now, which is
+// the intended reading of a per-frame budget: it caps the share of each frame
+// spent meshing, and a machine with more frames has more capacity to spend.
+//
+// A chunk count is not a budget: it bounds work only in units of "chunks", and
+// a chunk costs whatever the hardware makes it cost. Measured, building one
+// chunk mesh costs ~660 us on the development machine and ~2730 us on the
+// low-end target, so the count of 96 that fit one frame on the first took
 // 217 ms on the second — the sustained 5 FPS this constant replaces. Time is
 // the unit the constraint is actually expressed in, so the same value is right
 // on every machine; it changes how fast the world loads, not whether the frame
@@ -155,28 +165,14 @@ static void UpdateWorldChunks(World *WorldVal) {
   }
 }
 
-// Build up to Budget chunk meshes; returns how many were built.
-// Build chunk meshes until the frame's time budget is spent or its remaining
-// count allowance is used, whichever comes first. Returns how many were built so
-// the caller can keep the frame's running total.
-//
-// Deadline is an absolute time, not a duration, because the budget belongs to
-// the frame and is shared across every tick in it: a per-tick duration would let
-// a catch-up frame spend it once per tick and multiply the frame's cost by the
-// tick count, which is the defect this replaces in a new unit.
-static int BuildMeshes(World *WorldVal, int CountAllowance, double Deadline,
-                       bool FrameAlreadyBuilt) {
+// Build chunk meshes until the time budget is spent or the count allowance is
+// used, whichever comes first. Called exactly once per rendered frame, which is
+// what makes the minimum-one-build guarantee frame-scoped without needing to be
+// tracked: this call is the frame's only one.
+static void BuildMeshes(World *WorldVal, int CountAllowance, double Deadline) {
   int MeshesBuilt = 0;
   if (CountAllowance <= 0) {
-    return 0;
-  }
-
-  // The minimum-one-build guarantee is scoped to the FRAME, not to this call. A
-  // catch-up frame runs several ticks and calls in here once per tick; without
-  // this test each call would force its own chunk through and the frame would
-  // overrun by one chunk per tick instead of one in total.
-  if (FrameAlreadyBuilt && PlatformGetTime() >= Deadline) {
-    return 0;
+    return;
   }
 
   for (int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++) {
@@ -202,8 +198,6 @@ static int BuildMeshes(World *WorldVal, int CountAllowance, double Deadline,
       }
     }
   }
-
-  return MeshesBuilt;
 }
 
 static void RenderGame(World *WorldVal, Player *PlayerVal, GameCamera *ActiveCamera,
@@ -296,10 +290,6 @@ int main(void) {
     // of framerate, catching up via an accumulator (capped to avoid spiral).
     Accumulator += PlatformGetFrameTime();
     int Ticks = 0;
-    int MeshesThisFrame = 0;
-    // One deadline per frame, established before the tick loop and shared by
-    // every tick in it, so a catch-up burst cannot spend the budget repeatedly.
-    double MeshDeadline = PlatformGetTime() + MESH_BUDGET_SECONDS;
     while (Accumulator >= TICK_DT && Ticks < MAX_TICKS_PER_FRAME) {
       Vec3 LoadCenter = (GetDebugState()->Freecam && WasFreecam)
                             ? FreeCamera.Position
@@ -317,14 +307,11 @@ int main(void) {
 
       PendingInput = ClearInputEdges(PendingInput);
 
-      // Chunk bookkeeping and mesh building are tick-paced (bookkeeping first)
-      // so loading throughput stays independent of render framerate. Both frame
-      // limits apply: the shared deadline bounds how long the frame spends here,
-      // and the remaining count allowance bounds how many GPU uploads it issues.
+      // Neighbour-dirty bookkeeping stays tick-paced: it reacts to terrain the
+      // workers finished, which is simulation state, and running it per frame
+      // would repeat a full chunk scan for nothing. Mesh building runs after the
+      // tick loop instead — see below.
       UpdateWorldChunks(WorldVal);
-      MeshesThisFrame += BuildMeshes(WorldVal,
-                                     MAX_MESHES_PER_FRAME - MeshesThisFrame,
-                                     MeshDeadline, MeshesThisFrame > 0);
 
       Accumulator -= TICK_DT;
       Ticks++;
@@ -332,6 +319,12 @@ int main(void) {
     if (Ticks >= MAX_TICKS_PER_FRAME) {
       Accumulator = 0.0F;
     }
+
+    // Once per frame, after the ticks so it sees this frame's bookkeeping. The
+    // deadline is taken here rather than before the tick loop so the budget
+    // measures meshing alone and is not eaten by the simulation ahead of it.
+    BuildMeshes(WorldVal, MAX_MESHES_PER_FRAME,
+                PlatformGetTime() + MESH_BUDGET_SECONDS);
 
     UpdateChat(&ChatVal, ActiveCamera, &PlayerVal, WorldVal);
 
