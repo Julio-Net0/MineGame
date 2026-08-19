@@ -222,3 +222,49 @@ jobs:
           name: MineGame-windows-x86_64
           path: dist/MineGame-windows-x86_64.zip
           if-no-files-found: error
+
+  # Rolling build of master, published under a fixed tag so its download URLs
+  # never change. Marked a prerelease so GitHub keeps pointing "Latest release"
+  # at the newest v* tag instead of at this.
+  publish-nightly:
+    name: Publish nightly
+    if: github.ref == 'refs/heads/master'
+    needs: [build-linux, build-windows, lint]
+    runs-on: ubuntu-24.04
+    # The only job that may write to the repository.
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Download platform archives
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: MineGame-*
+          merge-multiple: true
+
+      # Deleted and recreated rather than updated in place: recreating drops
+      # assets whose names have changed instead of leaving them behind forever,
+      # and re-points the tag at the commit being published in one step.
+      - name: Republish the nightly release
+        run: |
+          if gh release view nightly > /dev/null 2>&1; then
+            echo 'Removing the previous nightly release'
+            gh release delete nightly --yes --cleanup-tag
+          fi
+          cat > release-notes.md <<EOF
+          Rolling build of the latest \`master\`, replaced on every push. For a
+          permanent version, use a \`v*\` release instead.
+
+          Built from commit \`$GITHUB_SHA\`.
+
+          Extract the archive and launch the executable from inside the extracted
+          folder — assets are loaded relative to the working directory.
+          EOF
+          gh release create nightly artifacts/*.zip \
+            --title 'Nightly build' \
+            --prerelease \
+            --target "$GITHUB_SHA" \
+            --notes-file release-notes.md
