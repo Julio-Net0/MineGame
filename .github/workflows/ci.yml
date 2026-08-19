@@ -268,3 +268,43 @@ jobs:
             --prerelease \
             --target "$GITHUB_SHA" \
             --notes-file release-notes.md
+
+  # Permanent release for a hand-pushed v* tag. Nothing ever deletes or replaces
+  # these, which is what separates them from the rolling nightly.
+  publish-release:
+    name: Publish tagged release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-linux, build-windows, lint]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Download platform archives
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: MineGame-*
+          merge-multiple: true
+
+      # --notes is prepended to the commit list --generate-notes builds, so the
+      # download instructions stay above the changelog. No --clobber and no
+      # delete: re-running a tag fails rather than silently replacing a release
+      # players may already have downloaded.
+      - name: Publish the tagged release
+        run: |
+          NOTES=$(cat <<EOF
+          Download the archive for your platform, extract it, and launch the
+          executable from inside the extracted folder — assets are loaded
+          relative to the working directory.
+
+          The Linux build requires system X11/OpenGL libraries and glibc 2.39 or
+          newer. The Windows build is self-contained.
+          EOF
+          )
+          gh release create "$GITHUB_REF_NAME" artifacts/*.zip \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --notes "$NOTES"
