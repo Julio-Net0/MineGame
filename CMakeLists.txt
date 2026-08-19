@@ -4,6 +4,13 @@ project(MineGame)
 set(CMAKE_C_STANDARD 17)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# The engine uses pthreads directly (chunk workers, region I/O locks). Linking
+# them implicitly happens to work on glibc 2.34+ and on MinGW, but that is a
+# toolchain accident rather than a guarantee; request the flag explicitly so any
+# supported toolchain links them the way it expects.
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+find_package(Threads REQUIRED)
+
 include(FetchContent)
 FetchContent_Declare(
   raylib
@@ -45,7 +52,7 @@ add_executable(${PROJECT_NAME}
   src/third_party/cJSON.c
 )
 
-target_link_libraries(${PROJECT_NAME} raylib)
+target_link_libraries(${PROJECT_NAME} raylib Threads::Threads)
 
 target_include_directories(${PROJECT_NAME} PUBLIC src ${raylib_SOURCE_DIR}/src)
 

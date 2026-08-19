@@ -1,0 +1,110 @@
+name: CI
+
+# Path filters are deliberately safe here: GitHub does not evaluate them for tag
+# pushes, so a v* tag still builds even when its commit only touched docs.
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  workflow_dispatch:
+
+# Only the release job (added later) needs write access; builds stay read-only.
+permissions:
+  contents: read
+
+# A newer push to the same ref supersedes the run in flight.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-linux:
+    name: Build (Linux)
+    # Pinned rather than ubuntu-latest: the runner image decides the glibc floor
+    # of the released binary, so it must move deliberately, not silently.
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # raylib is compiled from source through FetchContent, so its X11, OpenGL,
+      # ALSA and Wayland headers must exist before CMake configures.
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build \
+            libasound2-dev \
+            libx11-dev \
+            libxrandr-dev \
+            libxi-dev \
+            libgl1-mesa-dev \
+            libglu1-mesa-dev \
+            libxcursor-dev \
+            libxinerama-dev \
+            libwayland-dev \
+            libxkbcommon-dev
+
+      # Keyed on CMakeLists.txt, which is where the raylib revision is declared.
+      # The prefix restore-key keeps the cache useful when only the source list
+      # changes; FetchContent re-clones by itself if the pinned tag differs.
+      - name: Cache fetched dependencies
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: deps-linux-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: deps-linux-
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_C_COMPILER=gcc
+          -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      - name: Build
+        run: cmake --build build
+
+  build-windows:
+    name: Build (Windows)
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # MSVC cannot build this project: the engine uses POSIX threads and GCC
+      # function attributes. MSYS2 also matches the toolchain BuildAndRun.ps1
+      # uses locally, so a red CI run reproduces on the maintainer's machine.
+      # cache: true freezes the resolved package set between runs, since MSYS2
+      # itself is a rolling distribution with no per-package pinning.
+      - name: Set up MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          cache: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+
+      - name: Cache fetched dependencies
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: deps-windows-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: deps-windows-
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_C_COMPILER=gcc
+          -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      - name: Build
+        run: cmake --build build
