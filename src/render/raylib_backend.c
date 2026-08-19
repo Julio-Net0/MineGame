@@ -1,5 +1,6 @@
 #include "render/backend.h"
 #include "render/rl_compat.h"
+#include "core/profiler.h"
 #include "world/block_system.h"
 #include "world/world.h"
 #include "raylib.h"
@@ -134,6 +135,11 @@ MeshHandle RenderUploadMesh(const MeshData *Data) {
     return MESH_HANDLE_INVALID;
   }
 
+  // Covers the staging copies and the driver handoff both, so this scope and
+  // the mesh-build scope together account for the whole cost of turning a dirty
+  // chunk into a drawable one while staying separable.
+  PROFILE_BEGIN(UploadStart);
+
   MeshHandle Handle = State->FreeList[--State->FreeCount];
   Mesh MeshVal = {0};
   MeshVal.vertexCount = Data->VertexCount;
@@ -159,6 +165,8 @@ MeshHandle RenderUploadMesh(const MeshData *Data) {
 
   State->MeshPool[Handle] = MeshVal;
   State->MeshSlotUsed[Handle] = true;
+
+  PROFILE_END(UploadStart, PROFILE_MESH_UPLOAD);
   return Handle;
 }
 
@@ -215,6 +223,7 @@ void RenderDrawMesh(MeshHandle Handle) {
 // ---------------------------------------------------------------------------
 
 void RenderBeginFrame(RenderCamera Camera) {
+  PROFILE_BEGIN(SetupStart);
   Camera3D RlCamera = {0};
   RlCamera.position = Vec3ToRL(Camera.Position);
   RlCamera.target = Vec3ToRL(Camera.Target);
@@ -225,11 +234,20 @@ void RenderBeginFrame(RenderCamera Camera) {
   BeginDrawing();
   ClearBackground(SKYBLUE);
   BeginMode3D(RlCamera);
+  PROFILE_END(SetupStart, PROFILE_FRAME_SETUP);
 }
 
 void RenderEnd3D(void) { EndMode3D(); }
 
-void RenderEndFrame(void) { EndDrawing(); }
+// EndDrawing is the buffer swap plus the platform's input-event pump, so this
+// scope covers everything the driver and the OS can make the frame wait on.
+// With no vsync and the GPU queue kept full it is the likeliest home of a stall
+// that no other scope accounts for.
+void RenderEndFrame(void) {
+  PROFILE_BEGIN(PresentStart);
+  EndDrawing();
+  PROFILE_END(PresentStart, PROFILE_PRESENT);
+}
 
 void RenderBeginTranslucentPass(void) {
   rlDrawRenderBatchActive();

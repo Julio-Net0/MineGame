@@ -1,6 +1,7 @@
 #include "world/chunk_worker.h"
 #include "world/feature.h"
 #include "persistence/world_save.h"
+#include "core/profiler.h"
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -51,6 +52,8 @@ static void *WorkerLoop(void *Arg) {
 
     pthread_mutex_unlock(&State->QueueMutex);
 
+    PROFILE_BEGIN(GenerationStart);
+
     // Before the branch, not after it: generation reads the biome map to choose
     // its blocks, and a chunk read back from disk needs one just the same. A
     // single call ahead of both paths is what stops them from drifting apart.
@@ -65,6 +68,8 @@ static void *WorkerLoop(void *Arg) {
       PlaceChunkFlora(Target);
     }
 
+    PROFILE_END(GenerationStart, PROFILE_WORKER_GENERATION);
+
     Target->TerrainJustGenerated = true;
     Target->IsGenerated = true;
     Target->IsGenerating = false;
@@ -77,7 +82,6 @@ void InitChunkWorker(void) {
   atomic_store(&State->WorkerRunning, true);
   pthread_mutex_init(&State->QueueMutex, (const pthread_mutexattr_t *)0);
   pthread_cond_init(&State->WorkAvail, (const pthread_condattr_t *)0);
-  #pragma unroll 4
   for (int Idx = 0; Idx < WORKER_THREAD_COUNT; Idx++) {
     pthread_create(&State->WorkerThreads[Idx], (const pthread_attr_t *)0, WorkerLoop, (void *)0);
   }
@@ -87,7 +91,6 @@ void CloseChunkWorker(void) {
   ChunkWorkerState *State = GetWorkerState();
   atomic_store(&State->WorkerRunning, false);
   pthread_cond_broadcast(&State->WorkAvail);
-  #pragma unroll 4
   for (int Idx = 0; Idx < WORKER_THREAD_COUNT; Idx++) {
     pthread_join(State->WorkerThreads[Idx], (void **)0);
   }

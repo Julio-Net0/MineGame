@@ -20,7 +20,6 @@ PlayerInput PollPlayerInput(bool HasControl) {
   Input.AscendHeld = IsKeyDown(KEY_SPACE);
   Input.DescendHeld = IsKeyDown(KEY_LEFT_CONTROL);
 
-  #pragma unroll 4
   for (int IdxI = 0; IdxI < HOTBAR_SIZE; IdxI++) {
     if (IsKeyPressed(KEY_ONE + IdxI)) {
       Input.HotbarSelect = IdxI;
@@ -47,7 +46,6 @@ TextInput PollTextInput(void) {
   TextInput Text = {0};
 
   int Key = GetCharPressed();
-  #pragma unroll 4
   for (int LoopIdx = 0; LoopIdx < CHAT_MAX_INPUT_CHARS; LoopIdx++) {
     if (Key <= 0) {
       break;

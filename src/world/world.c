@@ -3,6 +3,7 @@
 #include "render/backend.h"
 #include "world/chunk_worker.h"
 #include "persistence/world_save.h"
+#include "core/profiler.h"
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -34,13 +35,11 @@ static int HashChunkPos(int Cx, int Cy, int Cz){
 void InitWorld(World *WorldVal){
   WorldVal->ChunkCount = 0;
 
-  #pragma unroll 4
   for(int IdxI = 0; IdxI < CHUNK_MAP_SIZE; IdxI++){
     WorldVal->ChunkHashMap[IdxI] = HASH_EMPTY;
   }
 
   WorldVal->FreeCount = MAX_ACTIVE_CHUNKS;
-  #pragma unroll 4
   for(int IdxI = 0; IdxI < MAX_ACTIVE_CHUNKS; IdxI++){
     WorldVal->FreeList[IdxI] = IdxI;
   }
@@ -103,11 +102,8 @@ Chunk* GetChunkAtPos(World *WorldVal, Vec3 Pos){
 }
 
 static void MarkUsefulChunks(World *WorldVal, int PChunkX, int PChunkY, int PChunkZ, int RenderDist, bool *KeepChunk){
-  #pragma unroll 4
   for(int IdxX = PChunkX - RenderDist; IdxX <= PChunkX + RenderDist; IdxX++){
-    #pragma unroll 4
     for(int IdxY = PChunkY - RenderDist; IdxY <= PChunkY + RenderDist; IdxY++){
-      #pragma unroll 4
       for(int IdxZ = PChunkZ - RenderDist; IdxZ <= PChunkZ + RenderDist; IdxZ++){
         Chunk* ChunkVal = GetChunkFromWorld(WorldVal, IdxX, IdxY, IdxZ);
         if(ChunkVal != (Chunk *)0){
@@ -130,7 +126,6 @@ void UpdateNeighborsDirtyFlag(World *WorldVal, int Cx, int Cy, int Cz){
 }
 
 static void EvictUnneededChunks(World *WorldVal, bool *KeepChunk){
-  #pragma unroll 4
   for(int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++){
     if(KeepChunk[IdxI] || WorldVal->Chunks[IdxI].IsGenerating){
       continue;
@@ -185,6 +180,7 @@ static void CreateOrRecycleChunk(World *WorldVal, int ChunkX, int ChunkY, int Ch
 }
 
 void UpdateWorld(World *WorldVal, Vec3 PlayerPos, int RenderDist){
+  PROFILE_BEGIN(UpdateStart);
   int Side = (2 * RenderDist) + 1;
   int RequiredChunks = Side * Side * Side;
   if(RequiredChunks > MAX_ACTIVE_CHUNKS){
@@ -204,6 +200,7 @@ void UpdateWorld(World *WorldVal, Vec3 PlayerPos, int RenderDist){
      WorldVal->LastLoadChunkY == PChunkY &&
      WorldVal->LastLoadChunkZ == PChunkZ &&
      WorldVal->LastLoadRenderDist == RenderDist){
+    PROFILE_END(UpdateStart, PROFILE_WORLD_UPDATE);
     return;
   }
 
@@ -212,11 +209,8 @@ void UpdateWorld(World *WorldVal, Vec3 PlayerPos, int RenderDist){
   MarkUsefulChunks(WorldVal, PChunkX, PChunkY, PChunkZ, RenderDist, KeepChunk);
   EvictUnneededChunks(WorldVal, KeepChunk);
 
-  #pragma unroll 4
   for(int IdxX = PChunkX - RenderDist; IdxX <= PChunkX + RenderDist; IdxX++){
-    #pragma unroll 4
     for(int IdxY = PChunkY - RenderDist; IdxY <= PChunkY + RenderDist; IdxY++){
-      #pragma unroll 4
       for(int IdxZ = PChunkZ - RenderDist; IdxZ <= PChunkZ + RenderDist; IdxZ++){
         if(GetChunkFromWorld(WorldVal, IdxX, IdxY, IdxZ) == (Chunk *)0){
           CreateOrRecycleChunk(WorldVal, IdxX, IdxY, IdxZ);
@@ -230,6 +224,7 @@ void UpdateWorld(World *WorldVal, Vec3 PlayerPos, int RenderDist){
   WorldVal->LastLoadChunkZ = PChunkZ;
   WorldVal->LastLoadRenderDist = RenderDist;
   WorldVal->HasLoadedOnce = true;
+  PROFILE_END(UpdateStart, PROFILE_WORLD_UPDATE);
 }
 
 static Chunk* GetLocalCoords(World *WorldVal, Vec3 GlobalPos, int *LocalX, int *LocalY, int *LocalZ){
@@ -390,7 +385,6 @@ RaycastResult RayCastToWorld(World *WorldVal, Vec3 RayOrigin, Vec3 RayDir, float
 
   int MaxIter = (int)(MaxDistance * DDA_MAX_CROSSED_AXES) + 1; 
 
-  #pragma unroll 4
   for(int IdxI = 0; IdxI < MaxIter; IdxI++){
     Vec3 CheckPos = { (float)Dda.VoxelX, (float)Dda.VoxelY, (float)Dda.VoxelZ };
     int Id = GetBlockIDFromWorld(WorldVal, CheckPos);
@@ -430,7 +424,6 @@ bool AreNeighborsGenerated(World *WorldVal, Chunk *ChunkVal) {
     {Cx, Cy, Cz + 1}
   };
 
-  #pragma unroll 4
   for (int IdxI = 0; IdxI < NEIGHBOR_COUNT; IdxI++) {
     Chunk *Neighbor = GetChunkFromWorld(WorldVal, NeighborCoords[IdxI][0], NeighborCoords[IdxI][1], NeighborCoords[IdxI][2]);
     if (Neighbor != (Chunk *)0) {

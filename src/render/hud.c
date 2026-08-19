@@ -5,6 +5,7 @@
 #include "render/renderer.h"
 #include "render/backend.h"
 #include "world/world.h"
+#include "core/profiler.h"
 #include <stdio.h>
 
 enum {
@@ -24,7 +25,10 @@ enum {
   DEBUG_ACTIVE_CHUNKS_Y = 50,
   DEBUG_RENDERED_CHUNKS_X = 10,
   DEBUG_RENDERED_CHUNKS_Y = 70,
-  DEBUG_TEXT_CAPACITY = 64
+  DEBUG_TEXT_CAPACITY = 96,
+  DEBUG_TIMING_X = 10,
+  DEBUG_TIMING_Y = 100,
+  DEBUG_TIMING_LINE_HEIGHT = 20
 };
 
 #define HOTBAR_SELECTED_BOX_THICKNESS 3.0F
@@ -39,7 +43,6 @@ static void DrawHotbar(Player *PlayerVal) {
 
   Color8 SlotBgColor = Color8Alpha(COLOR_BLACK, HOTBAR_TRANSPARENCY);
 
-  #pragma unroll
   for (int Idx = 0; Idx < HOTBAR_SIZE; Idx++) {
     int XPos = StartX + (Idx * (HOTBAR_SLOT_SIZE + HOTBAR_PADDING));
 
@@ -75,6 +78,77 @@ static void DrawCrosshair(void) {
                  CROSSHAIR_SIZE, CrosshairColor);
 }
 
+#ifdef MINEGAME_PROFILE
+
+// Per-subsystem cost in microseconds, not milliseconds: on a fast machine the
+// whole frame costs a fraction of a millisecond and every subsystem would read
+// as zero. Average alongside peak and 1% low, because the stall this panel
+// exists to diagnose happens on a minority of frames and an average hides it
+// exactly when it matters.
+//
+// Recomputed a few times a second rather than every frame. Scanning the window
+// per frame would waste work on a number nobody can read at 60 Hz, and a
+// readout that changes 60 times a second is unreadable anyway.
+#define TIMING_REFRESH_INTERVAL 0.25
+
+typedef struct {
+  ProfileStats Stats[PROFILE_SCOPE_COUNT];
+  ProfileStats FrameStats;
+  double LastRefreshTime;
+  bool HasSamples;
+} TimingPanelState;
+
+static TimingPanelState *GetTimingPanelState(void) {
+  static TimingPanelState State;
+  return &State;
+}
+
+static void DrawTimingPanel(void) {
+  TimingPanelState *Panel = GetTimingPanelState();
+
+  double Now = PlatformGetTime();
+  if (!Panel->HasSamples || (Now - Panel->LastRefreshTime) >= TIMING_REFRESH_INTERVAL) {
+    for (int Scope = 0; Scope < PROFILE_SCOPE_COUNT; Scope++) {
+      ProfilerQuery((ProfileScope)Scope, &Panel->Stats[Scope]);
+    }
+    ProfilerQueryFrame(&Panel->FrameStats);
+    Panel->LastRefreshTime = Now;
+    Panel->HasSamples = true;
+  }
+
+  char Line[DEBUG_TEXT_CAPACITY];
+  int YPos = DEBUG_TIMING_Y;
+
+  snprintf(Line, sizeof(Line), "%-12s %8s %8s %8s %6s", "us/frame", "avg", "max",
+           "1%low", "n");
+  RenderDrawText(Line, DEBUG_TIMING_X, YPos, DEBUG_FONT_SIZE, COLOR_RAYWHITE);
+  YPos += DEBUG_TIMING_LINE_HEIGHT;
+
+  // The whole-frame total first, so the scopes below read as parts of it and
+  // the remainder they do not account for is apparent rather than inferred.
+  snprintf(Line, sizeof(Line), "%-12s %8u %8u %8u", "Frame",
+           Panel->FrameStats.AverageUs, Panel->FrameStats.MaxUs,
+           Panel->FrameStats.OnePercentLowUs);
+  RenderDrawText(Line, DEBUG_TIMING_X, YPos, DEBUG_FONT_SIZE, COLOR_RAYWHITE);
+  YPos += DEBUG_TIMING_LINE_HEIGHT;
+
+  for (int Scope = 0; Scope < PROFILE_SCOPE_COUNT; Scope++) {
+    const ProfileStats *Stats = &Panel->Stats[Scope];
+    // Worker generation is summed across four threads, so it can legitimately
+    // exceed the frame's own wall-clock duration. Marked so that reading it as
+    // a share of the frame is not the obvious interpretation.
+    const char *Suffix = (Scope == PROFILE_WORKER_GENERATION) ? " (4T sum)" : "";
+    snprintf(Line, sizeof(Line), "%-12s %8u %8u %8u %6u%s",
+             GetProfileScopeName((ProfileScope)Scope), Stats->AverageUs,
+             Stats->MaxUs, Stats->OnePercentLowUs, Stats->AverageEntries,
+             Suffix);
+    RenderDrawText(Line, DEBUG_TIMING_X, YPos, DEBUG_FONT_SIZE, COLOR_RAYWHITE);
+    YPos += DEBUG_TIMING_LINE_HEIGHT;
+  }
+}
+
+#endif
+
 static void DrawDebugScreen(Player *PlayerVal, World *WorldVal, GameCamera Camera) {
   char DebugText[DEBUG_TEXT_CAPACITY];
 
@@ -91,7 +165,6 @@ static void DrawDebugScreen(Player *PlayerVal, World *WorldVal, GameCamera Camer
   int WorldChunkCount = WorldVal->ChunkCount;
   int TargetCount = WorldChunkCount < MAX_ACTIVE_CHUNKS ? WorldChunkCount : MAX_ACTIVE_CHUNKS;
 
-  #pragma unroll 4
   for (int Idx = 0; Idx < MAX_ACTIVE_CHUNKS; Idx++) {
     if (Idx >= TargetCount) {
       break;
@@ -113,7 +186,6 @@ static void DrawDebugScreen(Player *PlayerVal, World *WorldVal, GameCamera Camer
   };
 
   int RenderedChunks = 0;
-  #pragma unroll 4
   for (int Idx = 0; Idx < MAX_ACTIVE_CHUNKS; Idx++) {
     if (Idx >= TargetCount) {
       break;
@@ -127,6 +199,10 @@ static void DrawDebugScreen(Player *PlayerVal, World *WorldVal, GameCamera Camer
            RenderedChunks, MAX_ACTIVE_CHUNKS);
   RenderDrawText(DebugText, DEBUG_RENDERED_CHUNKS_X, DEBUG_RENDERED_CHUNKS_Y,
                  DEBUG_FONT_SIZE, COLOR_RAYWHITE);
+
+#ifdef MINEGAME_PROFILE
+  DrawTimingPanel();
+#endif
 }
 
 void DrawHUD(Player *PlayerVal, World *WorldVal, GameCamera Camera, bool ShowDebugF3) {

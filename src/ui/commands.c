@@ -8,6 +8,7 @@
 #include "ui/debug.h"
 #include "core/log.h"
 #include "core/utils.h"
+#include "core/profiler.h"
 #include "world/world.h"
 #include "persistence/world_save.h"
 #include <stdint.h>
@@ -29,6 +30,9 @@ static void CommandSeed(const char *Args, CommandContext *Ctx);
 static void CommandSave(const char *Args, CommandContext *Ctx);
 static void CommandPrefab(const char *Args, CommandContext *Ctx);
 static void CommandBiome(const char *Args, CommandContext *Ctx);
+#ifdef MINEGAME_PROFILE
+static void CommandProfile(const char *Args, CommandContext *Ctx);
+#endif
 
 static const CommandInfo AVAILABLECOMMANDS[] = {
     {"/help", "Use: /help",
@@ -50,6 +54,11 @@ static const CommandInfo AVAILABLECOMMANDS[] = {
     {"/biome", "Use: /biome",
      "Returns the biome and its raw climate values at your position",
      CommandBiome},
+#ifdef MINEGAME_PROFILE
+    {"/profile", "Use: /profile <start | stop | dump>",
+     "Streams per-frame timings to CSV (start/stop), or dumps the window",
+     CommandProfile},
+#endif
 };
 
 static const int AVAILABLECOMMANDSCOUNT =
@@ -76,7 +85,6 @@ static char *TokenizeSpace(char **Context) {
   }
   char *Orig = *Context;
   int StartIndex = 0;
-  #pragma unroll 4
   for (int Index = 0; Index < CHAT_MAX_INPUT_CHARS; Index++) {
     if (Orig[StartIndex] == ' ') {
       StartIndex++;
@@ -90,7 +98,6 @@ static char *TokenizeSpace(char **Context) {
     return (void*)0;
   }
   int EndIndex = StartIndex;
-  #pragma unroll 4
   for (int Index = 0; Index < CHAT_MAX_INPUT_CHARS; Index++) {
     char CharVal = Orig[EndIndex];
     if (CharVal != '\0' && CharVal != ' ') {
@@ -186,7 +193,6 @@ static void CommandTP(const char *Args, CommandContext *Ctx) {
 static void CommandHelp(const char *Args, CommandContext *Ctx) {
   (void)Args;
 
-  #pragma unroll
   for (int Index = 0; Index < AVAILABLECOMMANDSCOUNT; Index++) {
     char Msg[MSG_BUFFER_SIZE];
     snprintf(Msg, sizeof(Msg), "%s | %s | %s", AVAILABLECOMMANDS[Index].Name,
@@ -207,6 +213,89 @@ static void CommandPos(const char *Args, CommandContext *Ctx) {
            (double)PosZ);
   ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
 }
+
+#ifdef MINEGAME_PROFILE
+static void ProfileDump(CommandContext *Ctx) {
+  char Path[PROFILER_DUMP_PATH_CAPACITY];
+  char Msg[MSG_BUFFER_SIZE];
+
+  switch (ProfilerDumpCsv(Path, sizeof(Path))) {
+  case PROFILER_DUMP_OK:
+    snprintf(Msg, sizeof(Msg), "Profile written to %s", Path);
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
+    break;
+  case PROFILER_DUMP_NO_SAMPLES:
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_WARN,
+                  "No frames recorded yet, nothing to export");
+    break;
+  case PROFILER_DUMP_WRITE_FAILED:
+  default:
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR, "Could not write the profile file");
+    break;
+  }
+}
+
+static void ProfileStart(CommandContext *Ctx) {
+  char Path[PROFILER_DUMP_PATH_CAPACITY];
+  char Msg[MSG_BUFFER_SIZE];
+
+  if (ProfilerIsCapturing()) {
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_WARN,
+                  "Already capturing. Use /profile stop first");
+    return;
+  }
+
+  if (!ProfilerStartCapture(Path, sizeof(Path))) {
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR, "Could not start the capture");
+    return;
+  }
+
+  snprintf(Msg, sizeof(Msg), "Capturing every frame to %s. /profile stop to end",
+           Path);
+  ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
+}
+
+static void ProfileStop(CommandContext *Ctx) {
+  if (!ProfilerIsCapturing()) {
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_WARN, "Not capturing");
+    return;
+  }
+  ProfilerStopCapture();
+  ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, "Capture stopped and written");
+}
+
+static void CommandProfile(const char *Args, CommandContext *Ctx) {
+  if (Args == (void *)0) {
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR,
+                  "Incorrect Format. try: /profile <start | stop | dump>");
+    return;
+  }
+
+  char ArgsCopy[CHAT_MAX_INPUT_CHARS];
+  SafeStrncpy(ArgsCopy, Args, (int)sizeof(ArgsCopy));
+
+  char *SavePtr = ArgsCopy;
+  char *SubCmd = TokenizeSpace(&SavePtr);
+
+  if (SubCmd != (void *)0 && CompareString(SubCmd, "dump") == 0) {
+    ProfileDump(Ctx);
+    return;
+  }
+
+  if (SubCmd != (void *)0 && CompareString(SubCmd, "start") == 0) {
+    ProfileStart(Ctx);
+    return;
+  }
+
+  if (SubCmd != (void *)0 && CompareString(SubCmd, "stop") == 0) {
+    ProfileStop(Ctx);
+    return;
+  }
+
+  ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR,
+                "Incorrect Format. try: /profile <start | stop | dump>");
+}
+#endif
 
 static void CommandSeed(const char *Args, CommandContext *Ctx) {
   (void)Args;
@@ -255,7 +344,6 @@ static void CommandSave(const char *Args, CommandContext *Ctx) {
   int SavedCount = 0;
   int WorldChunkCount = Ctx->World->ChunkCount;
   int TargetCount = WorldChunkCount < MAX_ACTIVE_CHUNKS ? WorldChunkCount : MAX_ACTIVE_CHUNKS;
-  #pragma unroll 4
   for (int Index = 0; Index < MAX_ACTIVE_CHUNKS; Index++) {
     if (Index >= TargetCount) {
       break;
@@ -279,7 +367,6 @@ static void PrefabList(CommandContext *Ctx) {
     return;
   }
 
-  #pragma unroll 4
   for (int Index = 0; Index < Count; Index++) {
     const Prefab *Entry = GetPrefabByIndex(Index);
     if (Entry == (void*)0) {
@@ -514,7 +601,6 @@ static void CommandList(const char *Args, CommandContext *Ctx) {
   }
 
   int Printed = 0;
-  #pragma unroll 4
   for (int Index = 0; Index < BLOCK_REGISTRY_SIZE; Index++) {
     if (Ctx->BlockRegistry[Index].Id != -1) {
       char Msg[MSG_BUFFER_SIZE];
@@ -599,7 +685,6 @@ static void CommandDebug(const char *Args, CommandContext *Ctx) {
 
   if (CompareString(DebugStr, "help") == 0) {
     ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, "===DEBUG COMMANDS===");
-    #pragma unroll
     for (int Index = 0; Index < AVAILABLEDEBUGSCOUNT; Index++) {
       char Msg[MSG_BUFFER_SIZE];
       snprintf(Msg, sizeof(Msg), "/debug %s %s", AVAILABLEDEBUGS[Index].Name,
@@ -617,7 +702,6 @@ static void CommandDebug(const char *Args, CommandContext *Ctx) {
 
   bool State = (ParseInt(OptStr, (char **)0) == 1);
 
-  #pragma unroll
   for (int Index = 0; Index < AVAILABLEDEBUGSCOUNT; Index++) {
     if (CompareString(DebugStr, AVAILABLEDEBUGS[Index].Name) == 0) {
       AVAILABLEDEBUGS[Index].Func(Ctx, State);
@@ -656,7 +740,6 @@ void CommandHandler(char *Command, ChatState *Chat, GameCamera *Camera,
 
   char *Args = GetRemainingString(&SavePtr);
 
-  #pragma unroll
   for (int Index = 0; Index < AVAILABLECOMMANDSCOUNT; Index++) {
     if (CompareString(CommandName, AVAILABLECOMMANDS[Index].Name) == 0) {
       AVAILABLECOMMANDS[Index].Function(Args, &Ctx);

@@ -130,9 +130,7 @@ void FillChunkBiomeMap(Chunk *ChunkVal) {
   uint64_t SeedVal = GetWorldSeed();
   const int CELL_CENTER = BIOME_CELL_SIZE / 2;
 
-  #pragma unroll 4
   for (int CellX = 0; CellX < BIOME_CELLS_PER_CHUNK; CellX++) {
-    #pragma unroll 4
     for (int CellZ = 0; CellZ < BIOME_CELLS_PER_CHUNK; CellZ++) {
       int GlobalX = (ChunkVal->ChunkX * CHUNK_SIZE) + (CellX * BIOME_CELL_SIZE) +
                     CELL_CENTER;
@@ -146,7 +144,6 @@ void FillChunkBiomeMap(Chunk *ChunkVal) {
       BiomeClimate Climate = SampleBiomeClimate(GlobalX, TerrainHeight, GlobalZ,
                                                 TerrainHeight, SeedVal);
 
-      #pragma unroll 4
       for (int CellY = 0; CellY < BIOME_CELLS_PER_CHUNK; CellY++) {
         int GlobalY = (ChunkVal->ChunkY * CHUNK_SIZE) +
                       (CellY * BIOME_CELL_SIZE) + CELL_CENTER;
@@ -169,20 +166,15 @@ void GenerateChunkTerrain(Chunk *ChunkVal) {
   float OffsetZ = 0.0F;
   GetTerrainNoiseOffsets(SeedVal, &OffsetX, &OffsetZ);
 
-  #pragma unroll 4
   for (int IdxX = 0; IdxX < CHUNK_SIZE; IdxX++) {
-    #pragma unroll 4
     for (int IdxY = 0; IdxY < CHUNK_SIZE; IdxY++) {
-      #pragma unroll 4
       for (int IdxZ = 0; IdxZ < CHUNK_SIZE; IdxZ++) {
         ChunkVal->Data[IdxX][IdxY][IdxZ] = 0;
       }
     }
   }
 
-  #pragma unroll 4
   for (int IdxX = 0; IdxX < CHUNK_SIZE; IdxX++) {
-    #pragma unroll 4
     for (int IdxZ = 0; IdxZ < CHUNK_SIZE; IdxZ++) {
       int GlobalX = (ChunkVal->ChunkX * CHUNK_SIZE) + IdxX;
       int GlobalZ = (ChunkVal->ChunkZ * CHUNK_SIZE) + IdxZ;
@@ -190,7 +182,6 @@ void GenerateChunkTerrain(Chunk *ChunkVal) {
       int TerrainHeight =
           TerrainHeightFromOffsets(GlobalX, GlobalZ, OffsetX, OffsetZ);
 
-      #pragma unroll 4
       for (int IdxY = 0; IdxY < CHUNK_SIZE; IdxY++) {
         int GlobalY = (ChunkVal->ChunkY * CHUNK_SIZE) + IdxY;
         const BiomeType *Biome =

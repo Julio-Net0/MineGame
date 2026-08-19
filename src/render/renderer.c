@@ -4,6 +4,7 @@
 #include "world/block_system.h"
 #include "world/chunk.h"
 #include "ui/debug.h"
+#include "core/profiler.h"
 #include "core/tint.h"
 #include "core/vecmath.h"
 #include <stddef.h>
@@ -308,7 +309,6 @@ static void AddFaceColors(const int Ao[4], Color8 Tint, bool IsTrans) {
     MesherState *State = GetMesherState();
     int ColIdx = (IsTrans ? State->TransVCount : State->VCount) * COLOR_CHANNELS;
     unsigned char *ColorsArray = IsTrans ? State->TransColors : State->TempColors;
-    #pragma unroll 4
     for (int IdxI = 0; IdxI < 4; IdxI++) {
         ColorsArray[ColIdx++] = Tint.R;
         ColorsArray[ColIdx++] = Tint.G;
@@ -334,7 +334,6 @@ static void AddFaceTexLayer(float Layer, float OverlayLayer, bool IsTrans) {
     MesherState *State = GetMesherState();
     int Tc2Idx = (IsTrans ? State->TransVCount : State->VCount) * 2;
     float *Tc2Array = IsTrans ? State->TransTexCoords2 : State->TempTexCoords2;
-    #pragma unroll 4
     for (int IdxI = 0; IdxI < 4; IdxI++) {
         Tc2Array[Tc2Idx + (IdxI * 2) + 0] = Layer;
         Tc2Array[Tc2Idx + (IdxI * 2) + 1] = OverlayLayer;
@@ -468,7 +467,6 @@ static bool MasksCompatible(const FaceMaskData *A, const FaceMaskData *B) {
     // colour and paint it across the whole span.
     if (A->Tint.R != B->Tint.R || A->Tint.G != B->Tint.G ||
         A->Tint.B != B->Tint.B) { return false; }
-    #pragma unroll 4
     for (int IdxI = 0; IdxI < VERTICES_PER_FACE; IdxI++) { if (A->Ao[IdxI] != B->Ao[IdxI]) { return false; } }
     return true;
 }
@@ -478,9 +476,7 @@ static void BuildGreedyFacePass(World *WorldVal, Chunk *ChunkVal, const FaceDir 
         FaceMaskData Mask[CHUNK_SIZE][CHUNK_SIZE];
 
         // Build mask for this slice
-        #pragma unroll 4
         for (int U = 0; U < CHUNK_SIZE; U++) {
-            #pragma unroll 4
             for (int V = 0; V < CHUNK_SIZE; V++) {
                 Mask[U][V].BlockId = 0;
                 Mask[U][V].Used = false;
@@ -531,7 +527,6 @@ static void BuildGreedyFacePass(World *WorldVal, Chunk *ChunkVal, const FaceDir 
                 int H = 1;
                 bool CanExpand = true;
                 while (V0 + H < CHUNK_SIZE && CanExpand) {
-                    #pragma unroll 4
                     for (int Ku = 0; Ku < W; Ku++) {
                         if (!MasksCompatible(Origin, &Mask[U0 + Ku][V0 + H])) {
                             CanExpand = false;
@@ -564,9 +559,7 @@ static void BuildGreedyFacePass(World *WorldVal, Chunk *ChunkVal, const FaceDir 
                                            Origin->FlipQuad, false);
 
                 // Mark used
-                #pragma unroll 4
                 for (int Ku = 0; Ku < W; Ku++) {
-                    #pragma unroll 4
                     for (int Kv = 0; Kv < H; Kv++) {
                         Mask[U0 + Ku][V0 + Kv].Used = true;
                     }
@@ -578,11 +571,8 @@ static void BuildGreedyFacePass(World *WorldVal, Chunk *ChunkVal, const FaceDir 
 
 // Per-face pass for transparent blocks (no greedy merging)
 static void BuildTransparentFacePass(World *WorldVal, Chunk *ChunkVal) {
-    #pragma unroll 4
     for (int X = 0; X < CHUNK_SIZE; X++) {
-        #pragma unroll 4
         for (int Y = 0; Y < CHUNK_SIZE; Y++) {
-            #pragma unroll 4
             for (int Z = 0; Z < CHUNK_SIZE; Z++) {
                 unsigned char Id = ChunkVal->Data[X][Y][Z];
                 if (Id == 0) { continue; }
@@ -669,7 +659,6 @@ static void AddCrossQuad(const float Verts[4][3], int TexLayer, Color8 Tint) {
     AddFaceTexLayer((float)TexLayer, (float)NO_TEXTURE_OVERLAY, false);
 
     int VIdx = State->VCount * FLOATS_PER_VERTEX;
-    #pragma unroll 4
     for (int IdxI = 0; IdxI < VERTICES_PER_FACE; IdxI++) {
         State->TempVertices[VIdx++] = Verts[IdxI][0];
         State->TempVertices[VIdx++] = Verts[IdxI][1];
@@ -682,11 +671,8 @@ static void AddCrossQuad(const float Verts[4][3], int TexLayer, Color8 Tint) {
 // emitted front and back so the quads are visible from either side regardless
 // of face-culling state.
 static void BuildCrossPass(World *WorldVal, Chunk *ChunkVal) {
-    #pragma unroll 4
     for (int X = 0; X < CHUNK_SIZE; X++) {
-        #pragma unroll 4
         for (int Y = 0; Y < CHUNK_SIZE; Y++) {
-            #pragma unroll 4
             for (int Z = 0; Z < CHUNK_SIZE; Z++) {
                 unsigned char Id = ChunkVal->Data[X][Y][Z];
                 if (Id == 0) { continue; }
@@ -756,12 +742,17 @@ void BuildChunkMesh(World *WorldVal, Chunk *ChunkVal) {
         return;
     }
 
+    // Closed before the uploads below, so this scope covers only the CPU-side
+    // mask scanning and the upload scope covers only the driver handoff. Which
+    // of the two dominates a stall frame is the question this instrument exists
+    // to answer, and a combined scope would leave it unanswered.
+    PROFILE_BEGIN(MeshBuildStart);
+
     State->VCount = 0; State->ICount = 0;
     State->TransVCount = 0; State->TransICount = 0;
 
     // Opaque greedy pass
     static const int FACE_DIRS_COUNT = (int)(sizeof(FACE_DIRS) / sizeof(FACE_DIRS[0]));
-    #pragma unroll 4
     for (int Fd = 0; Fd < FACE_DIRS_COUNT; Fd++) { BuildGreedyFacePass(WorldVal, ChunkVal, &FACE_DIRS[Fd]); }
 
     // Transparent per-face pass
@@ -769,6 +760,8 @@ void BuildChunkMesh(World *WorldVal, Chunk *ChunkVal) {
 
     // Cross-billboard pass (flora and other non-cube blocks)
     BuildCrossPass(WorldVal, ChunkVal);
+
+    PROFILE_END(MeshBuildStart, PROFILE_MESH_BUILD);
 
     UnloadChunkMesh(ChunkVal);
     ChunkVal->IsDirty = false;
@@ -848,10 +841,10 @@ static void ShellSortChunks(ChunkDistance Array[], int Len) {
 }
 
 void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
+    PROFILE_BEGIN(DrawStart);
     if (GetDebugState()->Wireframe) { RenderSetWireframe(true); }
 
     // Opaque pass
-    #pragma unroll 4
     for (int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++) {
         Chunk *ChunkVal = &WorldVal->Chunks[IdxI];
         if (!IsChunkInFrustum(CameraVal, ChunkVal)) { continue; }
@@ -872,7 +865,6 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
     static ChunkDistance VisibleChunks[MAX_ACTIVE_CHUNKS];
     int VisibleCount = 0;
 
-    #pragma unroll 4
     for (int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++) {
         Chunk *ChunkVal = &WorldVal->Chunks[IdxI];
         if (!ChunkVal->HasTranslucentMesh) { continue; }
@@ -890,7 +882,6 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
     }
 
     ShellSortChunks(VisibleChunks, VisibleCount);
-    #pragma unroll 4
     for (int IdxI = 0; IdxI < VisibleCount; IdxI++) {
         RenderDrawMesh(WorldVal->Chunks[VisibleChunks[IdxI].Index].TranslucentMesh);
     }
@@ -898,6 +889,7 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
     RenderEndTranslucentPass();
 
     if (GetDebugState()->Wireframe) { RenderSetWireframe(false); }
+    PROFILE_END(DrawStart, PROFILE_WORLD_DRAW);
 }
 
 void DrawAABBDebug(World *WorldVal, Player *PlayerVal) {
@@ -918,7 +910,6 @@ void DrawAABBDebug(World *WorldVal, Player *PlayerVal) {
     float Sz = PLAYER_DEBUG_AABB_SQUARES_SIZE;
     float Wz = PLAYER_DEBUG_AABB_WIRES_SIZE;
 
-    #pragma unroll 4
     for (int IdxI = 0; IdxI < COLLISION_POINTS; IdxI++) {
         RenderDrawDebugCube(BottomPoints[IdxI], Sz, false, IsPointSolid(WorldVal, BottomPoints[IdxI]));
         RenderDrawDebugCube(TopPoints[IdxI], Sz, false, IsPointSolid(WorldVal, TopPoints[IdxI]));

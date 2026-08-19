@@ -13,7 +13,6 @@ void SafeStrncpy(char *Dest, const char *Src, int MaxLen) {
     return;
   }
   int Index = 0;
-  #pragma unroll 4
   for (int LoopIdx = 0; LoopIdx < MAX_STR_LOOP; LoopIdx++) {
     if (Index < MaxLen - 1 && Src[Index] != '\0') {
       Dest[Index] = Src[Index];
@@ -33,7 +32,6 @@ int CompareString(const char *Str1, const char *Str2) {
     return (Str1 == (void*)0) ? -1 : 1;
   }
   int Index = 0;
-  #pragma unroll 4
   for (int LoopIdx = 0; LoopIdx < MAX_STR_LOOP; LoopIdx++) {
     if (Str1[Index] != '\0' && Str2[Index] != '\0' && Str1[Index] == Str2[Index]) {
       Index++;
@@ -52,7 +50,6 @@ float ParseFloat(const char *Str, char **EndPtr) {
     return 0.0F;
   }
   int SpaceIndex = 0;
-  #pragma unroll 4
   for (int Index = 0; Index < MAX_STR_LOOP; Index++) {
     if (Str[SpaceIndex] == ' ') {
       SpaceIndex++;
@@ -72,7 +69,6 @@ float ParseFloat(const char *Str, char **EndPtr) {
 
   float Value = 0.0F;
   int DigitIndex = SignIndex;
-  #pragma unroll 4
   for (int Index = 0; Index < MAX_STR_LOOP; Index++) {
     char CharVal = Str[DigitIndex];
     if (CharVal >= '0' && CharVal <= '9') {
@@ -88,7 +84,6 @@ float ParseFloat(const char *Str, char **EndPtr) {
     FinalIndex++;
     float Factor = MULTIPLIER_TENTH;
     int DecIndex = FinalIndex;
-    #pragma unroll 4
     for (int Index = 0; Index < MAX_STR_LOOP; Index++) {
       char CharVal = Str[DecIndex];
       if (CharVal >= '0' && CharVal <= '9') {
@@ -116,7 +111,6 @@ int ParseInt(const char *Str, char **EndPtr) {
     return 0;
   }
   int SpaceIndex = 0;
-  #pragma unroll 4
   for (int Index = 0; Index < MAX_STR_LOOP; Index++) {
     if (Str[SpaceIndex] == ' ') {
       SpaceIndex++;
@@ -136,7 +130,6 @@ int ParseInt(const char *Str, char **EndPtr) {
 
   int Value = 0;
   int DigitIndex = SignIndex;
-  #pragma unroll 4
   for (int Index = 0; Index < MAX_STR_LOOP; Index++) {
     char CharVal = Str[DigitIndex];
     if (CharVal >= '0' && CharVal <= '9') {

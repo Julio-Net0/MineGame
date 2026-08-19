@@ -8,11 +8,8 @@ int ChunkSerialize(const Chunk *ChunkVal, uint8_t *OutBuffer, bool *IsRaw) {
   unsigned char CurrentId = ChunkVal->Data[0][0][0];
   int CurrentRun = 0;
 
-  #pragma unroll 4
   for (int IdxX = 0; IdxX < CHUNK_SIZE; IdxX++) {
-    #pragma unroll 4
     for (int IdxY = 0; IdxY < CHUNK_SIZE; IdxY++) {
-      #pragma unroll 4
       for (int IdxZ = 0; IdxZ < CHUNK_SIZE; IdxZ++) {
         unsigned char BlockId = ChunkVal->Data[IdxX][IdxY][IdxZ];
         if (BlockId == CurrentId && CurrentRun < MAX_RLE_RUN_LENGTH) {
@@ -23,7 +20,6 @@ int ChunkSerialize(const Chunk *ChunkVal, uint8_t *OutBuffer, bool *IsRaw) {
             // RLE would reach or exceed CHUNK_VOLUME bytes: fall back to raw copy
             *IsRaw = true;
             const uint8_t *SrcFlat = (const uint8_t *)ChunkVal->Data;
-            #pragma unroll 4
             for (int IdxI = 0; IdxI < (int)CHUNK_VOLUME; IdxI++) {
               OutBuffer[IdxI] = SrcFlat[IdxI];
             }
@@ -42,7 +38,6 @@ int ChunkSerialize(const Chunk *ChunkVal, uint8_t *OutBuffer, bool *IsRaw) {
   if (OutIndex + 2 >= (int)CHUNK_VOLUME) {
     *IsRaw = true;
     const uint8_t *SrcFlat = (const uint8_t *)ChunkVal->Data;
-    #pragma unroll 4
     for (int IdxI = 0; IdxI < (int)CHUNK_VOLUME; IdxI++) {
       OutBuffer[IdxI] = SrcFlat[IdxI];
     }
@@ -65,11 +60,9 @@ bool ChunkDeserialize(Chunk *ChunkVal, const uint8_t *InBuffer, int DataSize,
       return false;
     }
     uint8_t *DestFlat = (uint8_t *)TempData;
-    #pragma unroll 4
     for (int IdxI = 0; IdxI < (int)CHUNK_VOLUME; IdxI++) {
       DestFlat[IdxI] = InBuffer[IdxI];
     }
-    #pragma unroll 4
     for (int IdxI = 0; IdxI < (int)CHUNK_VOLUME; IdxI++) {
       if (InBuffer[IdxI] != 0) {
         SolidCount++;
@@ -95,7 +88,6 @@ bool ChunkDeserialize(Chunk *ChunkVal, const uint8_t *InBuffer, int DataSize,
       if (RunLimit > MAX_RLE_RUN_LENGTH) {
         RunLimit = MAX_RLE_RUN_LENGTH;
       }
-      #pragma unroll 4
       for (int IdxI = 0; IdxI < MAX_RLE_RUN_LENGTH; IdxI++) {
         if (IdxI < RunLimit) {
           FlatData[BlocksDecoded + IdxI] = BlockId;
@@ -114,7 +106,6 @@ bool ChunkDeserialize(Chunk *ChunkVal, const uint8_t *InBuffer, int DataSize,
   // Copy values to the destination chunk
   uint8_t *DestFlat = (uint8_t *)ChunkVal->Data;
   const uint8_t *SrcFlat = (const uint8_t *)TempData;
-  #pragma unroll 4
   for (int IdxI = 0; IdxI < (int)CHUNK_VOLUME; IdxI++) {
     DestFlat[IdxI] = SrcFlat[IdxI];
   }

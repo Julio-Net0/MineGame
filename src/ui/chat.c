@@ -22,7 +22,6 @@ void AddChatHistory(ChatState *Chat, const char *Message) {
     Chat->History[Chat->HistoryCount].TimeCreated = PlatformGetTime();
     Chat->HistoryCount++;
   } else {
-    #pragma unroll 4
     for (int Idx = 0; Idx < CHAT_MAX_HISTORY - 1; Idx++) {
       Chat->History[Idx] = Chat->History[Idx + 1];
     }
@@ -51,7 +50,6 @@ static void UpdateChatScroll(ChatState *Chat, int Delta) {
 }
 
 static void ApplyTextInput(ChatState *Chat, const TextInput *Text) {
-  #pragma unroll 4
   for (int Idx = 0; Idx < Text->Count; Idx++) {
     if (Chat->LetterCount < CHAT_MAX_INPUT_CHARS) {
       Chat->InputText[Chat->LetterCount] = Text->Chars[Idx];
@@ -116,7 +114,6 @@ void DrawChat(ChatState *Chat) {
   double CurrentTime = PlatformGetTime();
 
   int HistoryLimit = Chat->HistoryCount;
-  #pragma unroll 4
   for (int Idx = 0; Idx < CHAT_MAX_HISTORY; Idx++) {
     if (Idx >= HistoryLimit) {
       break;

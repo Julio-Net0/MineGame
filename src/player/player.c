@@ -95,7 +95,6 @@ void GetPlayerPoints(Player *PlayerVal, PointConfig Config,
 }
 
 static bool IsAnyPointSolid(World *WorldVal, Vec3 Points[], int PointsLen) {
-#pragma unroll 4
   for (int IdxI = 0; IdxI < PointsLen; IdxI++) {
     if (IsPointSolid(WorldVal, Points[IdxI])) {
       return true;

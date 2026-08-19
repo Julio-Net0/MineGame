@@ -30,7 +30,6 @@ static int *GetPrefabCountPtr(void) {
 
 void InitPrefabRegistry(void) {
   Prefab *Registry = GetPrefabRegistry();
-  #pragma unroll 4
   for (int Idx = 0; Idx < MAX_PREFABS; Idx++) {
     if (Registry[Idx].Cells != NULL) {
       free(Registry[Idx].Cells);
@@ -58,7 +57,6 @@ const Prefab *GetPrefab(const char *Name) {
 
   Prefab *Registry = GetPrefabRegistry();
   int Count = *GetPrefabCountPtr();
-  #pragma unroll 4
   for (int Idx = 0; Idx < Count; Idx++) {
     if (CompareString(Registry[Idx].Name, Name) == 0) {
       return &Registry[Idx];
@@ -85,7 +83,6 @@ static bool ParseSize(const cJSON *SizeItem, int *OutX, int *OutY, int *OutZ) {
   }
 
   int Dims[3];
-  #pragma unroll
   for (int Idx = 0; Idx < 3; Idx++) {
     const cJSON *DimItem = cJSON_GetArrayItem(SizeItem, Idx);
     if (cJSON_IsNumber(DimItem) == 0) {
@@ -147,7 +144,6 @@ static bool ParseCell(const cJSON *CellItem, int SizeX, int SizeY, int SizeZ,
   }
 
   int Fields[CELL_FIELD_COUNT];
-  #pragma unroll
   for (int Idx = 0; Idx < CELL_FIELD_COUNT; Idx++) {
     const cJSON *FieldItem = cJSON_GetArrayItem(CellItem, Idx);
     if (cJSON_IsNumber(FieldItem) == 0) {
@@ -191,7 +187,6 @@ static bool ParseOrigin(const cJSON *OriginItem, int SizeX, int SizeY,
 
   int Coords[3];
   int Bounds[3] = {SizeX, SizeY, SizeZ};
-  #pragma unroll
   for (int Idx = 0; Idx < 3; Idx++) {
     const cJSON *Item = cJSON_GetArrayItem(OriginItem, Idx);
     if (cJSON_IsNumber(Item) == 0) {
@@ -502,7 +497,6 @@ void LoadAllPrefabs(const char *DirectoryPath) {
     return;
   }
 
-  #pragma unroll 4
   for (int Idx = 0; Idx < FilesCount; Idx++) {
     if (HasFileExtension(FilePaths[Idx], ".json")) {
       RegisterPrefabFile(FilePaths[Idx]);

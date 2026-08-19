@@ -22,7 +22,6 @@ BlockType *GetBlockRegistry(void) {
 
 void InitBlockRegistry(void) {
   BlockType *BlockRegistry = GetBlockRegistry();
-  #pragma unroll 4
   for (int Idx = 0; Idx < BLOCK_REGISTRY_SIZE; Idx++) {
     BlockRegistry[Idx].Id = -1;
     BlockRegistry[Idx].Name[0] = '\0';
@@ -73,7 +72,6 @@ int GetBlockIdByName(const char *Name) {
   }
 
   BlockType *BlockRegistry = GetBlockRegistry();
-  #pragma unroll 4
   for (int Idx = 0; Idx < BLOCK_REGISTRY_SIZE; Idx++) {
     if (BlockRegistry[Idx].Id != -1 &&
         CompareString(BlockRegistry[Idx].Name, Name) == 0) {
@@ -209,7 +207,6 @@ void LoadAllBlockDefinitions(const char *DirectoryPath) {
 
   int LoadedCount = 0;
 
-  #pragma unroll 4
   for (int Idx = 0; Idx < FilesCount; Idx++) {
     if (HasFileExtension(FilePaths[Idx], ".json")) {
       ParseBlockFile(FilePaths[Idx]);

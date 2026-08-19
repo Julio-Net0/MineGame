@@ -63,7 +63,6 @@ int GetLoadedBiomesCount(void) { return *GetLoadedBiomesCountPtr(); }
 
 void InitBiomeRegistry(void) {
   BiomeType *Registry = GetBiomeRegistry();
-  #pragma unroll 4
   for (int Idx = 0; Idx < BIOME_REGISTRY_SIZE; Idx++) {
     Registry[Idx].Id = -1;
     Registry[Idx].Name[0] = '\0';
@@ -146,7 +145,6 @@ static void GetAxisOffsets(uint64_t Seed, int Axis, float *OffX, float *OffZ) {
 static float NoiseAmplitudeSum(const BiomeNoiseParams *Params) {
   float Amplitude = 1.0F;
   float Sum = 0.0F;
-  #pragma unroll 4
   for (int Idx = 0; Idx < Params->Octaves; Idx++) {
     Sum += Amplitude;
     Amplitude *= Params->Gain;
@@ -199,7 +197,6 @@ int ResolveBiome(BiomeClimate Climate) {
   int BestPriority = 0;
   bool Found = false;
 
-  #pragma unroll 4
   for (int Idx = 0; Idx < BIOME_REGISTRY_SIZE; Idx++) {
     const BiomeType *Biome = &Registry[Idx];
     if (Biome->Id == -1) {
@@ -283,7 +280,6 @@ static void ParseTint(const cJSON *Json, const char *Key, Color8 *Out) {
   }
 
   unsigned char Channels[COLOR_FIELD_COUNT];
-  #pragma unroll 4
   for (int Idx = 0; Idx < COLOR_FIELD_COUNT; Idx++) {
     cJSON *Channel = cJSON_GetArrayItem(Item, Idx);
     if (cJSON_IsNumber(Channel) == 0) {
@@ -586,7 +582,6 @@ void LoadAllBiomeDefinitions(const char *DirectoryPath) {
     return;
   }
 
-  #pragma unroll 4
   for (int Idx = 0; Idx < FilesCount; Idx++) {
     if (HasFileExtension(FilePaths[Idx], ".json")) {
       ParseBiomeFile(FilePaths[Idx]);
