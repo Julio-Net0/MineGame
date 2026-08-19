@@ -2,68 +2,79 @@
 
 [![CI](https://github.com/Julio-Net0/MineGame/actions/workflows/ci.yml/badge.svg)](https://github.com/Julio-Net0/MineGame/actions/workflows/ci.yml)
 
-A minimalist Minecraft-inspired voxel engine built from scratch in **C17** using the **Raylib** library. This project focuses on learning game engine fundamentals, memory management, and clean code practices.
+A minimalist Minecraft-inspired voxel engine built from scratch in **C17** using the **Raylib** library. Infinite procedural terrain, biomes, threaded chunk generation and a persistent world, written with a focus on memory management, static-analysis cleanliness and squeezing the most out of the CPU and GPU.
 
 ## ⬇️ Downloads
 
-Every push to `master` is built for both platforms automatically.
+Every push to `master` is built for Linux and Windows automatically. Pick a permanent version, or the newest build of the day.
 
-* **[Latest release](https://github.com/Julio-Net0/MineGame/releases/latest)** — a published version, kept forever.
-* **[Nightly build](https://github.com/Julio-Net0/MineGame/releases/tag/nightly)** — the newest `master` commit, replaced on every push.
+|  | **Latest release** | **Nightly build** |
+|---|---|---|
+| | [Release page](https://github.com/Julio-Net0/MineGame/releases/latest) | [Release page](https://github.com/Julio-Net0/MineGame/releases/tag/nightly) |
+| 🐧 Linux | [MineGame-linux-x86_64.zip](https://github.com/Julio-Net0/MineGame/releases/latest/download/MineGame-linux-x86_64.zip) | [MineGame-linux-x86_64.zip](https://github.com/Julio-Net0/MineGame/releases/download/nightly/MineGame-linux-x86_64.zip) |
+| 🪟 Windows | [MineGame-windows-x86_64.zip](https://github.com/Julio-Net0/MineGame/releases/latest/download/MineGame-windows-x86_64.zip) | [MineGame-windows-x86_64.zip](https://github.com/Julio-Net0/MineGame/releases/download/nightly/MineGame-windows-x86_64.zip) |
+| | a published version, kept forever | the newest `master` commit, replaced on every push |
 
-Extract the archive and run the executable from inside the extracted folder. See **[Releases](docs/releases.md)** for platform requirements and the release process.
+**Extract the archive and launch the executable from inside the extracted folder** — assets are loaded relative to the working directory. See **[Releases](docs/releases.md)** for platform requirements and the difference between the two.
 
-## 🌱 Roadmap to Beta 4
-Goal: Evolve the engine into a portable, backend-agnostic platform and bring the world to life with prefab-driven structures and vegetation.
-- [X] **Renderer Decoupling (Backend Abstraction):** Isolate all Raylib calls behind a render backend interface so the engine speaks only abstract mesh and draw commands, paving the way for alternative rendering backends (e.g. Vulkan) and a clean client/server split.
-- [X] **Engine Math Types:** Replace leaked Raylib math types (`Vector3`, etc.) in the simulation layer with engine-owned vector and matrix types, removing the renderer dependency from world, physics, and persistence code.
-- [X] **Input Intent System:** Decouple player input from simulation by capturing raw input into an abstract intent struct, enabling remappable controls and forming the client→server command seam for future multiplayer.
-- [X] **Prefab System (JSON):** Introduce a simple, sparse, palette-based JSON prefab format — human-readable and friendly to external editing tools — compiled into a packed in-memory structure at load time.
-- [X] **Procedural Tree Generation:** Stamp tree prefabs during terrain generation using seed-deterministic placement and an overlap-scan so structures spanning chunk borders resolve correctly: each chunk independently re-derives every tree whose bounding box reaches into it and clips the stamp to its own bounds, needing no cross-chunk writes, shared queue, or locks.
-- [X] **In-Game Prefab Capture:** Add commands to select a block volume and export it directly to a JSON prefab file, round-tripping with the loader so external tools can edit the same files.
-- [x] **Prefab Rotation & Variety:** Support rotation and mirroring when stamping prefabs, multiplying visual variety from a small set of source models.
-- [X] **Flora Decoration Pass:** Scatter single-block features (tall grass, flowers) through the feature-placement pipeline, seed-deterministic and biome-driven. Flora renders through a new `render: "cross"` billboard block type — two intersecting alpha-cutout quads, non-occluding and drawn in the opaque pass — the first non-cube geometry in the engine and a reusable primitive for later thin blocks.
-- [X] **Fixed-Tick Simulation Loop:** Run world logic at a fixed tick rate (e.g. 20 TPS) decoupled from render framerate with interpolation, forming the backbone for growth, fluids, and multiplayer.
-- [X] **Biomes (Palettes & Tinting):** Select block palettes per region from a multi-noise climate space — temperature and humidity, plus a `depth` axis derived from the surface so biomes are addressable in X, Y and Z and cave biomes become a data change rather than a rewrite. Biomes are defined in JSON, stored one id per 4×4×4 cell, and tint grass and foliage to their own colours; a per-texel side overlay lets the grass fringe take the biome colour while the dirt behind it keeps its own. See [Asset Formats](docs/asset-formats.md).
-- [X] **Biome Structure Sets:** Drive terrain-appropriate prefab placement from each biome's palette, reusing the feature-placement pass from **Procedural Tree Generation** — biome-driven prefab selection in place of the hardcoded `oak_small`.
+## ✨ Features
+
+**World generation.** Terrain is infinite and generated on the fly from a seed: fBm Perlin noise carves mountains, valleys and underground caves, with water filled up to sea level. A multi-noise climate field — temperature and humidity, plus a depth axis derived from the surface — selects a biome per 4×4×4 cell, so biomes are addressable in X, Y *and* Z. Every biome is a JSON file declaring its own block palette, its grass and foliage tints, and the structures and flora that grow in it.
+
+**Structures and flora.** Trees are JSON prefabs stamped during generation, placed by a seed-deterministic hash and given a random rotation or mirror so a handful of models never look like a clone grid. Structures spanning a chunk border resolve without any cross-chunk write: each chunk independently re-derives every structure whose bounding box reaches into it and clips the stamp to its own bounds. A separate decoration pass scatters tall grass and flowers, drawn as cross-shaped alpha-cutout billboards.
+
+**Rendering.** Chunk meshes are built with greedy meshing — adjacent faces of the same block merge into single quads, cutting vertex count by up to 80% — with per-vertex ambient occlusion for soft contact shadows, and split into opaque and translucent passes so glass and water sort correctly. Everything draws from a single texture atlas through VBOs, with view-frustum culling skipping whatever is behind the camera. Biome tint rides the vertex colour channel and is composited per texel in the shader, which lets a grass block's side fringe take the biome colour while the dirt behind it keeps its own.
+
+**Gameplay.** A physics-driven player with AABB collision, gravity and jumping walks the world, breaks and places blocks through a DDA raycast, and picks materials from a hotbar. An in-game console (`T`) provides `/help`, `/tp`, `/pos`, `/seed`, `/save`, `/list`, `/noclip`, `/biome`, `/debug` and `/prefab` — the last of which selects a volume of blocks and exports it straight to a JSON prefab file the generator can then use. Modified chunks are serialised to disk with run-length encoding and loaded back seamlessly, so player creations survive.
+
+**Architecture.** Simulation runs on a fixed 20 TPS tick with render interpolation, independent of framerate, while four worker threads generate and load chunks in the background and a time-sliced budget caps how many meshes are built per tick. Raylib is confined to four translation units behind platform, input, and render-backend interfaces; the world, physics, persistence and generation code uses engine-owned math types and knows nothing about the renderer — which keeps the door open for a different graphics backend and for a dedicated-server split later.
 
 ## 🤓 Tech Stack
 
 * **Language:** C17
-* **Graphics API:** [Raylib 5.5](https://www.raylib.com/)
-* **cJSON:** [cJSON 1.7.19](https://github.com/DaveGamble/cJSON)
-* **Build System:** CMake (with FetchContent for zero-install dependency management).
-* **Static Analysis:** Clang-Tidy.
+* **Graphics API:** [Raylib 5.5](https://www.raylib.com/) (OpenGL 3.3)
+* **JSON:** [cJSON 1.7.19](https://github.com/DaveGamble/cJSON)
+* **Noise:** [stb_perlin](https://github.com/nothings/stb)
+* **Threading:** POSIX threads
+* **Build System:** CMake (with FetchContent for zero-install dependency management)
+* **Static Analysis:** Clang-Tidy, enforced as a CI gate
 
 ## 📚 Documentation
 
-* **[Asset Formats](docs/asset-formats.md)** — the JSON the engine loads at startup: biome definitions, climate tuning, and the block tint property.
+* **[Asset Formats](docs/asset-formats.md)** — the JSON the engine loads at startup: biome definitions with their flora and structure sets, climate tuning, and the block tint, side-overlay and cross-render properties.
 * **[Releases](docs/releases.md)** — the nightly build versus versioned releases, what each archive contains, how to cut a release, and what a failed build means.
 
 ## 🔧 Getting Started
 
 ### Prerequisites
 
-### 🐧 Linux
-  - GCC or Clang 
-  - CMake 
-  - X11/OpenGL development headers.
+#### 🪟 Windows
+[Scoop](https://scoop.sh/) (recommended) to install `gcc`, `cmake` and `ninja`.
 
-#### 🪟 Windows (Native PowerShell)
-  - [Scoop](https://scoop.sh/) (Recommended) to install: `gcc`, `cmake`, `ninja`.
+#### 🐧 Linux
+GCC or Clang, CMake, Ninja, and the X11/OpenGL/ALSA development headers raylib compiles against.
 
 ---
 
 ### Build & Run
 
-#### 🪟 Windows (Native PowerShell)
-The easiest way is using the provided automation script which handles the Ninja generator and GCC paths:
+Each platform has a script that configures CMake with the Ninja generator, builds, and launches the game:
+
+#### 🪟 Windows
 
 ```powershell
 ./BuildAndRun.ps1
 ```
 
-Or you can build it manually
+#### 🐧 Linux
+
+```bash
+./BuildAndRun.sh
+```
+
+Or build it manually:
+
+#### 🪟 Windows
 
 ```powershell
 cmake -S . -B build -G "Ninja" -DCMAKE_C_COMPILER=gcc
@@ -71,13 +82,12 @@ cmake --build build
 ./build/MineGame.exe
 ```
 
-### 🐧 Linux
+#### 🐧 Linux
 
-```powershell
-mkdir build && cd build
-cmake ..
-make
-./MineGame
+```bash
+cmake -S . -B build -G "Ninja" -DCMAKE_C_COMPILER=gcc
+cmake --build build
+./build/MineGame
 ```
 
 ### ❗Known Issues/Limitations
@@ -95,36 +105,3 @@ This project is made possible thanks to these amazing open-source libraries:
     * *License:* Public Domain / MIT (Dual-licensed)
 
 Special thanks to **Ramon Santamaria (@raysan5)** for creating Raylib and the community for the continuous support.
-
----
-
-## 📜 Completed Roadmaps (Milestones)
-
-### 🚀 Beta 3
-Goal: Transform the optimized rendering engine into a dynamic, infinite, visually polished, and persistent voxel game world.
-- [X] Data Architecture Upgrade: Replace the linear chunk array with an O(1) Hash Map or 2D Spatial Grid to eliminate CPU bottlenecks during chunk lookups and recover maximum FPS.
-- [X] Texture Atlas & UV Mapping: Transition from solid vertex colors to actual block graphics by mapping a single global texture image onto the VBOs.
-- [X] Procedural Terrain Generation: Integrate Perlin or Simplex noise algorithms to generate organic landscapes, mountains, valleys, and underground caves instead of flat planes.
-- [X] Multithreaded Chunk Processing: Implement background Worker Threads to handle chunk generation and meshing in parallel, eliminating all gameplay stutters when crossing chunk borders.
-- [X] World Persistence (Save/Load): Develop a binary serialization system with RLE (Run-Length Encoding) compression to save modified chunks to disk and load them seamlessly, preserving player creations.
-- [X] View Frustum Culling: Add camera-aware mathematics (Dot Product / Plane Extraction) to completely ignore and skip rendering chunks that are behind the player or outside the field of view, maximizing GPU efficiency.
-- [X] Meshing Amortization(Chunk Queue): Implement a time-sliced building queue that limits the number of meshes generated per frame. This eliminates CPU lag spikes and guarantees buttery-smooth framerates when crossing chunk boundaries at high speeds.
-- [X] Greedy Meshing: Upgrade the Face Culling algorithm to merge adjacent block faces of the same type into massive, single quads. This slashes the total vertex count by up to 80%, drastically reducing VRAM usage and GPU memory bandwidth.
-- [X] Voxel Ambient Occlusion (AO): Calculate smooth, localized shadows on block vertices based on neighboring geometry to add visual depth and that classic "voxel lighting" feel to the world.
-- [X] Translucency & Render Passes: Split chunk meshes into "Opaque" and "Transparent" passes to correctly render glass, water, and foliage without OpenGL depth-sorting bugs.
-
-### 🚀 Beta 2
-Goal: Transform the engine from a free-roaming spectator into a physically-grounded game world.
-- [X] **Debug Console & Command System:** Implement an in-game text terminal to execute logic functions, list loaded assets from cJSON, toggle debug overlays, etc.
-- [X] **Physical Embodiment:** Replace the flying camera with a physics-aware Player entity using AABB (Axis-Aligned Bounding Box) collision detection.
-- [X] **Dynamic World Management:** Implement a World Handler to manage, render, and "stitch" together multiple chunks (Mesh-culling across chunk borders).
-- [X] **Player Mechanics:** Implementation of gravity, jumping, and ground-level movement (step-up/step-down logic).
-- [X] **Gameplay Loop:** Basic inventory system with a HUD Hotbar and block selection (1-9 keys) to choose materials for building.
-- [X] **Performance Pass:** Transition from Immediate Mode rendering to Vertex Buffer Objects (VBOs) to support larger view distances.
-
-### 🚀 Beta 1
-Goal: Establish a functional "Creative Mode" foundation.
-- [X] **Static World:** Render a fixed world.
-- [X] **Spectator Movement:** Implementation of a 6-DOF camera to fly through the world.
-- [X] **Block Placement:** Ability to add blocks to the grid in real-time.
-- [X] **Block Destruction:** Ability to remove blocks from the grid.

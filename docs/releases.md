@@ -68,10 +68,16 @@ Publishing a version is a single push. There is no build to run by hand and no f
 
 The release notes are assembled automatically: download and platform instructions on top, followed by the list of commits since the previous release.
 
+### Naming the release
+
+The pipeline titles the release after its tag, so it is published as plain `v0.4-beta`. The earlier releases carry a descriptive title instead — *Beta 3: Infinite Terrain, Optimization & World Persistence* and so on — and that is a manual step: edit the release on the Releases page after it is published and replace the title. Only the title is worth touching; the generated notes below it are already what you want.
+
+This stays manual on purpose. A title is chosen once per release, from what the release turned out to be about, which is not something the workflow could read out of the repository without inventing a file to hold it.
+
 ### Verifying afterwards
 
 - The release appears without the **Pre-release** badge, with both `.zip` files attached.
-- **Latest release** now points at the new tag.
+- **Latest release** now points at the new tag, and the direct `releases/latest/download/…` links in the README resolve to its archives.
 - The `Nightly build` release is untouched, with the same assets and the same URLs it had before.
 
 ### Re-running a tag
