@@ -22,6 +22,25 @@
 #define INITIAL_WIDTH 1280
 #define INITIAL_HEIGHT 720
 
+// Bounds on a framebuffer size given on the command line. The lower bound only
+// has to keep the HUD from being degenerate; the upper one is 8K.
+#define MIN_REQUESTED_DIMENSION 160
+#define MAX_REQUESTED_DIMENSION 7680
+#define DECIMAL_BASE 10
+
+// How the window is sized at startup.
+//
+// Fullscreen is the normal path and the framebuffer is then the monitor's, which
+// is what makes the default INITIAL_WIDTH/HEIGHT above nearly invisible. An
+// explicit size exists to measure whether GPU time scales with pixel count:
+// fill-rate cost does, cost bound on vertex bandwidth does not, and running the
+// same camera position at two very different framebuffer sizes separates them.
+typedef struct {
+  int Width;
+  int Height;
+  bool Fullscreen;
+} WindowRequest;
+
 #define PLAYER_SPAWN_X 0.0F
 #define PLAYER_SPAWN_Y 25.0F
 #define PLAYER_SPAWN_Z 0.0F
@@ -64,7 +83,8 @@
 // Returns false when startup could not complete; nothing is initialised in that
 // case, so the caller has nothing to tear down.
 static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCamera,
-                     ChatState *ChatVal, GameCamera *FreeCamera) {
+                     ChatState *ChatVal, GameCamera *FreeCamera,
+                     WindowRequest Window) {
   // First, before the window and the registries: a failure here then costs no
   // teardown of a live GL context and no unloading of already-parsed assets.
   *WorldVal = (World *)malloc(sizeof(World));
@@ -73,9 +93,9 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
     return false;
   }
 
-  PlatformInit(INITIAL_WIDTH, INITIAL_HEIGHT, "MineGame Beta 4");
+  PlatformInit(Window.Width, Window.Height, "MineGame Beta 4");
   PlatformSetCursorDisabled(true);
-  PlatformToggleFullscreen();
+  if (Window.Fullscreen) { PlatformToggleFullscreen(); }
 
   InitRenderer();
 
@@ -286,7 +306,50 @@ static PlayerInput ClearInputEdges(PlayerInput Pending) {
   return Pending;
 }
 
-int main(void) {
+// Parses an optional "<width> <height>" pair. Anything else -- no arguments, a
+// wrong count, a non-number, a dimension out of range -- leaves the request
+// fullscreen, so a malformed invocation starts the game normally rather than
+// failing or silently measuring at a size nobody asked for.
+static WindowRequest ParseWindowRequest(int Argc, char **Argv) {
+  WindowRequest Request = {
+    .Width = INITIAL_WIDTH,
+    .Height = INITIAL_HEIGHT,
+    .Fullscreen = true,
+  };
+
+  if (Argc != 3) {
+    if (Argc > 1) {
+      LogWarn("MAIN: expected \"<width> <height>\" or no arguments; starting fullscreen");
+    }
+    return Request;
+  }
+
+  char *WidthEnd = (char *)0;
+  char *HeightEnd = (char *)0;
+  long Width = strtol(Argv[1], &WidthEnd, DECIMAL_BASE);
+  long Height = strtol(Argv[2], &HeightEnd, DECIMAL_BASE);
+
+  bool Parsed = (WidthEnd != Argv[1]) && (*WidthEnd == '\0') &&
+                (HeightEnd != Argv[2]) && (*HeightEnd == '\0');
+  bool InRange = (Width >= MIN_REQUESTED_DIMENSION) &&
+                 (Width <= MAX_REQUESTED_DIMENSION) &&
+                 (Height >= MIN_REQUESTED_DIMENSION) &&
+                 (Height <= MAX_REQUESTED_DIMENSION);
+
+  if (!Parsed || !InRange) {
+    LogWarn("MAIN: window size must be two integers in [%d, %d]; starting fullscreen",
+            MIN_REQUESTED_DIMENSION, MAX_REQUESTED_DIMENSION);
+    return Request;
+  }
+
+  Request.Width = (int)Width;
+  Request.Height = (int)Height;
+  Request.Fullscreen = false;
+  LogInfo("MAIN: windowed at %dx%d", Request.Width, Request.Height);
+  return Request;
+}
+
+int main(int Argc, char **Argv) {
   World *WorldVal = (World *)0;
   Player PlayerVal;
   GameCamera PlayerCamera;
@@ -295,7 +358,10 @@ int main(void) {
   ChatState ChatVal;
   bool ShowDebug = false;
 
-  if (!InitGame(&WorldVal, &PlayerVal, &PlayerCamera, &ChatVal, &FreeCamera)) {
+  WindowRequest Window = ParseWindowRequest(Argc, Argv);
+
+  if (!InitGame(&WorldVal, &PlayerVal, &PlayerCamera, &ChatVal, &FreeCamera,
+                Window)) {
     return EXIT_FAILURE;
   }
 
