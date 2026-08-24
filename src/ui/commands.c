@@ -68,12 +68,15 @@ static void DebugAABB(CommandContext *Ctx, bool State);
 static void DebugWireframe(CommandContext *Ctx, bool State);
 static void DebugChunkBorders(CommandContext *Ctx, bool State);
 static void DebugFreeCam(CommandContext *Ctx, bool State);
+static void DebugForceCutout(CommandContext *Ctx, bool State);
 
 static const DebugToggle AVAILABLEDEBUGS[] = {
     {"aabb", "Show collision boxes", DebugAABB},
     {"wireframe", "Show lines view", DebugWireframe},
     {"chunkborders", "Show chunk borders", DebugChunkBorders},
     {"freecam", "Enable freecam", DebugFreeCam},
+    {"forcecutout", "Draw solid blocks with the cutout shader (measurement)",
+     DebugForceCutout},
 };
 
 static const int AVAILABLEDEBUGSCOUNT =
@@ -659,6 +662,11 @@ static void DebugChunkBorders(CommandContext *Ctx, bool State) {
 static void DebugFreeCam(CommandContext *Ctx, bool State) {
   (void)Ctx;
   GetDebugState()->Freecam = State;
+}
+
+static void DebugForceCutout(CommandContext *Ctx, bool State) {
+  (void)Ctx;
+  GetDebugState()->ForceCutoutShader = State;
 }
 
 static void CommandDebug(const char *Args, CommandContext *Ctx) {

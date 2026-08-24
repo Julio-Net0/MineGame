@@ -1224,8 +1224,11 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
 
     int Rendered = 0;
 
-    // Solid faces, with the shader that keeps early depth rejection.
-    RenderBeginChunkPass(CHUNK_PASS_OPAQUE);
+    // Solid faces, with the shader that keeps early depth rejection. The debug
+    // toggle routes them back through the cutout shader instead, restoring the
+    // pre-split behaviour so the two can be measured against each other.
+    RenderBeginChunkPass(GetDebugState()->ForceCutoutShader ? CHUNK_PASS_CUTOUT
+                                                            : CHUNK_PASS_OPAQUE);
     for (int IdxI = 0; IdxI < ChunkCount; IdxI++) {
         Chunk *ChunkVal = &WorldVal->Chunks[IdxI];
         if (!Visible[IdxI] || !ChunkVal->HasMesh) { continue; }

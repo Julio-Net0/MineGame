@@ -6,6 +6,7 @@ DebugState *GetDebugState(void) {
     .ChunkBorders = false,
     .Aabb = false,
     .Freecam = false,
+    .ForceCutoutShader = false,
   };
   return &SDebug;
 }
