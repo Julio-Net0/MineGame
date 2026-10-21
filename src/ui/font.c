@@ -556,16 +556,23 @@ static void DrawGlyph(UiContext *Ctx, const FontState *State,
                  Color);
 }
 
-// Walks Text, drawing when Ctx is not null, and returns the advance.
-static float RunText(UiContext *Ctx, const char *Text, float X, float Y,
-                     Color8 Color) {
+static float GlyphAdvance(const FontState *State, uint32_t Codepoint) {
+  const FontGlyph *Glyph = FindGlyph(State, Codepoint);
+  return IsDrawable(State, Glyph) ? Glyph->Advance : (float)PLACEHOLDER_ADVANCE;
+}
+
+// Walks up to Length bytes of Text (all of it when Length is negative),
+// drawing when Ctx is not null, and returns the advance.
+static float RunText(UiContext *Ctx, const char *Text, int Length, float X,
+                     float Y, Color8 Color) {
   FontState *State = GetFontState();
   if (Text == NULL) {
     return 0.0F;
   }
   float Pen = X;
   const unsigned char *Cursor = (const unsigned char *)Text;
-  while (*Cursor != 0) {
+  const unsigned char *End = (Length >= 0) ? Cursor + Length : NULL;
+  while (*Cursor != 0 && (End == NULL || Cursor < End)) {
     uint32_t Codepoint = 0;
     Cursor += DecodeUtf8(Cursor, &Codepoint);
     const FontGlyph *Glyph = FindGlyph(State, Codepoint);
@@ -585,19 +592,74 @@ static float RunText(UiContext *Ctx, const char *Text, float X, float Y,
   return Pen - X;
 }
 
+static Color8 ShadowColor(Color8 Color) {
+  return (Color8){(unsigned char)(Color.R / SHADOW_DIVISOR),
+                  (unsigned char)(Color.G / SHADOW_DIVISOR),
+                  (unsigned char)(Color.B / SHADOW_DIVISOR), Color.A};
+}
+
 void UiText(UiContext *Ctx, const char *Text, float X, float Y, Color8 Color) {
-  RunText(Ctx, Text, X, Y, Color);
+  RunText(Ctx, Text, -1, X, Y, Color);
 }
 
 void UiTextShadow(UiContext *Ctx, const char *Text, float X, float Y,
                   Color8 Color) {
-  Color8 Shadow = {(unsigned char)(Color.R / SHADOW_DIVISOR),
-                   (unsigned char)(Color.G / SHADOW_DIVISOR),
-                   (unsigned char)(Color.B / SHADOW_DIVISOR), Color.A};
-  RunText(Ctx, Text, X + 1.0F, Y + 1.0F, Shadow);
-  RunText(Ctx, Text, X, Y, Color);
+  UiTextRangeShadow(Ctx, Text, -1, X, Y, Color);
+}
+
+void UiTextRangeShadow(UiContext *Ctx, const char *Text, int Length, float X,
+                       float Y, Color8 Color) {
+  RunText(Ctx, Text, Length, X + 1.0F, Y + 1.0F, ShadowColor(Color));
+  RunText(Ctx, Text, Length, X, Y, Color);
 }
 
 float UiMeasureText(const char *Text) {
-  return RunText(NULL, Text, 0.0F, 0.0F, COLOR_WHITE);
+  return RunText(NULL, Text, -1, 0.0F, 0.0F, COLOR_WHITE);
+}
+
+int UiWrapText(const char *Text, float MaxWidth, int *OutStarts, int MaxLines) {
+  if (Text == NULL || OutStarts == NULL || MaxLines <= 0) {
+    return 0;
+  }
+  FontState *State = GetFontState();
+  OutStarts[0] = 0;
+  int Lines = 1;
+
+  int LineStart = 0;
+  // Byte offset just past the last space on the current line, and the line
+  // width up to that point; a break there moves the rest of the line down.
+  int BreakAfterSpace = -1;
+  float WidthAtBreak = 0.0F;
+  float Width = 0.0F;
+
+  int Offset = 0;
+  while (Text[Offset] != '\0' && Lines < MaxLines) {
+    uint32_t Codepoint = 0;
+    int Bytes = DecodeUtf8((const unsigned char *)&Text[Offset], &Codepoint);
+    float Advance = GlyphAdvance(State, Codepoint);
+
+    if (Width + Advance > MaxWidth && Offset > LineStart) {
+      if (BreakAfterSpace > LineStart) {
+        LineStart = BreakAfterSpace;
+        Width -= WidthAtBreak;
+      } else {
+        LineStart = Offset;
+        Width = 0.0F;
+      }
+      OutStarts[Lines++] = LineStart;
+      BreakAfterSpace = -1;
+      WidthAtBreak = 0.0F;
+      if (Lines >= MaxLines) {
+        break;
+      }
+    }
+
+    Width += Advance;
+    Offset += Bytes;
+    if (Codepoint == ' ') {
+      BreakAfterSpace = Offset;
+      WidthAtBreak = Width;
+    }
+  }
+  return Lines;
 }

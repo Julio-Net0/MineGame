@@ -9,6 +9,8 @@
 #include "world/world.h"
 #include "raylib.h"
 #include "raymath.h"
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,6 +33,16 @@
 typedef struct {
   Texture2D BlockAtlas;
   Texture2D UiAtlas;
+
+  // UI draw list path: the whole list is copied into one vertex buffer and
+  // each command is one indexed draw, instead of three rlgl calls per vertex.
+  Shader UiShader;
+  int UiMvpLoc;
+  int UiTextureLoc;
+  unsigned int UiVao;
+  unsigned int UiVbo;
+  unsigned int UiEbo;
+  int UiQuadCapacity;
   unsigned int BlockArrayTexID;
 
   // Same vertex shader, two fragment shaders differing only by the alpha test.
@@ -233,6 +245,11 @@ void RenderBackendInit(void) {
   State->ChunkShaderCutout = LoadShader("assets/shaders/chunk.vert",
                                         "assets/shaders/chunk_cutout.frag");
 
+  State->UiShader =
+      LoadShader("assets/shaders/ui.vert", "assets/shaders/ui.frag");
+  State->UiMvpLoc = GetShaderLocation(State->UiShader, "mvp");
+  State->UiTextureLoc = GetShaderLocation(State->UiShader, "texture0");
+
   int Unit = 0;
   SetShaderValue(State->ChunkShaderOpaque,
                  GetShaderLocation(State->ChunkShaderOpaque, "uBlockArray"),
@@ -259,6 +276,14 @@ void RenderBackendShutdown(void) {
   }
   UnloadShader(State->ChunkShaderOpaque);
   UnloadShader(State->ChunkShaderCutout);
+  UnloadShader(State->UiShader);
+  if (State->UiVao != 0) {
+    glDeleteVertexArrays(1, &State->UiVao);
+    glDeleteBuffers(1, &State->UiVbo);
+    glDeleteBuffers(1, &State->UiEbo);
+    State->UiVao = 0;
+    State->UiQuadCapacity = 0;
+  }
   UnloadTexture(State->BlockAtlas);
   if (State->UiAtlas.id != 0) {
     UnloadTexture(State->UiAtlas);
@@ -482,38 +507,159 @@ static unsigned int UiTextureHandle(UiTextureId Texture) {
                                              : State->UiAtlas.id;
 }
 
+enum {
+  UI_INITIAL_QUAD_CAPACITY = 4096,
+  UI_INDICES_PER_QUAD = 6
+};
+
+// OpenGL takes a buffer offset through a pointer parameter. The union states
+// that conversion once instead of casting an integer to a pointer at each call.
+static const void *GlBufferOffset(size_t Offset) {
+  union {
+    uintptr_t Offset;
+    const void *Pointer;
+  } Converted = {.Offset = (uintptr_t)Offset};
+  return Converted.Pointer;
+}
+
+static void BindUiAttribute(unsigned int Program, const char *Name,
+                            int Components, unsigned int Type,
+                            unsigned char Normalized, size_t Offset) {
+  int Location = glGetAttribLocation(Program, Name);
+  if (Location < 0) {
+    return;
+  }
+  glEnableVertexAttribArray((unsigned int)Location);
+  glVertexAttribPointer((unsigned int)Location, Components, Type, Normalized,
+                        (int)sizeof(UiVertex), GlBufferOffset(Offset));
+}
+
+static void CreateUiVertexArray(BackendState *State) {
+  glGenVertexArrays(1, &State->UiVao);
+  glGenBuffers(1, &State->UiVbo);
+  glGenBuffers(1, &State->UiEbo);
+
+  glBindVertexArray(State->UiVao);
+  glBindBuffer(GL_ARRAY_BUFFER, State->UiVbo);
+  unsigned int Program = State->UiShader.id;
+  BindUiAttribute(Program, "vertexPosition", 2, GL_FLOAT, GL_FALSE,
+                  offsetof(UiVertex, X));
+  BindUiAttribute(Program, "vertexTexCoord", 2, GL_FLOAT, GL_FALSE,
+                  offsetof(UiVertex, U));
+  BindUiAttribute(Program, "vertexColor", 4, GL_UNSIGNED_BYTE, GL_TRUE,
+                  offsetof(UiVertex, Color));
+  // The element buffer binding is part of the VAO state.
+  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, State->UiEbo);
+  glBindVertexArray(0);
+}
+
+// Grows the vertex buffer to hold QuadCount quads. The index buffer only ever
+// holds the fixed two-triangle pattern per quad, so it is rebuilt on growth
+// and never touched per frame.
+static bool EnsureUiCapacity(BackendState *State, int QuadCount) {
+  if (State->UiVao == 0) {
+    CreateUiVertexArray(State);
+  }
+  if (QuadCount <= State->UiQuadCapacity) {
+    return true;
+  }
+
+  int Capacity = (State->UiQuadCapacity > 0) ? State->UiQuadCapacity
+                                             : UI_INITIAL_QUAD_CAPACITY;
+  while (Capacity < QuadCount) {
+    Capacity *= 2;
+  }
+
+  size_t IndexCount = (size_t)Capacity * UI_INDICES_PER_QUAD;
+  unsigned int *Indices = (unsigned int *)malloc(IndexCount * sizeof(unsigned int));
+  if (Indices == NULL) {
+    TraceLog(LOG_WARNING, "RENDER: out of memory growing the UI index buffer");
+    return false;
+  }
+  // Same split as rlgl's quads, so the winding matches its back-face culling.
+  static const unsigned int QUAD_PATTERN[UI_INDICES_PER_QUAD] = {0, 1, 2,
+                                                                 0, 2, 3};
+  for (unsigned int Quad = 0; Quad < (unsigned int)Capacity; Quad++) {
+    unsigned int Base = Quad * UI_QUAD_CORNERS;
+    unsigned int *Out = &Indices[(size_t)Quad * UI_INDICES_PER_QUAD];
+    for (int Corner = 0; Corner < UI_INDICES_PER_QUAD; Corner++) {
+      Out[Corner] = Base + QUAD_PATTERN[Corner];
+    }
+  }
+
+  glBindVertexArray(State->UiVao);
+  glBindBuffer(GL_ARRAY_BUFFER, State->UiVbo);
+  glBufferData(GL_ARRAY_BUFFER, (long)((size_t)Capacity * sizeof(UiQuad)), NULL,
+               GL_STREAM_DRAW);
+  glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+               (long)(IndexCount * sizeof(unsigned int)), Indices,
+               GL_STATIC_DRAW);
+  glBindVertexArray(0);
+  free(Indices);
+
+  State->UiQuadCapacity = Capacity;
+  return true;
+}
+
 void RenderSubmitUI(const UiDrawList *List) {
+  BackendState *State = GetBackendState();
+  if (List->QuadCount <= 0 || State->UiShader.id == 0) {
+    return;
+  }
+  // Anything Raylib still has batched (debug lines, the 3D pass) must reach
+  // the GPU first, or it would draw over the UI.
+  rlDrawRenderBatchActive();
+  if (!EnsureUiCapacity(State, List->QuadCount)) {
+    return;
+  }
+
+  // Raylib's own 2D projection for this frame, so the UI lands exactly where
+  // its immediate helpers would have drawn it.
+  Matrix Mvp = MatrixMultiply(rlGetMatrixModelview(), rlGetMatrixProjection());
+
+  glUseProgram(State->UiShader.id);
+  rlSetUniformMatrix(State->UiMvpLoc, Mvp);
+  glUniform1i(State->UiTextureLoc, 0);
+  glActiveTexture(GL_TEXTURE0);
+
+  glBindVertexArray(State->UiVao);
+  glBindBuffer(GL_ARRAY_BUFFER, State->UiVbo);
+  // Orphan the previous frame's storage so the upload never waits on a draw
+  // the GPU is still reading from.
+  glBufferData(GL_ARRAY_BUFFER,
+               (long)((size_t)State->UiQuadCapacity * sizeof(UiQuad)), NULL,
+               GL_STREAM_DRAW);
+  glBufferSubData(GL_ARRAY_BUFFER, 0,
+                  (long)((size_t)List->QuadCount * sizeof(UiQuad)),
+                  List->Quads);
+
   for (int CmdIdx = 0; CmdIdx < List->CommandCount; CmdIdx++) {
     const UiCommand *Cmd = &List->Commands[CmdIdx];
     bool Scissored = Cmd->Scissor.W > 0;
-    // BeginScissorMode flushes the batch and converts the top-left rectangle
-    // to the framebuffer's bottom-left convention.
+    // BeginScissorMode converts the top-left rectangle to the framebuffer's
+    // bottom-left convention, including high-DPI scaling.
     if (Scissored) {
       BeginScissorMode(Cmd->Scissor.X, Cmd->Scissor.Y, Cmd->Scissor.W,
                        Cmd->Scissor.H);
     }
 
-    rlSetTexture(UiTextureHandle(Cmd->Texture));
-    rlBegin(RL_QUADS);
-    for (int QuadIdx = 0; QuadIdx < Cmd->QuadCount; QuadIdx++) {
-      // Flushes and restores the mode and texture when the batch is full, so
-      // a long chat history cannot overrun it.
-      rlCheckRenderBatchLimit(UI_QUAD_CORNERS);
-      const UiQuad *Quad = &List->Quads[Cmd->FirstQuad + QuadIdx];
-      for (int Corner = 0; Corner < UI_QUAD_CORNERS; Corner++) {
-        const UiVertex *Vert = &Quad->V[Corner];
-        rlColor4ub(Vert->Color.R, Vert->Color.G, Vert->Color.B, Vert->Color.A);
-        rlTexCoord2f(Vert->U, Vert->V);
-        rlVertex2f(Vert->X, Vert->Y);
-      }
-    }
-    rlEnd();
-    rlSetTexture(0);
+    glBindTexture(GL_TEXTURE_2D, UiTextureHandle(Cmd->Texture));
+    // Every quad has the same index pattern, so each command reads the indices
+    // from the start and shifts them to its first quad with the base vertex.
+    glDrawElementsBaseVertex(GL_TRIANGLES, Cmd->QuadCount * UI_INDICES_PER_QUAD,
+                             GL_UNSIGNED_INT, NULL,
+                             Cmd->FirstQuad * UI_QUAD_CORNERS);
 
     if (Scissored) {
       EndScissorMode();
     }
   }
+
+  // rlgl rebinds its own program, VAO and texture on every batch it draws, so
+  // clearing ours is enough to hand the context back.
+  glBindVertexArray(0);
+  glBindTexture(GL_TEXTURE_2D, 0);
+  glUseProgram(0);
 }
 
 // ---------------------------------------------------------------------------

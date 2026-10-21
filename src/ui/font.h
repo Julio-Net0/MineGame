@@ -32,4 +32,14 @@ void UiTextShadow(UiContext *Ctx, const char *Text, float X, float Y,
 
 float UiMeasureText(const char *Text);
 
+// Draws the first Length bytes of Text with the vanilla drop shadow.
+void UiTextRangeShadow(UiContext *Ctx, const char *Text, int Length, float X,
+                       float Y, Color8 Color);
+
+// Splits Text into lines no wider than MaxWidth, breaking after a space when
+// the line has one and mid-word otherwise. Writes the byte offset at which
+// each line starts into OutStarts (the first is always 0) and returns how many
+// lines there are, at most MaxLines; anything past the last one stays on it.
+int UiWrapText(const char *Text, float MaxWidth, int *OutStarts, int MaxLines);
+
 #endif

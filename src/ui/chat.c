@@ -48,6 +48,7 @@ void AddChatHistory(ChatState *Chat, const char *Message) {
   if (Chat->HistoryCount < CHAT_MAX_HISTORY) {
     SafeStrncpy(Chat->History[Chat->HistoryCount].Text, Message, CHAT_MAX_INPUT_CHARS);
     Chat->History[Chat->HistoryCount].TimeCreated = PlatformGetTime();
+    Chat->History[Chat->HistoryCount].WrapWidth = 0;
     Chat->HistoryCount++;
   } else {
     for (int Idx = 0; Idx < CHAT_MAX_HISTORY - 1; Idx++) {
@@ -55,6 +56,7 @@ void AddChatHistory(ChatState *Chat, const char *Message) {
     }
     SafeStrncpy(Chat->History[CHAT_MAX_HISTORY - 1].Text, Message, CHAT_MAX_INPUT_CHARS);
     Chat->History[CHAT_MAX_HISTORY - 1].TimeCreated = PlatformGetTime();
+    Chat->History[CHAT_MAX_HISTORY - 1].WrapWidth = 0;
   }
 }
 
@@ -176,31 +178,58 @@ static float HistoryAlpha(const ChatState *Chat, const ChatMessage *Message,
   return 0.0F;
 }
 
+static void EnsureWrapped(ChatMessage *Message, int Width) {
+  if (Message->WrapWidth == Width) {
+    return;
+  }
+  Message->WrappedLineCount = UiWrapText(Message->Text, (float)Width,
+                                         Message->WrappedLineStarts,
+                                         CHAT_MAX_WRAPPED_LINES);
+  Message->WrapWidth = Width;
+}
+
 void DrawChat(UiContext *Ctx, ChatState *Chat) {
   double CurrentTime = PlatformGetTime();
-  int MaxLines = Chat->IsActive ? CHAT_FOCUSED_LINES : CHAT_UNFOCUSED_LINES;
+  int MaxRows = Chat->IsActive ? CHAT_FOCUSED_LINES : CHAT_UNFOCUSED_LINES;
   int LineWidth = CHAT_LINE_WIDTH;
   if (LineWidth > Ctx->GuiWidth - (CHAT_TEXT_INSET * 2)) {
     LineWidth = Ctx->GuiWidth - (CHAT_TEXT_INSET * 2);
   }
 
-  for (int Line = 0; Line < MaxLines; Line++) {
-    int Idx = Chat->HistoryCount - 1 - Chat->ScrollOffset - Line;
-    int Top = Ctx->GuiHeight - CHAT_BOTTOM_OFFSET - ((Line + 1) * FONT_LINE_HEIGHT);
-    if (Idx < 0 || Top < 0) {
-      break;
-    }
-
-    float Alpha = HistoryAlpha(Chat, &Chat->History[Idx], CurrentTime);
+  // Rows fill upward from the bottom, newest message first; a wrapped message
+  // keeps its own lines in reading order, so its last line is the lowest.
+  int Row = 0;
+  for (int Idx = Chat->HistoryCount - 1 - Chat->ScrollOffset;
+       Idx >= 0 && Row < MaxRows; Idx--) {
+    ChatMessage *Message = &Chat->History[Idx];
+    float Alpha = HistoryAlpha(Chat, Message, CurrentTime);
     if (Alpha <= 0.0F) {
       continue;
     }
-    UiFillRect(Ctx,
-               (UiRect){0, Top, LineWidth + (CHAT_TEXT_INSET * 2),
-                        FONT_LINE_HEIGHT},
-               Color8Alpha(COLOR_BLACK, CHAT_HISTORY_BG_ALPHA * Alpha));
-    UiTextShadow(Ctx, Chat->History[Idx].Text, (float)CHAT_TEXT_INSET,
-                 (float)(Top + 1), Color8Alpha(COLOR_WHITE, Alpha));
+    EnsureWrapped(Message, LineWidth);
+
+    Color8 Background = Color8Alpha(COLOR_BLACK, CHAT_HISTORY_BG_ALPHA * Alpha);
+    Color8 Foreground = Color8Alpha(COLOR_WHITE, Alpha);
+    for (int Line = Message->WrappedLineCount - 1; Line >= 0 && Row < MaxRows;
+         Line--) {
+      int Top =
+          Ctx->GuiHeight - CHAT_BOTTOM_OFFSET - ((Row + 1) * FONT_LINE_HEIGHT);
+      if (Top < 0) {
+        Row = MaxRows;
+        break;
+      }
+      int Start = Message->WrappedLineStarts[Line];
+      int Length = (Line + 1 < Message->WrappedLineCount)
+                       ? (Message->WrappedLineStarts[Line + 1] - Start)
+                       : -1;
+      UiFillRect(Ctx,
+                 (UiRect){0, Top, LineWidth + (CHAT_TEXT_INSET * 2),
+                          FONT_LINE_HEIGHT},
+                 Background);
+      UiTextRangeShadow(Ctx, &Message->Text[Start], Length,
+                        (float)CHAT_TEXT_INSET, (float)(Top + 1), Foreground);
+      Row++;
+    }
   }
 
   if (Chat->IsActive) {
