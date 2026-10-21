@@ -1,8 +1,8 @@
 {
   "id": 4,
   "name": "Sand",
-  "texTop": 18,
-  "texBottom": 18,
-  "texSide": 18,
+  "texTop": "sand",
+  "texBottom": "sand",
+  "texSide": "sand",
   "isTransparent": false
 }

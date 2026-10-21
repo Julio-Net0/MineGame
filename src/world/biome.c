@@ -16,6 +16,9 @@ enum {
   RANGE_FIELD_COUNT = 2,
   COLOR_FIELD_COUNT = 3,
   COLOR_CHANNEL_MAX = 255,
+  DEFAULT_WATER_TINT_R = 63,
+  DEFAULT_WATER_TINT_G = 118,
+  DEFAULT_WATER_TINT_B = 228,
   // Climate axis indices. Each gets its own hashed noise offsets so the fields
   // stay decorrelated from each other and from the terrain-height field.
   AXIS_TEMPERATURE = 0,
@@ -74,6 +77,9 @@ void InitBiomeRegistry(void) {
     // White so an unloaded slot tints nothing rather than turning faces black.
     Registry[Idx].GrassTint = COLOR_WHITE;
     Registry[Idx].FoliageTint = COLOR_WHITE;
+    Registry[Idx].WaterTint =
+        (Color8){DEFAULT_WATER_TINT_R, DEFAULT_WATER_TINT_G,
+                 DEFAULT_WATER_TINT_B, (unsigned char)COLOR_CHANNEL_MAX};
     Registry[Idx].SurfaceBlockId = 0;
     Registry[Idx].SubsurfaceBlockId = 0;
     Registry[Idx].UnderwaterBlockId = 0;
@@ -240,6 +246,8 @@ Color8 GetBiomeTint(int BiomeId, TintSource Source) {
     return Biome->GrassTint;
   case TINT_FOLIAGE:
     return Biome->FoliageTint;
+  case TINT_WATER:
+    return Biome->WaterTint;
   case TINT_NONE:
   default:
     return COLOR_WHITE;
@@ -494,6 +502,7 @@ static void ParseBiomeFile(const char *FilePath) {
 
   ParseTint(Json, "grassTint", &Biome->GrassTint);
   ParseTint(Json, "foliageTint", &Biome->FoliageTint);
+  ParseTint(Json, "waterTint", &Biome->WaterTint);
 
   cJSON *SubsurfaceDepthItem =
       cJSON_GetObjectItemCaseSensitive(Json, "subsurfaceDepth");

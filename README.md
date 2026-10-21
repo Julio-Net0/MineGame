@@ -23,7 +23,9 @@ Every push to `master` is built for Linux and Windows automatically. Pick a perm
 
 **Structures and flora.** Trees are JSON prefabs stamped during generation, placed by a seed-deterministic hash and given a random rotation or mirror so a handful of models never look like a clone grid. Structures spanning a chunk border resolve without any cross-chunk write: each chunk independently re-derives every structure whose bounding box reaches into it and clips the stamp to its own bounds. A separate decoration pass scatters tall grass and flowers, drawn as cross-shaped alpha-cutout billboards.
 
-**Rendering.** Chunk meshes are built with greedy meshing — adjacent faces of the same block merge into single quads, cutting vertex count by up to 80% — with per-vertex ambient occlusion for soft contact shadows, and split into opaque and translucent passes so glass and water sort correctly. Everything draws from a single texture atlas through VBOs, with view-frustum culling skipping whatever is behind the camera. Biome tint rides the vertex colour channel and is composited per texel in the shader, which lets a grass block's side fringe take the biome colour while the dirt behind it keeps its own.
+**Rendering.** Chunk meshes are built with greedy meshing — adjacent faces of the same block merge into single quads, cutting vertex count by up to 80% — with per-vertex ambient occlusion for soft contact shadows, and split into opaque and translucent passes so glass and water sort correctly. Everything draws from a `GL_TEXTURE_2D_ARRAY` through VBOs, with view-frustum culling skipping whatever is behind the camera. Biome tint (grass, foliage and water) rides the vertex colour channel and is composited per texel in the shader, which lets a grass block's side fringe take the biome colour while the dirt behind it keeps its own.
+
+**Resource packs.** Block definitions reference textures by standard Minecraft names rather than numeric atlas coordinates. Drop any standard Minecraft `.zip` resource pack into `textures/external/` (or `assets/textures/external/` in a release build) and the engine resolves `assets/minecraft/textures/block/<name>.png` directly from the archive at startup, cropping vertical animation strips to their top frame, normalizing tile resolutions, and falling back to the base `textures/block/` directory for any tile a pack omits.
 
 **Gameplay.** A physics-driven player with AABB collision, gravity and jumping walks the world, breaks and places blocks through a DDA raycast, and picks materials from a hotbar. An in-game console (`T`) provides `/help`, `/tp`, `/pos`, `/seed`, `/save`, `/list`, `/noclip`, `/biome`, `/debug`, `/profile` and `/prefab` — the last of which selects a volume of blocks and exports it straight to a JSON prefab file the generator can then use. Modified chunks are serialised to disk with run-length encoding and loaded back seamlessly, so player creations survive.
 
@@ -104,6 +106,13 @@ cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_COMPILER=gcc
 ```
 
 No `-march` or `-mtune` is set, deliberately. The lowest-end machine this engine targets is an AMD Phenom II (K10), which has SSE3 and SSE4a but not SSSE3 or SSE4.1/4.2 — so a binary built for the common `x86-64-v2` level would fault with an illegal instruction on it, and `-march=native` would bake the build machine's instruction set into a binary meant to run elsewhere. The plain `x86-64` baseline is the target.
+
+### Resource Packs
+
+External Minecraft resource packs (`.zip`) are loaded automatically at startup without extracting them to disk:
+
+1. Place one or more `.zip` resource packs in `textures/external/` (when building from source, CMake syncs them into `build/assets/textures/external/`) or directly in `assets/textures/external/` inside an extracted release archive.
+2. When multiple `.zip` archives are present, they are searched in ascending filename order and the first pack containing `assets/minecraft/textures/block/<name>.png` wins. Any texture omitted by the pack falls back to `assets/textures/block/<name>.png`.
 
 ### Profiling
 

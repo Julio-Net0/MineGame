@@ -6,6 +6,8 @@
 
 #define BLOCK_REGISTRY_SIZE 256
 #define MAX_BLOCK_NAME_SIZE 32
+#define MAX_BLOCK_TEXTURES 256
+#define MAX_TEXTURE_NAME_SIZE 64
 
 // Sentinel for "this block has no side overlay". Negative so it can never
 // collide with a real texture array layer, and so the shader can test for it.
@@ -54,5 +56,8 @@ void ParseBlockFile(const char *FilePath);
 BlockType *GetBlockDef(int Id);
 int GetBlockIdByName(const char *Name);
 int GetLoadedBlocksCount(void);
+int RegisterBlockTexture(const char *Name);
+int GetBlockTextureCount(void);
+const char *GetBlockTextureName(int Index);
 
 #endif

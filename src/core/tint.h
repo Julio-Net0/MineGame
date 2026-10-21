@@ -9,13 +9,14 @@
 // one would force that layer to include the other.
 //
 // TINT_GRASS resolves to the biome's grass color and applies to the top face
-// only, because the grass side texture is a pre-baked dirt-and-fringe image that
-// would discolor if tinted whole. TINT_FOLIAGE resolves to the biome's foliage
-// color and applies to every face.
+// and side overlay only, because the grass side base texture contains dirt.
+// TINT_FOLIAGE and TINT_WATER resolve to the biome's foliage and water colors
+// and apply to every face.
 typedef enum {
   TINT_NONE = 0,
   TINT_GRASS,
-  TINT_FOLIAGE
+  TINT_FOLIAGE,
+  TINT_WATER
 } TintSource;
 
 #endif

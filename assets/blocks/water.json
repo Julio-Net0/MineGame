@@ -1,9 +1,10 @@
 {
   "id": 5,
   "name": "Water",
-  "texTop": 205,
-  "texBottom": 205,
-  "texSide": 205,
+  "texTop": "water_still",
+  "texBottom": "water_still",
+  "texSide": "water_still",
+  "tint": "water",
   "isTransparent": true,
   "isSolid": false
 }

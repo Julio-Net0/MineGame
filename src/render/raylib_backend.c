@@ -1,10 +1,14 @@
 #include "render/backend.h"
 #include "render/rl_compat.h"
+#include "core/fileio.h"
 #include "core/profiler.h"
+#include "world/biome.h"
 #include "world/block_system.h"
 #include "world/world.h"
 #include "raylib.h"
 #include "raymath.h"
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 // Must include glad before rlgl to get raw GL constants (GL_TEXTURE_2D_ARRAY etc.)
@@ -45,50 +49,254 @@ static BackendState *GetBackendState(void) {
 }
 
 // ---------------------------------------------------------------------------
-// Texture array loader
+// Texture array and HUD atlas loader
 // ---------------------------------------------------------------------------
+
+enum {
+  ATLAS_GRID_DIM = 16,
+  MIN_TILE_SIZE = 16,
+  MAX_TILE_SIZE = 256,
+  CHECKER_HALF_SIZE = 8,
+  MAX_PACK_FILES = 64,
+  RGBA_BYTES_PER_PIXEL = 4
+};
+
+static int ComparePackPaths(const void *Lhs, const void *Rhs) {
+  const char *PathA = (const char *)Lhs;
+  const char *PathB = (const char *)Rhs;
+  return strcmp(PathA, PathB);
+}
+
+static void SelectTextureDirectories(const char **OutExternalDir,
+                                     const char **OutBaseDir) {
+  if (DirectoryExists("assets/textures/block")) {
+    *OutExternalDir = "assets/textures/external";
+    *OutBaseDir = "assets/textures/block";
+  } else {
+    *OutExternalDir = "textures/external";
+    *OutBaseDir = "textures/block";
+  }
+}
+
+static int OpenExternalPacks(const char *ExternalDir,
+                             ZipArchive *OutArchives[MAX_PACK_FILES]) {
+  static char CandidatePaths[MAX_PACK_FILES][FILEIO_MAX_PATH];
+  static char ZipPaths[MAX_PACK_FILES][FILEIO_MAX_PATH];
+
+  int CandidateCount =
+      ListDirectoryFiles(ExternalDir, CandidatePaths, MAX_PACK_FILES);
+  int ZipCount = 0;
+  for (int Idx = 0; Idx < CandidateCount; Idx++) {
+    if (HasFileExtension(CandidatePaths[Idx], ".zip")) {
+      snprintf(ZipPaths[ZipCount], FILEIO_MAX_PATH, "%s", CandidatePaths[Idx]);
+      ZipCount++;
+    }
+  }
+
+  if (ZipCount > 1) {
+    qsort(ZipPaths, (size_t)ZipCount, FILEIO_MAX_PATH, ComparePackPaths);
+  }
+
+  int OpenCount = 0;
+  for (int Idx = 0; Idx < ZipCount; Idx++) {
+    ZipArchive *Archive = ZipOpen(ZipPaths[Idx]);
+    if (Archive == NULL) {
+      TraceLog(LOG_WARNING,
+               "RENDER: Unusable resource pack archive '%s', skipping",
+               ZipPaths[Idx]);
+      continue;
+    }
+    OutArchives[OpenCount++] = Archive;
+  }
+
+  return OpenCount;
+}
+
+static void CloseExternalPacks(ZipArchive *Archives[MAX_PACK_FILES],
+                               int PackCount) {
+  for (int Idx = 0; Idx < PackCount; Idx++) {
+    ZipClose(Archives[Idx]);
+    Archives[Idx] = NULL;
+  }
+}
+
+static Image TryLoadFromZip(ZipArchive *Archive, const char *EntryPath) {
+  Image Result = {0};
+  const ZipEntry *Entry = ZipFind(Archive, EntryPath);
+  if (Entry == NULL) {
+    return Result;
+  }
+
+  int RawSize = 0;
+  int Method = 0;
+  unsigned char *Raw = ZipReadRaw(Archive, Entry, &RawSize, &Method);
+  if (Raw == NULL) {
+    return Result;
+  }
+
+  if (Method == ZIP_METHOD_STORED) {
+    Result = LoadImageFromMemory(".png", Raw, RawSize);
+  } else if (Method == ZIP_METHOD_DEFLATE) {
+    int UncompSize = 0;
+    unsigned char *Uncomp = DecompressData(Raw, RawSize, &UncompSize);
+    if (Uncomp != NULL && UncompSize > 0) {
+      Result = LoadImageFromMemory(".png", Uncomp, UncompSize);
+    }
+    MemFree(Uncomp);
+  }
+
+  free(Raw);
+  return Result;
+}
+
+static Image ResolveBlockTextureImage(const char *Name, const char *BaseDir,
+                                      ZipArchive *Archives[MAX_PACK_FILES],
+                                      int PackCount) {
+  if (Name != NULL && Name[0] != '\0') {
+    char EntryPath[FILEIO_MAX_PATH];
+    snprintf(EntryPath, sizeof(EntryPath),
+             "assets/minecraft/textures/block/%s.png", Name);
+
+    for (int PackIdx = 0; PackIdx < PackCount; PackIdx++) {
+      Image Packed = TryLoadFromZip(Archives[PackIdx], EntryPath);
+      if (Packed.data != NULL && Packed.width > 0 && Packed.height > 0) {
+        return Packed;
+      }
+      if (Packed.data != NULL) {
+        UnloadImage(Packed);
+      }
+    }
+
+    char DiskPath[FILEIO_MAX_PATH];
+    snprintf(DiskPath, sizeof(DiskPath), "%s/%s.png", BaseDir, Name);
+    if (FileExists(DiskPath)) {
+      Image BaseImg = LoadImage(DiskPath);
+      if (BaseImg.data != NULL && BaseImg.width > 0 && BaseImg.height > 0) {
+        return BaseImg;
+      }
+      if (BaseImg.data != NULL) {
+        UnloadImage(BaseImg);
+      }
+    }
+  }
+
+  TraceLog(LOG_WARNING,
+           "RENDER: Texture '%s' not found, using checkerboard fallback",
+           (Name != NULL) ? Name : "<none>");
+  return GenImageChecked(MIN_TILE_SIZE, MIN_TILE_SIZE, CHECKER_HALF_SIZE,
+                         CHECKER_HALF_SIZE, MAGENTA, BLACK);
+}
+
+static int DeriveTileSize(int MaxObservedSide) {
+  int Clamped = MaxObservedSide;
+  if (Clamped < MIN_TILE_SIZE) {
+    Clamped = MIN_TILE_SIZE;
+  }
+  if (Clamped > MAX_TILE_SIZE) {
+    Clamped = MAX_TILE_SIZE;
+  }
+
+  int TileSize = MIN_TILE_SIZE;
+  while (TileSize < Clamped && TileSize < MAX_TILE_SIZE) {
+    TileSize *= 2;
+  }
+  return TileSize;
+}
+
+static void CopyTileIntoAtlas(Image *AtlasImg, const Image *TileImg,
+                              int TileIdx, int TileSize) {
+  int TileCol = TileIdx % ATLAS_GRID_DIM;
+  int TileRow = TileIdx / ATLAS_GRID_DIM;
+  if (TileRow >= ATLAS_GRID_DIM) {
+    return;
+  }
+
+  unsigned char *DestPixels = (unsigned char *)AtlasImg->data;
+  const unsigned char *SrcPixels = (const unsigned char *)TileImg->data;
+  size_t RowBytes = (size_t)TileSize * (size_t)RGBA_BYTES_PER_PIXEL;
+
+  for (int Row = 0; Row < TileSize; Row++) {
+    int DestY = (TileRow * TileSize) + Row;
+    int DestX = TileCol * TileSize;
+    size_t DestOffset =
+        (((size_t)DestY * (size_t)AtlasImg->width) + (size_t)DestX) *
+        (size_t)RGBA_BYTES_PER_PIXEL;
+    size_t SrcOffset = (size_t)Row * RowBytes;
+    memcpy(DestPixels + DestOffset, SrcPixels + SrcOffset, RowBytes);
+  }
+}
 
 static void LoadBlockTextureArray(void) {
   BackendState *State = GetBackendState();
-  Image AtlasImg = LoadImage("assets/atlas/terrain.png");
-  ImageFormat(&AtlasImg, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
 
-  int TileW = AtlasImg.width / (int)ATLAS_COLS;
-  int TileH = AtlasImg.height / (int)ATLAS_ROWS;
-  int TotalTiles = (int)ATLAS_COLS * (int)ATLAS_ROWS;
+  const char *ExternalDir = NULL;
+  const char *BaseDir = NULL;
+  SelectTextureDirectories(&ExternalDir, &BaseDir);
+
+  ZipArchive *Archives[MAX_PACK_FILES] = {0};
+  int PackCount = OpenExternalPacks(ExternalDir, Archives);
+
+  int RegisteredCount = GetBlockTextureCount();
+  int LayerCount = (RegisteredCount > 0) ? RegisteredCount : 1;
+  if (LayerCount > MAX_BLOCK_TEXTURES) {
+    LayerCount = MAX_BLOCK_TEXTURES;
+  }
+
+  static Image Tiles[MAX_BLOCK_TEXTURES];
+  int MaxSide = MIN_TILE_SIZE;
+
+  for (int Idx = 0; Idx < LayerCount; Idx++) {
+    const char *Name =
+        (RegisteredCount > 0) ? GetBlockTextureName(Idx) : NULL;
+    Tiles[Idx] = ResolveBlockTextureImage(Name, BaseDir, Archives, PackCount);
+    ImageFormat(&Tiles[Idx], PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+
+    if (Tiles[Idx].height > Tiles[Idx].width) {
+      Rectangle TopFrame = {0.0F, 0.0F, (float)Tiles[Idx].width,
+                            (float)Tiles[Idx].width};
+      ImageCrop(&Tiles[Idx], TopFrame);
+    } else if (Tiles[Idx].width > Tiles[Idx].height) {
+      Rectangle LeftFrame = {0.0F, 0.0F, (float)Tiles[Idx].height,
+                             (float)Tiles[Idx].height};
+      ImageCrop(&Tiles[Idx], LeftFrame);
+    }
+
+    if (Tiles[Idx].width > MaxSide) {
+      MaxSide = Tiles[Idx].width;
+    }
+  }
+
+  CloseExternalPacks(Archives, PackCount);
+
+  int TileSize = DeriveTileSize(MaxSide);
+  int AtlasDim = ATLAS_GRID_DIM * TileSize;
+  Image AtlasImg = GenImageColor(AtlasDim, AtlasDim, BLANK);
+  ImageFormat(&AtlasImg, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
 
   glGenTextures(1, &State->BlockArrayTexID);
   glBindTexture(GL_TEXTURE_2D_ARRAY, State->BlockArrayTexID);
-  glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8, TileW, TileH, TotalTiles, 0,
-               GL_RGBA, GL_UNSIGNED_BYTE, (const void *)0);
+  glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8, TileSize, TileSize, LayerCount,
+               0, GL_RGBA, GL_UNSIGNED_BYTE, (const void *)0);
 
-  unsigned char *Pixels = (unsigned char *)AtlasImg.data;
-  unsigned char *TileBuf = (unsigned char *)MemAlloc((size_t)(TileW * TileH * 4));
-
-  for (int TileIdx = 0; TileIdx < TotalTiles; TileIdx++) {
-    int TileCol = TileIdx % (int)ATLAS_COLS;
-    int TileRow = TileIdx / (int)ATLAS_COLS;
-
-    for (int Row = 0; Row < TileH; Row++) {
-      int SrcRow = (TileRow * TileH) + Row;
-      int SrcCol = TileCol * TileW;
-      size_t DestOffset = (size_t)Row * (size_t)TileW * 4U;
-      size_t SrcOffset = (((size_t)SrcRow * (size_t)AtlasImg.width) + (size_t)SrcCol) * 4U;
-      size_t Len = (size_t)TileW * 4U;
-      memcpy(TileBuf + DestOffset, Pixels + SrcOffset, Len);
+  for (int Idx = 0; Idx < LayerCount; Idx++) {
+    if (Tiles[Idx].width != TileSize || Tiles[Idx].height != TileSize) {
+      ImageResizeNN(&Tiles[Idx], TileSize, TileSize);
     }
 
-    glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, TileIdx, TileW, TileH, 1,
-                    GL_RGBA, GL_UNSIGNED_BYTE, TileBuf);
+    glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, Idx, TileSize, TileSize, 1,
+                    GL_RGBA, GL_UNSIGNED_BYTE, Tiles[Idx].data);
+    CopyTileIntoAtlas(&AtlasImg, &Tiles[Idx], Idx, TileSize);
+    UnloadImage(Tiles[Idx]);
   }
 
-  MemFree(TileBuf);
   glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_REPEAT);
   glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_REPEAT);
   glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
 
+  State->BlockAtlas = LoadTextureFromImage(AtlasImg);
+  SetTextureFilter(State->BlockAtlas, TEXTURE_FILTER_POINT);
   UnloadImage(AtlasImg);
 }
 
@@ -98,9 +306,6 @@ static void LoadBlockTextureArray(void) {
 
 void RenderBackendInit(void) {
   BackendState *State = GetBackendState();
-
-  State->BlockAtlas = LoadTexture("assets/atlas/terrain.png");
-  SetTextureFilter(State->BlockAtlas, TEXTURE_FILTER_POINT);
 
   LoadBlockTextureArray();
 
@@ -353,12 +558,35 @@ static void GetTextureUV(int TextureIndex, Vector2 *UvMin, Vector2 *UvMax) {
   UvMax->y = V + H;
 }
 
+static void SetIconFaceColor(Color8 Tint, unsigned int Shade) {
+  unsigned char R =
+      (unsigned char)(((unsigned int)Tint.R * Shade) / BLOCK_ICON_COLOR_TOP);
+  unsigned char G =
+      (unsigned char)(((unsigned int)Tint.G * Shade) / BLOCK_ICON_COLOR_TOP);
+  unsigned char B =
+      (unsigned char)(((unsigned int)Tint.B * Shade) / BLOCK_ICON_COLOR_TOP);
+  rlColor4ub(R, G, B, BLOCK_ICON_ALPHA);
+}
+
+static void EmitIconQuad(Vector2 UvMin, Vector2 UvMax, Vector2 V0, Vector2 V1,
+                         Vector2 V2, Vector2 V3) {
+  rlTexCoord2f(UvMin.x, UvMin.y);
+  rlVertex2f(V0.x, V0.y);
+  rlTexCoord2f(UvMin.x, UvMax.y);
+  rlVertex2f(V1.x, V1.y);
+  rlTexCoord2f(UvMax.x, UvMax.y);
+  rlVertex2f(V2.x, V2.y);
+  rlTexCoord2f(UvMax.x, UvMin.y);
+  rlVertex2f(V3.x, V3.y);
+}
+
 void RenderDrawBlockIcon(int BlockId, int X, int Y, int Size) {
   BackendState *State = GetBackendState();
   if (BlockId == 0) {
     return;
   }
   BlockType *Def = GetBlockDef(BlockId);
+  Color8 Tint = GetBiomeTint(BIOME_FALLBACK_ID, Def->Tint);
 
   // Cross blocks (flora) have no cube geometry, so the isometric box icon is
   // wrong for them: draw their sprite as a flat, front-facing quad instead.
@@ -367,14 +595,16 @@ void RenderDrawBlockIcon(int BlockId, int X, int Y, int Size) {
     Vector2 SpriteMax;
     GetTextureUV(Def->TexTop, &SpriteMin, &SpriteMax);
 
+    Vector2 TopLeft = {(float)X, (float)Y};
+    Vector2 BottomLeft = {(float)X, (float)(Y + Size)};
+    Vector2 BottomRight = {(float)(X + Size), (float)(Y + Size)};
+    Vector2 TopRight = {(float)(X + Size), (float)Y};
+
     rlSetTexture(State->BlockAtlas.id);
     rlBegin(RL_QUADS);
-    rlColor4ub(BLOCK_ICON_COLOR_TOP, BLOCK_ICON_COLOR_TOP, BLOCK_ICON_COLOR_TOP,
-               BLOCK_ICON_ALPHA);
-    rlTexCoord2f(SpriteMin.x, SpriteMin.y); rlVertex2f((float)X, (float)Y);
-    rlTexCoord2f(SpriteMin.x, SpriteMax.y); rlVertex2f((float)X, (float)(Y + Size));
-    rlTexCoord2f(SpriteMax.x, SpriteMax.y); rlVertex2f((float)(X + Size), (float)(Y + Size));
-    rlTexCoord2f(SpriteMax.x, SpriteMin.y); rlVertex2f((float)(X + Size), (float)Y);
+    SetIconFaceColor(Tint, BLOCK_ICON_COLOR_TOP);
+    EmitIconQuad(SpriteMin, SpriteMax, TopLeft, BottomLeft, BottomRight,
+                 TopRight);
     rlEnd();
     rlSetTexture(0);
     return;
@@ -386,6 +616,9 @@ void RenderDrawBlockIcon(int BlockId, int X, int Y, int Size) {
   Vector2 SideMax;
   GetTextureUV(Def->TexTop, &TopMin, &TopMax);
   GetTextureUV(Def->TexSide, &SideMin, &SideMax);
+
+  bool HasSideOverlay = (Def->TexSideOverlay != NO_TEXTURE_OVERLAY);
+  Color8 SideBaseTint = HasSideOverlay ? COLOR_WHITE : Tint;
 
   float Cx = (float)X + ((float)Size / BLOCK_ICON_HALF_DIVISOR);
   float Cy = (float)Y + ((float)Size / BLOCK_ICON_HALF_DIVISOR);
@@ -402,23 +635,28 @@ void RenderDrawBlockIcon(int BlockId, int X, int Y, int Size) {
   rlSetTexture(State->BlockAtlas.id);
   rlBegin(RL_QUADS);
 
-  rlColor4ub(BLOCK_ICON_COLOR_TOP, BLOCK_ICON_COLOR_TOP, BLOCK_ICON_COLOR_TOP, BLOCK_ICON_ALPHA);
-  rlTexCoord2f(TopMin.x, TopMin.y); rlVertex2f(PTop.x, PTop.y);
-  rlTexCoord2f(TopMin.x, TopMax.y); rlVertex2f(PTopLeft.x, PTopLeft.y);
-  rlTexCoord2f(TopMax.x, TopMax.y); rlVertex2f(PCenter.x, PCenter.y);
-  rlTexCoord2f(TopMax.x, TopMin.y); rlVertex2f(PTopRight.x, PTopRight.y);
+  SetIconFaceColor(Tint, BLOCK_ICON_COLOR_TOP);
+  EmitIconQuad(TopMin, TopMax, PTop, PTopLeft, PCenter, PTopRight);
 
-  rlColor4ub(BLOCK_ICON_COLOR_LEFT, BLOCK_ICON_COLOR_LEFT, BLOCK_ICON_COLOR_LEFT, BLOCK_ICON_ALPHA);
-  rlTexCoord2f(SideMin.x, SideMin.y); rlVertex2f(PTopLeft.x, PTopLeft.y);
-  rlTexCoord2f(SideMin.x, SideMax.y); rlVertex2f(PBottomLeft.x, PBottomLeft.y);
-  rlTexCoord2f(SideMax.x, SideMax.y); rlVertex2f(PBottom.x, PBottom.y);
-  rlTexCoord2f(SideMax.x, SideMin.y); rlVertex2f(PCenter.x, PCenter.y);
+  SetIconFaceColor(SideBaseTint, BLOCK_ICON_COLOR_LEFT);
+  EmitIconQuad(SideMin, SideMax, PTopLeft, PBottomLeft, PBottom, PCenter);
 
-  rlColor4ub(BLOCK_ICON_COLOR_RIGHT, BLOCK_ICON_COLOR_RIGHT, BLOCK_ICON_COLOR_RIGHT, BLOCK_ICON_ALPHA);
-  rlTexCoord2f(SideMin.x, SideMin.y); rlVertex2f(PCenter.x, PCenter.y);
-  rlTexCoord2f(SideMin.x, SideMax.y); rlVertex2f(PBottom.x, PBottom.y);
-  rlTexCoord2f(SideMax.x, SideMax.y); rlVertex2f(PBottomRight.x, PBottomRight.y);
-  rlTexCoord2f(SideMax.x, SideMin.y); rlVertex2f(PTopRight.x, PTopRight.y);
+  SetIconFaceColor(SideBaseTint, BLOCK_ICON_COLOR_RIGHT);
+  EmitIconQuad(SideMin, SideMax, PCenter, PBottom, PBottomRight, PTopRight);
+
+  if (HasSideOverlay) {
+    Vector2 OverlayMin;
+    Vector2 OverlayMax;
+    GetTextureUV(Def->TexSideOverlay, &OverlayMin, &OverlayMax);
+
+    SetIconFaceColor(Tint, BLOCK_ICON_COLOR_LEFT);
+    EmitIconQuad(OverlayMin, OverlayMax, PTopLeft, PBottomLeft, PBottom,
+                 PCenter);
+
+    SetIconFaceColor(Tint, BLOCK_ICON_COLOR_RIGHT);
+    EmitIconQuad(OverlayMin, OverlayMax, PCenter, PBottom, PBottomRight,
+                 PTopRight);
+  }
 
   rlEnd();
   rlSetTexture(0);

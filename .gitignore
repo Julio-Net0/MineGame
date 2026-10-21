@@ -1,5 +1,6 @@
 build/
 build-linux/
+build-baseline/
 .cache/
 bin/
 
@@ -26,6 +27,10 @@ package.json
 
 .agent/
 .claude/
+.gemini/
 openspec/
 CLAUDE.md
 AGENTS.md
+
+textures/external/*
+!textures/external/.gitkeep

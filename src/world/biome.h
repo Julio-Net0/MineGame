@@ -74,6 +74,7 @@ typedef struct {
   BiomeRange Depth;
   Color8 GrassTint;
   Color8 FoliageTint;
+  Color8 WaterTint;
   int Id;
   int SurfaceBlockId;
   int SubsurfaceBlockId;

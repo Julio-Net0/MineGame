@@ -123,11 +123,29 @@ endif()
 
 # Mirror assets into the build tree on every build. file(COPY) at configure time
 # never prunes, so a renamed or deleted source asset would linger in the build
-# copy and shadow the real one; wiping the destination first keeps them in sync
-# and removes orphans.
+# copy and shadow the real one; wiping the source-backed subdirectories first
+# keeps them in sync and removes orphans while leaving synced textures intact.
+if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.26")
+  set(MINEGAME_COPY_DIR_CMD copy_directory_if_different)
+else()
+  set(MINEGAME_COPY_DIR_CMD copy_directory)
+endif()
+
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E rm -rf ${CMAKE_CURRENT_BINARY_DIR}/assets
+  COMMAND ${CMAKE_COMMAND} -E rm -rf
+          ${CMAKE_CURRENT_BINARY_DIR}/assets/atlas
+          ${CMAKE_CURRENT_BINARY_DIR}/assets/biomes
+          ${CMAKE_CURRENT_BINARY_DIR}/assets/blocks
+          ${CMAKE_CURRENT_BINARY_DIR}/assets/prefabs
+          ${CMAKE_CURRENT_BINARY_DIR}/assets/shaders
+          ${CMAKE_CURRENT_BINARY_DIR}/assets/biome_params.json
   COMMAND ${CMAKE_COMMAND} -E copy_directory
           ${CMAKE_CURRENT_SOURCE_DIR}/assets ${CMAKE_CURRENT_BINARY_DIR}/assets
-  COMMENT "Syncing assets to build tree (pruning orphans)"
+  COMMAND ${CMAKE_COMMAND} -E ${MINEGAME_COPY_DIR_CMD}
+          ${CMAKE_CURRENT_SOURCE_DIR}/textures/block
+          ${CMAKE_CURRENT_BINARY_DIR}/assets/textures/block
+  COMMAND ${CMAKE_COMMAND} -E ${MINEGAME_COPY_DIR_CMD}
+          ${CMAKE_CURRENT_SOURCE_DIR}/textures/external
+          ${CMAKE_CURRENT_BINARY_DIR}/assets/textures/external
+  COMMENT "Syncing assets and textures to build tree"
   VERBATIM)

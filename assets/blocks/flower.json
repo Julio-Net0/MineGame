@@ -1,9 +1,9 @@
 {
   "id": 9,
   "name": "Flower",
-  "texTop": 13,
-  "texBottom": 13,
-  "texSide": 13,
+  "texTop": "dandelion",
+  "texBottom": "dandelion",
+  "texSide": "dandelion",
   "isTransparent": true,
   "render": "cross"
 }

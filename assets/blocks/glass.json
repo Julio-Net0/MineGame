@@ -1,8 +1,8 @@
 {
   "id": 6,
   "name": "Glass",
-  "texTop": 49,
-  "texBottom": 49,
-  "texSide": 49,
+  "texTop": "glass",
+  "texBottom": "glass",
+  "texSide": "glass",
   "isTransparent": true
 }

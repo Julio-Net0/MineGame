@@ -1,8 +1,8 @@
 {
   "id": 8,
   "name": "Oak",
-  "texTop": 21,
-  "texBottom": 21,
-  "texSide": 20,
+  "texTop": "oak_log_top",
+  "texBottom": "oak_log_top",
+  "texSide": "oak_log",
   "isTransparent": false
 }

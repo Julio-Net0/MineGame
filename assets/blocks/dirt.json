@@ -1,8 +1,8 @@
 {
   "id": 2,
   "name": "Dirt",
-  "texTop": 2,
-  "texBottom": 2,
-  "texSide": 2,
+  "texTop": "dirt",
+  "texBottom": "dirt",
+  "texSide": "dirt",
   "isTransparent": false
 }

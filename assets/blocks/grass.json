@@ -1,10 +1,10 @@
 {
   "id": 1,
   "name": "Grass",
-  "texTop": 0,
-  "texBottom": 2,
-  "texSide": 3,
-  "texSideOverlay": 180,
+  "texTop": "grass_block_top",
+  "texBottom": "dirt",
+  "texSide": "grass_block_side",
+  "texSideOverlay": "grass_block_side_overlay",
   "tint": "grass",
   "isTransparent": false
 }

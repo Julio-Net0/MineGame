@@ -97,10 +97,10 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
   PlatformSetCursorDisabled(true);
   if (Window.Fullscreen) { PlatformToggleFullscreen(); }
 
-  InitRenderer();
-
   InitBlockRegistry();
   LoadAllBlockDefinitions("assets/blocks");
+
+  InitRenderer();
 
   InitPrefabRegistry();
   LoadAllPrefabs("assets/prefabs");

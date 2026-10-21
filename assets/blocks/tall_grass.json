@@ -1,9 +1,10 @@
 {
   "id": 11,
   "name": "TallGrass",
-  "texTop": 95,
-  "texBottom": 95,
-  "texSide": 95,
+  "texTop": "short_grass",
+  "texBottom": "short_grass",
+  "texSide": "short_grass",
+  "tint": "grass",
   "isTransparent": true,
   "render": "cross"
 }

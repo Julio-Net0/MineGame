@@ -4,8 +4,13 @@
 #include <stdbool.h>
 
 enum {
-  FILEIO_MAX_PATH = 512
+  FILEIO_MAX_PATH = 512,
+  ZIP_METHOD_STORED = 0,
+  ZIP_METHOD_DEFLATE = 8
 };
+
+typedef struct ZipArchive ZipArchive;
+typedef struct ZipEntry ZipEntry;
 
 // Read an entire text file into a heap buffer (caller frees). Null on error.
 char *ReadTextFile(const char *Path);
@@ -21,5 +26,23 @@ int ListDirectoryFiles(const char *DirPath, char OutPaths[][FILEIO_MAX_PATH],
 
 // True if Path ends with Ext (case-insensitive), e.g. Ext ".json".
 bool HasFileExtension(const char *Path, const char *Ext);
+
+// Open a .zip archive and parse its Central Directory once. Returns null when
+// the file cannot be opened or its directory is malformed or truncated.
+ZipArchive *ZipOpen(const char *Path);
+
+// Find a validated entry by exact archive-relative path. Returns null when the
+// entry is absent or failed bounds/format validation.
+const ZipEntry *ZipFind(const ZipArchive *Archive, const char *EntryName);
+
+// Read the raw (stored or DEFLATE-compressed) payload of Entry into a heap
+// buffer (caller frees with free()). Writes the payload byte length to OutSize
+// and the compression method (ZIP_METHOD_STORED or ZIP_METHOD_DEFLATE) to
+// OutMethod. Returns null on any bounds or I/O error.
+unsigned char *ZipReadRaw(ZipArchive *Archive, const ZipEntry *Entry,
+                          int *OutSize, int *OutMethod);
+
+// Close the archive and free its directory index.
+void ZipClose(ZipArchive *Archive);
 
 #endif
