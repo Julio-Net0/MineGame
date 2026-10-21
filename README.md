@@ -143,5 +143,7 @@ This project is made possible thanks to these amazing open-source libraries:
     * *License:* [MIT](https://github.com/DaveGamble/cJSON/blob/master/LICENSE)
 * **[stb_perlin](https://github.com/nothings/stb)** - A single-file C implementation of Perlin noise.
     * *License:* Public Domain / MIT (Dual-licensed)
+* **[stb_image](https://github.com/nothings/stb)** - A single-file C image loader, used for renderer-independent PNG decoding and resource pack inflation.
+    * *License:* Public Domain / MIT (Dual-licensed)
 
 Special thanks to **Ramon Santamaria (@raysan5)** for creating Raylib and the community for the continuous support.

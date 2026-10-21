@@ -94,6 +94,8 @@ add_executable(${PROJECT_NAME}
   src/ui/debug.c
   src/core/utils.c
   src/core/fileio.c
+  src/core/image.c
+  src/core/resource_pack.c
   src/core/log.c
   src/core/noise.c
   src/core/profiler.c
@@ -144,6 +146,12 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E ${MINEGAME_COPY_DIR_CMD}
           ${CMAKE_CURRENT_SOURCE_DIR}/textures/block
           ${CMAKE_CURRENT_BINARY_DIR}/assets/textures/block
+  COMMAND ${CMAKE_COMMAND} -E ${MINEGAME_COPY_DIR_CMD}
+          ${CMAKE_CURRENT_SOURCE_DIR}/textures/gui
+          ${CMAKE_CURRENT_BINARY_DIR}/assets/textures/gui
+  COMMAND ${CMAKE_COMMAND} -E ${MINEGAME_COPY_DIR_CMD}
+          ${CMAKE_CURRENT_SOURCE_DIR}/textures/font
+          ${CMAKE_CURRENT_BINARY_DIR}/assets/textures/font
   COMMAND ${CMAKE_COMMAND} -E ${MINEGAME_COPY_DIR_CMD}
           ${CMAKE_CURRENT_SOURCE_DIR}/textures/external
           ${CMAKE_CURRENT_BINARY_DIR}/assets/textures/external

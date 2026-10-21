@@ -1,6 +1,8 @@
 #include "render/backend.h"
 #include "render/rl_compat.h"
 #include "core/fileio.h"
+#include "core/image.h"
+#include "core/resource_pack.h"
 #include "core/profiler.h"
 #include "world/biome.h"
 #include "world/block_system.h"
@@ -57,126 +59,54 @@ enum {
   MIN_TILE_SIZE = 16,
   MAX_TILE_SIZE = 256,
   CHECKER_HALF_SIZE = 8,
-  MAX_PACK_FILES = 64,
   RGBA_BYTES_PER_PIXEL = 4
 };
 
-static int ComparePackPaths(const void *Lhs, const void *Rhs) {
-  const char *PathA = (const char *)Lhs;
-  const char *PathB = (const char *)Rhs;
-  return strcmp(PathA, PathB);
-}
-
-static void SelectTextureDirectories(const char **OutExternalDir,
-                                     const char **OutBaseDir) {
-  if (DirectoryExists("assets/textures/block")) {
-    *OutExternalDir = "assets/textures/external";
-    *OutBaseDir = "assets/textures/block";
-  } else {
-    *OutExternalDir = "textures/external";
-    *OutBaseDir = "textures/block";
-  }
-}
-
-static int OpenExternalPacks(const char *ExternalDir,
-                             ZipArchive *OutArchives[MAX_PACK_FILES]) {
-  static char CandidatePaths[MAX_PACK_FILES][FILEIO_MAX_PATH];
-  static char ZipPaths[MAX_PACK_FILES][FILEIO_MAX_PATH];
-
-  int CandidateCount =
-      ListDirectoryFiles(ExternalDir, CandidatePaths, MAX_PACK_FILES);
-  int ZipCount = 0;
-  for (int Idx = 0; Idx < CandidateCount; Idx++) {
-    if (HasFileExtension(CandidatePaths[Idx], ".zip")) {
-      snprintf(ZipPaths[ZipCount], FILEIO_MAX_PATH, "%s", CandidatePaths[Idx]);
-      ZipCount++;
-    }
-  }
-
-  if (ZipCount > 1) {
-    qsort(ZipPaths, (size_t)ZipCount, FILEIO_MAX_PATH, ComparePackPaths);
-  }
-
-  int OpenCount = 0;
-  for (int Idx = 0; Idx < ZipCount; Idx++) {
-    ZipArchive *Archive = ZipOpen(ZipPaths[Idx]);
-    if (Archive == NULL) {
-      TraceLog(LOG_WARNING,
-               "RENDER: Unusable resource pack archive '%s', skipping",
-               ZipPaths[Idx]);
-      continue;
-    }
-    OutArchives[OpenCount++] = Archive;
-  }
-
-  return OpenCount;
-}
-
-static void CloseExternalPacks(ZipArchive *Archives[MAX_PACK_FILES],
-                               int PackCount) {
-  for (int Idx = 0; Idx < PackCount; Idx++) {
-    ZipClose(Archives[Idx]);
-    Archives[Idx] = NULL;
-  }
-}
-
-static Image TryLoadFromZip(ZipArchive *Archive, const char *EntryPath) {
+// Hands a decoded image to Raylib without copying. stb_image and Raylib both
+// allocate through the C runtime's malloc/free, so UnloadImage releases the
+// pixels correctly.
+static Image ImageFromCore(CoreImage Decoded) {
   Image Result = {0};
-  const ZipEntry *Entry = ZipFind(Archive, EntryPath);
-  if (Entry == NULL) {
-    return Result;
-  }
-
-  int RawSize = 0;
-  int Method = 0;
-  unsigned char *Raw = ZipReadRaw(Archive, Entry, &RawSize, &Method);
-  if (Raw == NULL) {
-    return Result;
-  }
-
-  if (Method == ZIP_METHOD_STORED) {
-    Result = LoadImageFromMemory(".png", Raw, RawSize);
-  } else if (Method == ZIP_METHOD_DEFLATE) {
-    int UncompSize = 0;
-    unsigned char *Uncomp = DecompressData(Raw, RawSize, &UncompSize);
-    if (Uncomp != NULL && UncompSize > 0) {
-      Result = LoadImageFromMemory(".png", Uncomp, UncompSize);
-    }
-    MemFree(Uncomp);
-  }
-
-  free(Raw);
+  Result.data = Decoded.Pixels;
+  Result.width = Decoded.Width;
+  Result.height = Decoded.Height;
+  Result.mipmaps = 1;
+  Result.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
   return Result;
 }
 
-static Image ResolveBlockTextureImage(const char *Name, const char *BaseDir,
-                                      ZipArchive *Archives[MAX_PACK_FILES],
-                                      int PackCount) {
-  if (Name != NULL && Name[0] != '\0') {
-    char EntryPath[FILEIO_MAX_PATH];
-    snprintf(EntryPath, sizeof(EntryPath),
-             "assets/minecraft/textures/block/%s.png", Name);
+static bool TryDecodeFrom(const char *RelPath, int Source, Image *Out) {
+  int Size = 0;
+  unsigned char *Bytes =
+      ResourceReadFrom(RESOURCE_TEXTURE, RelPath, Source, &Size);
+  if (Bytes == NULL) {
+    return false;
+  }
+  CoreImage Decoded;
+  bool Ok = CoreImageDecodePng(Bytes, Size, &Decoded);
+  free(Bytes);
+  if (Ok) {
+    *Out = ImageFromCore(Decoded);
+  }
+  return Ok;
+}
 
+// A pack whose entry fails to decode is skipped rather than trusted, so the
+// next pack or the base directory still gets a chance.
+static Image ResolveBlockTextureImage(const char *Name) {
+  if (Name != NULL && Name[0] != '\0') {
+    char RelPath[FILEIO_MAX_PATH];
+    snprintf(RelPath, sizeof(RelPath), "block/%s.png", Name);
+
+    Image Result = {0};
+    int PackCount = ResourcePackCount();
     for (int PackIdx = 0; PackIdx < PackCount; PackIdx++) {
-      Image Packed = TryLoadFromZip(Archives[PackIdx], EntryPath);
-      if (Packed.data != NULL && Packed.width > 0 && Packed.height > 0) {
-        return Packed;
-      }
-      if (Packed.data != NULL) {
-        UnloadImage(Packed);
+      if (TryDecodeFrom(RelPath, PackIdx, &Result)) {
+        return Result;
       }
     }
-
-    char DiskPath[FILEIO_MAX_PATH];
-    snprintf(DiskPath, sizeof(DiskPath), "%s/%s.png", BaseDir, Name);
-    if (FileExists(DiskPath)) {
-      Image BaseImg = LoadImage(DiskPath);
-      if (BaseImg.data != NULL && BaseImg.width > 0 && BaseImg.height > 0) {
-        return BaseImg;
-      }
-      if (BaseImg.data != NULL) {
-        UnloadImage(BaseImg);
-      }
+    if (TryDecodeFrom(RelPath, RESOURCE_SOURCE_BASE, &Result)) {
+      return Result;
     }
   }
 
@@ -229,13 +159,6 @@ static void CopyTileIntoAtlas(Image *AtlasImg, const Image *TileImg,
 static void LoadBlockTextureArray(void) {
   BackendState *State = GetBackendState();
 
-  const char *ExternalDir = NULL;
-  const char *BaseDir = NULL;
-  SelectTextureDirectories(&ExternalDir, &BaseDir);
-
-  ZipArchive *Archives[MAX_PACK_FILES] = {0};
-  int PackCount = OpenExternalPacks(ExternalDir, Archives);
-
   int RegisteredCount = GetBlockTextureCount();
   int LayerCount = (RegisteredCount > 0) ? RegisteredCount : 1;
   if (LayerCount > MAX_BLOCK_TEXTURES) {
@@ -248,7 +171,7 @@ static void LoadBlockTextureArray(void) {
   for (int Idx = 0; Idx < LayerCount; Idx++) {
     const char *Name =
         (RegisteredCount > 0) ? GetBlockTextureName(Idx) : NULL;
-    Tiles[Idx] = ResolveBlockTextureImage(Name, BaseDir, Archives, PackCount);
+    Tiles[Idx] = ResolveBlockTextureImage(Name);
     ImageFormat(&Tiles[Idx], PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
 
     if (Tiles[Idx].height > Tiles[Idx].width) {
@@ -265,8 +188,6 @@ static void LoadBlockTextureArray(void) {
       MaxSide = Tiles[Idx].width;
     }
   }
-
-  CloseExternalPacks(Archives, PackCount);
 
   int TileSize = DeriveTileSize(MaxSide);
   int AtlasDim = ATLAS_GRID_DIM * TileSize;

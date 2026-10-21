@@ -7,7 +7,9 @@
 
 enum { MAX_TEXT_FILE_SIZE = 16 * 1024 * 1024 };
 
-char *ReadTextFile(const char *Path) {
+// Reads the whole file into a heap buffer with one extra zero byte, so text
+// callers get a terminated string and binary callers simply ignore it.
+static unsigned char *ReadWholeFile(const char *Path, size_t *OutSize) {
   if (Path == (void *)0) {
     return (void *)0;
   }
@@ -33,7 +35,7 @@ char *ReadTextFile(const char *Path) {
   }
 
   size_t AllocSize = (size_t)Size;
-  char *Buffer = (char *)calloc(AllocSize + 1U, sizeof(char));
+  unsigned char *Buffer = (unsigned char *)calloc(AllocSize + 1U, 1U);
   if (Buffer == (void *)0) {
     fclose(File);
     return (void *)0;
@@ -45,7 +47,37 @@ char *ReadTextFile(const char *Path) {
     free(Buffer);
     return (void *)0;
   }
+  *OutSize = AllocSize;
   return Buffer;
+}
+
+char *ReadTextFile(const char *Path) {
+  size_t Size = 0;
+  return (char *)ReadWholeFile(Path, &Size);
+}
+
+unsigned char *ReadBinaryFile(const char *Path, int *OutSize) {
+  if (OutSize == (void *)0) {
+    return (void *)0;
+  }
+  size_t Size = 0;
+  unsigned char *Buffer = ReadWholeFile(Path, &Size);
+  if (Buffer != (void *)0) {
+    *OutSize = (int)Size;
+  }
+  return Buffer;
+}
+
+bool IsDirectory(const char *Path) {
+  if (Path == (void *)0) {
+    return false;
+  }
+  DIR *Dir = opendir(Path);
+  if (Dir == (void *)0) {
+    return false;
+  }
+  closedir(Dir);
+  return true;
 }
 
 bool WriteTextFile(const char *Path, const char *Content) {
@@ -488,6 +520,13 @@ unsigned char *ZipReadRaw(ZipArchive *Archive, const ZipEntry *Entry,
   *OutSize = (int)CompSize;
   *OutMethod = (int)Entry->Method;
   return Buf;
+}
+
+int ZipEntryUncompressedSize(const ZipEntry *Entry) {
+  if (Entry == NULL || !Entry->Valid) {
+    return 0;
+  }
+  return (int)Entry->UncompressedSize;
 }
 
 void ZipClose(ZipArchive *Archive) {

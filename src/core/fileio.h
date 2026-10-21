@@ -15,6 +15,13 @@ typedef struct ZipEntry ZipEntry;
 // Read an entire text file into a heap buffer (caller frees). Null on error.
 char *ReadTextFile(const char *Path);
 
+// Read an entire file into a heap buffer (caller frees) and write its byte
+// length to OutSize. Null on error.
+unsigned char *ReadBinaryFile(const char *Path, int *OutSize);
+
+// True if Path names an existing directory.
+bool IsDirectory(const char *Path);
+
 // Write Content to Path, truncating any existing file. Returns true on success.
 bool WriteTextFile(const char *Path, const char *Content);
 
@@ -41,6 +48,10 @@ const ZipEntry *ZipFind(const ZipArchive *Archive, const char *EntryName);
 // OutMethod. Returns null on any bounds or I/O error.
 unsigned char *ZipReadRaw(ZipArchive *Archive, const ZipEntry *Entry,
                           int *OutSize, int *OutMethod);
+
+// Uncompressed byte length the Central Directory declares for Entry, already
+// validated against the reader's size ceiling. Zero for a null entry.
+int ZipEntryUncompressedSize(const ZipEntry *Entry);
 
 // Close the archive and free its directory index.
 void ZipClose(ZipArchive *Archive);

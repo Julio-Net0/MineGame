@@ -14,6 +14,7 @@
 #include "render/renderer.h"
 #include "core/log.h"
 #include "core/profiler.h"
+#include "core/resource_pack.h"
 #include "world/world.h"
 #include "persistence/world_save.h"
 #include <stdbool.h>
@@ -100,6 +101,9 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
   InitBlockRegistry();
   LoadAllBlockDefinitions("assets/blocks");
 
+  // After PlatformInit, which anchors the working directory the pack and base
+  // paths are relative to; before InitRenderer, which loads block textures.
+  ResourcePacksInit();
   InitRenderer();
 
   InitPrefabRegistry();
@@ -142,6 +146,7 @@ static void CleanupGame(World *WorldVal) {
   CloseWorldSave();
   free(WorldVal);
   CloseRenderer();
+  ResourcePacksShutdown();
   PlatformShutdown();
 }
 
