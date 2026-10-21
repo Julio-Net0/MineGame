@@ -11,6 +11,8 @@ void PlatformInit(int Width, int Height, const char *Title) {
   SetTraceLogLevel(LOG_WARNING);
   ChangeDirectory(GetApplicationDirectory());
   InitWindow(Width, Height, Title);
+  // ESC opens the pause menu; the window close button is the quit signal.
+  SetExitKey(KEY_NULL);
 }
 
 void PlatformShutdown(void) { CloseWindow(); }

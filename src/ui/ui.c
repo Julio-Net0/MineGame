@@ -2,11 +2,62 @@
 #include "core/log.h"
 #include "render/backend.h"
 #include "ui/font.h"
+#include "platform/platform.h"
+#include <string.h>
 
 enum {
   GUI_MIN_WIDTH = 320,
-  GUI_MIN_HEIGHT = 240
+  GUI_MIN_HEIGHT = 240,
+  BUTTON_LABEL_HEIGHT = 8,
+  SLIDER_HANDLE_WIDTH = 8,
+  TEXT_FIELD_INSET = 4,
+  TEXT_FIELD_INSET_BORDERLESS = 2,
+  CARET_BLINK_RATE = 2,
+  UTF8_CONTINUATION_MASK = 0xC0,
+  UTF8_CONTINUATION_TAG = 0x80,
+  UTF8_TWO_MASK = 0xE0,
+  UTF8_TWO_TAG = 0xC0,
+  UTF8_THREE_MASK = 0xF0,
+  UTF8_THREE_TAG = 0xE0,
+  UTF8_FOUR_MASK = 0xF8,
+  UTF8_FOUR_TAG = 0xF0
 };
+
+#define UI_LABEL_COLOR ((Color8){255, 255, 255, 255})
+#define UI_LABEL_DISABLED_COLOR ((Color8){160, 160, 160, 255})
+#define UI_TEXT_FIELD_BG_ALPHA 0.5F
+
+typedef struct {
+  UiSpriteId Button;
+  UiSpriteId ButtonHighlighted;
+  UiSpriteId ButtonDisabled;
+  UiSpriteId Slider;
+  UiSpriteId SliderHighlighted;
+  UiSpriteId SliderHandle;
+  UiSpriteId SliderHandleHighlighted;
+  UiSpriteId TextField;
+  UiSpriteId TextFieldHighlighted;
+} WidgetSprites;
+
+static WidgetSprites *GetWidgetSprites(void) {
+  static WidgetSprites Sprites;
+  return &Sprites;
+}
+
+static void RegisterWidgetSprites(void) {
+  WidgetSprites *Sprites = GetWidgetSprites();
+  Sprites->Button = GuiAtlasRegister("widget/button");
+  Sprites->ButtonHighlighted = GuiAtlasRegister("widget/button_highlighted");
+  Sprites->ButtonDisabled = GuiAtlasRegister("widget/button_disabled");
+  Sprites->Slider = GuiAtlasRegister("widget/slider");
+  Sprites->SliderHighlighted = GuiAtlasRegister("widget/slider_highlighted");
+  Sprites->SliderHandle = GuiAtlasRegister("widget/slider_handle");
+  Sprites->SliderHandleHighlighted =
+      GuiAtlasRegister("widget/slider_handle_highlighted");
+  Sprites->TextField = GuiAtlasRegister("widget/text_field");
+  Sprites->TextFieldHighlighted =
+      GuiAtlasRegister("widget/text_field_highlighted");
+}
 
 static int *GetGuiScaleSetting(void) {
   static int Setting = UI_GUI_SCALE_AUTO;
@@ -22,6 +73,7 @@ void UiInit(void) {
   UiContext *Ctx = GetUiContext();
   *Ctx = (UiContext){0};
   Ctx->Scale = 1;
+  RegisterWidgetSprites();
 }
 
 void UiShutdown(void) {
@@ -67,7 +119,8 @@ int UiComputeGuiScale(int ScreenWidth, int ScreenHeight, int Setting) {
   return Scale;
 }
 
-void UiBeginFrame(UiContext *Ctx, int ScreenWidth, int ScreenHeight) {
+void UiBeginFrame(UiContext *Ctx, int ScreenWidth, int ScreenHeight,
+                  const UiPointer *PointerPixels) {
   UiDrawListReset(&Ctx->DrawList);
   Ctx->ScreenWidth = ScreenWidth;
   Ctx->ScreenHeight = ScreenHeight;
@@ -76,7 +129,27 @@ void UiBeginFrame(UiContext *Ctx, int ScreenWidth, int ScreenHeight) {
   Ctx->GuiWidth = ScreenWidth / Ctx->Scale;
   Ctx->GuiHeight = ScreenHeight / Ctx->Scale;
   Ctx->Scissor = (UiScissor){0};
+
+  Ctx->Pointer = (PointerPixels != NULL) ? *PointerPixels : (UiPointer){0};
+  Ctx->Pointer.X /= (float)Ctx->Scale;
+  Ctx->Pointer.Y /= (float)Ctx->Scale;
+  Ctx->HotId = UI_ID_NONE;
 }
+
+void UiEndFrame(UiContext *Ctx) {
+  // Cleared after the widgets ran, so the release frame is still seen by the
+  // widget that was pressed.
+  if (!Ctx->Pointer.LeftDown) {
+    Ctx->ActiveId = UI_ID_NONE;
+  }
+}
+
+void UiSetScissor(UiContext *Ctx, UiRect Rect) {
+  Ctx->Scissor = (UiScissor){Rect.X * Ctx->Scale, Rect.Y * Ctx->Scale,
+                             Rect.W * Ctx->Scale, Rect.H * Ctx->Scale};
+}
+
+void UiClearScissor(UiContext *Ctx) { Ctx->Scissor = (UiScissor){0}; }
 
 static void PushQuad(UiContext *Ctx, UiTextureId Texture, const UiQuad *Quad) {
   static bool ReportedFailure = false;
@@ -264,4 +337,169 @@ void UiNineSlice(UiContext *Ctx, UiSpriteId Sprite, UiRect Rect, Color8 Tint) {
                           SrcCenterH, DstInnerX, DstInnerY, DstCenterW,
                           DstCenterH},
             Tile, Tile, Tint);
+}
+
+// ---------------------------------------------------------------------------
+// Widgets
+// ---------------------------------------------------------------------------
+
+static bool PointerInside(const UiContext *Ctx, UiRect Rect) {
+  return Ctx->Pointer.X >= (float)Rect.X &&
+         Ctx->Pointer.X < (float)(Rect.X + Rect.W) &&
+         Ctx->Pointer.Y >= (float)Rect.Y &&
+         Ctx->Pointer.Y < (float)(Rect.Y + Rect.H);
+}
+
+// Updates hot and active for a widget and returns whether it is hot.
+static bool TrackWidget(UiContext *Ctx, int Id, UiRect Rect, bool Enabled) {
+  bool Hot = Enabled && PointerInside(Ctx, Rect) &&
+             (Ctx->ActiveId == UI_ID_NONE || Ctx->ActiveId == Id);
+  if (Hot) {
+    Ctx->HotId = Id;
+    if (Ctx->Pointer.LeftPressed) {
+      Ctx->ActiveId = Id;
+    }
+  }
+  return Hot;
+}
+
+static void DrawCenteredLabel(UiContext *Ctx, UiRect Rect, const char *Label,
+                              Color8 Color) {
+  float Width = UiMeasureText(Label);
+  float X = (float)Rect.X + (((float)Rect.W - Width) * UI_HALF);
+  float Y = (float)Rect.Y + ((float)(Rect.H - BUTTON_LABEL_HEIGHT) * UI_HALF);
+  UiTextShadow(Ctx, Label, X, Y, Color);
+}
+
+bool UiButton(UiContext *Ctx, int Id, UiRect Rect, const char *Label,
+              bool Enabled) {
+  const WidgetSprites *Sprites = GetWidgetSprites();
+  bool Hot = TrackWidget(Ctx, Id, Rect, Enabled);
+  bool Clicked = Hot && Ctx->ActiveId == Id && Ctx->Pointer.LeftReleased;
+
+  UiSpriteId Sprite = Sprites->Button;
+  if (!Enabled) {
+    Sprite = Sprites->ButtonDisabled;
+  } else if (Hot) {
+    Sprite = Sprites->ButtonHighlighted;
+  }
+  UiNineSlice(Ctx, Sprite, Rect, COLOR_WHITE);
+  DrawCenteredLabel(Ctx, Rect, Label,
+                    Enabled ? UI_LABEL_COLOR : UI_LABEL_DISABLED_COLOR);
+  return Clicked;
+}
+
+bool UiSlider(UiContext *Ctx, int Id, UiRect Rect, const char *Label,
+              float *Value) {
+  const WidgetSprites *Sprites = GetWidgetSprites();
+  bool Hot = TrackWidget(Ctx, Id, Rect, true);
+  bool Dragging = Ctx->ActiveId == Id && Ctx->Pointer.LeftDown;
+
+  bool Changed = false;
+  int Travel = Rect.W - SLIDER_HANDLE_WIDTH;
+  if (Dragging && Travel > 0) {
+    float Next = UiClamp01((Ctx->Pointer.X - (float)Rect.X -
+                            ((float)SLIDER_HANDLE_WIDTH * UI_HALF)) /
+                           (float)Travel);
+    Changed = Next != *Value;
+    *Value = Next;
+  }
+
+  bool Lit = Hot || Dragging;
+  UiNineSlice(Ctx, Lit ? Sprites->SliderHighlighted : Sprites->Slider, Rect,
+              COLOR_WHITE);
+  int HandleX = Rect.X + (int)(*Value * (float)Travel);
+  UiNineSlice(Ctx,
+              Lit ? Sprites->SliderHandleHighlighted : Sprites->SliderHandle,
+              (UiRect){HandleX, Rect.Y, SLIDER_HANDLE_WIDTH, Rect.H},
+              COLOR_WHITE);
+  DrawCenteredLabel(Ctx, Rect, Label, UI_LABEL_COLOR);
+  return Changed;
+}
+
+static int Utf8SequenceLength(unsigned char Lead) {
+  if ((Lead & UTF8_TWO_MASK) == UTF8_TWO_TAG) {
+    return 2;
+  }
+  if ((Lead & UTF8_THREE_MASK) == UTF8_THREE_TAG) {
+    return 3;
+  }
+  if ((Lead & UTF8_FOUR_MASK) == UTF8_FOUR_TAG) {
+    return 4;
+  }
+  return 1;
+}
+
+UiTextAction UiTextFieldEdit(char *Buffer, int Capacity,
+                             const UiTextEvents *Events) {
+  if (Buffer == NULL || Capacity <= 0 || Events == NULL) {
+    return UI_TEXT_NONE;
+  }
+  int Length = 0;
+  while (Length < Capacity - 1 && Buffer[Length] != '\0') {
+    Length++;
+  }
+  Buffer[Length] = '\0';
+
+  int Idx = 0;
+  while (Events->Chars != NULL && Idx < Events->Count) {
+    int Sequence = Utf8SequenceLength((unsigned char)Events->Chars[Idx]);
+    if (Sequence > Events->Count - Idx) {
+      break;
+    }
+    if (Sequence <= Capacity - 1 - Length) {
+      memcpy(&Buffer[Length], &Events->Chars[Idx], (size_t)Sequence);
+      Length += Sequence;
+      Buffer[Length] = '\0';
+    }
+    Idx += Sequence;
+  }
+
+  if (Events->Backspace && Length > 0) {
+    Length--;
+    while (Length > 0 && (((unsigned char)Buffer[Length]) &
+                          UTF8_CONTINUATION_MASK) == UTF8_CONTINUATION_TAG) {
+      Length--;
+    }
+    Buffer[Length] = '\0';
+  }
+
+  if (Events->Cancel) {
+    return UI_TEXT_CANCEL;
+  }
+  return Events->Submit ? UI_TEXT_SUBMIT : UI_TEXT_NONE;
+}
+
+void UiTextFieldDraw(UiContext *Ctx, UiRect Rect, const char *Text,
+                     bool Focused, bool Bordered) {
+  const WidgetSprites *Sprites = GetWidgetSprites();
+  int Inset = TEXT_FIELD_INSET_BORDERLESS;
+  float TextY = (float)(Rect.Y + TEXT_FIELD_INSET_BORDERLESS);
+  if (Bordered) {
+    UiNineSlice(Ctx, Focused ? Sprites->TextFieldHighlighted : Sprites->TextField,
+                Rect, COLOR_WHITE);
+    Inset = TEXT_FIELD_INSET;
+    TextY = (float)Rect.Y + ((float)(Rect.H - BUTTON_LABEL_HEIGHT) * UI_HALF);
+  } else {
+    UiFillRect(Ctx, Rect, Color8Alpha(COLOR_BLACK, UI_TEXT_FIELD_BG_ALPHA));
+  }
+
+  UiRect Inner = {Rect.X + Inset, Rect.Y, Rect.W - (Inset * 2), Rect.H};
+  bool ShowCaret =
+      Focused && ((int)(PlatformGetTime() * CARET_BLINK_RATE)) % 2 == 0;
+  float TextWidth = UiMeasureText(Text);
+  float CaretWidth = UiMeasureText("_");
+
+  // Scrolled left just enough that the end of the text and the caret stay in
+  // view, as vanilla's edit box does while typing.
+  float Overflow = TextWidth + CaretWidth - (float)Inner.W;
+  float TextX = (float)Inner.X - ((Overflow > 0.0F) ? Overflow : 0.0F);
+
+  UiScissor Previous = Ctx->Scissor;
+  UiSetScissor(Ctx, Inner);
+  UiTextShadow(Ctx, Text, TextX, TextY, UI_LABEL_COLOR);
+  if (ShowCaret) {
+    UiTextShadow(Ctx, "_", TextX + TextWidth, TextY, UI_LABEL_COLOR);
+  }
+  Ctx->Scissor = Previous;
 }

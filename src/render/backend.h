@@ -106,13 +106,4 @@ enum {
 void RenderUploadUiAtlas(const CoreImage *Atlas);
 void RenderSubmitUI(const UiDrawList *List);
 
-// 2D drawing layer (deferred HUD layer). Renderer-agnostic: all color via
-// Color8, geometry via plain ints, text via C strings. HUD and chat draw
-// through these instead of calling the renderer directly.
-void RenderDrawRect(int X, int Y, int W, int H, Color8 Color);
-void RenderDrawRectLines(int X, int Y, int W, int H, Color8 Color);
-void RenderDrawRectLinesEx(int X, int Y, int W, int H, float Thick, Color8 Color);
-void RenderDrawText(const char *Text, int X, int Y, int Size, Color8 Color);
-int RenderMeasureText(const char *Text, int Size);
-
 #endif

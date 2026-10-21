@@ -10,6 +10,7 @@
 #include "ui/hud.h"
 #include "ui/ui.h"
 #include "ui/font.h"
+#include "ui/pause_menu.h"
 #include "input/input.h"
 #include "platform/platform.h"
 #include "player/player.h"
@@ -160,8 +161,13 @@ static void CleanupGame(World *WorldVal) {
   PlatformShutdown();
 }
 
-static void UpdateSystemInputs(bool *ShowDebug) {
+static void UpdateSystemInputs(bool *ShowDebug, const ChatState *Chat) {
   SystemInput System = PollSystemInput();
+
+  // With chat open, ESC belongs to the chat, which closes on it this frame.
+  if (System.PauseToggle && !Chat->IsActive) {
+    PauseMenuToggle();
+  }
 
   if (System.FullscreenToggle) {
     PlatformToggleFullscreen();
@@ -264,7 +270,8 @@ static void UploadFinishedMeshes(int CountAllowance, double Deadline) {
 }
 
 static void RenderGame(World *WorldVal, Player *PlayerVal, GameCamera *ActiveCamera,
-                       ChatState *ChatVal, bool ShowDebug) {
+                       GameCamera *PlayerCamera, ChatState *ChatVal,
+                       bool ShowDebug) {
   RenderCamera Cam = {
       .Position = ActiveCamera->Position,
       .Target = ActiveCamera->Target,
@@ -287,9 +294,16 @@ static void RenderGame(World *WorldVal, Player *PlayerVal, GameCamera *ActiveCam
 
   UiContext *Ui = GetUiContext();
   PROFILE_BEGIN(UiBuildStart);
-  UiBeginFrame(Ui, PlatformGetScreenWidth(), PlatformGetScreenHeight());
+  PointerInput Pointer = PollPointerInput();
+  UiPointer UiPointerPixels = {Pointer.Cursor.x, Pointer.Cursor.y,
+                               Pointer.LeftPressed, Pointer.LeftDown,
+                               Pointer.LeftReleased};
+  UiBeginFrame(Ui, PlatformGetScreenWidth(), PlatformGetScreenHeight(),
+               &UiPointerPixels);
   DrawHUD(Ui, PlayerVal, WorldVal, *ActiveCamera, ShowDebug);
   DrawChat(Ui, ChatVal);
+  DrawPauseMenu(Ui, PlayerCamera);
+  UiEndFrame(Ui);
   PROFILE_END(UiBuildStart, PROFILE_UI_BUILD);
 
   PROFILE_BEGIN(UiSubmitStart);
@@ -389,10 +403,12 @@ int main(int Argc, char **Argv) {
   PendingInput.HotbarSelect = -1;
   float Accumulator = 0.0F;
 
-  while (!PlatformShouldClose()) {
-    UpdateSystemInputs(&ShowDebug);
+  while (!PlatformShouldClose() && !PauseMenuQuitRequested()) {
+    UpdateSystemInputs(&ShowDebug, &ChatVal);
 
-    bool HasControl = (!ChatVal.IsActive) != 0;
+    // An open menu or chat owns the keyboard and mouse, so nothing typed or
+    // clicked there also moves the player or breaks a block.
+    bool HasControl = !ChatVal.IsActive && !PauseMenuIsOpen();
     PendingInput = AccumulateInput(PendingInput, PollPlayerInput(HasControl));
 
     // Mouse-look and active-camera selection run per frame for responsiveness.
@@ -442,7 +458,9 @@ int main(int Argc, char **Argv) {
     UploadFinishedMeshes(MAX_MESHES_PER_FRAME,
                          PlatformGetTime() + MESH_BUDGET_SECONDS);
 
-    UpdateChat(&ChatVal, ActiveCamera, &PlayerVal, WorldVal);
+    if (!PauseMenuIsOpen()) {
+      UpdateChat(&ChatVal, ActiveCamera, &PlayerVal, WorldVal);
+    }
     PollCommandEvents(&ChatVal);
 
     // Render interpolation: the camera follows the player position interpolated
@@ -453,7 +471,11 @@ int main(int Argc, char **Argv) {
       CameraFollowTarget(&PlayerCamera, RenderPos, PlayerVal.HeadOffset);
     }
 
-    RenderGame(WorldVal, &PlayerVal, ActiveCamera, &ChatVal, ShowDebug);
+    RenderGame(WorldVal, &PlayerVal, ActiveCamera, &PlayerCamera, &ChatVal,
+               ShowDebug);
+    // The pause menu's FOV slider edits the player camera; the free camera
+    // follows so switching to it keeps the chosen field of view.
+    FreeCamera.FovY = PlayerCamera.FovY;
 
     // After rendering, so the frame's own work is fully accounted for before
     // its samples are folded into the profiler's window.

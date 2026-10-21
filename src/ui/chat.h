@@ -30,7 +30,6 @@ typedef struct {
 
   char InputText[CHAT_MAX_INPUT_CHARS + 1];
 
-  int LetterCount;
   int HistoryCount;
   int ScrollOffset;
 

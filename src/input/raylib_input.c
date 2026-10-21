@@ -44,6 +44,7 @@ SystemInput PollSystemInput(void) {
   System.FullscreenToggle = IsKeyPressed(KEY_F11);
   System.DebugToggle = IsKeyPressed(KEY_F3);
   System.ChatOpen = IsKeyPressed(KEY_T);
+  System.PauseToggle = IsKeyPressed(KEY_ESCAPE);
   return System;
 }
 
@@ -70,8 +71,20 @@ TextInput PollTextInput(void) {
 
   Text.Backspace = IsKeyPressed(KEY_BACKSPACE) || IsKeyPressedRepeat(KEY_BACKSPACE);
   Text.Submit = IsKeyPressed(KEY_ENTER);
-  Text.Cancel = IsKeyPressed(KEY_DELETE);
+  Text.Cancel = IsKeyPressed(KEY_ESCAPE) || IsKeyPressed(KEY_DELETE);
   return Text;
+}
+
+PointerInput PollPointerInput(void) {
+  PointerInput Pointer = {0};
+  Pointer.Cursor = Vec2FromRL(GetMousePosition());
+  Pointer.LeftPressed = IsMouseButtonPressed(MOUSE_LEFT_BUTTON);
+  Pointer.LeftDown = IsMouseButtonDown(MOUSE_LEFT_BUTTON);
+  Pointer.LeftReleased = IsMouseButtonReleased(MOUSE_LEFT_BUTTON);
+  Pointer.RightPressed = IsMouseButtonPressed(MOUSE_RIGHT_BUTTON);
+  Pointer.RightDown = IsMouseButtonDown(MOUSE_RIGHT_BUTTON);
+  Pointer.RightReleased = IsMouseButtonReleased(MOUSE_RIGHT_BUTTON);
+  return Pointer;
 }
 
 int InputGetScrollDelta(void) {

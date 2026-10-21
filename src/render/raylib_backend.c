@@ -601,6 +601,24 @@ static bool EnsureUiCapacity(BackendState *State, int QuadCount) {
   return true;
 }
 
+// Converts a top-left scissor rectangle in screen pixels to the framebuffer's
+// bottom-left convention, scaling when the framebuffer is not the screen size
+// (high-DPI). Raylib's BeginScissorMode is not usable here: it flushes the
+// rlgl batch, and that flush unbinds the current program and VAO even when the
+// batch is empty, which left every scissored UI command drawing nothing.
+static void ApplyUiScissor(UiScissor Scissor) {
+  int ScreenW = GetScreenWidth();
+  int ScreenH = GetScreenHeight();
+  float ScaleX = (ScreenW > 0) ? (float)GetRenderWidth() / (float)ScreenW : 1.0F;
+  float ScaleY = (ScreenH > 0) ? (float)GetRenderHeight() / (float)ScreenH : 1.0F;
+  int X = (int)((float)Scissor.X * ScaleX);
+  int W = (int)((float)Scissor.W * ScaleX);
+  int H = (int)((float)Scissor.H * ScaleY);
+  int Y = GetRenderHeight() - (int)((float)(Scissor.Y + Scissor.H) * ScaleY);
+  glEnable(GL_SCISSOR_TEST);
+  glScissor(X, Y, W, H);
+}
+
 void RenderSubmitUI(const UiDrawList *List) {
   BackendState *State = GetBackendState();
   if (List->QuadCount <= 0 || State->UiShader.id == 0) {
@@ -636,11 +654,8 @@ void RenderSubmitUI(const UiDrawList *List) {
   for (int CmdIdx = 0; CmdIdx < List->CommandCount; CmdIdx++) {
     const UiCommand *Cmd = &List->Commands[CmdIdx];
     bool Scissored = Cmd->Scissor.W > 0;
-    // BeginScissorMode converts the top-left rectangle to the framebuffer's
-    // bottom-left convention, including high-DPI scaling.
     if (Scissored) {
-      BeginScissorMode(Cmd->Scissor.X, Cmd->Scissor.Y, Cmd->Scissor.W,
-                       Cmd->Scissor.H);
+      ApplyUiScissor(Cmd->Scissor);
     }
 
     glBindTexture(GL_TEXTURE_2D, UiTextureHandle(Cmd->Texture));
@@ -651,7 +666,7 @@ void RenderSubmitUI(const UiDrawList *List) {
                              Cmd->FirstQuad * UI_QUAD_CORNERS);
 
     if (Scissored) {
-      EndScissorMode();
+      glDisable(GL_SCISSOR_TEST);
     }
   }
 
@@ -663,7 +678,7 @@ void RenderSubmitUI(const UiDrawList *List) {
 }
 
 // ---------------------------------------------------------------------------
-// 2D drawing layer (rects, text, measure)
+// 3D debug wireframe
 // ---------------------------------------------------------------------------
 
 static Color Color8ToRL(Color8 C) { return (Color){C.R, C.G, C.B, C.A}; }
@@ -682,26 +697,4 @@ void RenderDrawWireBox(Vec3 Center, Vec3 Size, Color8 Color, bool XRay) {
   } else {
     DrawCubeWiresV(RlCenter, RlSize, Color8ToRL(Color));
   }
-}
-
-void RenderDrawRect(int X, int Y, int W, int H, Color8 Color) {
-  DrawRectangle(X, Y, W, H, Color8ToRL(Color));
-}
-
-void RenderDrawRectLines(int X, int Y, int W, int H, Color8 Color) {
-  DrawRectangleLines(X, Y, W, H, Color8ToRL(Color));
-}
-
-void RenderDrawRectLinesEx(int X, int Y, int W, int H, float Thick, Color8 Color) {
-  DrawRectangleLinesEx(
-      (Rectangle){(float)X, (float)Y, (float)W, (float)H}, Thick,
-      Color8ToRL(Color));
-}
-
-void RenderDrawText(const char *Text, int X, int Y, int Size, Color8 Color) {
-  DrawText(Text, X, Y, Size, Color8ToRL(Color));
-}
-
-int RenderMeasureText(const char *Text, int Size) {
-  return MeasureText(Text, Size);
 }
