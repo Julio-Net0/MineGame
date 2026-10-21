@@ -1,21 +1,26 @@
-#include "render/hud.h"
+#include "ui/hud.h"
 #include "player/player.h"
 #include "core/color.h"
 #include "platform/platform.h"
 #include "render/renderer.h"
 #include "render/backend.h"
+#include "ui/block_icon.h"
 #include "world/world.h"
 #include "core/profiler.h"
 #include <stdio.h>
 
+// Hotbar and crosshair sizes are vanilla's, in GUI units: the sprites are
+// authored at exactly these sizes, and a higher-resolution resource pack keeps
+// them because the size comes from here rather than from the image.
 enum {
-  HOTBAR_SLOT_SIZE = 50,
-  HOTBAR_PADDING = 5,
-  HOTBAR_BOTTOM_MARGIN = 20,
-  HOTBAR_INNER_PADDING = 10,
-  HOTBAR_ICON_SIZE = (HOTBAR_SLOT_SIZE - (HOTBAR_INNER_PADDING * 2)),
-  CROSSHAIR_SIZE = 16,
-  CROSSHAIR_THICKNESS = 2,
+  HOTBAR_WIDTH = 182,
+  HOTBAR_HEIGHT = 22,
+  HOTBAR_SLOT_PITCH = 20,
+  HOTBAR_SELECTION_WIDTH = 24,
+  HOTBAR_SELECTION_HEIGHT = 23,
+  HOTBAR_ICON_INSET = 3,
+  HOTBAR_ICON_SIZE = 16,
+  CROSSHAIR_SIZE = 15,
   DEBUG_FONT_SIZE = 20,
   DEBUG_FPS_X = 10,
   DEBUG_FPS_Y = 10,
@@ -31,51 +36,56 @@ enum {
   DEBUG_TIMING_LINE_HEIGHT = 20
 };
 
-#define HOTBAR_SELECTED_BOX_THICKNESS 3.0F
-#define HOTBAR_TOTAL_WIDTH                                                     \
-  (((HOTBAR_SIZE * HOTBAR_SLOT_SIZE) + ((HOTBAR_SIZE - 1) * HOTBAR_PADDING)))
-#define HOTBAR_TRANSPARENCY 0.5F
-#define CROSSHAIR_TRANSPARENCY 0.8F
+typedef struct {
+  UiSpriteId Hotbar;
+  UiSpriteId HotbarSelection;
+  UiSpriteId Crosshair;
+} HudSprites;
 
-static void DrawHotbar(Player *PlayerVal) {
-  int StartX = (PlatformGetScreenWidth() - HOTBAR_TOTAL_WIDTH) / 2;
-  int StartY = PlatformGetScreenHeight() - HOTBAR_SLOT_SIZE - HOTBAR_BOTTOM_MARGIN;
+static HudSprites *GetHudSprites(void) {
+  static HudSprites Sprites;
+  return &Sprites;
+}
 
-  Color8 SlotBgColor = Color8Alpha(COLOR_BLACK, HOTBAR_TRANSPARENCY);
+void InitHud(void) {
+  HudSprites *Sprites = GetHudSprites();
+  Sprites->Hotbar = GuiAtlasRegister("hud/hotbar");
+  Sprites->HotbarSelection = GuiAtlasRegister("hud/hotbar_selection");
+  Sprites->Crosshair = GuiAtlasRegister("hud/crosshair");
+}
+
+static void DrawHotbar(UiContext *Ctx, Player *PlayerVal) {
+  HudSprites *Sprites = GetHudSprites();
+  int StartX = (Ctx->GuiWidth - HOTBAR_WIDTH) / 2;
+  int StartY = Ctx->GuiHeight - HOTBAR_HEIGHT;
+
+  UiSprite(Ctx, Sprites->Hotbar,
+           (UiRect){StartX, StartY, HOTBAR_WIDTH, HOTBAR_HEIGHT}, COLOR_WHITE);
+
+  // Offset one unit up and left: the selection frame is two units larger than
+  // a slot so it overlaps the hotbar's own border.
+  int Selected = PlayerVal->SelectedHotbarSlot;
+  UiSprite(Ctx, Sprites->HotbarSelection,
+           (UiRect){StartX - 1 + (Selected * HOTBAR_SLOT_PITCH), StartY - 1,
+                    HOTBAR_SELECTION_WIDTH, HOTBAR_SELECTION_HEIGHT},
+           COLOR_WHITE);
 
   for (int Idx = 0; Idx < HOTBAR_SIZE; Idx++) {
-    int XPos = StartX + (Idx * (HOTBAR_SLOT_SIZE + HOTBAR_PADDING));
-
-    RenderDrawRect(XPos, StartY, HOTBAR_SLOT_SIZE, HOTBAR_SLOT_SIZE, SlotBgColor);
-
     unsigned char BlockId = PlayerVal->Hotbar[Idx];
     if (BlockId != 0) {
-      RenderDrawBlockIcon(BlockId, HOTBAR_INNER_PADDING + XPos,
-                    HOTBAR_INNER_PADDING + StartY, HOTBAR_ICON_SIZE);
-    }
-
-    if (Idx == PlayerVal->SelectedHotbarSlot) {
-      RenderDrawRectLinesEx(XPos, StartY, HOTBAR_SLOT_SIZE, HOTBAR_SLOT_SIZE,
-                            HOTBAR_SELECTED_BOX_THICKNESS, COLOR_WHITE);
-    } else {
-      RenderDrawRectLines(XPos, StartY, HOTBAR_SLOT_SIZE, HOTBAR_SLOT_SIZE,
-                          COLOR_DARKGRAY);
+      float IconX =
+          (float)(StartX + HOTBAR_ICON_INSET + (Idx * HOTBAR_SLOT_PITCH));
+      float IconY = (float)(StartY + HOTBAR_ICON_INSET);
+      UiBlockIcon(Ctx, BlockId, IconX, IconY, (float)HOTBAR_ICON_SIZE);
     }
   }
 }
 
-static void DrawCrosshair(void) {
-  int CenterX = PlatformGetScreenWidth() / 2;
-  int CenterY = PlatformGetScreenHeight() / 2;
-
-  int HalfSize = CROSSHAIR_SIZE / 2;
-  int HalfThick = CROSSHAIR_THICKNESS / 2;
-
-  Color8 CrosshairColor = Color8Alpha(COLOR_WHITE, CROSSHAIR_TRANSPARENCY);
-  RenderDrawRect(CenterX - HalfSize, CenterY - HalfThick, CROSSHAIR_SIZE,
-                 CROSSHAIR_THICKNESS, CrosshairColor);
-  RenderDrawRect(CenterX - HalfThick, CenterY - HalfSize, CROSSHAIR_THICKNESS,
-                 CROSSHAIR_SIZE, CrosshairColor);
+static void DrawCrosshair(UiContext *Ctx) {
+  int X = (Ctx->GuiWidth - CROSSHAIR_SIZE) / 2;
+  int Y = (Ctx->GuiHeight - CROSSHAIR_SIZE) / 2;
+  UiSprite(Ctx, GetHudSprites()->Crosshair,
+           (UiRect){X, Y, CROSSHAIR_SIZE, CROSSHAIR_SIZE}, COLOR_WHITE);
 }
 
 #ifdef MINEGAME_PROFILE
@@ -193,10 +203,11 @@ static void DrawDebugScreen(Player *PlayerVal, World *WorldVal, GameCamera Camer
 #endif
 }
 
-void DrawHUD(Player *PlayerVal, World *WorldVal, GameCamera Camera, bool ShowDebugF3) {
-  DrawHotbar(PlayerVal);
+void DrawHUD(UiContext *Ctx, Player *PlayerVal, World *WorldVal,
+             GameCamera Camera, bool ShowDebugF3) {
+  DrawHotbar(Ctx, PlayerVal);
   if (ShowDebugF3) {
     DrawDebugScreen(PlayerVal, WorldVal, Camera);
   }
-  DrawCrosshair();
+  DrawCrosshair(Ctx);
 }

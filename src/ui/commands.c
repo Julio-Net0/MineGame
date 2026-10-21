@@ -6,6 +6,7 @@
 #include "world/prefab_capture.h"
 #include "ui/chat.h"
 #include "ui/debug.h"
+#include "ui/ui.h"
 #include "core/log.h"
 #include "core/utils.h"
 #include "core/profiler.h"
@@ -30,6 +31,7 @@ static void CommandSeed(const char *Args, CommandContext *Ctx);
 static void CommandSave(const char *Args, CommandContext *Ctx);
 static void CommandPrefab(const char *Args, CommandContext *Ctx);
 static void CommandBiome(const char *Args, CommandContext *Ctx);
+static void CommandGuiScale(const char *Args, CommandContext *Ctx);
 #ifdef MINEGAME_PROFILE
 static void CommandProfile(const char *Args, CommandContext *Ctx);
 #endif
@@ -54,6 +56,9 @@ static const CommandInfo AVAILABLECOMMANDS[] = {
     {"/biome", "Use: /biome",
      "Returns the biome and its raw climate values at your position",
      CommandBiome},
+    {"/guiscale", "Use: /guiscale <0-4>",
+     "Sets the GUI scale; 0 picks the largest that fits the window",
+     CommandGuiScale},
 #ifdef MINEGAME_PROFILE
     {"/profile", "Use: /profile <start | stop | dump>",
      "Streams per-frame timings to CSV (start/stop), or dumps the window",
@@ -339,6 +344,29 @@ static void CommandBiome(const char *Args, CommandContext *Ctx) {
            "Biome: %s [%d] | T:%.3f H:%.3f D:%.0f (surface Y:%d)", Biome->Name,
            BiomeId, (double)Climate.Temperature, (double)Climate.Humidity,
            (double)Climate.Depth, TerrainHeight);
+  ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
+}
+
+static void CommandGuiScale(const char *Args, CommandContext *Ctx) {
+  char *End = (char *)0;
+  int Setting = ParseInt(Args, &End);
+  // ParseInt leaves End just past the last digit, so a preceding digit is the
+  // only proof that a number was actually read.
+  bool HasNumber = (End != (char *)0) && (End != Args) && (End[-1] >= '0') &&
+                   (End[-1] <= '9');
+  if (!HasNumber || Setting < UI_GUI_SCALE_AUTO || Setting > UI_GUI_SCALE_MAX) {
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR,
+                  "Incorrect Format. try: /guiscale <0-4>");
+    return;
+  }
+
+  UiSetGuiScaleSetting(Setting);
+  char Msg[MSG_BUFFER_SIZE];
+  if (Setting == UI_GUI_SCALE_AUTO) {
+    snprintf(Msg, sizeof(Msg), "GUI scale set to auto");
+  } else {
+    snprintf(Msg, sizeof(Msg), "GUI scale set to %d", Setting);
+  }
   ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
 }
 

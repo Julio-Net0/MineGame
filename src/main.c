@@ -6,7 +6,8 @@
 #include "world/chunk.h"
 #include "world/chunk_worker.h"
 #include "ui/debug.h"
-#include "render/hud.h"
+#include "ui/hud.h"
+#include "ui/ui.h"
 #include "input/input.h"
 #include "platform/platform.h"
 #include "player/player.h"
@@ -106,6 +107,11 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
   ResourcePacksInit();
   InitRenderer();
 
+  // Every module registers its GUI sprites before the atlas is packed.
+  UiInit();
+  InitHud();
+  UiBuildAtlas();
+
   InitPrefabRegistry();
   LoadAllPrefabs("assets/prefabs");
 
@@ -145,6 +151,7 @@ static void CleanupGame(World *WorldVal) {
 
   CloseWorldSave();
   free(WorldVal);
+  UiShutdown();
   CloseRenderer();
   ResourcePacksShutdown();
   PlatformShutdown();
@@ -275,11 +282,18 @@ static void RenderGame(World *WorldVal, Player *PlayerVal, GameCamera *ActiveCam
   }
   RenderEnd3D();
 
-  // 2D HUD layer (deferred; still drawn directly by Raylib helpers).
-  PROFILE_BEGIN(HudStart);
-  DrawHUD(PlayerVal, WorldVal, *ActiveCamera, ShowDebug);
+  // The F3 text and the chat still draw through the immediate 2D helpers
+  // until they move onto the bitmap font; they are counted as UI build.
+  UiContext *Ui = GetUiContext();
+  PROFILE_BEGIN(UiBuildStart);
+  UiBeginFrame(Ui, PlatformGetScreenWidth(), PlatformGetScreenHeight());
+  DrawHUD(Ui, PlayerVal, WorldVal, *ActiveCamera, ShowDebug);
   DrawChat(ChatVal);
-  PROFILE_END(HudStart, PROFILE_HUD);
+  PROFILE_END(UiBuildStart, PROFILE_UI_BUILD);
+
+  PROFILE_BEGIN(UiSubmitStart);
+  RenderSubmitUI(&Ui->DrawList);
+  PROFILE_END(UiSubmitStart, PROFILE_UI_SUBMIT);
 
   RenderEndFrame();
 }

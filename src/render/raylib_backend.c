@@ -17,9 +17,6 @@
 #include "external/glad.h"
 #include <rlgl.h>
 
-#define ATLAS_COLS 16.0F
-#define ATLAS_ROWS 16.0F
-
 #define FLOATS_PER_VERTEX 3
 #define COLOR_CHANNELS 4
 
@@ -33,6 +30,7 @@
 
 typedef struct {
   Texture2D BlockAtlas;
+  Texture2D UiAtlas;
   unsigned int BlockArrayTexID;
 
   // Same vertex shader, two fragment shaders differing only by the alpha test.
@@ -55,7 +53,7 @@ static BackendState *GetBackendState(void) {
 // ---------------------------------------------------------------------------
 
 enum {
-  ATLAS_GRID_DIM = 16,
+  ATLAS_GRID_DIM = RENDER_BLOCK_ICON_GRID,
   MIN_TILE_SIZE = 16,
   MAX_TILE_SIZE = 256,
   CHECKER_HALF_SIZE = 8,
@@ -262,6 +260,9 @@ void RenderBackendShutdown(void) {
   UnloadShader(State->ChunkShaderOpaque);
   UnloadShader(State->ChunkShaderCutout);
   UnloadTexture(State->BlockAtlas);
+  if (State->UiAtlas.id != 0) {
+    UnloadTexture(State->UiAtlas);
+  }
   glDeleteTextures(1, &State->BlockArrayTexID);
 }
 
@@ -457,130 +458,62 @@ void RenderDrawDebugCube(Vec3 Pos, float Size, bool Wire, bool Solid) {
 }
 
 // ---------------------------------------------------------------------------
-// 2D block icon (deferred HUD layer)
+// UI layer
 // ---------------------------------------------------------------------------
 
-#define BLOCK_ICON_HALF_DIVISOR 2.0F
-#define BLOCK_ICON_QUART_DIVISOR 4.0F
-#define BLOCK_ICON_COLOR_TOP 255U
-#define BLOCK_ICON_COLOR_LEFT 150U
-#define BLOCK_ICON_COLOR_RIGHT 200U
-#define BLOCK_ICON_ALPHA 255U
-
-static void GetTextureUV(int TextureIndex, Vector2 *UvMin, Vector2 *UvMax) {
-  float U = (float)(TextureIndex % (int)ATLAS_COLS) / ATLAS_COLS;
-  int Row = TextureIndex / (int)ATLAS_COLS;
-  float V = (float)Row / ATLAS_ROWS;
-  float W = 1.0F / ATLAS_COLS;
-  float H = 1.0F / ATLAS_ROWS;
-  UvMin->x = U;
-  UvMin->y = V;
-  UvMax->x = U + W;
-  UvMax->y = V + H;
-}
-
-static void SetIconFaceColor(Color8 Tint, unsigned int Shade) {
-  unsigned char R =
-      (unsigned char)(((unsigned int)Tint.R * Shade) / BLOCK_ICON_COLOR_TOP);
-  unsigned char G =
-      (unsigned char)(((unsigned int)Tint.G * Shade) / BLOCK_ICON_COLOR_TOP);
-  unsigned char B =
-      (unsigned char)(((unsigned int)Tint.B * Shade) / BLOCK_ICON_COLOR_TOP);
-  rlColor4ub(R, G, B, BLOCK_ICON_ALPHA);
-}
-
-static void EmitIconQuad(Vector2 UvMin, Vector2 UvMax, Vector2 V0, Vector2 V1,
-                         Vector2 V2, Vector2 V3) {
-  rlTexCoord2f(UvMin.x, UvMin.y);
-  rlVertex2f(V0.x, V0.y);
-  rlTexCoord2f(UvMin.x, UvMax.y);
-  rlVertex2f(V1.x, V1.y);
-  rlTexCoord2f(UvMax.x, UvMax.y);
-  rlVertex2f(V2.x, V2.y);
-  rlTexCoord2f(UvMax.x, UvMin.y);
-  rlVertex2f(V3.x, V3.y);
-}
-
-void RenderDrawBlockIcon(int BlockId, int X, int Y, int Size) {
+void RenderUploadUiAtlas(const CoreImage *Atlas) {
   BackendState *State = GetBackendState();
-  if (BlockId == 0) {
-    return;
+  if (State->UiAtlas.id != 0) {
+    UnloadTexture(State->UiAtlas);
   }
-  BlockType *Def = GetBlockDef(BlockId);
-  Color8 Tint = GetBiomeTint(BIOME_FALLBACK_ID, Def->Tint);
+  Image Wrapped = {0};
+  Wrapped.data = Atlas->Pixels;
+  Wrapped.width = Atlas->Width;
+  Wrapped.height = Atlas->Height;
+  Wrapped.mipmaps = 1;
+  Wrapped.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+  State->UiAtlas = LoadTextureFromImage(Wrapped);
+  SetTextureFilter(State->UiAtlas, TEXTURE_FILTER_POINT);
+}
 
-  // Cross blocks (flora) have no cube geometry, so the isometric box icon is
-  // wrong for them: draw their sprite as a flat, front-facing quad instead.
-  if (Def->RenderType == BLOCK_RENDER_CROSS) {
-    Vector2 SpriteMin;
-    Vector2 SpriteMax;
-    GetTextureUV(Def->TexTop, &SpriteMin, &SpriteMax);
+static unsigned int UiTextureHandle(UiTextureId Texture) {
+  BackendState *State = GetBackendState();
+  return (Texture == UI_TEXTURE_BLOCK_ATLAS) ? State->BlockAtlas.id
+                                             : State->UiAtlas.id;
+}
 
-    Vector2 TopLeft = {(float)X, (float)Y};
-    Vector2 BottomLeft = {(float)X, (float)(Y + Size)};
-    Vector2 BottomRight = {(float)(X + Size), (float)(Y + Size)};
-    Vector2 TopRight = {(float)(X + Size), (float)Y};
+void RenderSubmitUI(const UiDrawList *List) {
+  for (int CmdIdx = 0; CmdIdx < List->CommandCount; CmdIdx++) {
+    const UiCommand *Cmd = &List->Commands[CmdIdx];
+    bool Scissored = Cmd->Scissor.W > 0;
+    // BeginScissorMode flushes the batch and converts the top-left rectangle
+    // to the framebuffer's bottom-left convention.
+    if (Scissored) {
+      BeginScissorMode(Cmd->Scissor.X, Cmd->Scissor.Y, Cmd->Scissor.W,
+                       Cmd->Scissor.H);
+    }
 
-    rlSetTexture(State->BlockAtlas.id);
+    rlSetTexture(UiTextureHandle(Cmd->Texture));
     rlBegin(RL_QUADS);
-    SetIconFaceColor(Tint, BLOCK_ICON_COLOR_TOP);
-    EmitIconQuad(SpriteMin, SpriteMax, TopLeft, BottomLeft, BottomRight,
-                 TopRight);
+    for (int QuadIdx = 0; QuadIdx < Cmd->QuadCount; QuadIdx++) {
+      // Flushes and restores the mode and texture when the batch is full, so
+      // a long chat history cannot overrun it.
+      rlCheckRenderBatchLimit(UI_QUAD_CORNERS);
+      const UiQuad *Quad = &List->Quads[Cmd->FirstQuad + QuadIdx];
+      for (int Corner = 0; Corner < UI_QUAD_CORNERS; Corner++) {
+        const UiVertex *Vert = &Quad->V[Corner];
+        rlColor4ub(Vert->Color.R, Vert->Color.G, Vert->Color.B, Vert->Color.A);
+        rlTexCoord2f(Vert->U, Vert->V);
+        rlVertex2f(Vert->X, Vert->Y);
+      }
+    }
     rlEnd();
     rlSetTexture(0);
-    return;
+
+    if (Scissored) {
+      EndScissorMode();
+    }
   }
-
-  Vector2 TopMin;
-  Vector2 TopMax;
-  Vector2 SideMin;
-  Vector2 SideMax;
-  GetTextureUV(Def->TexTop, &TopMin, &TopMax);
-  GetTextureUV(Def->TexSide, &SideMin, &SideMax);
-
-  bool HasSideOverlay = (Def->TexSideOverlay != NO_TEXTURE_OVERLAY);
-  Color8 SideBaseTint = HasSideOverlay ? COLOR_WHITE : Tint;
-
-  float Cx = (float)X + ((float)Size / BLOCK_ICON_HALF_DIVISOR);
-  float Cy = (float)Y + ((float)Size / BLOCK_ICON_HALF_DIVISOR);
-  float H = (float)Size / BLOCK_ICON_QUART_DIVISOR;
-
-  Vector2 PTop = {Cx, (float)Y};
-  Vector2 PTopLeft = {(float)X, (float)Y + H};
-  Vector2 PTopRight = {(float)(X + Size), (float)Y + H};
-  Vector2 PCenter = {Cx, Cy};
-  Vector2 PBottomLeft = {(float)X, Cy + H};
-  Vector2 PBottomRight = {(float)(X + Size), Cy + H};
-  Vector2 PBottom = {Cx, (float)(Y + Size)};
-
-  rlSetTexture(State->BlockAtlas.id);
-  rlBegin(RL_QUADS);
-
-  SetIconFaceColor(Tint, BLOCK_ICON_COLOR_TOP);
-  EmitIconQuad(TopMin, TopMax, PTop, PTopLeft, PCenter, PTopRight);
-
-  SetIconFaceColor(SideBaseTint, BLOCK_ICON_COLOR_LEFT);
-  EmitIconQuad(SideMin, SideMax, PTopLeft, PBottomLeft, PBottom, PCenter);
-
-  SetIconFaceColor(SideBaseTint, BLOCK_ICON_COLOR_RIGHT);
-  EmitIconQuad(SideMin, SideMax, PCenter, PBottom, PBottomRight, PTopRight);
-
-  if (HasSideOverlay) {
-    Vector2 OverlayMin;
-    Vector2 OverlayMax;
-    GetTextureUV(Def->TexSideOverlay, &OverlayMin, &OverlayMax);
-
-    SetIconFaceColor(Tint, BLOCK_ICON_COLOR_LEFT);
-    EmitIconQuad(OverlayMin, OverlayMax, PTopLeft, PBottomLeft, PBottom,
-                 PCenter);
-
-    SetIconFaceColor(Tint, BLOCK_ICON_COLOR_RIGHT);
-    EmitIconQuad(OverlayMin, OverlayMax, PCenter, PBottom, PBottomRight,
-                 PTopRight);
-  }
-
-  rlEnd();
-  rlSetTexture(0);
 }
 
 // ---------------------------------------------------------------------------

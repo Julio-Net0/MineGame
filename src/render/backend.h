@@ -5,6 +5,8 @@
 #include "core/vecmath.h"
 #include "core/mesh_handle.h"
 #include "core/color.h"
+#include "core/image.h"
+#include "ui/draw_list.h"
 
 // Abstract render backend interface. The engine issues backend-agnostic mesh,
 // draw, and frame commands; a single backend implementation TU (currently
@@ -92,8 +94,17 @@ void RenderDrawDebugCube(Vec3 Pos, float Size, bool Wire, bool Solid);
 // XRay is true it is drawn without depth testing so it shows through blocks.
 void RenderDrawWireBox(Vec3 Center, Vec3 Size, Color8 Color, bool XRay);
 
-// 2D helper (deferred HUD layer; backend-owned).
-void RenderDrawBlockIcon(int BlockId, int X, int Y, int Size);
+// The block-icon atlas holds texture layer i in cell (i % GRID, i / GRID) of a
+// GRID x GRID grid, which is all the UI needs to address it.
+enum {
+  RENDER_BLOCK_ICON_GRID = 16
+};
+
+// UI layer. The GUI atlas is uploaded once at startup; each frame's UI reaches
+// the backend as one draw list, drawn after the 3D pass with alpha blending and
+// no depth test.
+void RenderUploadUiAtlas(const CoreImage *Atlas);
+void RenderSubmitUI(const UiDrawList *List);
 
 // 2D drawing layer (deferred HUD layer). Renderer-agnostic: all color via
 // Color8, geometry via plain ints, text via C strings. HUD and chat draw

@@ -12,7 +12,8 @@
 // columns and a longer name would push the numbers out of alignment.
 static const char *const SCOPE_NAMES[PROFILE_SCOPE_COUNT] = {
     "Mesh build", "Mesh snap",  "Mesh upload", "World draw",  "World update",
-    "Frame setup", "HUD 2D",    "Present",     "Player",      "Worker gen"};
+    "Frame setup", "UI build",  "UI submit",   "Present",     "Player",
+    "Worker gen"};
 
 // Kept beside the names so the two cannot drift: a scope that changes threads
 // has to be updated here, and the overlay and any analysis read it rather than
@@ -24,7 +25,8 @@ static const bool SCOPE_IS_WORKER_SIDE[PROFILE_SCOPE_COUNT] = {
     false, /* World draw   */
     false, /* World update */
     false, /* Frame setup  */
-    false, /* HUD 2D       */
+    false, /* UI build     */
+    false, /* UI submit    */
     false, /* Present      */
     false, /* Player       */
     true   /* Worker gen   */

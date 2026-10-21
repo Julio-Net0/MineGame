@@ -88,7 +88,11 @@ add_executable(${PROJECT_NAME}
   src/render/renderer.c
   src/render/raylib_backend.c
   src/render/camera.c
-  src/render/hud.c
+  src/ui/hud.c
+  src/ui/ui.c
+  src/ui/draw_list.c
+  src/ui/gui_atlas.c
+  src/ui/block_icon.c
   src/ui/chat.c
   src/ui/commands.c
   src/ui/debug.c
