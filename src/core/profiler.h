@@ -101,6 +101,16 @@ bool ProfilerStartCapture(char *OutPath, size_t PathCapacity);
 void ProfilerStopCapture(void);
 bool ProfilerIsCapturing(void);
 
+// A capture that ends by itself once Seconds of wall-clock time have passed,
+// so repeated measurements cover the same span instead of however long it
+// took to type the stop command. Stopping it early by hand still works.
+bool ProfilerStartTimedCapture(char *OutPath, size_t PathCapacity,
+                               double Seconds);
+
+// True exactly once after a timed capture ended by itself; OutFrames receives
+// the number of frames it wrote. The client polls this to tell the player.
+bool ProfilerConsumeTimedStop(int *OutFrames);
+
 // Wall-clock duration of the whole frame, measured between consecutive frame
 // boundaries. Reported alongside the scopes so the share of the frame they do
 // NOT account for is visible rather than inferred.

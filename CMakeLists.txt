@@ -93,6 +93,7 @@ add_executable(${PROJECT_NAME}
   src/ui/draw_list.c
   src/ui/gui_atlas.c
   src/ui/block_icon.c
+  src/ui/font.c
   src/ui/chat.c
   src/ui/commands.c
   src/ui/debug.c

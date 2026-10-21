@@ -38,11 +38,24 @@ typedef struct {
   int BorderRight;
   int BorderBottom;
   bool StretchInner;
+  // Where the image landed in the atlas, in pixels, for consumers that read
+  // the packed pixels back (the font measures its glyphs this way).
+  int AtlasX;
+  int AtlasY;
+  int PixelWidth;
+  int PixelHeight;
+  // False when the image was missing or did not fit and this is the checker.
+  bool Resolved;
 } GuiSprite;
 
 // Registering the same name twice returns the same id. Must be called before
 // GuiAtlasBuild; later registrations return UI_SPRITE_INVALID.
 UiSpriteId GuiAtlasRegister(const char *Name);
+
+// Registers a whole texture by its path relative to the textures root (for
+// example "font/ascii.png"), packed as-is with no .mcmeta. Same rules as
+// GuiAtlasRegister.
+UiSpriteId GuiAtlasRegisterTexture(const char *TexturePath);
 
 // Resolves, decodes and packs every registered sprite into OutAtlas (caller
 // frees with CoreImageFree after uploading). A sprite missing from every

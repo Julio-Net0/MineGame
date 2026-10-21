@@ -15,7 +15,8 @@ typedef struct {
 } SystemInput;
 
 // Per-frame text-entry query for a text field: the printable characters typed
-// this frame plus the edit-key edges. Backspace includes key-repeat; Submit is
+// this frame as UTF-8 bytes (Count is a byte count and never splits a
+// sequence) plus the edit-key edges. Backspace includes key-repeat; Submit is
 // enter, Cancel is delete. The caller consumes intent, never key codes.
 typedef struct {
   char Chars[CHAT_MAX_INPUT_CHARS];

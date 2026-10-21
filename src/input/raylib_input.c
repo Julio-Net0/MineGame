@@ -2,6 +2,11 @@
 #include "render/rl_compat.h"
 #include "core/vecmath.h"
 #include "raylib.h"
+#include <string.h>
+
+enum {
+  DELETE_CODEPOINT = 127
+};
 
 PlayerInput PollPlayerInput(bool HasControl) {
   PlayerInput Input = {0};
@@ -50,9 +55,15 @@ TextInput PollTextInput(void) {
     if (Key <= 0) {
       break;
     }
-    if ((Key >= ' ') && (Key <= '~') && (Text.Count < CHAT_MAX_INPUT_CHARS)) {
-      Text.Chars[Text.Count] = (char)Key;
-      Text.Count++;
+    // Any printable codepoint, encoded as UTF-8, so accented letters typed
+    // on the keyboard reach the chat. Only whole sequences are appended.
+    if (Key >= ' ' && Key != DELETE_CODEPOINT) {
+      int Size = 0;
+      const char *Encoded = CodepointToUTF8(Key, &Size);
+      if (Size > 0 && Text.Count + Size <= CHAT_MAX_INPUT_CHARS) {
+        memcpy(&Text.Chars[Text.Count], Encoded, (size_t)Size);
+        Text.Count += Size;
+      }
     }
     Key = GetCharPressed();
   }

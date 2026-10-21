@@ -1,6 +1,7 @@
 #include "ui/ui.h"
 #include "core/log.h"
 #include "render/backend.h"
+#include "ui/font.h"
 
 enum {
   GUI_MIN_WIDTH = 320,
@@ -25,6 +26,7 @@ void UiInit(void) {
 
 void UiShutdown(void) {
   UiDrawListFree(&GetUiContext()->DrawList);
+  FontShutdown();
   GuiAtlasShutdown();
 }
 
@@ -32,6 +34,9 @@ bool UiBuildAtlas(void) {
   CoreImage Atlas;
   bool Ok = GuiAtlasBuild(&Atlas);
   if (Ok) {
+    // Glyph widths are measured from the packed pixels, which exist on the
+    // CPU only until the upload below frees them.
+    FontBuildMetrics(&Atlas);
     RenderUploadUiAtlas(&Atlas);
   }
   CoreImageFree(&Atlas);
@@ -98,6 +103,12 @@ static void EmitRect(UiContext *Ctx, UiTextureId Texture, float DstX,
       {X1, Y0, U1, V0, Color},
   }};
   PushQuad(Ctx, Texture, &Quad);
+}
+
+void UiTexturedRect(UiContext *Ctx, UiTextureId Texture, float X, float Y,
+                    float W, float H, float U0, float V0, float U1, float V1,
+                    Color8 Color) {
+  EmitRect(Ctx, Texture, X, Y, W, H, U0, V0, U1, V1, Color);
 }
 
 void UiFillRect(UiContext *Ctx, UiRect Rect, Color8 Color) {

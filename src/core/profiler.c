@@ -84,6 +84,10 @@ typedef struct {
   // appended to by ProfilerEndFrame, closed by ProfilerStopCapture.
   FILE *CaptureFile;
   int CaptureRow;
+  // Zero for a capture that runs until stopped.
+  double CaptureDeadline;
+  bool TimedStopPending;
+  int TimedStopFrames;
 } ProfilerState;
 
 static ProfilerState *GetProfilerState(void) {
@@ -158,6 +162,11 @@ void ProfilerEndFrame(void) {
   if (State->CaptureFile != NULL) {
     WriteCsvRow(State->CaptureFile, State, State->CaptureRow, Slot);
     State->CaptureRow++;
+    if (State->CaptureDeadline > 0.0 && Now >= State->CaptureDeadline) {
+      State->TimedStopFrames = State->CaptureRow;
+      State->TimedStopPending = true;
+      ProfilerStopCapture();
+    }
   }
 
   State->WriteCursor = (Slot + 1) % PROFILER_WINDOW_FRAMES;
@@ -408,6 +417,30 @@ bool ProfilerStartCapture(char *OutPath, size_t PathCapacity) {
   WriteCsvHeader(FileVal);
   State->CaptureFile = FileVal;
   State->CaptureRow = 0;
+  State->CaptureDeadline = 0.0;
+  return true;
+}
+
+bool ProfilerStartTimedCapture(char *OutPath, size_t PathCapacity,
+                               double Seconds) {
+  if (Seconds <= 0.0 || !ProfilerStartCapture(OutPath, PathCapacity)) {
+    return false;
+  }
+  ProfilerState *State = GetProfilerState();
+  State->CaptureDeadline = PlatformGetTime() + Seconds;
+  State->TimedStopPending = false;
+  return true;
+}
+
+bool ProfilerConsumeTimedStop(int *OutFrames) {
+  ProfilerState *State = GetProfilerState();
+  if (!State->TimedStopPending) {
+    return false;
+  }
+  State->TimedStopPending = false;
+  if (OutFrames != NULL) {
+    *OutFrames = State->TimedStopFrames;
+  }
   return true;
 }
 
@@ -419,6 +452,7 @@ void ProfilerStopCapture(void) {
   (void)fclose(State->CaptureFile);
   State->CaptureFile = NULL;
   State->CaptureRow = 0;
+  State->CaptureDeadline = 0.0;
 }
 
 #endif

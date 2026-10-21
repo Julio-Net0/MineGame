@@ -63,6 +63,12 @@ void UiSprite(UiContext *Ctx, UiSpriteId Sprite, UiRect Rect, Color8 Tint);
 // UiSprite for a sprite without nine-slice metadata.
 void UiNineSlice(UiContext *Ctx, UiSpriteId Sprite, UiRect Rect, Color8 Tint);
 
+// Axis-aligned quad in GUI units (fractional positions allowed) sampling an
+// explicit UV rectangle of Texture.
+void UiTexturedRect(UiContext *Ctx, UiTextureId Texture, float X, float Y,
+                    float W, float H, float U0, float V0, float U1, float V1,
+                    Color8 Color);
+
 // Free-form quad with corners in GUI units (top-left, bottom-left,
 // bottom-right, top-right), for geometry such as the isometric block icon.
 void UiQuadGui(UiContext *Ctx, UiTextureId Texture,

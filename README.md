@@ -124,11 +124,12 @@ For a capture that outlives the window:
 
 ```
 /profile start     # one CSV row per frame, no length limit
+/profile start 10  # same, but stops by itself after 10 s and says so in chat
 /profile stop
 /profile dump      # snapshot of the rolling window instead
 ```
 
-Files land next to the executable as `profile_NNN.csv`, never overwriting a previous capture.
+Files land next to the executable as `profile_NNN.csv`, never overwriting a previous capture. A timed capture is the one to compare across changes, since every run then covers the same span. `/fillchat [lines]` fills the chat history with identical lines, 20 by default, so a capture with chat open always draws the same text.
 
 ### ❗Known Issues/Limitations
 * **WSL Compatibility:** The cursor might not be disabled as expected when running this project on Windows Subsystem for Linux (WSL).

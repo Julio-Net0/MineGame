@@ -3,11 +3,13 @@
 #include "world/prefab.h"
 #include "render/camera.h"
 #include "ui/chat.h"
+#include "ui/commands.h"
 #include "world/chunk.h"
 #include "world/chunk_worker.h"
 #include "ui/debug.h"
 #include "ui/hud.h"
 #include "ui/ui.h"
+#include "ui/font.h"
 #include "input/input.h"
 #include "platform/platform.h"
 #include "player/player.h"
@@ -110,6 +112,7 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
   // Every module registers its GUI sprites before the atlas is packed.
   UiInit();
   InitHud();
+  FontInit();
   UiBuildAtlas();
 
   InitPrefabRegistry();
@@ -282,13 +285,11 @@ static void RenderGame(World *WorldVal, Player *PlayerVal, GameCamera *ActiveCam
   }
   RenderEnd3D();
 
-  // The F3 text and the chat still draw through the immediate 2D helpers
-  // until they move onto the bitmap font; they are counted as UI build.
   UiContext *Ui = GetUiContext();
   PROFILE_BEGIN(UiBuildStart);
   UiBeginFrame(Ui, PlatformGetScreenWidth(), PlatformGetScreenHeight());
   DrawHUD(Ui, PlayerVal, WorldVal, *ActiveCamera, ShowDebug);
-  DrawChat(ChatVal);
+  DrawChat(Ui, ChatVal);
   PROFILE_END(UiBuildStart, PROFILE_UI_BUILD);
 
   PROFILE_BEGIN(UiSubmitStart);
@@ -442,6 +443,7 @@ int main(int Argc, char **Argv) {
                          PlatformGetTime() + MESH_BUDGET_SECONDS);
 
     UpdateChat(&ChatVal, ActiveCamera, &PlayerVal, WorldVal);
+    PollCommandEvents(&ChatVal);
 
     // Render interpolation: the camera follows the player position interpolated
     // between the previous and current tick, for smooth motion above tick rate.

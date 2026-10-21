@@ -30,6 +30,8 @@ enum {
 typedef struct {
   char Name[MAX_SPRITE_NAME];
   GuiSprite Sprite;
+  // A whole texture addressed by path rather than a gui/sprites/ name.
+  bool IsTexture;
 } SpriteEntry;
 
 typedef struct {
@@ -53,18 +55,19 @@ static GuiAtlasState *GetGuiAtlasState(void) {
   return &State;
 }
 
-UiSpriteId GuiAtlasRegister(const char *Name) {
+static UiSpriteId RegisterEntry(const char *Name, bool IsTexture) {
   GuiAtlasState *State = GetGuiAtlasState();
   if (Name == NULL || Name[0] == '\0') {
     return UI_SPRITE_INVALID;
   }
   for (int Idx = 0; Idx < State->Count; Idx++) {
-    if (strcmp(State->Entries[Idx].Name, Name) == 0) {
+    if (State->Entries[Idx].IsTexture == IsTexture &&
+        strcmp(State->Entries[Idx].Name, Name) == 0) {
       return Idx;
     }
   }
   if (State->Built) {
-    LogError("GUI: sprite '%s' registered after the atlas was built", Name);
+    LogError("GUI: '%s' registered after the atlas was built", Name);
     return UI_SPRITE_INVALID;
   }
   if (State->Count >= MAX_GUI_SPRITES) {
@@ -73,7 +76,16 @@ UiSpriteId GuiAtlasRegister(const char *Name) {
   }
   SpriteEntry *Entry = &State->Entries[State->Count];
   snprintf(Entry->Name, sizeof(Entry->Name), "%s", Name);
+  Entry->IsTexture = IsTexture;
   return State->Count++;
+}
+
+UiSpriteId GuiAtlasRegister(const char *Name) {
+  return RegisterEntry(Name, false);
+}
+
+UiSpriteId GuiAtlasRegisterTexture(const char *TexturePath) {
+  return RegisterEntry(TexturePath, true);
 }
 
 const GuiSprite *GuiAtlasGetSprite(UiSpriteId Id) {
@@ -234,10 +246,14 @@ static void ApplyMetadata(const char *Name, int Source, CoreImage *Image,
   cJSON_Delete(Json);
 }
 
-static bool LoadSprite(const char *Name, CoreImage *OutImage,
+static bool LoadSprite(const SpriteEntry *Entry, CoreImage *OutImage,
                        GuiSprite *Sprite) {
   char Path[FILEIO_MAX_PATH];
-  snprintf(Path, sizeof(Path), "gui/sprites/%s.png", Name);
+  if (Entry->IsTexture) {
+    snprintf(Path, sizeof(Path), "%s", Entry->Name);
+  } else {
+    snprintf(Path, sizeof(Path), "gui/sprites/%s.png", Entry->Name);
+  }
 
   int Size = 0;
   int Source = RESOURCE_SOURCE_NONE;
@@ -255,7 +271,9 @@ static bool LoadSprite(const char *Name, CoreImage *OutImage,
   Sprite->Scaling = GUI_SCALING_NONE;
   Sprite->LogicalWidth = OutImage->Width;
   Sprite->LogicalHeight = OutImage->Height;
-  ApplyMetadata(Name, Source, OutImage, Sprite);
+  if (!Entry->IsTexture) {
+    ApplyMetadata(Entry->Name, Source, OutImage, Sprite);
+  }
   return true;
 }
 
@@ -323,6 +341,11 @@ static void AssignUV(GuiSprite *Sprite, const PackItem *Item, int Dim) {
   Sprite->V0 = (float)Item->Y * Scale;
   Sprite->U1 = (float)(Item->X + Item->Image.Width) * Scale;
   Sprite->V1 = (float)(Item->Y + Item->Image.Height) * Scale;
+  Sprite->AtlasX = Item->X;
+  Sprite->AtlasY = Item->Y;
+  Sprite->PixelWidth = Item->Image.Width;
+  Sprite->PixelHeight = Item->Image.Height;
+  Sprite->Resolved = true;
 }
 
 static void ResetToChecker(GuiSprite *Sprite, const GuiSprite *Checker) {
@@ -353,7 +376,7 @@ bool GuiAtlasBuild(CoreImage *OutAtlas) {
     PackItem *Item = &Items[ItemCount++];
     *Item = (PackItem){0};
     SpriteEntry *Entry = &State->Entries[Idx];
-    if (!LoadSprite(Entry->Name, &Item->Image, &Entry->Sprite)) {
+    if (!LoadSprite(Entry, &Item->Image, &Entry->Sprite)) {
       LogWarn("GUI: sprite '%s' not found, drawing a checker", Entry->Name);
       Missing[Idx] = true;
     }
@@ -395,6 +418,7 @@ bool GuiAtlasBuild(CoreImage *OutAtlas) {
     State->Checker.LogicalWidth = CHECKER_SIZE;
     State->Checker.LogicalHeight = CHECKER_SIZE;
     AssignUV(&State->Checker, CheckerItem, Dim);
+    State->Checker.Resolved = false;
     State->WhiteU = ((float)White->X + TEXEL_CENTER) / (float)Dim;
     State->WhiteV = ((float)White->Y + TEXEL_CENTER) / (float)Dim;
 

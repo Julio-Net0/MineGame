@@ -16,6 +16,7 @@
 #include <stdio.h>
 
 enum {
+  FILLCHAT_DEFAULT_LINES = 20,
   DEBUG_HELP_LINE_SIZE = 128,
   DEBUG_STATUS_MSG_SIZE = 64,
   MSG_BUFFER_SIZE = 256
@@ -32,6 +33,7 @@ static void CommandSave(const char *Args, CommandContext *Ctx);
 static void CommandPrefab(const char *Args, CommandContext *Ctx);
 static void CommandBiome(const char *Args, CommandContext *Ctx);
 static void CommandGuiScale(const char *Args, CommandContext *Ctx);
+static void CommandFillChat(const char *Args, CommandContext *Ctx);
 #ifdef MINEGAME_PROFILE
 static void CommandProfile(const char *Args, CommandContext *Ctx);
 #endif
@@ -59,9 +61,13 @@ static const CommandInfo AVAILABLECOMMANDS[] = {
     {"/guiscale", "Use: /guiscale <0-4>",
      "Sets the GUI scale; 0 picks the largest that fits the window",
      CommandGuiScale},
+    {"/fillchat", "Use: /fillchat [lines]",
+     "Fills the chat history with identical test lines (20 by default)",
+     CommandFillChat},
 #ifdef MINEGAME_PROFILE
-    {"/profile", "Use: /profile <start | stop | dump>",
-     "Streams per-frame timings to CSV (start/stop), or dumps the window",
+    {"/profile", "Use: /profile <start [seconds] | stop | dump>",
+     "Streams per-frame timings to CSV (start/stop, or start for a fixed "
+     "time), or dumps the window",
      CommandProfile},
 #endif
 };
@@ -223,6 +229,9 @@ static void CommandPos(const char *Args, CommandContext *Ctx) {
 }
 
 #ifdef MINEGAME_PROFILE
+// A capture longer than this is almost certainly a typo in the duration.
+#define PROFILE_MAX_TIMED_SECONDS 600.0F
+
 static void ProfileDump(CommandContext *Ctx) {
   char Path[PROFILER_DUMP_PATH_CAPACITY];
   char Msg[MSG_BUFFER_SIZE];
@@ -243,8 +252,15 @@ static void ProfileDump(CommandContext *Ctx) {
   }
 }
 
-static void ProfileStart(CommandContext *Ctx) {
-  char Path[PROFILER_DUMP_PATH_CAPACITY];
+// Kept so the message announcing that a timed capture finished can name the
+// file it went to.
+static char *GetLastCapturePath(void) {
+  static char Path[PROFILER_DUMP_PATH_CAPACITY];
+  return Path;
+}
+
+static void ProfileStart(CommandContext *Ctx, const char *DurationArg) {
+  char *Path = GetLastCapturePath();
   char Msg[MSG_BUFFER_SIZE];
 
   if (ProfilerIsCapturing()) {
@@ -253,13 +269,34 @@ static void ProfileStart(CommandContext *Ctx) {
     return;
   }
 
-  if (!ProfilerStartCapture(Path, sizeof(Path))) {
-    ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR, "Could not start the capture");
+  if (DurationArg == (void *)0) {
+    if (!ProfilerStartCapture(Path, PROFILER_DUMP_PATH_CAPACITY)) {
+      ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR, "Could not start the capture");
+      return;
+    }
+    snprintf(Msg, sizeof(Msg),
+             "Capturing every frame to %s. /profile stop to end", Path);
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
     return;
   }
 
-  snprintf(Msg, sizeof(Msg), "Capturing every frame to %s. /profile stop to end",
-           Path);
+  char *End = (char *)0;
+  float Seconds = ParseFloat(DurationArg, &End);
+  if (End == DurationArg || Seconds <= 0.0F ||
+      Seconds > PROFILE_MAX_TIMED_SECONDS) {
+    snprintf(Msg, sizeof(Msg),
+             "Duration must be a number of seconds between 0 and %d",
+             (int)PROFILE_MAX_TIMED_SECONDS);
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR, Msg);
+    return;
+  }
+
+  if (!ProfilerStartTimedCapture(Path, PROFILER_DUMP_PATH_CAPACITY,
+                                 (double)Seconds)) {
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR, "Could not start the capture");
+    return;
+  }
+  snprintf(Msg, sizeof(Msg), "Capturing %.1f s to %s", (double)Seconds, Path);
   ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
 }
 
@@ -275,7 +312,7 @@ static void ProfileStop(CommandContext *Ctx) {
 static void CommandProfile(const char *Args, CommandContext *Ctx) {
   if (Args == (void *)0) {
     ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR,
-                  "Incorrect Format. try: /profile <start | stop | dump>");
+                  "Incorrect Format. try: /profile <start [seconds] | stop | dump>");
     return;
   }
 
@@ -291,7 +328,7 @@ static void CommandProfile(const char *Args, CommandContext *Ctx) {
   }
 
   if (SubCmd != (void *)0 && CompareString(SubCmd, "start") == 0) {
-    ProfileStart(Ctx);
+    ProfileStart(Ctx, TokenizeSpace(&SavePtr));
     return;
   }
 
@@ -368,6 +405,32 @@ static void CommandGuiScale(const char *Args, CommandContext *Ctx) {
     snprintf(Msg, sizeof(Msg), "GUI scale set to %d", Setting);
   }
   ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
+}
+
+// Identical lines, accents included, so chat-cost captures always draw the
+// same glyphs from the same sheets.
+static void CommandFillChat(const char *Args, CommandContext *Ctx) {
+  int Lines = FILLCHAT_DEFAULT_LINES;
+  if (Args != (void *)0) {
+    char *End = (char *)0;
+    Lines = ParseInt(Args, &End);
+    bool HasNumber = (End != (char *)0) && (End != Args) &&
+                     (End[-1] >= '0') && (End[-1] <= '9');
+    if (!HasNumber || Lines < 1 || Lines > CHAT_MAX_HISTORY) {
+      ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR,
+                    "Incorrect Format. try: /fillchat [1-256]");
+      return;
+    }
+  }
+
+  char Line[MSG_BUFFER_SIZE];
+  for (int Idx = 0; Idx < Lines; Idx++) {
+    snprintf(Line, sizeof(Line),
+             "Fill %03d: The quick brown fox jumps over the lazy dog. "
+             "A\xc3\xa7\xc3\xa3o, n\xc3\xa3o, \xc3\xa9 poss\xc3\xadvel.",
+             Idx + 1);
+    AddChatHistory(Ctx->Chat, Line);
+  }
 }
 
 static void CommandSave(const char *Args, CommandContext *Ctx) {
@@ -785,4 +848,18 @@ void CommandHandler(char *Command, ChatState *Chat, GameCamera *Camera,
   char Msg[MSG_BUFFER_SIZE];
   snprintf(Msg, sizeof(Msg), "Unknown command: %s. Type /help", CommandName);
   ReturnCommand(Chat, LOG_LEVEL_WARN, Msg);
+}
+
+void PollCommandEvents(ChatState *Chat) {
+#ifdef MINEGAME_PROFILE
+  int Frames = 0;
+  if (ProfilerConsumeTimedStop(&Frames)) {
+    char Msg[MSG_BUFFER_SIZE];
+    snprintf(Msg, sizeof(Msg), "Timed capture finished: %d frames written to %s",
+             Frames, GetLastCapturePath());
+    ReturnCommand(Chat, LOG_LEVEL_INFO, Msg);
+  }
+#else
+  (void)Chat;
+#endif
 }

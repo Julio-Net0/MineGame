@@ -35,4 +35,8 @@ typedef struct {
 
 void CommandHandler(char *Command, ChatState *Chat, GameCamera *Camera, Player *Player, World *World);
 
+// Once per frame: reports to the chat anything a command started that has
+// since finished on its own, such as a timed profiler capture.
+void PollCommandEvents(ChatState *Chat);
+
 #endif
