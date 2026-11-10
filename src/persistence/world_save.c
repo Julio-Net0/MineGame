@@ -84,14 +84,23 @@ typedef struct {
 typedef struct {
   pthread_mutex_t RegionMutexes[REGION_MUTEX_STRIPES];
   uint64_t WorldSeed;
+  uint64_t SeedOverride;
+  bool HasSeedOverride;
   // Set once before any thread exists and never written again, so the worker
-  // threads that call SaveChunkToDisk read it without synchronisation.
+  // threads that call SaveChunkToDisk and LoadChunkFromDisk read it without
+  // synchronisation.
   bool ReadOnly;
 } WorldSaveState;
 
 static WorldSaveState *GetWorldSaveState(void) {
   static WorldSaveState State = { .WorldSeed = 0 };
   return &State;
+}
+
+void WorldSaveSetSeedOverride(uint64_t Seed) {
+  WorldSaveState *State = GetWorldSaveState();
+  State->SeedOverride = Seed;
+  State->HasSeedOverride = true;
 }
 
 void WorldSaveSetReadOnly(bool ReadOnly) {
@@ -146,9 +155,15 @@ void InitWorldSave(void) {
                        (const pthread_mutexattr_t *)0);
   }
 
-  if (!State->ReadOnly) {
-    make_dir("world");
+  if (State->ReadOnly) {
+    State->WorldSeed = State->HasSeedOverride ? State->SeedOverride
+                                              : SCRIPT_DEFAULT_WORLD_SEED;
+    LogInfo("WORLD_SAVE: Read-only run using deterministic seed: %llu",
+            (unsigned long long)State->WorldSeed);
+    return;
   }
+
+  make_dir("world");
 
   LevelMetadata Meta;
   bool Loaded = false;
@@ -176,17 +191,9 @@ void InitWorldSave(void) {
   }
 
   if (!Loaded) {
-    State->WorldSeed = GenerateRandomSeed();
+    State->WorldSeed =
+        State->HasSeedOverride ? State->SeedOverride : GenerateRandomSeed();
     LogInfo("WORLD_SAVE: Generated new random world seed: %llu", (unsigned long long)State->WorldSeed);
-
-    if (State->ReadOnly) {
-      // The seed is not persisted, so a read-only run against a world that does
-      // not exist yet generates different terrain every time. Worth saying out
-      // loud: it is the one case where two such runs are not comparable.
-      LogWarn("WORLD_SAVE: Read-only run with no existing world; this seed is "
-              "not saved and the next run will differ");
-      return;
-    }
 
     FileVal = fopen("world/level.bin", "wb");
     if (FileVal != (FILE *)0) {
@@ -332,6 +339,10 @@ void SaveChunkToDisk(Chunk *ChunkVal) {
 }
 
 bool LoadChunkFromDisk(Chunk *ChunkVal) {
+  if (GetWorldSaveState()->ReadOnly) {
+    return false;
+  }
+
   int Rx = FloorDiv8(ChunkVal->ChunkX);
   int Ry = FloorDiv8(ChunkVal->ChunkY);
   int Rz = FloorDiv8(ChunkVal->ChunkZ);

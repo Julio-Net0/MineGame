@@ -216,6 +216,25 @@ void ProfilerEndFrame(void) {
   }
 }
 
+void ProfilerResetWindow(void) {
+  ProfilerState *State = GetProfilerState();
+  for (int Scope = 0; Scope < PROFILE_SCOPE_COUNT; Scope++) {
+    (void)atomic_exchange_explicit(&State->AccumUs[Scope], 0U,
+                                   memory_order_relaxed);
+    (void)atomic_exchange_explicit(&State->AccumEntries[Scope], 0U,
+                                   memory_order_relaxed);
+    for (int Slot = 0; Slot < PROFILER_WINDOW_FRAMES; Slot++) {
+      State->WindowUs[Scope][Slot] = 0U;
+      State->WindowEntries[Scope][Slot] = 0U;
+    }
+  }
+  for (int Slot = 0; Slot < PROFILER_WINDOW_FRAMES; Slot++) {
+    State->WindowFrameUs[Slot] = 0U;
+  }
+  State->WriteCursor = 0;
+  State->RecordedFrames = 0;
+}
+
 // Keep the Capacity largest values seen, sorted ascending, so Top[0] is always
 // the smallest of the current set and the admission test is a single compare.
 // A full sort of the window would do the same job; this avoids qsort's

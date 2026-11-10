@@ -226,13 +226,56 @@ jobs:
           path: dist/MineGame-windows-x86_64.zip
           if-no-files-found: error
 
+  test:
+    name: Regression Tests (Linux)
+    needs: [build-linux]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # xvfb + libgl1-mesa-dri (llvmpipe) provides a software OpenGL 3.3+
+      # rasterizer with occlusion-query support on headless CI runners.
+      - name: Install runtime and test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb \
+            libgl1-mesa-dri \
+            mesa-utils \
+            python3 \
+            unzip \
+            libasound2t64 \
+            libx11-6 \
+            libxrandr2 \
+            libxi6 \
+            libxcursor1 \
+            libxinerama1
+
+      - name: Download Linux archive
+        uses: actions/download-artifact@v4
+        with:
+          name: MineGame-linux-x86_64
+          path: dist
+
+      - name: Extract Linux archive
+        run: |
+          unzip -q dist/MineGame-linux-x86_64.zip -d dist
+          chmod +x dist/MineGame-linux-x86_64/MineGame
+
+      - name: Run regression suite
+        run: >
+          xvfb-run -a -s "-screen 0 1920x1080x24"
+          python3 scripts/run_regression.py
+          --binary dist/MineGame-linux-x86_64/MineGame
+
   # Rolling build of master, published under a fixed tag so its download URLs
   # never change. Marked a prerelease so GitHub keeps pointing "Latest release"
   # at the newest v* tag instead of at this.
   publish-nightly:
     name: Publish nightly
     if: github.ref == 'refs/heads/master'
-    needs: [build-linux, build-windows, lint]
+    needs: [build-linux, build-windows, lint, test]
     runs-on: ubuntu-24.04
     # The only job that may write to the repository.
     permissions:
@@ -277,7 +320,7 @@ jobs:
   publish-release:
     name: Publish tagged release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-linux, build-windows, lint]
+    needs: [build-linux, build-windows, lint, test]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

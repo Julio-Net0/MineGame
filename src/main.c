@@ -115,6 +115,9 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
 
   // Before InitWorldSave, which creates the level metadata of a world that does
   // not exist yet: a scripted run must not write even that.
+  if (Options->HasSeed) {
+    WorldSaveSetSeedOverride(Options->Seed);
+  }
   if (ScriptIsActive()) {
     WorldSaveSetReadOnly(true);
     LogInfo("MAIN: script mode; the world is read-only for this run");

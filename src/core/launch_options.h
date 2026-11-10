@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #define INITIAL_WIDTH 1280
 #define INITIAL_HEIGHT 720
@@ -37,6 +38,8 @@ typedef struct {
   int CoreCount;
   double CpuSlowdown;
   size_t RamLimitMb;
+  bool HasSeed;
+  uint64_t Seed;
   const char *ScriptPath;
   const char *ScriptOutDir;
   double ScriptTimeoutSeconds;

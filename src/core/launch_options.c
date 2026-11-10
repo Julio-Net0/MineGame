@@ -39,6 +39,8 @@ static LaunchOptions *GetMutableLaunchOptions(void) {
       .CoreCount = 0,
       .CpuSlowdown = 1.0,
       .RamLimitMb = 0,
+      .HasSeed = false,
+      .Seed = 0,
       .ScriptPath = (const char *)0,
       .ScriptOutDir = SCRIPT_DEFAULT_OUT_DIR,
       .ScriptTimeoutSeconds = SCRIPT_DEFAULT_TIMEOUT_SECONDS,
@@ -82,6 +84,20 @@ static bool ParseStrictLong(const char *Str, long *OutValue) {
     return false;
   }
   *OutValue = Value;
+  return true;
+}
+
+static bool ParseStrictUint64(const char *Str, uint64_t *OutValue) {
+  if (Str == (const char *)0 || Str[0] < '0' || Str[0] > '9') {
+    return false;
+  }
+  errno = 0;
+  char *End = (char *)0;
+  unsigned long long Value = strtoull(Str, &End, DECIMAL_BASE);
+  if (errno == ERANGE || End == Str || *End != '\0') {
+    return false;
+  }
+  *OutValue = (uint64_t)Value;
   return true;
 }
 
@@ -216,6 +232,17 @@ static void ParseRamLimitValue(const char *ValueStr, LaunchOptions *Options) {
   Options->RamLimitMb = (size_t)Value;
 }
 
+static void ParseSeedValue(const char *ValueStr, LaunchOptions *Options) {
+  uint64_t Value = 0;
+  if (!ParseStrictUint64(ValueStr, &Value)) {
+    LogWarn("MAIN: --seed must be an unsigned 64-bit integer; ignoring \"%s\"",
+            ValueStr);
+    return;
+  }
+  Options->HasSeed = true;
+  Options->Seed = Value;
+}
+
 void ParseLaunchOptions(int Argc, char **Argv) {
   LaunchOptions *Options = GetMutableLaunchOptions();
   *Options = (LaunchOptions){
@@ -229,6 +256,8 @@ void ParseLaunchOptions(int Argc, char **Argv) {
       .CoreCount = 0,
       .CpuSlowdown = 1.0,
       .RamLimitMb = 0,
+      .HasSeed = false,
+      .Seed = 0,
       .ScriptPath = (const char *)0,
       .ScriptOutDir = SCRIPT_DEFAULT_OUT_DIR,
       .ScriptTimeoutSeconds = SCRIPT_DEFAULT_TIMEOUT_SECONDS,
@@ -257,6 +286,7 @@ void ParseLaunchOptions(int Argc, char **Argv) {
                      (strcmp(Arg, "--cores") == 0) ||
                      (strcmp(Arg, "--cpu-slowdown") == 0) ||
                      (strcmp(Arg, "--ram-limit") == 0) ||
+                     (strcmp(Arg, "--seed") == 0) ||
                      (strcmp(Arg, "--script") == 0) ||
                      (strcmp(Arg, "--script-out") == 0) ||
                      (strcmp(Arg, "--script-timeout") == 0);
@@ -283,6 +313,8 @@ void ParseLaunchOptions(int Argc, char **Argv) {
       ParseCpuSlowdownValue(ValueStr, Options);
     } else if (strcmp(Arg, "--ram-limit") == 0) {
       ParseRamLimitValue(ValueStr, Options);
+    } else if (strcmp(Arg, "--seed") == 0) {
+      ParseSeedValue(ValueStr, Options);
     } else if (strcmp(Arg, "--script") == 0) {
       Options->ScriptPath = ValueStr;
     } else if (strcmp(Arg, "--script-out") == 0) {

@@ -65,9 +65,8 @@ static const CommandInfo AVAILABLECOMMANDS[] = {
      "Fills the chat history with identical test lines (20 by default)",
      CommandFillChat},
 #ifdef MINEGAME_PROFILE
-    {"/profile", "Use: /profile <start [seconds] | stop | dump>",
-     "Streams per-frame timings to CSV (start/stop, or start for a fixed "
-     "time), or dumps the window",
+    {"/profile", "Use: /profile <start [seconds] | stop | dump | reset>",
+     "Streams per-frame timings to CSV, dumps the window, or resets it",
      CommandProfile},
 #endif
 };
@@ -321,8 +320,9 @@ static void ProfileStop(CommandContext *Ctx) {
 
 static void CommandProfile(const char *Args, CommandContext *Ctx) {
   if (Args == (void *)0) {
-    ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR,
-                  "Incorrect Format. try: /profile <start [seconds] | stop | dump>");
+    ReturnCommand(
+        Ctx->Chat, LOG_LEVEL_ERROR,
+        "Incorrect Format. try: /profile <start [seconds] | stop | dump | reset>");
     return;
   }
 
@@ -347,8 +347,14 @@ static void CommandProfile(const char *Args, CommandContext *Ctx) {
     return;
   }
 
+  if (SubCmd != (void *)0 && CompareString(SubCmd, "reset") == 0) {
+    ProfilerResetWindow();
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, "Profiler window reset");
+    return;
+  }
+
   ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR,
-                "Incorrect Format. try: /profile <start | stop | dump>");
+                "Incorrect Format. try: /profile <start | stop | dump | reset>");
 }
 #endif
 

@@ -899,6 +899,11 @@ static bool ScriptIsWaiting(const ScriptContext *Ctx) {
     break;
   case SCRIPT_WAIT_LOADED:
     State->SettledFrames = ScriptWorldSettled(Ctx) ? State->SettledFrames + 1 : 0;
+    if (State->SettledFrames == 1) {
+      // Discard the loading spike at the start of the quiet streak so the
+      // window holds only settled frames once the wait releases.
+      ProfilerResetWindow();
+    }
     if (State->SettledFrames < SETTLED_FRAMES_REQUIRED) {
       return true;
     }

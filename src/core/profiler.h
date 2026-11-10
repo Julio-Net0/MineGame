@@ -127,6 +127,7 @@ void ProfilerQueryFrame(ProfileStats *Out);
 double ProfilerNow(void);
 void ProfilerRecord(ProfileScope Scope, double StartTime);
 void ProfilerEndFrame(void);
+void ProfilerResetWindow(void);
 void ProfilerQuery(ProfileScope Scope, ProfileStats *Out);
 
 // Open and close a scope. The identifier names a local holding the start time,
@@ -146,6 +147,7 @@ void ProfilerQuery(ProfileScope Scope, ProfileStats *Out);
 #define PROFILE_BEGIN(Var) ((void)0)
 #define PROFILE_END(Var, Scope) ((void)0)
 #define PROFILE_FRAME_END() ((void)0)
+#define ProfilerResetWindow() ((void)0)
 
 #endif
 
