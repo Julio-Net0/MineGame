@@ -1,0 +1,49 @@
+# Creative inventory check: open the screen, look at each tab, hover an entry
+# for its tooltip, move a block into the hotbar through the player intent, and
+# place it in the world.
+#
+#   build/MineGame.exe --script scripts/inventory.mgs --script-timeout 180
+
+/tp 0 90 0
+wait loaded
+wait ticks 60
+wait loaded
+
+inventory open
+wait frames 2
+state inv_open
+screenshot inv_building
+
+inventory tab colored
+wait frames 2
+screenshot inv_colored
+
+inventory tab natural
+inventory hover 1
+wait frames 2
+screenshot inv_tooltip
+inventory hover off
+
+# Glass is the only colored block: pick it and drop it into the last slot. The
+# edit reaches the player only after a tick consumes the request.
+inventory tab colored
+inventory pick 1
+inventory put 9
+wait ticks 2
+state after_put
+
+inventory close
+wait frames 2
+state inv_closed
+
+# Place the new block on the ground just ahead of the player.
+hotbar 9
+look 0 -45
+wait ticks 1
+press place
+wait ticks 2
+wait loaded
+state after_place
+screenshot after_place
+
+quit

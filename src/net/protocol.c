@@ -25,8 +25,9 @@ enum {
   INPUT_FLAG_DESCEND = 1 << 2,
   INPUT_FLAG_BREAK = 1 << 3,
   INPUT_FLAG_PLACE = 1 << 4,
+  INPUT_FLAG_HOTBAR_SET = 1 << 5,
   INPUT_FLAG_MASK = INPUT_FLAG_JUMP | INPUT_FLAG_ASCEND | INPUT_FLAG_DESCEND |
-                    INPUT_FLAG_BREAK | INPUT_FLAG_PLACE,
+                    INPUT_FLAG_BREAK | INPUT_FLAG_PLACE | INPUT_FLAG_HOTBAR_SET,
 };
 
 enum {
@@ -238,18 +239,23 @@ static bool HasExactPacket(const uint8_t *Buf, int Size, PacketType Type,
 
 int NetEncodeClientInput(const PktClientInput *Pkt, uint8_t *OutBuf,
                          int Capacity) {
-  if (Pkt == (const PktClientInput *)0 || OutBuf == (uint8_t *)0 ||
-      Capacity < NET_CLIENT_INPUT_BYTES) {
+  if (Pkt == (const PktClientInput *)0 || OutBuf == (uint8_t *)0) {
+    return 0;
+  }
+  const PlayerInput *Input = &Pkt->Input;
+  int PacketSize = NET_CLIENT_INPUT_BYTES +
+                   (Input->HotbarSetRequested ? NET_HOTBAR_TAIL_BYTES : 0);
+  if (Capacity < PacketSize) {
     return 0;
   }
 
-  const PlayerInput *Input = &Pkt->Input;
   unsigned Flags = 0U;
   Flags |= Input->Jump ? (unsigned)INPUT_FLAG_JUMP : 0U;
   Flags |= Input->AscendHeld ? (unsigned)INPUT_FLAG_ASCEND : 0U;
   Flags |= Input->DescendHeld ? (unsigned)INPUT_FLAG_DESCEND : 0U;
   Flags |= Input->Break ? (unsigned)INPUT_FLAG_BREAK : 0U;
   Flags |= Input->Place ? (unsigned)INPUT_FLAG_PLACE : 0U;
+  Flags |= Input->HotbarSetRequested ? (unsigned)INPUT_FLAG_HOTBAR_SET : 0U;
 
   int HotbarSelect =
       IsValidHotbarSelect(Input->HotbarSelect) ? Input->HotbarSelect : -1;
@@ -263,13 +269,23 @@ int NetEncodeClientInput(const PktClientInput *Pkt, uint8_t *OutBuf,
   WriteI8(&Writer, (int8_t)HotbarSelect);
   WriteI8(&Writer, ClampToInt8(Input->HotbarScroll));
   WriteVec3(&Writer, Pkt->Forward);
+  if (Input->HotbarSetRequested) {
+    for (int Slot = 0; Slot < HOTBAR_SIZE; Slot++) {
+      WriteU16Le(&Writer, Input->HotbarSet[Slot]);
+    }
+  }
   return Writer.Ok ? Writer.Pos : 0;
 }
 
 bool NetDecodeClientInput(PktClientInput *OutPkt, const uint8_t *Buf,
                           int Size) {
-  if (OutPkt == (PktClientInput *)0 ||
-      !HasExactPacket(Buf, Size, PKT_CLIENT_INPUT, NET_CLIENT_INPUT_BYTES)) {
+  // Two layouts share the tag; the hotbar flag decides which length is exact,
+  // so it is checked once the flags byte has been read.
+  bool BaseLayout =
+      HasExactPacket(Buf, Size, PKT_CLIENT_INPUT, NET_CLIENT_INPUT_BYTES);
+  bool TailLayout = HasExactPacket(Buf, Size, PKT_CLIENT_INPUT,
+                                   NET_CLIENT_INPUT_BYTES + NET_HOTBAR_TAIL_BYTES);
+  if (OutPkt == (PktClientInput *)0 || (!BaseLayout && !TailLayout)) {
     return false;
   }
 
@@ -282,10 +298,18 @@ bool NetDecodeClientInput(PktClientInput *OutPkt, const uint8_t *Buf,
   int8_t HotbarSelect = ReadI8(&Reader);
   int8_t HotbarScroll = ReadI8(&Reader);
   Vec3 Forward = ReadVec3(&Reader);
+  bool HotbarSetRequested = (Flags & (unsigned)INPUT_FLAG_HOTBAR_SET) != 0U;
+  BlockID HotbarSet[HOTBAR_SIZE] = {0};
+  if (HotbarSetRequested && TailLayout) {
+    for (int Slot = 0; Slot < HOTBAR_SIZE; Slot++) {
+      HotbarSet[Slot] = ReadU16Le(&Reader);
+    }
+  }
 
   // -128 has no positive counterpart, so a conforming encoder never emits it.
   if (!Reader.Ok || MoveX == INT8_MIN_VALUE || MoveForward == INT8_MIN_VALUE ||
       (Flags & ~(unsigned)INPUT_FLAG_MASK) != 0U ||
+      HotbarSetRequested != TailLayout ||
       !IsValidHotbarSelect(HotbarSelect) || !IsVec3Finite(Forward)) {
     return false;
   }
@@ -303,9 +327,13 @@ bool NetDecodeClientInput(PktClientInput *OutPkt, const uint8_t *Buf,
               .HotbarScroll = HotbarScroll,
               .Break = (Flags & (unsigned)INPUT_FLAG_BREAK) != 0U,
               .Place = (Flags & (unsigned)INPUT_FLAG_PLACE) != 0U,
+              .HotbarSetRequested = HotbarSetRequested,
           },
       .Forward = Forward,
   };
+  for (int Slot = 0; Slot < HOTBAR_SIZE; Slot++) {
+    OutPkt->Input.HotbarSet[Slot] = HotbarSet[Slot];
+  }
   return true;
 }
 

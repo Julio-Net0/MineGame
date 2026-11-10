@@ -11,6 +11,7 @@
 #include "render/renderer.h"
 #include "third_party/cJSON.h"
 #include "ui/commands.h"
+#include "ui/creative_inventory.h"
 #include "ui/debug.h"
 #include "world/block_system.h"
 
@@ -72,8 +73,20 @@ typedef enum {
   SCRIPT_OP_HOTBAR,
   SCRIPT_OP_SCREENSHOT,
   SCRIPT_OP_STATE,
+  SCRIPT_OP_INVENTORY,
   SCRIPT_OP_QUIT
 } ScriptOpKind;
+
+// What an inventory statement does; its argument travels in Count.
+typedef enum {
+  SCRIPT_INV_OPEN,
+  SCRIPT_INV_CLOSE,
+  SCRIPT_INV_TAB,
+  SCRIPT_INV_SCROLL,
+  SCRIPT_INV_HOVER,
+  SCRIPT_INV_PICK,
+  SCRIPT_INV_PUT
+} ScriptInventoryAction;
 
 // Movement axes a hold statement can drive. They are pairs on the same axis of
 // the abstract intent, so forward and back held at once cancel out exactly as
@@ -310,6 +323,18 @@ static bool ParsePositiveInt(const char *Str, int *OutValue) {
   return true;
 }
 
+static bool ParseSignedInt(const char *Str, int *OutValue) {
+  errno = 0;
+  char *End = (char *)0;
+  long Value = strtol(Str, &End, SCRIPT_DECIMAL_BASE);
+  if (errno == ERANGE || End == Str || *End != '\0' || Value < INT32_MIN ||
+      Value > INT32_MAX) {
+    return false;
+  }
+  *OutValue = (int)Value;
+  return true;
+}
+
 static bool ParseFinite(const char *Str, float *OutValue) {
   errno = 0;
   char *End = (char *)0;
@@ -372,6 +397,58 @@ static bool IsSafeOutputName(const char *Name) {
     }
   }
   return true;
+}
+
+// "inventory <action> [argument]". Arguments are validated here; whether the
+// action can apply (the screen open, the entry present) is only known when the
+// statement runs.
+static bool ParseInventoryStatement(char **Tokens, int TokenCount,
+                                    int LineNumber, const char *LineText) {
+  static const char *const USAGE =
+      "expected \"inventory <open|close|tab <building|colored|natural>|"
+      "scroll <rows>|hover <n|off>|pick <n>|put <1-9>>\"";
+  ScriptStatement Step = {.Kind = SCRIPT_OP_INVENTORY, .Line = LineNumber};
+  bool Valid = false;
+  const char *Action = (TokenCount >= 2) ? Tokens[1] : "";
+  const char *Argument = (TokenCount == 3) ? Tokens[2] : "";
+
+  if (TokenCount == 2 && CompareString(Action, "open") == 0) {
+    Step.Index = SCRIPT_INV_OPEN;
+    Valid = true;
+  } else if (TokenCount == 2 && CompareString(Action, "close") == 0) {
+    Step.Index = SCRIPT_INV_CLOSE;
+    Valid = true;
+  } else if (TokenCount == 3 && CompareString(Action, "tab") == 0) {
+    Step.Index = SCRIPT_INV_TAB;
+    for (int Tab = 0; Tab < INVENTORY_TAB_COUNT; Tab++) {
+      if (CompareString(Argument,
+                        CreativeInventoryTabName((InventoryTab)Tab)) == 0) {
+        Step.Count = Tab;
+        Valid = true;
+      }
+    }
+  } else if (TokenCount == 3 && CompareString(Action, "scroll") == 0) {
+    Step.Index = SCRIPT_INV_SCROLL;
+    Valid = ParseSignedInt(Argument, &Step.Count);
+  } else if (TokenCount == 3 && CompareString(Action, "hover") == 0) {
+    Step.Index = SCRIPT_INV_HOVER;
+    Step.Count = 0;
+    Valid = CompareString(Argument, "off") == 0 ||
+            ParsePositiveInt(Argument, &Step.Count);
+  } else if (TokenCount == 3 && CompareString(Action, "pick") == 0) {
+    Step.Index = SCRIPT_INV_PICK;
+    Valid = ParsePositiveInt(Argument, &Step.Count);
+  } else if (TokenCount == 3 && CompareString(Action, "put") == 0) {
+    Step.Index = SCRIPT_INV_PUT;
+    Valid = ParsePositiveInt(Argument, &Step.Count) &&
+            Step.Count <= HOTBAR_SIZE;
+  }
+
+  if (!Valid) {
+    ParseError(LineNumber, USAGE);
+    return false;
+  }
+  return AppendStatement(Step, "", LineText);
 }
 
 static bool ParseStatement(char *Statement, int LineNumber) {
@@ -494,6 +571,10 @@ static bool ParseStatement(char *Statement, int LineNumber) {
                                              .Line = LineNumber,
                                              .Index = Slot - 1},
                            "", LineText);
+  }
+
+  if (CompareString(Tokens[0], "inventory") == 0) {
+    return ParseInventoryStatement(Tokens, TokenCount, LineNumber, LineText);
   }
 
   bool IsScreenshot = CompareString(Tokens[0], "screenshot") == 0;
@@ -716,7 +797,30 @@ static void ScriptAddPlayerJson(cJSON *Root, const ScriptContext *Ctx) {
   cJSON_AddBoolToObject(Node, "grounded", PlayerVal->IsGrounded);
   cJSON_AddBoolToObject(Node, "noclip", PlayerVal->Noclip);
   cJSON_AddNumberToObject(Node, "hotbarSlot", PlayerVal->SelectedHotbarSlot);
+  cJSON *Hotbar = cJSON_CreateArray();
+  if (Hotbar != (cJSON *)0) {
+    for (int Slot = 0; Slot < HOTBAR_SIZE; Slot++) {
+      cJSON_AddItemToArray(Hotbar,
+                           cJSON_CreateNumber((double)PlayerVal->Hotbar[Slot]));
+    }
+    cJSON_AddItemToObject(Node, "hotbar", Hotbar);
+  }
   cJSON_AddItemToObject(Root, "player", Node);
+}
+
+static void ScriptAddInventoryJson(cJSON *Root) {
+  cJSON *Node = cJSON_CreateObject();
+  if (Node == (cJSON *)0) {
+    return;
+  }
+  CreativeInventoryState Inventory = CreativeInventoryGetState();
+  cJSON_AddBoolToObject(Node, "open", Inventory.Open);
+  cJSON_AddStringToObject(Node, "tab",
+                          CreativeInventoryTabName(Inventory.Tab));
+  cJSON_AddNumberToObject(Node, "scrollRow", Inventory.ScrollRow);
+  cJSON_AddNumberToObject(Node, "maxScrollRow", Inventory.MaxScrollRow);
+  cJSON_AddNumberToObject(Node, "carried", (double)Inventory.Carried);
+  cJSON_AddItemToObject(Root, "inventory", Node);
 }
 
 static void ScriptAddCameraJson(cJSON *Root, const ScriptContext *Ctx) {
@@ -831,6 +935,7 @@ static bool ScriptWriteState(const ScriptContext *Ctx, const char *Name,
   ScriptAddCameraJson(Root, Ctx);
   ScriptAddTargetBlockJson(Root, Ctx);
   ScriptAddChunksJson(Root, Ctx);
+  ScriptAddInventoryJson(Root);
 #ifdef MINEGAME_PROFILE
   ScriptAddProfilerJson(Root);
 #endif
@@ -919,6 +1024,57 @@ static bool ScriptIsWaiting(const ScriptContext *Ctx) {
 
   State->Wait = SCRIPT_WAIT_NONE;
   return false;
+}
+
+// Runs one inventory statement through the same handlers the mouse uses. A
+// statement that cannot apply fails the run, so a script never silently
+// screenshots a state it did not reach.
+static bool ScriptRunInventory(const ScriptStatement *Step,
+                               const Player *PlayerVal) {
+  if (Step->Index == SCRIPT_INV_OPEN) {
+    CreativeInventoryOpen(PlayerVal);
+    // A scripted run never captures the cursor, open screen or not.
+    PlatformSetCursorDisabled(false);
+    return true;
+  }
+  if (!CreativeInventoryIsOpen()) {
+    ScriptFail(Step->Line, "the inventory is not open");
+    return false;
+  }
+
+  switch ((ScriptInventoryAction)Step->Index) {
+  case SCRIPT_INV_CLOSE:
+    CreativeInventoryClose();
+    PlatformSetCursorDisabled(false);
+    return true;
+  case SCRIPT_INV_TAB:
+    CreativeInventorySelectTab((InventoryTab)Step->Count);
+    return true;
+  case SCRIPT_INV_SCROLL:
+    CreativeInventoryScrollRows(Step->Count);
+    return true;
+  case SCRIPT_INV_HOVER:
+  case SCRIPT_INV_PICK:
+    // Entries are counted from 1 in scripts, as they are read on screen.
+    if (Step->Count > CreativeInventoryVisibleEntryCount()) {
+      ScriptFail(Step->Line, "no visible catalog entry with that number");
+      return false;
+    }
+    if (Step->Index == SCRIPT_INV_HOVER) {
+      CreativeInventoryHoverEntry(Step->Count - 1);
+      return true;
+    }
+    return CreativeInventoryPickEntry(Step->Count - 1);
+  case SCRIPT_INV_PUT:
+    if (!CreativeInventoryPutCarried(Step->Count - 1)) {
+      ScriptFail(Step->Line, "no block is carried");
+      return false;
+    }
+    return true;
+  case SCRIPT_INV_OPEN:
+    return true;
+  }
+  return true;
 }
 
 void ScriptStep(ChatState *Chat, GameCamera *Camera, Player *PlayerVal,
@@ -1010,6 +1166,11 @@ void ScriptStep(ChatState *Chat, GameCamera *Camera, Player *PlayerVal,
       break;
     case SCRIPT_OP_HOTBAR:
       State->HotbarSelect = Step->Index;
+      break;
+    case SCRIPT_OP_INVENTORY:
+      if (!ScriptRunInventory(Step, PlayerVal)) {
+        return;
+      }
       break;
     case SCRIPT_OP_STATE:
       if (!ScriptWriteState(&Ctx, Step->Name, Step->Line)) {

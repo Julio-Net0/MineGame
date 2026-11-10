@@ -1,6 +1,7 @@
 {
   "id": 6,
   "name": "Glass",
+  "category": "colored",
   "texTop": "glass",
   "texBottom": "glass",
   "texSide": "glass",

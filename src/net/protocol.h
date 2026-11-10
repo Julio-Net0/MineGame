@@ -34,6 +34,10 @@ enum {
   // HotbarScroll + Forward
   NET_CLIENT_INPUT_BYTES = 1 + 8 + 1 + 1 + 1 + 1 + 1 + (3 * 4),
 
+  // Optional PKT_CLIENT_INPUT tail present only when the hotbar flag is set:
+  // the requested hotbar contents as uint16 block ids.
+  NET_HOTBAR_TAIL_BYTES = HOTBAR_SIZE * 2,
+
   // tag + ServerTick + LastProcessedClientTick + Position + Velocity + flags +
   // SelectedHotbarSlot
   NET_SERVER_PLAYER_STATE_BYTES = 1 + 8 + 8 + (3 * 4) + (3 * 4) + 1 + 1,

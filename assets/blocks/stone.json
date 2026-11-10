@@ -1,6 +1,7 @@
 {
   "id": 3,
   "name": "Stone",
+  "category": "building",
   "texTop": "stone",
   "texBottom": "stone",
   "texSide": "stone",

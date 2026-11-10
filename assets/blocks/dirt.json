@@ -1,6 +1,7 @@
 {
   "id": 2,
   "name": "Dirt",
+  "category": "natural",
   "texTop": "dirt",
   "texBottom": "dirt",
   "texSide": "dirt",

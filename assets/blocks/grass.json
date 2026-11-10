@@ -1,6 +1,7 @@
 {
   "id": 1,
   "name": "Grass",
+  "category": "natural",
   "texTop": "grass_block_top",
   "texBottom": "dirt",
   "texSide": "grass_block_side",

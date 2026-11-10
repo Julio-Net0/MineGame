@@ -1,6 +1,7 @@
 {
   "id": 7,
   "name": "Leaves",
+  "category": "natural",
   "texTop": "oak_leaves",
   "texBottom": "oak_leaves",
   "texSide": "oak_leaves",

@@ -45,6 +45,13 @@ SystemInput PollSystemInput(void) {
   System.DebugToggle = IsKeyPressed(KEY_F3);
   System.ChatOpen = IsKeyPressed(KEY_T);
   System.PauseToggle = IsKeyPressed(KEY_ESCAPE);
+  System.InventoryToggle = IsKeyPressed(KEY_E);
+  System.HotbarKey = -1;
+  for (int IdxI = 0; IdxI < HOTBAR_SIZE; IdxI++) {
+    if (IsKeyPressed(KEY_ONE + IdxI)) {
+      System.HotbarKey = IdxI;
+    }
+  }
   return System;
 }
 

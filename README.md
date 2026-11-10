@@ -182,8 +182,14 @@ The entire script is parsed before the window, OpenGL context or worker threads 
 | `hold <forward\|back\|left\|right\|ascend\|descend> <ticks>` | Holds a movement axis for `N` ticks through the standard `PlayerInput` path (non-blocking; holds can overlap). |
 | `press <jump\|break\|place>` | Latches an action edge for the next simulation tick. |
 | `hotbar <1-9>` | Selects hotbar slot `1` .. `9`. |
+| `inventory open` / `inventory close` | Opens or closes the creative inventory. |
+| `inventory tab <building\|colored\|natural>` | Selects an inventory tab (scroll resets to the top). |
+| `inventory scroll <rows>` | Scrolls the catalog by a signed number of rows, clamped to the tab. |
+| `inventory hover <n\|off>` | Places a synthetic pointer over the `n`-th visible catalog entry (1-based), showing its highlight and tooltip. |
+| `inventory pick <n>` | Picks the `n`-th visible catalog entry onto the cursor. |
+| `inventory put <1-9>` | Puts the carried block into that hotbar slot; the edit reaches the player through `PlayerInput` on the next tick. |
 | `screenshot <name>` | Captures the finished frame (UI included) to `<out>/<name>.png`. |
-| `state <name>` | Writes player, camera, targeted block, chunk-load counts, settled flag and profiler averages to `<out>/<name>.json`. |
+| `state <name>` | Writes player (including hotbar contents), camera, targeted block, chunk-load counts, inventory state, settled flag and profiler averages to `<out>/<name>.json`. |
 | `quit` | Ends the run with exit code `0` (reaching end of file is equivalent). |
 
 Output `<name>` arguments are restricted to `[A-Za-z0-9_-]`. Every executed statement, every chat command response line, and the final run status are recorded in `<out>/run.log`.
@@ -191,7 +197,7 @@ Output `<name>` arguments are restricted to `[A-Za-z0-9_-]`. Every executed stat
 **Exit codes:**
 * `0` — Script reached `quit` or end of file.
 * `1` — Engine startup failure.
-* `2` — Script could not be read or parsed, or a statement failed at runtime (unknown `/` command, capture or file write failure).
+* `2` — Script could not be read or parsed, or a statement failed at runtime (unknown `/` command, inventory statement that cannot apply, capture or file write failure).
 * `3` — `--script-timeout` elapsed before the script finished (the blocking line is logged in `run.log`).
 
 See [`scripts/spawn_overview.mgs`](scripts/spawn_overview.mgs) for a ready-to-run example.

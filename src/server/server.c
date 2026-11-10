@@ -24,15 +24,6 @@ enum {
 
 #define DEFAULT_SETTLE_TIMEOUT_SECONDS 60.0
 
-static PlayerInput ClearServerInputEdges(PlayerInput Pending) {
-  Pending.Jump = false;
-  Pending.Break = false;
-  Pending.Place = false;
-  Pending.HotbarSelect = -1;
-  Pending.HotbarScroll = 0;
-  return Pending;
-}
-
 static int BlockToChunkCoord(int BlockCoord) {
   return (BlockCoord >= 0) ? (BlockCoord / CHUNK_SIZE)
                            : -((CHUNK_SIZE - 1 - BlockCoord) / CHUNK_SIZE);
@@ -94,19 +85,7 @@ void ServerBindLoopback(ServerState *Server, NetLoopback *Channel) {
 // Movement axes and held buttons take the latest packet; edge actions latch
 // until the tick consumes them, so a press is never lost between ticks.
 static void FoldClientInput(ServerState *Server, const PktClientInput *Pkt) {
-  PlayerInput *Pending = &Server->PendingInput;
-  const PlayerInput *Incoming = &Pkt->Input;
-  Pending->MoveX = Incoming->MoveX;
-  Pending->MoveForward = Incoming->MoveForward;
-  Pending->AscendHeld = Incoming->AscendHeld;
-  Pending->DescendHeld = Incoming->DescendHeld;
-  Pending->Jump = Pending->Jump || Incoming->Jump;
-  Pending->Break = Pending->Break || Incoming->Break;
-  Pending->Place = Pending->Place || Incoming->Place;
-  if (Incoming->HotbarSelect >= 0) {
-    Pending->HotbarSelect = Incoming->HotbarSelect;
-  }
-  Pending->HotbarScroll += Incoming->HotbarScroll;
+  Server->PendingInput = FoldPlayerInput(Server->PendingInput, Pkt->Input);
 
   if (Vec3Length(Pkt->Forward) > 0.0F) {
     Server->View.Forward = Vec3Normalize(Pkt->Forward);
@@ -333,7 +312,7 @@ void ServerStepTick(ServerState *Server) {
                           Server->PendingInput);
   PROFILE_END(PlayerStart, PROFILE_PLAYER);
 
-  Server->PendingInput = ClearServerInputEdges(Server->PendingInput);
+  Server->PendingInput = ClearPlayerInputEdges(Server->PendingInput);
   ServerUpdateWorldChunks(Server->WorldVal);
   Server->TickCount++;
 

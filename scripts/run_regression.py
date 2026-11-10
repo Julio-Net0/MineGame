@@ -19,7 +19,7 @@ EXPECTED_HEIGHT = 720
 EXPECTED_SEED = "16412814131703521744"
 # Number of "PROTOCOL_TEST: ok" lines MineGameServer --test-protocol logs; a
 # mismatch means a check was silently skipped or added without updating this.
-EXPECTED_PROTOCOL_CHECKS = 33
+EXPECTED_PROTOCOL_CHECKS = 36
 EXPECTED_ACTIVE_CHUNKS = 1331
 
 PROFILER_SCOPES = (
@@ -290,11 +290,56 @@ def verify_interact(out_dir: Path, _run_log: str) -> None:
     )
 
 
+GLASS_BLOCK_ID = 6
+WATER_BLOCK_ID = 5
+
+
+def verify_inventory(out_dir: Path, _run_log: str) -> None:
+    building_png = assert_png(out_dir / "inv_building.png")
+    colored_png = assert_png(out_dir / "inv_colored.png")
+    tooltip_png = assert_png(out_dir / "inv_tooltip.png")
+    assert_png(out_dir / "after_place.png")
+    require(building_png != colored_png, "inventory: building and colored tabs render identically")
+    require(colored_png != tooltip_png, "inventory: natural tab with tooltip renders like the colored tab")
+
+    inv_open = load_json(out_dir / "inv_open.json")
+    after_put = load_json(out_dir / "after_put.json")
+    inv_closed = load_json(out_dir / "inv_closed.json")
+    after_place = load_json(out_dir / "after_place.json")
+
+    inventory = inv_open["inventory"]
+    require(inventory["open"] is True, "inv_open.json: expected inventory.open == true")
+    require(inventory["tab"] == "building", f"inv_open.json: expected tab building, got {inventory['tab']}")
+    require(
+        inventory["maxScrollRow"] == 0,
+        f"inv_open.json: expected maxScrollRow 0 with the current blocks, got {inventory['maxScrollRow']}",
+    )
+
+    # The pick/put edit reaches the player through the intent on the next tick.
+    hotbar = after_put["player"]["hotbar"]
+    require(len(hotbar) == 9, f"after_put.json: expected 9 hotbar slots, got {len(hotbar)}")
+    require(hotbar[8] == GLASS_BLOCK_ID, f"after_put.json: expected glass in slot 9, got {hotbar[8]}")
+    # Water is hidden from the tabs but already in the default hotbar; an edit
+    # to another slot must not drop it.
+    require(hotbar[4] == WATER_BLOCK_ID, f"after_put.json: expected water kept in slot 5, got {hotbar[4]}")
+    require(after_put["inventory"]["carried"] == 0, "after_put.json: expected nothing carried after put")
+
+    require(inv_closed["inventory"]["open"] is False, "inv_closed.json: expected inventory.open == false")
+
+    target = after_place["targetBlock"]
+    require(target["hit"] is True, "after_place.json: expected targetBlock.hit == true")
+    require(
+        target["blockId"] == GLASS_BLOCK_ID,
+        f"after_place.json: expected the placed glass to be targeted, got {target['blockId']}",
+    )
+
+
 SCENARIOS: tuple[tuple[str, str, Callable[[Path, str], None]], ...] = (
     ("smoke", "scripts/smoke.mgs", verify_smoke),
     ("spawn_overview", "scripts/spawn_overview.mgs", verify_spawn_overview),
     ("loaded", "scripts/loaded.mgs", verify_loaded),
     ("interact", "scripts/interact.mgs", verify_interact),
+    ("inventory", "scripts/inventory.mgs", verify_inventory),
 )
 
 

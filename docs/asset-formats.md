@@ -143,6 +143,19 @@ A block's `"id"` is its registry slot, `0`–`4095`, and is stored as a 16-bit v
 
 Up to **4096 distinct texture names** can be registered across all blocks (12 bits in the packed vertex). The renderer also checks the driver's `GL_MAX_ARRAY_TEXTURE_LAYERS` at startup and logs a warning when more textures are registered than the GPU can hold.
 
+## Creative inventory category
+
+The optional `"category"` property picks the creative inventory tab a block is listed under:
+
+| Value | Tab |
+|---|---|
+| `"building"`, absent, or unrecognized | Building Blocks |
+| `"colored"` | Colored Blocks |
+| `"natural"` | Natural Blocks |
+| `"none"` | no tab (air, water) |
+
+Within a tab, blocks are listed in ascending id order, so grouping related blocks in id ranges also groups them on screen. `"none"` only hides a block from the tabs: a hidden block that is already in the hotbar (the default water slot) stays there when the hotbar is edited.
+
 ## Block tint
 
 Blocks opt into biome colouring with an optional `"tint"` property in `assets/blocks/*.json`:

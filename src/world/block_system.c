@@ -98,6 +98,7 @@ void InitBlockRegistry(void) {
     BlockRegistry[Idx].SideOverlaySlot = NO_OVERLAY_SLOT;
     BlockRegistry[Idx].Tint = TINT_NONE;
     BlockRegistry[Idx].RenderType = BLOCK_RENDER_CUBE;
+    BlockRegistry[Idx].Category = BLOCK_CATEGORY_BUILDING;
     BlockRegistry[Idx].IsTransparent = true;
     BlockRegistry[Idx].IsSolid = true;
   }
@@ -171,6 +172,25 @@ static TintSource ParseTintSource(const cJSON *Json) {
     return TINT_WATER;
   }
   return TINT_NONE;
+}
+
+// Optional "category" property. Like the tint, an absent or unrecognized value
+// falls back to a meaningful default rather than failing the block.
+static BlockCategory ParseCategory(const cJSON *Json) {
+  cJSON *CategoryItem = cJSON_GetObjectItemCaseSensitive(Json, "category");
+  if (cJSON_IsString(CategoryItem) == 0) {
+    return BLOCK_CATEGORY_BUILDING;
+  }
+  if (CompareString(CategoryItem->valuestring, "colored") == 0) {
+    return BLOCK_CATEGORY_COLORED;
+  }
+  if (CompareString(CategoryItem->valuestring, "natural") == 0) {
+    return BLOCK_CATEGORY_NATURAL;
+  }
+  if (CompareString(CategoryItem->valuestring, "none") == 0) {
+    return BLOCK_CATEGORY_NONE;
+  }
+  return BLOCK_CATEGORY_BUILDING;
 }
 
 BlockType *GetBlockDef(int BlockId) {
@@ -289,6 +309,7 @@ void ParseBlockFile(const char *FilePath) {
   }
 
   Block->Tint = ParseTintSource(Json);
+  Block->Category = ParseCategory(Json);
 
   cJSON *IsBlockTransparent =
       cJSON_GetObjectItemCaseSensitive(Json, "isTransparent");

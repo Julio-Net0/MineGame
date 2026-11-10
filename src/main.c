@@ -12,6 +12,7 @@
 #include "ui/ui.h"
 #include "ui/font.h"
 #include "ui/pause_menu.h"
+#include "ui/creative_inventory.h"
 #include "input/input.h"
 #include "platform/os_limits.h"
 #include "platform/platform.h"
@@ -118,6 +119,7 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
   // Every module registers its GUI sprites before the atlas is packed.
   UiInit();
   InitHud();
+  CreativeInventoryInit();
   FontInit();
   UiBuildAtlas();
 
@@ -195,12 +197,24 @@ static void CleanupGame(World *WorldVal) {
   }
 }
 
-static void UpdateSystemInputs(bool *ShowDebug, const ChatState *Chat) {
+static SystemInput UpdateSystemInputs(bool *ShowDebug, const ChatState *Chat,
+                                      const Player *PlayerVal) {
   SystemInput System = PollSystemInput();
 
-  // With chat open, ESC belongs to the chat, which closes on it this frame.
+  // With chat open, ESC belongs to the chat, which closes on it this frame. An
+  // open inventory takes ESC next, so it never stacks the pause menu over it.
   if (System.PauseToggle && !Chat->IsActive) {
-    PauseMenuToggle();
+    if (CreativeInventoryIsOpen()) {
+      CreativeInventoryClose();
+    } else {
+      PauseMenuToggle();
+    }
+  } else if (System.InventoryToggle && !Chat->IsActive && !PauseMenuIsOpen()) {
+    if (CreativeInventoryIsOpen()) {
+      CreativeInventoryClose();
+    } else {
+      CreativeInventoryOpen(PlayerVal);
+    }
   }
 
   if (System.FullscreenToggle) {
@@ -210,6 +224,7 @@ static void UpdateSystemInputs(bool *ShowDebug, const ChatState *Chat) {
   if (System.DebugToggle) {
     *ShowDebug = ((!*ShowDebug) != 0);
   }
+  return System;
 }
 
 static void UpdateCameras(GameCamera *PlayerCamera, GameCamera *FreeCamera,
@@ -295,7 +310,7 @@ static void UploadFinishedMeshes(int CountAllowance, double Deadline) {
 
 static void RenderGame(World *WorldVal, Player *PlayerVal, GameCamera *ActiveCamera,
                        GameCamera *PlayerCamera, ChatState *ChatVal,
-                       bool ShowDebug) {
+                       bool ShowDebug, const InventoryInput *InvInput) {
   RenderCamera Cam = {
       .Position = ActiveCamera->Position,
       .Target = ActiveCamera->Target,
@@ -322,9 +337,15 @@ static void RenderGame(World *WorldVal, Player *PlayerVal, GameCamera *ActiveCam
   UiPointer UiPointerPixels = {Pointer.Cursor.x, Pointer.Cursor.y,
                                Pointer.LeftPressed, Pointer.LeftDown,
                                Pointer.LeftReleased};
+  // A scripted run ignores the real mouse here too, so the viewer cannot click
+  // anything on an open screen.
+  if (ScriptIsActive()) {
+    UiPointerPixels = (UiPointer){.X = -1.0F, .Y = -1.0F};
+  }
   UiBeginFrame(Ui, PlatformGetScreenWidth(), PlatformGetScreenHeight(),
                &UiPointerPixels);
   DrawHUD(Ui, PlayerVal, WorldVal, *ActiveCamera, ShowDebug);
+  DrawCreativeInventory(Ui, InvInput);
   DrawChat(Ui, ChatVal);
   DrawPauseMenu(Ui, PlayerCamera);
   UiEndFrame(Ui);
@@ -335,33 +356,6 @@ static void RenderGame(World *WorldVal, Player *PlayerVal, GameCamera *ActiveCam
   PROFILE_END(UiSubmitStart, PROFILE_UI_SUBMIT);
 
   RenderEndFrame();
-}
-
-// Fold a per-frame poll into the pending intent: held axes take the latest
-// value, edge actions latch until consumed, scroll accumulates.
-static PlayerInput AccumulateInput(PlayerInput Pending, PlayerInput Frame) {
-  Pending.MoveX = Frame.MoveX;
-  Pending.MoveForward = Frame.MoveForward;
-  Pending.AscendHeld = Frame.AscendHeld;
-  Pending.DescendHeld = Frame.DescendHeld;
-  Pending.Jump = Pending.Jump || Frame.Jump;
-  Pending.Break = Pending.Break || Frame.Break;
-  Pending.Place = Pending.Place || Frame.Place;
-  if (Frame.HotbarSelect >= 0) {
-    Pending.HotbarSelect = Frame.HotbarSelect;
-  }
-  Pending.HotbarScroll += Frame.HotbarScroll;
-  return Pending;
-}
-
-// Clear edge/scroll fields after a tick consumes the intent (keep held axes).
-static PlayerInput ClearInputEdges(PlayerInput Pending) {
-  Pending.Jump = false;
-  Pending.Break = false;
-  Pending.Place = false;
-  Pending.HotbarSelect = -1;
-  Pending.HotbarScroll = 0;
-  return Pending;
 }
 
 int main(int Argc, char **Argv) {
@@ -427,20 +421,36 @@ int main(int Argc, char **Argv) {
     // mouse movement from whoever is watching cannot change its result. The
     // window's close button still ends the process.
     bool ScriptDriven = ScriptIsActive();
+    InventoryInput InvInput = {.WheelDelta = 0, .HotbarKey = -1};
     if (!ScriptDriven) {
-      UpdateSystemInputs(&ShowDebug, &ChatVal);
+      SystemInput System = UpdateSystemInputs(&ShowDebug, &ChatVal, &PlayerVal);
+      if (CreativeInventoryIsOpen()) {
+        InvInput.WheelDelta = InputGetScrollDelta();
+        InvInput.HotbarKey = System.HotbarKey;
+      }
     }
 
     // An open menu or chat owns the keyboard and mouse, so nothing typed or
     // clicked there also moves the player or breaks a block.
-    bool HasControl = !ChatVal.IsActive && !PauseMenuIsOpen() && !ScriptDriven;
-    PendingInput = AccumulateInput(PendingInput, PollPlayerInput(HasControl));
+    bool HasControl = !ChatVal.IsActive && !PauseMenuIsOpen() &&
+                      !CreativeInventoryIsOpen() && !ScriptDriven;
+    PendingInput = FoldPlayerInput(PendingInput, PollPlayerInput(HasControl));
 
     // A script's intent is folded in the same way the polled intent is, so it
     // reaches the simulation through the one path and exercises the same
     // movement, collision and interaction code a player would.
     if (ScriptDriven) {
-      PendingInput = AccumulateInput(PendingInput, ScriptPollInput());
+      PendingInput = FoldPlayerInput(PendingInput, ScriptPollInput());
+    }
+
+    // The inventory edits a desired hotbar; the edit reaches the player only as
+    // intent, so the simulation validates it like any other request.
+    BlockID RequestedHotbar[HOTBAR_SIZE];
+    if (CreativeInventoryTakeHotbarRequest(RequestedHotbar)) {
+      PendingInput.HotbarSetRequested = true;
+      for (int Slot = 0; Slot < HOTBAR_SIZE; Slot++) {
+        PendingInput.HotbarSet[Slot] = RequestedHotbar[Slot];
+      }
     }
 
     // Mouse-look and active-camera selection run per frame for responsiveness.
@@ -469,7 +479,7 @@ int main(int Argc, char **Argv) {
       HandlePlayerInteraction(&PlayerVal, WorldVal, InteractView, PendingInput);
       PROFILE_END(PlayerStart, PROFILE_PLAYER);
 
-      PendingInput = ClearInputEdges(PendingInput);
+      PendingInput = ClearPlayerInputEdges(PendingInput);
 
       // Neighbour-dirty bookkeeping stays tick-paced: it reacts to terrain the
       // workers finished, which is simulation state, and running it per frame
@@ -507,7 +517,7 @@ int main(int Argc, char **Argv) {
     }
 
     RenderGame(WorldVal, &PlayerVal, ActiveCamera, &PlayerCamera, &ChatVal,
-               ShowDebug);
+               ShowDebug, &InvInput);
     // The pause menu's FOV slider edits the player camera; the free camera
     // follows so switching to it keeps the chosen field of view.
     FreeCamera.FovY = PlayerCamera.FovY;

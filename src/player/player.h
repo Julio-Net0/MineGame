@@ -70,6 +70,11 @@ typedef struct {
   int HotbarScroll;  // hotbar scroll delta this tick
   bool Break;        // edge: break targeted block
   bool Place;        // edge: place block
+  // Edge: replace the whole hotbar with HotbarSet. The full contents travel
+  // rather than a single slot edit, so several edits made between two ticks
+  // fold into the latest request and none is lost.
+  bool HotbarSetRequested;
+  BlockID HotbarSet[HOTBAR_SIZE];
 } PlayerInput;
 
 // Abstract view the simulation uses for movement basis and the interaction
@@ -85,6 +90,15 @@ void HandlePlayerInteraction(Player *PlayerVal, World *WorldVal, PlayerView View
 bool IsPointSolid(World *WorldVal, Vec3 Pos);
 void GetPlayerPoints(Player *PlayerVal, PointConfig Config, Vec3 OutPoints[COLLISION_POINTS]);
 void SetHotbarSlot(Player *PlayerVal, int Slot, BlockID BlockId);
+
+// Folds one more intent sample into the intent pending for the next tick: held
+// axes take the latest value, edges latch until consumed, scroll accumulates
+// and a hotbar request replaces any earlier one.
+PlayerInput FoldPlayerInput(PlayerInput Pending, PlayerInput Sample);
+
+// Clears the edges and scroll after a tick consumed the intent, keeping held
+// axes.
+PlayerInput ClearPlayerInputEdges(PlayerInput Pending);
 void SetPlayerPosition(Player *PlayerVal, Vec3 Pos);
 
 #endif

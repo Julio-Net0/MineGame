@@ -238,6 +238,35 @@ static bool TestClientInput(void) {
                 "client_input_refuses_small_capacity");
 }
 
+static bool TestClientInputHotbarRequest(void) {
+  PktClientInput Sent = MakeSampleInput();
+  Sent.Input.HotbarSetRequested = true;
+  for (int Slot = 0; Slot < HOTBAR_SIZE; Slot++) {
+    Sent.Input.HotbarSet[Slot] = (BlockID)(WIDE_BLOCK_ID + Slot);
+  }
+  int Size = NetEncodeClientInput(&Sent, GPacketBuf, NET_MAX_PACKET_BYTES);
+  PktClientInput Got = {0};
+  bool Ok = Size == NET_CLIENT_INPUT_BYTES + NET_HOTBAR_TAIL_BYTES &&
+            NetDecodeClientInput(&Got, GPacketBuf, Size) &&
+            InputsEqual(&Got, &Sent) && Got.Input.HotbarSetRequested;
+  for (int Slot = 0; Ok && Slot < HOTBAR_SIZE; Slot++) {
+    Ok = Got.Input.HotbarSet[Slot] == Sent.Input.HotbarSet[Slot];
+  }
+  if (!Expect(Ok, "client_input_hotbar_request_roundtrip")) {
+    return false;
+  }
+
+  // The tail without the flag, and the flag without the tail, are both
+  // malformed: the flag decides which of the two lengths is exact.
+  const uint8_t HOTBAR_FLAG_BIT = 0x20;
+  memcpy(GScratchBuf, GPacketBuf, (size_t)Size);
+  GScratchBuf[INPUT_FLAGS_OFFSET] &= (uint8_t)~HOTBAR_FLAG_BIT;
+  bool Rejected = !ProbeClientInput(GScratchBuf, Size);
+  memcpy(GScratchBuf, GPacketBuf, (size_t)NET_CLIENT_INPUT_BYTES);
+  Rejected = Rejected && !ProbeClientInput(GScratchBuf, NET_CLIENT_INPUT_BYTES);
+  return Expect(Rejected, "client_input_hotbar_flag_length_mismatch_rejected");
+}
+
 static PktServerPlayerState MakeSampleState(void) {
   const uint64_t SAMPLE_SERVER_TICK = 987654321ULL;
   const uint64_t SAMPLE_CLIENT_TICK = 0xFFFFFFFF00000001ULL;
@@ -640,7 +669,8 @@ static bool TestLoopback(void) {
 }
 
 bool RunProtocolCodecSelfTest(void) {
-  return TestPeek() && TestClientInput() && TestPlayerState() &&
+  return TestPeek() && TestClientInput() && TestClientInputHotbarRequest() &&
+         TestPlayerState() &&
          TestBlockDelta() && TestChunkData() && TestLoopback();
 }
 
@@ -959,6 +989,25 @@ static bool TestServerDeltaOverflow(ServerState *Server, NetLoopback *Channel,
                 "server_delta_overflow_resends_chunk");
 }
 
+// A requested hotbar reaches the server through the input packet and is
+// validated per slot: a loaded block is kept, an id no block uses becomes air.
+static bool TestServerHotbarRequest(ServerState *Server, NetLoopback *Channel,
+                                    uint64_t *NextTick) {
+  const BlockID UNKNOWN_BLOCK_ID = 4000;
+  PlayerInput Request = IdleInput();
+  Request.HotbarSetRequested = true;
+  Request.HotbarSet[0] = UNKNOWN_BLOCK_ID;
+  Request.HotbarSet[1] = (BlockID)STONE_BLOCK_ID;
+  bool Sent = SendInput(Channel, (*NextTick)++, Request, LOOK_EAST);
+  ServerStepTick(Server);
+
+  const BlockID *Hotbar = Server->PlayerVal.Hotbar;
+  bool Ok = Sent && Hotbar[0] == BLOCK_ID_AIR &&
+            Hotbar[1] == (BlockID)STONE_BLOCK_ID &&
+            !Server->PendingInput.HotbarSetRequested;
+  return Expect(Ok, "server_applies_and_validates_hotbar_request");
+}
+
 bool RunProtocolServerSelfTest(ServerState *Server) {
   NetLoopback *Channel = NetLoopbackCreate();
   Chunk *ClientChunk = (Chunk *)calloc(1, sizeof(Chunk));
@@ -983,7 +1032,8 @@ bool RunProtocolServerSelfTest(ServerState *Server) {
             TestServerChunkReplication(Server, Channel, &Inbox, EditedBlock) &&
             TestServerDeltaOverflow(
                 Server, Channel, &Inbox,
-                Server->PlayerVal.Hotbar[Server->PlayerVal.SelectedHotbarSlot]);
+                Server->PlayerVal.Hotbar[Server->PlayerVal.SelectedHotbarSlot]) &&
+            TestServerHotbarRequest(Server, Channel, &NextTick);
 
   ServerBindLoopback(Server, (NetLoopback *)0);
   NetLoopbackDestroy(Channel);

@@ -345,8 +345,64 @@ static void RequestBlockPlace(World *WorldVal, Vec3 Pos,
   SetBlockInWorld(WorldVal, Pos, BlockId);
 }
 
+PlayerInput FoldPlayerInput(PlayerInput Pending, PlayerInput Sample) {
+  Pending.MoveX = Sample.MoveX;
+  Pending.MoveForward = Sample.MoveForward;
+  Pending.AscendHeld = Sample.AscendHeld;
+  Pending.DescendHeld = Sample.DescendHeld;
+  Pending.Jump = Pending.Jump || Sample.Jump;
+  Pending.Break = Pending.Break || Sample.Break;
+  Pending.Place = Pending.Place || Sample.Place;
+  if (Sample.HotbarSelect >= 0) {
+    Pending.HotbarSelect = Sample.HotbarSelect;
+  }
+  Pending.HotbarScroll += Sample.HotbarScroll;
+  if (Sample.HotbarSetRequested) {
+    Pending.HotbarSetRequested = true;
+    for (int Slot = 0; Slot < HOTBAR_SIZE; Slot++) {
+      Pending.HotbarSet[Slot] = Sample.HotbarSet[Slot];
+    }
+  }
+  return Pending;
+}
+
+PlayerInput ClearPlayerInputEdges(PlayerInput Pending) {
+  Pending.Jump = false;
+  Pending.Break = false;
+  Pending.Place = false;
+  Pending.HotbarSelect = -1;
+  Pending.HotbarScroll = 0;
+  Pending.HotbarSetRequested = false;
+  return Pending;
+}
+
+// A requested slot keeps its id only when it names air or a loaded block;
+// anything else empties the slot, so a client cannot place a block the server
+// does not know. A hidden category only keeps a block out of the inventory
+// tabs, so a hidden block already in the hotbar (water) survives an edit.
+static BlockID ValidateHotbarRequest(BlockID Requested) {
+  if (Requested == BLOCK_ID_AIR) {
+    return BLOCK_ID_AIR;
+  }
+  if (GetBlockDef((int)Requested)->Id != (int)Requested) {
+    return BLOCK_ID_AIR;
+  }
+  return Requested;
+}
+
+static void ApplyHotbarRequest(Player *PlayerVal, const PlayerInput *Input) {
+  if (!Input->HotbarSetRequested) {
+    return;
+  }
+  for (int Slot = 0; Slot < HOTBAR_SIZE; Slot++) {
+    PlayerVal->Hotbar[Slot] = ValidateHotbarRequest(Input->HotbarSet[Slot]);
+  }
+}
+
 void HandlePlayerInteraction(Player *PlayerVal, World *WorldVal,
                              PlayerView View, PlayerInput Input) {
+  ApplyHotbarRequest(PlayerVal, &Input);
+
   Vec3 RayDir = Vec3Normalize(View.Forward);
   PlayerVal->TargetBlock = RayCastToWorld(WorldVal, View.EyePosition, RayDir,
                                           PlayerVal->ReachDistance);

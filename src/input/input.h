@@ -13,6 +13,10 @@ typedef struct {
   bool DebugToggle;
   bool ChatOpen;
   bool PauseToggle;
+  bool InventoryToggle;
+  // -1, or the 0-based hotbar slot whose number key was pressed this frame.
+  // Reported regardless of control so an open screen can use it.
+  int HotbarKey;
 } SystemInput;
 
 // Per-frame text-entry query for a text field: the printable characters typed

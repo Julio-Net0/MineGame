@@ -1,6 +1,7 @@
 {
   "id": 11,
   "name": "TallGrass",
+  "category": "natural",
   "texTop": "short_grass",
   "texBottom": "short_grass",
   "texSide": "short_grass",

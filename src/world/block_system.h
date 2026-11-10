@@ -28,6 +28,16 @@ typedef enum {
   BLOCK_RENDER_CROSS
 } BlockRenderType;
 
+// Creative inventory tab a block is listed under, from the optional "category"
+// property. BLOCK_CATEGORY_NONE keeps a block out of every tab.
+typedef enum {
+  BLOCK_CATEGORY_BUILDING = 0,
+  BLOCK_CATEGORY_COLORED,
+  BLOCK_CATEGORY_NATURAL,
+  BLOCK_CATEGORY_NONE,
+  BLOCK_CATEGORY_COUNT
+} BlockCategory;
+
 typedef struct {
   int TexTop;
   int TexSide;
@@ -54,6 +64,8 @@ typedef struct {
   // Geometry kind, from the optional "render" property. CROSS forces the block
   // non-solid and non-occluding so it never culls neighbors or casts AO.
   BlockRenderType RenderType;
+
+  BlockCategory Category;
 
   bool IsTransparent;
   bool IsSolid;
