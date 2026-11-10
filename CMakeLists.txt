@@ -130,6 +130,9 @@ target_link_libraries(${PROJECT_NAME} raylib Threads::Threads)
 target_link_libraries(MineGameServer Threads::Threads)
 if(WIN32)
   target_link_libraries(MineGameServer psapi)
+else()
+  # The client gets libm transitively through raylib; the server must link it.
+  target_link_libraries(MineGameServer m)
 endif()
 
 # Applied to the game targets only, not to raylib. The cross-TU inlining worth
@@ -158,6 +161,12 @@ endif()
 
 set_source_files_properties(src/platform/os_limits.c PROPERTIES
   COMPILE_DEFINITIONS _GNU_SOURCE)
+
+# clock_gettime, nanosleep and readlink need POSIX.1-2008 under -std=c17.
+if(NOT WIN32)
+  set_source_files_properties(src/platform/os_time.c PROPERTIES
+    COMPILE_DEFINITIONS _POSIX_C_SOURCE=200809L)
+endif()
 
 # Mirror assets into the build tree on every build. file(COPY) at configure time
 # never prunes, so a renamed or deleted source asset would linger in the build
