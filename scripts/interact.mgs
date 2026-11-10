@@ -9,8 +9,11 @@
 /tp 0 90 0
 wait loaded
 
-# Fall to the ground with gravity and collision doing the work.
+# Fall to the ground with gravity and collision doing the work. Crossing four
+# vertical chunks on the way down streams in the underground layers around
+# Y=21.5, so wait for those to settle before sampling the landed state.
 wait ticks 60
+wait loaded
 state landed
 
 # Face north (yaw 0 is +Z) and slightly down, then walk for three seconds.
@@ -28,6 +31,7 @@ wait ticks 1
 state before_break
 press break
 wait ticks 2
+wait loaded
 state after_break
 screenshot after_break
 
@@ -35,6 +39,7 @@ screenshot after_break
 hotbar 3
 press place
 wait ticks 2
+wait loaded
 state after_place
 screenshot after_place
 

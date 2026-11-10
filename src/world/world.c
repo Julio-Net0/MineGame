@@ -165,10 +165,9 @@ static void EvictUnneededChunks(World *WorldVal, bool *KeepChunk){
   }
 }
 
-static void CreateOrRecycleChunk(World *WorldVal, int ChunkX, int ChunkY, int ChunkZ){
+static bool CreateOrRecycleChunk(World *WorldVal, int ChunkX, int ChunkY, int ChunkZ){
   if(WorldVal->FreeCount == 0){
-    (void)fprintf(stderr, "WORLD: Free-list exhausted, skipping chunk (%d,%d,%d)\n", ChunkX, ChunkY, ChunkZ);
-    return;
+    return false;
   }
 
   int IdxI = WorldVal->FreeList[--WorldVal->FreeCount];
@@ -183,6 +182,7 @@ static void CreateOrRecycleChunk(World *WorldVal, int ChunkX, int ChunkY, int Ch
   if(IdxI >= WorldVal->ChunkCount){
     WorldVal->ChunkCount = IdxI + 1;
   }
+  return true;
 }
 
 void UpdateWorld(World *WorldVal, Vec3 PlayerPos, int RenderDist){
@@ -215,11 +215,14 @@ void UpdateWorld(World *WorldVal, Vec3 PlayerPos, int RenderDist){
   MarkUsefulChunks(WorldVal, PChunkX, PChunkY, PChunkZ, RenderDist, KeepChunk);
   EvictUnneededChunks(WorldVal, KeepChunk);
 
+  bool AllCreated = true;
   for(int IdxX = PChunkX - RenderDist; IdxX <= PChunkX + RenderDist; IdxX++){
     for(int IdxY = PChunkY - RenderDist; IdxY <= PChunkY + RenderDist; IdxY++){
       for(int IdxZ = PChunkZ - RenderDist; IdxZ <= PChunkZ + RenderDist; IdxZ++){
         if(GetChunkFromWorld(WorldVal, IdxX, IdxY, IdxZ) == (Chunk *)0){
-          CreateOrRecycleChunk(WorldVal, IdxX, IdxY, IdxZ);
+          if(!CreateOrRecycleChunk(WorldVal, IdxX, IdxY, IdxZ)){
+            AllCreated = false;
+          }
         }
       }
     }
@@ -229,7 +232,7 @@ void UpdateWorld(World *WorldVal, Vec3 PlayerPos, int RenderDist){
   WorldVal->LastLoadChunkY = PChunkY;
   WorldVal->LastLoadChunkZ = PChunkZ;
   WorldVal->LastLoadRenderDist = RenderDist;
-  WorldVal->HasLoadedOnce = true;
+  WorldVal->HasLoadedOnce = AllCreated;
   PROFILE_END(UpdateStart, PROFILE_WORLD_UPDATE);
 }
 
