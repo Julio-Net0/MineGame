@@ -197,15 +197,15 @@ static Color8 GetFaceTint(const ChunkSnapshot *Snap, int Wx, int Wy,
 
 static bool IsNeighbourTransparent(const ChunkSnapshot *Snap,
                                    int LocalX, int LocalY, int LocalZ,
-                                   unsigned char SelfId) {
-    unsigned char Id = SnapshotBlockAt(Snap, LocalX, LocalY, LocalZ);
+                                   BlockID SelfId) {
+    BlockID Id = SnapshotBlockAt(Snap, LocalX, LocalY, LocalZ);
     if (Id == 0) { return true; }
     if (Id == SelfId && GetBlockDef(SelfId)->IsTransparent) { return false; }
     return GetBlockDef(Id)->IsTransparent;
 }
 
 static bool IsSolidForAO(const ChunkSnapshot *Snap, int LocalX, int LocalY, int LocalZ) {
-    unsigned char Id = SnapshotBlockAt(Snap, LocalX, LocalY, LocalZ);
+    BlockID Id = SnapshotBlockAt(Snap, LocalX, LocalY, LocalZ);
     if (Id == 0) { return false; }
     return GetBlockDef(Id)->IsSolid;
 }
@@ -286,8 +286,8 @@ enum {
     VERTEX_COORD_MASK = 31U,
     VERTEX_AO_MASK = 3U,
     VERTEX_NORMAL_MASK = 7U,
-    VERTEX_BYTE_MASK = 255U,
-    VERTEX_NO_OVERLAY_PACKED = 255U,
+    VERTEX_LAYER_MASK = 4095U,
+    VERTEX_OVERLAY_SLOT_MASK = 15U,
     VERTEX_NORMAL_CROSS = 6,
 
     VERTEX_SHIFT_Y = 5U,
@@ -297,7 +297,7 @@ enum {
     VERTEX_SHIFT_AO = 25U,
     VERTEX_SHIFT_NORMAL = 27U,
 
-    VERTEX_SHIFT_OVERLAY = 8U,
+    VERTEX_SHIFT_OVERLAY = 12U,
     VERTEX_SHIFT_TINT = 16U,
 
     RGB565_MAX_5 = 31U,
@@ -318,13 +318,11 @@ static uint16_t ColorToRgb565(Color8 Color) {
     return (uint16_t)((R5 << RGB565_SHIFT_R) | (G6 << RGB565_SHIFT_G) | B5);
 }
 
-static uint32_t PackVertexWord1(int TexLayer, int OverlayLayer,
+static uint32_t PackVertexWord1(int TexLayer, int OverlaySlot,
                                 uint16_t Tint565) {
-    uint32_t BaseByte = (uint32_t)TexLayer & VERTEX_BYTE_MASK;
-    uint32_t OverlayByte = (OverlayLayer < 0)
-                               ? VERTEX_NO_OVERLAY_PACKED
-                               : ((uint32_t)OverlayLayer & VERTEX_BYTE_MASK);
-    return BaseByte | (OverlayByte << VERTEX_SHIFT_OVERLAY) |
+    uint32_t Base = (uint32_t)TexLayer & VERTEX_LAYER_MASK;
+    uint32_t Slot = (uint32_t)OverlaySlot & VERTEX_OVERLAY_SLOT_MASK;
+    return Base | (Slot << VERTEX_SHIFT_OVERLAY) |
            ((uint32_t)Tint565 << VERTEX_SHIFT_TINT);
 }
 
@@ -369,7 +367,7 @@ static void AddGreedyFaceToMeshBuilder(MesherState *State, MeshTarget Target,
                                        BlockFace Face,
                                        int Lx0, int Ly0, int Lz0,
                                        int W, int H,
-                                       int TexIndex, int OverlayIndex,
+                                       int TexIndex, int OverlaySlot,
                                        const int Ao[4], uint16_t Tint565,
                                        bool FlipQuad) {
     if (!MesherHasRoom(State, Target)) { return; }
@@ -416,7 +414,7 @@ static void AddGreedyFaceToMeshBuilder(MesherState *State, MeshTarget Target,
 
     int TileU[VERTICES_PER_FACE] = {0, W, W, 0};
     int TileV[VERTICES_PER_FACE] = {H, H, 0, 0};
-    uint32_t Word1 = PackVertexWord1(TexIndex, OverlayIndex, Tint565);
+    uint32_t Word1 = PackVertexWord1(TexIndex, OverlaySlot, Tint565);
 
     ChunkVertex Corners[VERTICES_PER_FACE];
     for (int Corner = 0; Corner < VERTICES_PER_FACE; Corner++) {
@@ -433,8 +431,8 @@ static void AddGreedyFaceToMeshBuilder(MesherState *State, MeshTarget Target,
 // ---------------------------------------------------------------------------
 
 typedef struct {
-    unsigned char BlockId;
-    unsigned char TexIndex;
+    BlockID BlockId;
+    uint16_t TexIndex;
     uint16_t Tint565;
     int Ao[4];
     bool FlipQuad;
@@ -466,11 +464,12 @@ static int GetFaceTex(BlockType *Def, BlockFace Face) {
 
 // The side overlay wraps only the side faces: it is authored as the grass fringe
 // that runs around a block, while the top and bottom sample their own tiles.
+// Returns the overlay slot the vertex carries, not the texture layer.
 static int GetFaceOverlay(const BlockType *Def, BlockFace Face) {
     if (Face == FACE_TOP || Face == FACE_BOTTOM) {
-        return NO_TEXTURE_OVERLAY;
+        return NO_OVERLAY_SLOT;
     }
-    return Def->TexSideOverlay;
+    return Def->SideOverlaySlot;
 }
 
 static bool MasksCompatible(const FaceMaskData *A, const FaceMaskData *B) {
@@ -505,7 +504,7 @@ static void BuildGreedyFacePass(const ChunkSnapshot *Snap, const FaceDir *Fd, Me
                 int Ly = Lpos[1];
                 int Lz = Lpos[2];
 
-                unsigned char Id = SnapshotBlockAt(Snap, Lx, Ly, Lz);
+                BlockID Id = SnapshotBlockAt(Snap, Lx, Ly, Lz);
                 if (Id == 0) { continue; }
 
                 BlockType *Def = GetBlockDef(Id);
@@ -517,7 +516,7 @@ static void BuildGreedyFacePass(const ChunkSnapshot *Snap, const FaceDir *Fd, Me
                                             Nlpos[0], Nlpos[1], Nlpos[2], Id)) { continue; }
 
                 Mask[U][V].BlockId   = Id;
-                Mask[U][V].TexIndex  = (unsigned char)GetFaceTex(Def, Fd->Face);
+                Mask[U][V].TexIndex  = (uint16_t)GetFaceTex(Def, Fd->Face);
                 Mask[U][V].FlipQuad  = ComputeFaceAO(Snap, Lx, Ly, Lz,
                                                      Fd->Face, Mask[U][V].Ao);
                 Mask[U][V].Tint565 = ColorToRgb565(GetFaceTint(
@@ -561,15 +560,15 @@ static void BuildGreedyFacePass(const ChunkSnapshot *Snap, const FaceDir *Fd, Me
                 FirstLpos[Fd->VAxis] = V0;
 
                 // Every face in a merged rectangle shares a block id and a face
-                // direction, so its overlay layer is the same throughout and
+                // direction, so its overlay slot is the same throughout and
                 // needs no place in the mask.
-                int OverlayIndex =
+                int OverlaySlot =
                     GetFaceOverlay(GetBlockDef(Origin->BlockId), Fd->Face);
 
                 AddGreedyFaceToMeshBuilder(State, MESH_TARGET_OPAQUE, Fd->Face,
                                            FirstLpos[0], FirstLpos[1],
                                            FirstLpos[2], W, H,
-                                           Origin->TexIndex, OverlayIndex,
+                                           Origin->TexIndex, OverlaySlot,
                                            Origin->Ao, Origin->Tint565,
                                            Origin->FlipQuad);
 
@@ -589,7 +588,7 @@ static void BuildTransparentFacePass(const ChunkSnapshot *Snap, MesherState *Sta
     for (int X = 0; X < CHUNK_SIZE; X++) {
         for (int Y = 0; Y < CHUNK_SIZE; Y++) {
             for (int Z = 0; Z < CHUNK_SIZE; Z++) {
-                unsigned char Id = SnapshotBlockAt(Snap, X, Y, Z);
+                BlockID Id = SnapshotBlockAt(Snap, X, Y, Z);
                 if (Id == 0) { continue; }
 
                 BlockType *Def = GetBlockDef(Id);
@@ -667,7 +666,7 @@ static void AddCrossQuad(MesherState *State, const int Verts[4][3],
 
     static const int TILE_U[VERTICES_PER_FACE] = {0, 1, 1, 0};
     static const int TILE_V[VERTICES_PER_FACE] = {1, 1, 0, 0};
-    uint32_t Word1 = PackVertexWord1(TexLayer, NO_TEXTURE_OVERLAY, Tint565);
+    uint32_t Word1 = PackVertexWord1(TexLayer, NO_OVERLAY_SLOT, Tint565);
 
     ChunkVertex Corners[VERTICES_PER_FACE];
     for (int Corner = 0; Corner < VERTICES_PER_FACE; Corner++) {
@@ -686,7 +685,7 @@ static void BuildCrossPass(const ChunkSnapshot *Snap, MesherState *State) {
     for (int X = 0; X < CHUNK_SIZE; X++) {
         for (int Y = 0; Y < CHUNK_SIZE; Y++) {
             for (int Z = 0; Z < CHUNK_SIZE; Z++) {
-                unsigned char Id = SnapshotBlockAt(Snap, X, Y, Z);
+                BlockID Id = SnapshotBlockAt(Snap, X, Y, Z);
                 if (Id == 0) { continue; }
 
                 BlockType *Def = GetBlockDef(Id);

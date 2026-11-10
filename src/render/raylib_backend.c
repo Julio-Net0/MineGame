@@ -66,6 +66,9 @@ typedef struct {
   // Same vertex shader, two fragment shaders differing only by the alpha test.
   Shader ChunkShaderOpaque;
   Shader ChunkShaderCutout;
+  // Atlas grid dimension chosen when the block icon atlas was built.
+  int BlockIconGrid;
+
   int ChunkOriginLocOpaque;
   int ChunkOriginLocCutout;
   int ActiveChunkOriginLoc;
@@ -106,7 +109,7 @@ static BackendState *GetBackendState(void) {
 // ---------------------------------------------------------------------------
 
 enum {
-  ATLAS_GRID_DIM = RENDER_BLOCK_ICON_GRID,
+  MIN_ICON_GRID_DIM = 16,
   MIN_TILE_SIZE = 16,
   MAX_TILE_SIZE = 256,
   CHECKER_HALF_SIZE = 8,
@@ -185,10 +188,10 @@ static int DeriveTileSize(int MaxObservedSide) {
 }
 
 static void CopyTileIntoAtlas(Image *AtlasImg, const Image *TileImg,
-                              int TileIdx, int TileSize) {
-  int TileCol = TileIdx % ATLAS_GRID_DIM;
-  int TileRow = TileIdx / ATLAS_GRID_DIM;
-  if (TileRow >= ATLAS_GRID_DIM) {
+                              int TileIdx, int TileSize, int GridDim) {
+  int TileCol = TileIdx % GridDim;
+  int TileRow = TileIdx / GridDim;
+  if (TileRow >= GridDim) {
     return;
   }
 
@@ -207,6 +210,40 @@ static void CopyTileIntoAtlas(Image *AtlasImg, const Image *TileImg,
   }
 }
 
+// Smallest square grid holding every layer, never below the original 16x16 so
+// small texture sets keep the atlas layout they always had.
+static int DeriveIconGridDim(int LayerCount) {
+  int Grid = MIN_ICON_GRID_DIM;
+  while (Grid * Grid < LayerCount) {
+    Grid++;
+  }
+  return Grid;
+}
+
+// Icons are drawn at GUI sizes far below the tile size, so when the full-size
+// atlas would exceed the GPU's texture limit the icon tile is halved instead of
+// dropping layers from the atlas.
+static int DeriveIconTileSize(int TileSize, int GridDim, int MaxTextureSize) {
+  int IconTile = TileSize;
+  while (IconTile > 1 && GridDim * IconTile > MaxTextureSize) {
+    IconTile /= 2;
+  }
+  return IconTile;
+}
+
+static int ClampLayerCountToDriver(int LayerCount) {
+  GLint MaxLayers = 0;
+  glGetIntegerv(GL_MAX_ARRAY_TEXTURE_LAYERS, &MaxLayers);
+  if (MaxLayers > 0 && LayerCount > MaxLayers) {
+    TraceLog(LOG_WARNING,
+             "RENDER: %d block textures registered but the driver supports only "
+             "%d array layers; textures past the limit will sample wrong layers",
+             LayerCount, (int)MaxLayers);
+    return (int)MaxLayers;
+  }
+  return LayerCount;
+}
+
 static void LoadBlockTextureArray(void) {
   BackendState *State = GetBackendState();
 
@@ -215,6 +252,7 @@ static void LoadBlockTextureArray(void) {
   if (LayerCount > MAX_BLOCK_TEXTURES) {
     LayerCount = MAX_BLOCK_TEXTURES;
   }
+  LayerCount = ClampLayerCountToDriver(LayerCount);
 
   static Image Tiles[MAX_BLOCK_TEXTURES];
   int MaxSide = MIN_TILE_SIZE;
@@ -241,7 +279,12 @@ static void LoadBlockTextureArray(void) {
   }
 
   int TileSize = DeriveTileSize(MaxSide);
-  int AtlasDim = ATLAS_GRID_DIM * TileSize;
+  GLint MaxTextureSize = 0;
+  glGetIntegerv(GL_MAX_TEXTURE_SIZE, &MaxTextureSize);
+  int GridDim = DeriveIconGridDim(LayerCount);
+  int IconTile = DeriveIconTileSize(TileSize, GridDim, (int)MaxTextureSize);
+  State->BlockIconGrid = GridDim;
+  int AtlasDim = GridDim * IconTile;
   Image AtlasImg = GenImageColor(AtlasDim, AtlasDim, BLANK);
   ImageFormat(&AtlasImg, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
 
@@ -257,7 +300,10 @@ static void LoadBlockTextureArray(void) {
 
     glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, Idx, TileSize, TileSize, 1,
                     GL_RGBA, GL_UNSIGNED_BYTE, Tiles[Idx].data);
-    CopyTileIntoAtlas(&AtlasImg, &Tiles[Idx], Idx, TileSize);
+    if (IconTile != TileSize) {
+      ImageResizeNN(&Tiles[Idx], IconTile, IconTile);
+    }
+    CopyTileIntoAtlas(&AtlasImg, &Tiles[Idx], Idx, IconTile, GridDim);
     UnloadImage(Tiles[Idx]);
   }
 
@@ -334,6 +380,16 @@ void RenderBackendInit(void) {
   SetShaderValue(State->ChunkShaderCutout,
                  GetShaderLocation(State->ChunkShaderCutout, "uBlockArray"),
                  &Unit, SHADER_UNIFORM_INT);
+
+  // Uniform values persist on the program, so the overlay table is set once
+  // here rather than per chunk pass.
+  const int *OverlayLayers = GetOverlaySlotLayers();
+  SetShaderValueV(State->ChunkShaderOpaque,
+                  GetShaderLocation(State->ChunkShaderOpaque, "uOverlayLayers"),
+                  OverlayLayers, SHADER_UNIFORM_INT, OVERLAY_SLOT_COUNT);
+  SetShaderValueV(State->ChunkShaderCutout,
+                  GetShaderLocation(State->ChunkShaderCutout, "uOverlayLayers"),
+                  OverlayLayers, SHADER_UNIFORM_INT, OVERLAY_SLOT_COUNT);
 
   InitSharedChunkIndexBuffer(State);
 
@@ -763,6 +819,11 @@ void RenderDrawDebugCube(Vec3 Pos, float Size, bool Wire, bool Solid) {
 // ---------------------------------------------------------------------------
 // UI layer
 // ---------------------------------------------------------------------------
+
+int RenderGetBlockIconGrid(void) {
+  int Grid = GetBackendState()->BlockIconGrid;
+  return (Grid > 0) ? Grid : MIN_ICON_GRID_DIM;
+}
 
 void RenderUploadUiAtlas(const CoreImage *Atlas) {
   BackendState *State = GetBackendState();

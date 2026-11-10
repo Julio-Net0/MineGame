@@ -173,7 +173,7 @@ static bool ParseCell(const cJSON *CellItem, int SizeX, int SizeY, int SizeZ,
   OutCell->X = (unsigned char)PosX;
   OutCell->Y = (unsigned char)PosY;
   OutCell->Z = (unsigned char)PosZ;
-  OutCell->BlockId = (unsigned char)BlockId;
+  OutCell->BlockId = (BlockID)BlockId;
   return true;
 }
 

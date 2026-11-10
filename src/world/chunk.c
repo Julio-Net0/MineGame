@@ -29,8 +29,8 @@ enum {
 // Base blocks no biome owns, resolved once from the registry by name. Written
 // only by InitTerrainGeneration, before the workers start, and read-only after.
 typedef struct {
-  unsigned char StoneId;
-  unsigned char WaterId;
+  BlockID StoneId;
+  BlockID WaterId;
 } TerrainBaseBlocks;
 
 static TerrainBaseBlocks *GetTerrainBaseBlocks(void) {
@@ -38,13 +38,13 @@ static TerrainBaseBlocks *GetTerrainBaseBlocks(void) {
   return &SBase;
 }
 
-static unsigned char ResolveBaseBlock(const char *Name) {
+static BlockID ResolveBaseBlock(const char *Name) {
   int BlockId = GetBlockIdByName(Name);
   if (BlockId < 0) {
     LogError("CHUNK: base block '%s' is not loaded; terrain will use air", Name);
     return BLOCK_AIR;
   }
-  return (unsigned char)BlockId;
+  return (BlockID)BlockId;
 }
 
 void InitTerrainGeneration(void) {
@@ -96,19 +96,19 @@ int GetTerrainHeightAt(int GlobalX, int GlobalZ, uint64_t SeedVal) {
 // Air above the terrain, water up to sea level, and stone below the subsurface
 // layer are the biome-independent base. Everything between — the surface block
 // and the subsurface layer under it — comes from the biome's palette.
-static unsigned char DetermineBlockId(const BiomeType *Biome, int GlobalY,
-                                      int TerrainHeight) {
+static BlockID DetermineBlockId(const BiomeType *Biome, int GlobalY,
+                                int TerrainHeight) {
   const TerrainBaseBlocks *Base = GetTerrainBaseBlocks();
 
   if (GlobalY > TerrainHeight) {
     return (GlobalY <= SEA_LEVEL) ? Base->WaterId : BLOCK_AIR;
   }
   if (GlobalY == TerrainHeight) {
-    return (GlobalY <= SEA_LEVEL + 1) ? (unsigned char)Biome->UnderwaterBlockId
-                                      : (unsigned char)Biome->SurfaceBlockId;
+    return (GlobalY <= SEA_LEVEL + 1) ? (BlockID)Biome->UnderwaterBlockId
+                                      : (BlockID)Biome->SurfaceBlockId;
   }
   if (GlobalY > TerrainHeight - Biome->SubsurfaceDepth) {
-    return (unsigned char)Biome->SubsurfaceBlockId;
+    return (BlockID)Biome->SubsurfaceBlockId;
   }
   return Base->StoneId;
 }
@@ -186,7 +186,7 @@ void GenerateChunkTerrain(Chunk *ChunkVal) {
         int GlobalY = (ChunkVal->ChunkY * CHUNK_SIZE) + IdxY;
         const BiomeType *Biome =
             GetBiomeDef(GetChunkBiomeAtLocal(ChunkVal, IdxX, IdxY, IdxZ));
-        unsigned char BlockId = DetermineBlockId(Biome, GlobalY, TerrainHeight);
+        BlockID BlockId = DetermineBlockId(Biome, GlobalY, TerrainHeight);
 
         ChunkVal->Data[IdxX][IdxY][IdxZ] = BlockId;
 
@@ -214,14 +214,14 @@ int GetBlockIdInChunk(Chunk *ChunkVal, Vec3 LocalPos) {
   return (int)ChunkVal->Data[IdxX][IdxY][IdxZ];
 }
 
-void SetBlockInChunk(Chunk *ChunkVal, Vec3 LocalPos, unsigned char BlockId) {
+void SetBlockInChunk(Chunk *ChunkVal, Vec3 LocalPos, BlockID BlockId) {
   int IdxX = (int)LocalPos.x;
   int IdxY = (int)LocalPos.y;
   int IdxZ = (int)LocalPos.z;
 
   if (IdxX >= 0 && IdxX < CHUNK_SIZE && IdxY >= 0 && IdxY < CHUNK_SIZE && IdxZ >= 0 &&
       IdxZ < CHUNK_SIZE) {
-    unsigned char OldId = ChunkVal->Data[IdxX][IdxY][IdxZ];
+    BlockID OldId = ChunkVal->Data[IdxX][IdxY][IdxZ];
 
     if (OldId != BlockId) {
       if (OldId == 0 && BlockId != 0) {

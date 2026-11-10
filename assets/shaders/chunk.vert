@@ -2,11 +2,13 @@
 
 // 8-byte packed chunk vertex:
 //   x (Word0): X(5b) | Y(5b) | Z(5b) | U(5b) | V(5b) | AO(2b) | Normal(3b)
-//   y (Word1): TexLayer(8b) | OverlayLayer(8b, 255 = none) | TintRGB565(16b)
+//   y (Word1): TexLayer(12b) | OverlaySlot(4b, 0 = none) | TintRGB565(16b)
 layout(location = 0) in uvec2 aPackedVertex;
 
 uniform mat4 mvp;
 uniform vec3 uChunkOrigin;
+// Overlay slot -> texture array layer. Slot 0 is "no overlay".
+uniform int uOverlayLayers[16];
 
 out vec2 fragTexCoord;
 out vec4 fragColor;
@@ -38,9 +40,10 @@ void main() {
     );
     fragColor = vec4(tint, ao);
 
-    fragLayer = float(w1 & 255u);
-    uint overlayRaw = (w1 >> 8u) & 255u;
-    fragOverlayLayer = (overlayRaw == 255u) ? -1.0 : float(overlayRaw);
+    fragLayer = float(w1 & 4095u);
+    uint overlaySlot = (w1 >> 12u) & 15u;
+    fragOverlayLayer = (overlaySlot == 0u) ? -1.0
+                                           : float(uOverlayLayers[overlaySlot]);
 
     gl_Position = mvp * vec4(uChunkOrigin + localPos, 1.0);
 }

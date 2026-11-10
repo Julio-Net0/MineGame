@@ -26,7 +26,9 @@ enum {
 
 // 8-byte packed chunk vertex (uvec2 in chunk.vert):
 //   Word0: X(5b) | Y(5b) | Z(5b) | U(5b) | V(5b) | AO(2b) | Normal(3b)
-//   Word1: TexLayer(8b) | OverlayLayer(8b, 255 = none) | TintRGB565(16b)
+//   Word1: TexLayer(12b) | OverlaySlot(4b, 0 = none) | TintRGB565(16b)
+// The overlay slot indexes a 16-entry slot -> layer table uploaded as a shader
+// uniform (see GetOverlaySlotLayers), so overlays cost 4 bits, not a layer.
 typedef struct {
   uint32_t Word0;
   uint32_t Word1;
@@ -129,10 +131,10 @@ void RenderDrawDebugCube(Vec3 Pos, float Size, bool Wire, bool Solid);
 void RenderDrawWireBox(Vec3 Center, Vec3 Size, Color8 Color, bool XRay);
 
 // The block-icon atlas holds texture layer i in cell (i % GRID, i / GRID) of a
-// GRID x GRID grid, which is all the UI needs to address it.
-enum {
-  RENDER_BLOCK_ICON_GRID = 16
-};
+// GRID x GRID grid, which is all the UI needs to address it. GRID grows with the
+// registered texture count (never below 16) and is fixed once the backend has
+// built the atlas.
+int RenderGetBlockIconGrid(void);
 
 // UI layer. The GUI atlas is uploaded once at startup; each frame's UI reaches
 // the backend as one draw list, drawn after the 3D pass with alpha blending and

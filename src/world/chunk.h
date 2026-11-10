@@ -4,6 +4,7 @@
 #include "core/vecmath.h"
 #include "core/mesh_handle.h"
 #include "world/biome.h"
+#include "world/block_id.h"
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -38,7 +39,7 @@ typedef struct Chunk {
 
   MeshHandle TranslucentMesh;
 
-  unsigned char Data[CHUNK_SIZE][CHUNK_SIZE][CHUNK_SIZE];
+  BlockID Data[CHUNK_SIZE][CHUNK_SIZE][CHUNK_SIZE];
 
   // Derived from the seed and never saved to disk: FillChunkBiomeMap rebuilds it
   // for chunks loaded from disk exactly as it does for generated ones. Network
@@ -89,7 +90,7 @@ void FillChunkBiomeMap(Chunk *ChunkVal);
 unsigned char GetChunkBiomeAtLocal(const Chunk *ChunkVal, int LocalX,
                                    int LocalY, int LocalZ);
 
-void SetBlockInChunk(Chunk *ChunkVal, Vec3 Pos, unsigned char BlockId);
+void SetBlockInChunk(Chunk *ChunkVal, Vec3 Pos, BlockID BlockId);
 int GetBlockIdInChunk(Chunk *ChunkVal, Vec3 Pos);
 
 // Surface height of the terrain column at (GlobalX, GlobalZ) for a given seed.

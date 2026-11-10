@@ -3,6 +3,7 @@
 
 #include "core/vecmath.h"
 #include "player/player.h"
+#include "persistence/chunk_serial.h"
 #include "world/chunk.h"
 
 #include <stdbool.h>
@@ -38,11 +39,11 @@ enum {
   NET_SERVER_PLAYER_STATE_BYTES = 1 + 8 + 8 + (3 * 4) + (3 * 4) + 1 + 1,
 
   // tag + BlockX/Y/Z + BlockId
-  NET_BLOCK_DELTA_BYTES = 1 + (3 * 4) + 1,
+  NET_BLOCK_DELTA_BYTES = 1 + (3 * 4) + 2,
 
   // Largest packet: chunk data with a raw (uncompressed) voxel payload.
   NET_MAX_PACKET_BYTES =
-      NET_CHUNK_HEADER_BYTES + (int)CHUNK_VOLUME + NET_BIOME_MAP_BYTES,
+      NET_CHUNK_HEADER_BYTES + CHUNK_SERIAL_MAX_BYTES + NET_BIOME_MAP_BYTES,
 };
 
 // Axis quantization scale: MoveX/MoveForward travel as round(v * 127).
@@ -78,7 +79,7 @@ typedef struct {
   int BlockX;
   int BlockY;
   int BlockZ;
-  uint8_t BlockId;
+  BlockID BlockId;
 } PktServerBlockDelta;
 
 // Tag of the packet in Buf, or PKT_INVALID for an empty buffer or unknown tag.

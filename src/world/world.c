@@ -248,7 +248,7 @@ static Chunk* GetLocalCoords(World *WorldVal, Vec3 GlobalPos, int *LocalX, int *
   return GetChunkFromWorld(WorldVal, ChunkX, ChunkY, ChunkZ);
 }
 
-void SetBlockInWorld(World *WorldVal, Vec3 Pos, unsigned char BlockId){
+void SetBlockInWorld(World *WorldVal, Vec3 Pos, BlockID BlockId){
   Chunk *ChunkVal = GetChunkAtPos(WorldVal, Pos);
   if (ChunkVal == (Chunk *)0) { return; }
 
@@ -260,7 +260,7 @@ void SetBlockInWorld(World *WorldVal, Vec3 Pos, unsigned char BlockId){
   if (LocalY < 0) { LocalY += CHUNK_SIZE; }
   if (LocalZ < 0) { LocalZ += CHUNK_SIZE; }
 
-  unsigned char PreviousId = ChunkVal->Data[LocalX][LocalY][LocalZ];
+  BlockID PreviousId = ChunkVal->Data[LocalX][LocalY][LocalZ];
   SetBlockInChunk(ChunkVal, (Vec3){(float)LocalX, (float)LocalY, (float)LocalZ}, BlockId);
   ChunkVal->IsDirty = true;
   // A mesh already in flight was built from a snapshot taken before this edit,

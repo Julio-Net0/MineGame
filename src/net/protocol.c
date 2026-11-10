@@ -37,7 +37,7 @@ enum {
 
 _Static_assert(sizeof(((Chunk *)0)->BiomeMap) == (size_t)NET_BIOME_MAP_BYTES,
                "BiomeMap size must match its wire size");
-_Static_assert(CHUNK_VOLUME <= UINT16_MAX,
+_Static_assert(CHUNK_SERIAL_MAX_BYTES <= UINT16_MAX,
                "chunk payload size must fit the u16 DataSize field");
 
 typedef struct {
@@ -371,10 +371,10 @@ int NetEncodeChunkData(const Chunk *ChunkVal, uint8_t *OutBuf, int Capacity) {
     return 0;
   }
 
-  uint8_t Payload[CHUNK_VOLUME];
+  uint8_t Payload[CHUNK_SERIAL_MAX_BYTES];
   bool IsRaw = false;
   int DataSize = ChunkSerialize(ChunkVal, Payload, &IsRaw);
-  if (DataSize <= 0 || DataSize > (int)CHUNK_VOLUME ||
+  if (DataSize <= 0 || DataSize > CHUNK_SERIAL_MAX_BYTES ||
       Capacity < NET_CHUNK_HEADER_BYTES + DataSize + NET_BIOME_MAP_BYTES) {
     return 0;
   }
@@ -415,8 +415,8 @@ static bool ParseChunkPacket(const uint8_t *Buf, int Size,
   Header.IsRaw = (RawFlag == 1U);
 
   if (!Reader.Ok || RawFlag > 1U || Header.DataSize == 0U ||
-      Header.DataSize > CHUNK_VOLUME ||
-      (Header.IsRaw && Header.DataSize != CHUNK_VOLUME) ||
+      (int)Header.DataSize > CHUNK_SERIAL_MAX_BYTES ||
+      (Header.IsRaw && (int)Header.DataSize != CHUNK_SERIAL_MAX_BYTES) ||
       Size != NET_CHUNK_HEADER_BYTES + (int)Header.DataSize +
                   NET_BIOME_MAP_BYTES) {
     return false;
@@ -476,7 +476,7 @@ int NetEncodeBlockDelta(const PktServerBlockDelta *Pkt, uint8_t *OutBuf,
   WriteI32Le(&Writer, Pkt->BlockX);
   WriteI32Le(&Writer, Pkt->BlockY);
   WriteI32Le(&Writer, Pkt->BlockZ);
-  WriteU8(&Writer, Pkt->BlockId);
+  WriteU16Le(&Writer, Pkt->BlockId);
   return Writer.Ok ? Writer.Pos : 0;
 }
 
@@ -494,7 +494,7 @@ bool NetDecodeBlockDelta(PktServerBlockDelta *OutPkt, const uint8_t *Buf,
   Pkt.BlockX = ReadI32Le(&Reader);
   Pkt.BlockY = ReadI32Le(&Reader);
   Pkt.BlockZ = ReadI32Le(&Reader);
-  Pkt.BlockId = ReadU8(&Reader);
+  Pkt.BlockId = ReadU16Le(&Reader);
   if (!Reader.Ok) {
     return false;
   }

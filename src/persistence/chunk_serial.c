@@ -3,30 +3,50 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+enum {
+  SERIAL_BYTE_MASK = 0xFF,
+  SERIAL_BYTE_SHIFT = 8,
+  RLE_PAIR_BYTES = 3,
+  RAW_ID_BYTES = 2
+};
+
+static void WriteIdLe(uint8_t *Out, BlockID Id) {
+  Out[0] = (uint8_t)(Id & SERIAL_BYTE_MASK);
+  Out[1] = (uint8_t)((unsigned)Id >> SERIAL_BYTE_SHIFT);
+}
+
+static BlockID ReadIdLe(const uint8_t *In) {
+  return (BlockID)((unsigned)In[0] | ((unsigned)In[1] << SERIAL_BYTE_SHIFT));
+}
+
+static int WriteRaw(const Chunk *ChunkVal, uint8_t *OutBuffer, bool *IsRaw) {
+  const BlockID *SrcFlat = &ChunkVal->Data[0][0][0];
+  for (int IdxI = 0; IdxI < (int)CHUNK_VOLUME; IdxI++) {
+    WriteIdLe(&OutBuffer[(size_t)IdxI * RAW_ID_BYTES], SrcFlat[IdxI]);
+  }
+  *IsRaw = true;
+  return CHUNK_SERIAL_MAX_BYTES;
+}
+
 int ChunkSerialize(const Chunk *ChunkVal, uint8_t *OutBuffer, bool *IsRaw) {
   int OutIndex = 0;
-  unsigned char CurrentId = ChunkVal->Data[0][0][0];
+  BlockID CurrentId = ChunkVal->Data[0][0][0];
   int CurrentRun = 0;
 
   for (int IdxX = 0; IdxX < CHUNK_SIZE; IdxX++) {
     for (int IdxY = 0; IdxY < CHUNK_SIZE; IdxY++) {
       for (int IdxZ = 0; IdxZ < CHUNK_SIZE; IdxZ++) {
-        unsigned char BlockId = ChunkVal->Data[IdxX][IdxY][IdxZ];
+        BlockID BlockId = ChunkVal->Data[IdxX][IdxY][IdxZ];
         if (BlockId == CurrentId && CurrentRun < MAX_RLE_RUN_LENGTH) {
           CurrentRun++;
         } else {
-          // Write the previous run
-          if (OutIndex + 2 >= (int)CHUNK_VOLUME) {
-            // RLE would reach or exceed CHUNK_VOLUME bytes: fall back to raw copy
-            *IsRaw = true;
-            const uint8_t *SrcFlat = (const uint8_t *)ChunkVal->Data;
-            for (int IdxI = 0; IdxI < (int)CHUNK_VOLUME; IdxI++) {
-              OutBuffer[IdxI] = SrcFlat[IdxI];
-            }
-            return (int)CHUNK_VOLUME;
+          // RLE that would reach the raw size gains nothing: store raw instead.
+          if (OutIndex + RLE_PAIR_BYTES >= CHUNK_SERIAL_MAX_BYTES) {
+            return WriteRaw(ChunkVal, OutBuffer, IsRaw);
           }
-          OutBuffer[OutIndex++] = CurrentId;
-          OutBuffer[OutIndex++] = (uint8_t)CurrentRun;
+          WriteIdLe(&OutBuffer[OutIndex], CurrentId);
+          OutBuffer[OutIndex + RAW_ID_BYTES] = (uint8_t)CurrentRun;
+          OutIndex += RLE_PAIR_BYTES;
           CurrentId = BlockId;
           CurrentRun = 1;
         }
@@ -34,17 +54,12 @@ int ChunkSerialize(const Chunk *ChunkVal, uint8_t *OutBuffer, bool *IsRaw) {
     }
   }
 
-  // Write the final run
-  if (OutIndex + 2 >= (int)CHUNK_VOLUME) {
-    *IsRaw = true;
-    const uint8_t *SrcFlat = (const uint8_t *)ChunkVal->Data;
-    for (int IdxI = 0; IdxI < (int)CHUNK_VOLUME; IdxI++) {
-      OutBuffer[IdxI] = SrcFlat[IdxI];
-    }
-    return (int)CHUNK_VOLUME;
+  if (OutIndex + RLE_PAIR_BYTES >= CHUNK_SERIAL_MAX_BYTES) {
+    return WriteRaw(ChunkVal, OutBuffer, IsRaw);
   }
-  OutBuffer[OutIndex++] = CurrentId;
-  OutBuffer[OutIndex++] = (uint8_t)CurrentRun;
+  WriteIdLe(&OutBuffer[OutIndex], CurrentId);
+  OutBuffer[OutIndex + RAW_ID_BYTES] = (uint8_t)CurrentRun;
+  OutIndex += RLE_PAIR_BYTES;
 
   *IsRaw = false;
   return OutIndex;
@@ -52,48 +67,38 @@ int ChunkSerialize(const Chunk *ChunkVal, uint8_t *OutBuffer, bool *IsRaw) {
 
 bool ChunkDeserialize(Chunk *ChunkVal, const uint8_t *InBuffer, int DataSize,
                       bool IsRaw) {
-  unsigned char TempData[CHUNK_SIZE][CHUNK_SIZE][CHUNK_SIZE] = {0};
+  BlockID TempData[CHUNK_SIZE][CHUNK_SIZE][CHUNK_SIZE] = {0};
+  BlockID *FlatData = &TempData[0][0][0];
   int SolidCount = 0;
 
   if (IsRaw) {
-    if (DataSize != (int)CHUNK_VOLUME) {
+    if (DataSize != CHUNK_SERIAL_MAX_BYTES) {
       return false;
     }
-    uint8_t *DestFlat = (uint8_t *)TempData;
     for (int IdxI = 0; IdxI < (int)CHUNK_VOLUME; IdxI++) {
-      DestFlat[IdxI] = InBuffer[IdxI];
-    }
-    for (int IdxI = 0; IdxI < (int)CHUNK_VOLUME; IdxI++) {
-      if (InBuffer[IdxI] != 0) {
+      FlatData[IdxI] = ReadIdLe(&InBuffer[(size_t)IdxI * RAW_ID_BYTES]);
+      if (FlatData[IdxI] != BLOCK_ID_AIR) {
         SolidCount++;
       }
     }
   } else {
-    int Idx = 0;
+    if (DataSize <= 0 || DataSize % RLE_PAIR_BYTES != 0) {
+      return false; // truncated or misaligned run list
+    }
     int BlocksDecoded = 0;
-    unsigned char *FlatData = (unsigned char *)TempData;
-    while (Idx < DataSize) {
-      if (Idx + 2 > DataSize) {
-        return false; // incomplete pair
-      }
-      unsigned char BlockId = InBuffer[Idx++];
-      int Run = InBuffer[Idx++];
+    for (int Idx = 0; Idx < DataSize; Idx += RLE_PAIR_BYTES) {
+      BlockID BlockId = ReadIdLe(&InBuffer[Idx]);
+      int Run = InBuffer[Idx + RAW_ID_BYTES];
       if (Run == 0) {
         return false; // invalid run length
       }
       if (BlocksDecoded + Run > (int)CHUNK_VOLUME) {
         return false; // exceeds chunk boundaries
       }
-      int RunLimit = Run;
-      if (RunLimit > MAX_RLE_RUN_LENGTH) {
-        RunLimit = MAX_RLE_RUN_LENGTH;
+      for (int IdxI = 0; IdxI < Run; IdxI++) {
+        FlatData[BlocksDecoded + IdxI] = BlockId;
       }
-      for (int IdxI = 0; IdxI < MAX_RLE_RUN_LENGTH; IdxI++) {
-        if (IdxI < RunLimit) {
-          FlatData[BlocksDecoded + IdxI] = BlockId;
-        }
-      }
-      if (BlockId != 0) {
+      if (BlockId != BLOCK_ID_AIR) {
         SolidCount += Run;
       }
       BlocksDecoded += Run;
@@ -103,11 +108,9 @@ bool ChunkDeserialize(Chunk *ChunkVal, const uint8_t *InBuffer, int DataSize,
     }
   }
 
-  // Copy values to the destination chunk
-  uint8_t *DestFlat = (uint8_t *)ChunkVal->Data;
-  const uint8_t *SrcFlat = (const uint8_t *)TempData;
+  BlockID *DestFlat = &ChunkVal->Data[0][0][0];
   for (int IdxI = 0; IdxI < (int)CHUNK_VOLUME; IdxI++) {
-    DestFlat[IdxI] = SrcFlat[IdxI];
+    DestFlat[IdxI] = FlatData[IdxI];
   }
   ChunkVal->SolidBlockCount = SolidCount;
   ChunkVal->IsDirty = true;

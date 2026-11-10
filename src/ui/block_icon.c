@@ -23,9 +23,10 @@ typedef struct {
 } IconPoint;
 
 static IconUV GetTileUV(int TextureIndex) {
-  float Cell = 1.0F / (float)RENDER_BLOCK_ICON_GRID;
-  int Column = TextureIndex % RENDER_BLOCK_ICON_GRID;
-  int Row = TextureIndex / RENDER_BLOCK_ICON_GRID;
+  int Grid = RenderGetBlockIconGrid();
+  float Cell = 1.0F / (float)Grid;
+  int Column = TextureIndex % Grid;
+  int Row = TextureIndex / Grid;
   float U = (float)Column * Cell;
   float V = (float)Row * Cell;
   return (IconUV){U, V, U + Cell, V + Cell};

@@ -25,6 +25,24 @@ static char (*GetTextureRegistry(void))[MAX_TEXTURE_NAME_SIZE] {
   return STextureNames;
 }
 
+static int *GetOverlaySlotTable(void) {
+  static int SOverlaySlotLayers[OVERLAY_SLOT_COUNT];
+  return SOverlaySlotLayers;
+}
+
+const int *GetOverlaySlotLayers(void) { return GetOverlaySlotTable(); }
+
+static int FindBlockTexture(const char *Truncated) {
+  char (*TextureNames)[MAX_TEXTURE_NAME_SIZE] = GetTextureRegistry();
+  int Count = *GetTextureCountPtr();
+  for (int Idx = 0; Idx < Count; Idx++) {
+    if (CompareString(TextureNames[Idx], Truncated) == 0) {
+      return Idx;
+    }
+  }
+  return -1;
+}
+
 int RegisterBlockTexture(const char *Name) {
   if (Name == NULL || Name[0] == '\0') {
     return 0;
@@ -33,14 +51,13 @@ int RegisterBlockTexture(const char *Name) {
   char Truncated[MAX_TEXTURE_NAME_SIZE];
   SafeStrncpy(Truncated, Name, MAX_TEXTURE_NAME_SIZE);
 
+  int Existing = FindBlockTexture(Truncated);
+  if (Existing >= 0) {
+    return Existing;
+  }
+
   char (*TextureNames)[MAX_TEXTURE_NAME_SIZE] = GetTextureRegistry();
   int Count = *GetTextureCountPtr();
-
-  for (int Idx = 0; Idx < Count; Idx++) {
-    if (CompareString(TextureNames[Idx], Truncated) == 0) {
-      return Idx;
-    }
-  }
 
   if (Count >= MAX_BLOCK_TEXTURES) {
     fprintf(stderr,
@@ -78,6 +95,7 @@ void InitBlockRegistry(void) {
     BlockRegistry[Idx].TexSide = 0;
     BlockRegistry[Idx].TexBottom = 0;
     BlockRegistry[Idx].TexSideOverlay = NO_TEXTURE_OVERLAY;
+    BlockRegistry[Idx].SideOverlaySlot = NO_OVERLAY_SLOT;
     BlockRegistry[Idx].Tint = TINT_NONE;
     BlockRegistry[Idx].RenderType = BLOCK_RENDER_CUBE;
     BlockRegistry[Idx].IsTransparent = true;
@@ -89,6 +107,50 @@ void InitBlockRegistry(void) {
     TextureNames[Idx][0] = '\0';
   }
   *GetTextureCountPtr() = 0;
+
+  int *SlotLayers = GetOverlaySlotTable();
+  for (int Slot = 0; Slot < OVERLAY_SLOT_COUNT; Slot++) {
+    SlotLayers[Slot] = NO_TEXTURE_OVERLAY;
+  }
+}
+
+// Slots are looked up by layer, so a texture shared by several blocks' overlays
+// takes one slot. The texture is only registered once a slot is known to be
+// free, so a dropped overlay does not leave an unused layer behind.
+static void AssignSideOverlay(BlockType *Block, const char *Name,
+                              const char *FilePath) {
+  Block->TexSideOverlay = NO_TEXTURE_OVERLAY;
+  Block->SideOverlaySlot = NO_OVERLAY_SLOT;
+
+  char Truncated[MAX_TEXTURE_NAME_SIZE];
+  SafeStrncpy(Truncated, Name, MAX_TEXTURE_NAME_SIZE);
+
+  int *SlotLayers = GetOverlaySlotTable();
+  int Layer = FindBlockTexture(Truncated);
+  int FreeSlot = NO_OVERLAY_SLOT;
+  for (int Slot = 1; Slot < OVERLAY_SLOT_COUNT; Slot++) {
+    if (Layer >= 0 && SlotLayers[Slot] == Layer) {
+      Block->TexSideOverlay = Layer;
+      Block->SideOverlaySlot = Slot;
+      return;
+    }
+    if (FreeSlot == NO_OVERLAY_SLOT && SlotLayers[Slot] == NO_TEXTURE_OVERLAY) {
+      FreeSlot = Slot;
+    }
+  }
+
+  if (FreeSlot == NO_OVERLAY_SLOT) {
+    fprintf(stderr,
+            "BLOCK_SYSTEM: %s: overlay '%s' dropped, all %d overlay slots are "
+            "in use\n",
+            FilePath, Truncated, OVERLAY_SLOT_COUNT - 1);
+    return;
+  }
+
+  Layer = RegisterBlockTexture(Truncated);
+  SlotLayers[FreeSlot] = Layer;
+  Block->TexSideOverlay = Layer;
+  Block->SideOverlaySlot = FreeSlot;
 }
 
 // Optional "tint" property. An absent, non-string, or unrecognized value takes
@@ -178,6 +240,15 @@ void ParseBlockFile(const char *FilePath) {
 
   BlockType *BlockRegistry = GetBlockRegistry();
   BlockType *Block = &BlockRegistry[ParsedId];
+  if (Block->Id != -1) {
+    fprintf(stderr,
+            "BLOCK_SYSTEM: id %d from file %s is already used by block '%s'; "
+            "file rejected\n",
+            ParsedId, FilePath, Block->Name);
+    cJSON_Delete(Json);
+    free(FileContent);
+    return;
+  }
   Block->Id = ParsedId;
 
   cJSON *NameItem = cJSON_GetObjectItemCaseSensitive(Json, "name");
@@ -211,10 +282,10 @@ void ParseBlockFile(const char *FilePath) {
       cJSON_GetObjectItemCaseSensitive(Json, "texSideOverlay");
   if (cJSON_IsString(TexSideOverlayItem) != 0 &&
       TexSideOverlayItem->valuestring[0] != '\0') {
-    Block->TexSideOverlay =
-        RegisterBlockTexture(TexSideOverlayItem->valuestring);
+    AssignSideOverlay(Block, TexSideOverlayItem->valuestring, FilePath);
   } else {
     Block->TexSideOverlay = NO_TEXTURE_OVERLAY;
+    Block->SideOverlaySlot = NO_OVERLAY_SLOT;
   }
 
   Block->Tint = ParseTintSource(Json);

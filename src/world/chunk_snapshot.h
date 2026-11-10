@@ -38,8 +38,8 @@ typedef struct {
   // Indexed [LocalX + 1][LocalY + 1][LocalZ + 1]. An absent neighbour stores 0,
   // which is what the live lookup returns for an unloaded chunk, so an
   // edge-of-world mesh is unchanged.
-  unsigned char Blocks[SNAPSHOT_BLOCK_SPAN][SNAPSHOT_BLOCK_SPAN]
-                      [SNAPSHOT_BLOCK_SPAN];
+  BlockID Blocks[SNAPSHOT_BLOCK_SPAN][SNAPSHOT_BLOCK_SPAN]
+                [SNAPSHOT_BLOCK_SPAN];
 
   // Origin is cell (4*ChunkX - 1, 4*ChunkY, 4*ChunkZ - 1).
   unsigned char BiomeCells[SNAPSHOT_BIOME_SPAN_XZ][SNAPSHOT_BIOME_SPAN_Y]
@@ -58,8 +58,8 @@ void CaptureChunkSnapshot(World *WorldVal, const Chunk *ChunkVal,
                           ChunkSnapshot *Out);
 
 // Block at chunk-local coordinates, which may be -1 through CHUNK_SIZE.
-unsigned char SnapshotBlockAt(const ChunkSnapshot *Snap, int LocalX, int LocalY,
-                              int LocalZ);
+BlockID SnapshotBlockAt(const ChunkSnapshot *Snap, int LocalX, int LocalY,
+                        int LocalZ);
 
 // Biome id of a chunk-local cell, clamped like GetChunkBiomeAtLocal.
 unsigned char SnapshotLocalBiome(const ChunkSnapshot *Snap, int LocalX,

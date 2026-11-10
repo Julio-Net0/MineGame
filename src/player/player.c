@@ -55,7 +55,7 @@ Player InitPlayer(Vec3 SpawnPos) {
   return PlayerObj;
 }
 
-void SetHotbarSlot(Player *PlayerVal, int Slot, unsigned char BlockId) {
+void SetHotbarSlot(Player *PlayerVal, int Slot, BlockID BlockId) {
   if (Slot >= 0 && Slot < HOTBAR_SIZE) {
     PlayerVal->Hotbar[Slot] = BlockId;
   }
@@ -341,7 +341,7 @@ static void RequestBlockBreak(World *WorldVal, Vec3 Pos) {
 }
 
 static void RequestBlockPlace(World *WorldVal, Vec3 Pos,
-                              unsigned char BlockId) {
+                              BlockID BlockId) {
   SetBlockInWorld(WorldVal, Pos, BlockId);
 }
 
@@ -371,7 +371,7 @@ void HandlePlayerInteraction(Player *PlayerVal, World *WorldVal,
     }
 
     if (Input.Place) {
-      unsigned char BlockInHandId =
+      BlockID BlockInHandId =
           PlayerVal->Hotbar[PlayerVal->SelectedHotbarSlot];
 
       Vec3 PlacePos = Vec3Add(PlayerVal->TargetBlock.BlockPos,

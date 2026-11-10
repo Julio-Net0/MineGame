@@ -137,6 +137,12 @@ Biomes are stored **one id per 4×4×4 block cell**, sampled at the cell's centr
 
 The biome map is **derived, never saved**. It is recomputed from the seed whenever a chunk is generated or read back from disk, so changing any file here changes the world without touching the save format. Existing terrain in saved chunks keeps its blocks and will not match a retuned palette until those chunks are regenerated.
 
+## Block ids and texture limits
+
+A block's `"id"` is its registry slot, `0`–`4095`, and is stored as a 16-bit value in chunks, saves and network packets. Ids must be unique: a file whose id is already taken is rejected with an error naming the block that holds it, and the first block keeps the slot. Saves store raw ids, so changing a block's id changes what existing worlds contain.
+
+Up to **4096 distinct texture names** can be registered across all blocks (12 bits in the packed vertex). The renderer also checks the driver's `GL_MAX_ARRAY_TEXTURE_LAYERS` at startup and logs a warning when more textures are registered than the GPU can hold.
+
 ## Block tint
 
 Blocks opt into biome colouring with an optional `"tint"` property in `assets/blocks/*.json`:
@@ -186,7 +192,7 @@ That distinction is the point. The grass side tile mixes a grass fringe with dir
 
 Blocks whose whole texture is tintable — grass top, leaves — declare no overlay. Untinted blocks declare none either, and their white tint makes the multiply a no-op however grey their texture is (stone included).
 
-The overlay layer index rides the previously unused second component of the `texcoords2` vertex attribute, so it costs no new attribute — only one extra texture fetch on the faces that have one.
+Overlays are addressed through a slot table rather than a full layer index per vertex: each distinct `texSideOverlay` texture takes one of **15 slots**, the packed vertex carries the 4-bit slot, and the shader maps it to the texture layer through a uniform array. Blocks sharing an overlay texture share its slot. A 16th distinct overlay is dropped with a warning and the block loads without it. The cost is no extra vertex data — only one extra texture fetch on the faces that have an overlay.
 
 Inside a biome, a tinted block renders the palette's declared colour exactly. Across a border the tint is interpolated over about four blocks. Only the transition band splits merged faces; measured cost is about **+0.7% vertices**.
 

@@ -4,10 +4,17 @@
 #include "core/tint.h"
 #include <stdbool.h>
 
-#define BLOCK_REGISTRY_SIZE 256
+#define BLOCK_REGISTRY_SIZE 4096
 #define MAX_BLOCK_NAME_SIZE 32
-#define MAX_BLOCK_TEXTURES 256
+// Matches the 12-bit texture layer field of the packed chunk vertex.
+#define MAX_BLOCK_TEXTURES 4096
 #define MAX_TEXTURE_NAME_SIZE 64
+
+// Side overlays reach the shader through a small slot table rather than a full
+// layer index per vertex: slot 0 means "no overlay" and slots 1..15 map to a
+// texture layer. 4 bits of the packed vertex carry the slot.
+#define OVERLAY_SLOT_COUNT 16
+#define NO_OVERLAY_SLOT 0
 
 // Sentinel for "this block has no side overlay". Negative so it can never
 // collide with a real texture array layer, and so the shader can test for it.
@@ -34,6 +41,10 @@ typedef struct {
   // its own colour. NO_TEXTURE_OVERLAY when the block declares none.
   int TexSideOverlay;
 
+  // Overlay slot (1..OVERLAY_SLOT_COUNT-1) the mesher packs for side faces, or
+  // NO_OVERLAY_SLOT when TexSideOverlay is NO_TEXTURE_OVERLAY.
+  int SideOverlaySlot;
+
   char Name[MAX_BLOCK_NAME_SIZE];
 
   // Which biome palette this block's faces are multiplied by, from the optional
@@ -59,5 +70,8 @@ int GetLoadedBlocksCount(void);
 int RegisterBlockTexture(const char *Name);
 int GetBlockTextureCount(void);
 const char *GetBlockTextureName(int Index);
+// Slot -> texture layer table with OVERLAY_SLOT_COUNT entries. Entry 0 and
+// unused slots hold NO_TEXTURE_OVERLAY.
+const int *GetOverlaySlotLayers(void);
 
 #endif

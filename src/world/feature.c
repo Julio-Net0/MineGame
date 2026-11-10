@@ -260,7 +260,7 @@ void PlaceChunkFlora(Chunk *ChunkVal) {
       // Flora grows only on the biome's own surface block (grass), never on
       // exposed stone, sand margins, or an already-occupied voxel.
       if (ChunkVal->Data[Lx][SurfaceLocalY][Lz] !=
-          (unsigned char)Biome->SurfaceBlockId) {
+          (BlockID)Biome->SurfaceBlockId) {
         continue;
       }
       if (ChunkVal->Data[Lx][FloraLocalY][Lz] != 0) {
@@ -276,7 +276,7 @@ void PlaceChunkFlora(Chunk *ChunkVal) {
       uint64_t KindHash = HashCell(WorldX, WorldZ, Seed ^ FLORA_KIND_SALT);
       int BlockId = PickFloraBlock(Biome, KindHash);
 
-      ChunkVal->Data[Lx][FloraLocalY][Lz] = (unsigned char)BlockId;
+      ChunkVal->Data[Lx][FloraLocalY][Lz] = (BlockID)BlockId;
       ChunkVal->SolidBlockCount++;
     }
   }

@@ -71,7 +71,7 @@ static void DrawHotbar(UiContext *Ctx, Player *PlayerVal) {
            COLOR_WHITE);
 
   for (int Idx = 0; Idx < HOTBAR_SIZE; Idx++) {
-    unsigned char BlockId = PlayerVal->Hotbar[Idx];
+    BlockID BlockId = PlayerVal->Hotbar[Idx];
     if (BlockId != 0) {
       float IconX =
           (float)(StartX + HOTBAR_ICON_INSET + (Idx * HOTBAR_SLOT_PITCH));

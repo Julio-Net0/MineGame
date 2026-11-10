@@ -44,7 +44,7 @@ typedef struct {
   int Id;
   int SelectedHotbarSlot;
 
-  unsigned char Hotbar[HOTBAR_SIZE];
+  BlockID Hotbar[HOTBAR_SIZE];
   bool IsGrounded;
   bool Noclip;
   bool HasSelectionA;
@@ -84,7 +84,7 @@ void UpdatePlayer(Player *PlayerVal, World *WorldVal, PlayerView View, PlayerInp
 void HandlePlayerInteraction(Player *PlayerVal, World *WorldVal, PlayerView View, PlayerInput Input);
 bool IsPointSolid(World *WorldVal, Vec3 Pos);
 void GetPlayerPoints(Player *PlayerVal, PointConfig Config, Vec3 OutPoints[COLLISION_POINTS]);
-void SetHotbarSlot(Player *PlayerVal, int Slot, unsigned char BlockId);
+void SetHotbarSlot(Player *PlayerVal, int Slot, BlockID BlockId);
 void SetPlayerPosition(Player *PlayerVal, Vec3 Pos);
 
 #endif

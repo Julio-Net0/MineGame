@@ -65,7 +65,7 @@ static void QueueChunkResend(ServerState *Server, int ChunkX, int ChunkY,
 }
 
 static void OnServerBlockChange(void *UserData, int BlockX, int BlockY,
-                                int BlockZ, unsigned char NewBlockId) {
+                                int BlockZ, BlockID NewBlockId) {
   ServerState *Server = (ServerState *)UserData;
   if (Server->PendingDeltaCount < SERVER_MAX_DELTAS_PER_TICK) {
     Server->PendingDeltas[Server->PendingDeltaCount++] =

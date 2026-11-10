@@ -33,7 +33,7 @@ typedef struct {
   int BlockX;
   int BlockY;
   int BlockZ;
-  unsigned char BlockId;
+  BlockID BlockId;
 } ServerBlockDelta;
 
 typedef struct {

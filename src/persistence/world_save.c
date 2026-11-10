@@ -49,7 +49,9 @@ typedef struct {
 // Long-typed so the header offsets it feeds are computed in the width fseek
 // takes, rather than multiplied as int and widened afterwards.
 #define REGION_HEADER_SIZE     ((long)REGION_TOTAL_CHUNKS * REGION_HEADER_ENTRY_BYTES)
-#define REGION_SLOT_SIZE       4096
+#define REGION_SLOT_SIZE       CHUNK_SERIAL_MAX_BYTES
+#define LEVEL_FORMAT_VERSION   2U
+#define MAX_BACKUP_SUFFIX      100
 #define REGION_PATH_BUF_SIZE   256
 #define REGION_COORD_BITS      20
 #define REGION_COORD_MASK      0xFFFFF
@@ -133,6 +135,32 @@ static uint64_t GenerateRandomSeed(void) {
   return Hires ^ ((uint64_t)time((time_t *)0) * REGION_LCG_MULTIPLIER);
 }
 
+// Region files of another format version cannot be read with this slot layout,
+// so the whole directory is kept intact under a backup name instead of being
+// loaded or overwritten.
+static bool MoveOutdatedWorldAside(uint32_t OldVersion) {
+  char BackupPath[REGION_PATH_BUF_SIZE];
+  for (int Suffix = 0; Suffix < MAX_BACKUP_SUFFIX; Suffix++) {
+    if (Suffix == 0) {
+      snprintf(BackupPath, sizeof(BackupPath), "world_v%u_backup",
+               (unsigned)OldVersion);
+    } else {
+      snprintf(BackupPath, sizeof(BackupPath), "world_v%u_backup_%d",
+               (unsigned)OldVersion, Suffix);
+    }
+    if (rename("world", BackupPath) == 0) {
+      LogError("WORLD_SAVE: world format version %u is not supported (expected "
+               "%u); moved it to %s and creating a new world",
+               (unsigned)OldVersion, (unsigned)LEVEL_FORMAT_VERSION, BackupPath);
+      return true;
+    }
+  }
+  LogError("WORLD_SAVE: world format version %u is not supported and the world "
+           "directory could not be moved aside; running without saving",
+           (unsigned)OldVersion);
+  return false;
+}
+
 void InitWorldSave(void) {
   WorldSaveState *State = GetWorldSaveState();
   // Before InitChunkWorker creates any thread, so no lookup ever initialises.
@@ -153,6 +181,7 @@ void InitWorldSave(void) {
 
   LevelMetadata Meta;
   bool Loaded = false;
+  bool OutdatedFormat = false;
 
   FILE *FileVal = fopen("world/level.bin", "rb");
   if (FileVal != (FILE *)0) {
@@ -163,10 +192,12 @@ void InitWorldSave(void) {
           MagicMatch = false;
         }
       }
-      if (MagicMatch) {
+      if (MagicMatch && Meta.Version == LEVEL_FORMAT_VERSION) {
         State->WorldSeed = Meta.Seed;
         Loaded = true;
         LogInfo("WORLD_SAVE: Loaded existing world seed: %llu", (unsigned long long)State->WorldSeed);
+      } else if (MagicMatch) {
+        OutdatedFormat = true;
       } else {
         LogWarn("WORLD_SAVE: Invalid magic in level.bin");
       }
@@ -174,6 +205,17 @@ void InitWorldSave(void) {
       LogWarn("WORLD_SAVE: Failed to read level.bin");
     }
     fclose(FileVal);
+  }
+
+  if (OutdatedFormat) {
+    if (!MoveOutdatedWorldAside(Meta.Version)) {
+      // Never mix the old regions with new-format writes or reads.
+      State->ReadOnly = true;
+      State->WorldSeed =
+          State->HasSeedOverride ? State->SeedOverride : GenerateRandomSeed();
+      return;
+    }
+    make_dir("world");
   }
 
   if (!Loaded) {
@@ -186,7 +228,7 @@ void InitWorldSave(void) {
       for (int IdxI = 0; IdxI < 4; IdxI++) {
         Meta.Magic[IdxI] = "MGWL"[IdxI];
       }
-      Meta.Version = 1;
+      Meta.Version = LEVEL_FORMAT_VERSION;
       Meta.Seed = State->WorldSeed;
       if (fwrite(&Meta, sizeof(LevelMetadata), 1, FileVal) != 1) {
         LogWarn("WORLD_SAVE: Failed to write level.bin");
@@ -363,7 +405,9 @@ bool LoadChunkFromDisk(Chunk *ChunkVal) {
   uint8_t Flags = Entry[0];
   uint16_t DataSize = (uint16_t)(Entry[1] | ((uint16_t)Entry[2] << BYTE_SHIFT));
 
-  if ((Flags & 1) == 0) {
+  // A size past the slot is a corrupt header; reading it would overrun the
+  // stack buffer below.
+  if ((Flags & 1) == 0 || DataSize > REGION_SLOT_SIZE) {
     fclose(FileVal);
     pthread_mutex_unlock(RegionMutex);
     return false;

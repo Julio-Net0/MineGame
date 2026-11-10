@@ -15,7 +15,7 @@ typedef void (*ChunkEvictCallback)(Chunk *EvictedChunk);
 // Invoked by SetBlockInWorld after a loaded block's ID actually changes.
 // Terrain generation writes chunks directly and never triggers it.
 typedef void (*BlockChangeCallback)(void *UserData, int BlockX, int BlockY,
-                                    int BlockZ, unsigned char NewBlockId);
+                                    int BlockZ, BlockID NewBlockId);
 
 typedef struct World {
   Chunk Chunks[MAX_ACTIVE_CHUNKS];
@@ -56,7 +56,7 @@ int GetBlockIDFromWorld(World *WorldVal, Vec3 GlobalPos);
 // the edge of the loaded world degrades to the local color instead of a seam.
 unsigned char GetBiomeCellFromWorld(World *WorldVal, int CellX, int CellY,
                                     int CellZ, unsigned char Fallback);
-void SetBlockInWorld(World *WorldVal, Vec3 GlobalPos, unsigned char BlockId);
+void SetBlockInWorld(World *WorldVal, Vec3 GlobalPos, BlockID BlockId);
 RaycastResult RayCastToWorld(World *WorldVal, Vec3 RayOrigin, Vec3 RayDir, float MaxDistance);
 Chunk *GetChunkFromWorld(World *WorldVal, int ChunkX, int ChunkY, int ChunkZ);
 Chunk *GetChunkAtPos(World *WorldVal, Vec3 Pos);

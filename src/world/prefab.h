@@ -2,6 +2,7 @@
 #define PREFAB_H
 
 #include "core/vecmath.h"
+#include "world/block_id.h"
 #include <stdbool.h>
 
 struct World;
@@ -15,13 +16,13 @@ enum {
 // One occupied block of a prefab. Positions are local to the prefab origin and
 // the block id is already resolved from the palette at load time. Air cells are
 // not stored (the format is sparse), so a prefab holds exactly CellCount of
-// these. Byte fields keep the packed array tight; prefab axes stay well under
+// these. Byte positions keep the packed array tight; prefab axes stay well under
 // 256 blocks.
 typedef struct {
   unsigned char X;
   unsigned char Y;
   unsigned char Z;
-  unsigned char BlockId;
+  BlockID BlockId;
 } PrefabCell;
 
 // Compiled, renderer-free prefab: dimensions plus a flat heap array of occupied

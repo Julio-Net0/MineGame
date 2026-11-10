@@ -111,8 +111,8 @@ void CaptureChunkSnapshot(World *WorldVal, const Chunk *ChunkVal,
   }
 }
 
-unsigned char SnapshotBlockAt(const ChunkSnapshot *Snap, int LocalX, int LocalY,
-                              int LocalZ) {
+BlockID SnapshotBlockAt(const ChunkSnapshot *Snap, int LocalX, int LocalY,
+                        int LocalZ) {
   if (LocalX < -1 || LocalX > CHUNK_SIZE || LocalY < -1 || LocalY > CHUNK_SIZE ||
       LocalZ < -1 || LocalZ > CHUNK_SIZE) {
     return 0;
@@ -154,9 +154,9 @@ int VerifyChunkSnapshot(World *WorldVal, const Chunk *ChunkVal,
   for (int LocalX = -1; LocalX <= CHUNK_SIZE; LocalX++) {
     for (int LocalY = -1; LocalY <= CHUNK_SIZE; LocalY++) {
       for (int LocalZ = -1; LocalZ <= CHUNK_SIZE; LocalZ++) {
-        unsigned char FromSnapshot = SnapshotBlockAt(Snap, LocalX, LocalY, LocalZ);
+        BlockID FromSnapshot = SnapshotBlockAt(Snap, LocalX, LocalY, LocalZ);
 
-        unsigned char FromWorld;
+        BlockID FromWorld;
         if (LocalX >= 0 && LocalX < CHUNK_SIZE && LocalY >= 0 &&
             LocalY < CHUNK_SIZE && LocalZ >= 0 && LocalZ < CHUNK_SIZE) {
           FromWorld = ChunkVal->Data[LocalX][LocalY][LocalZ];
@@ -164,7 +164,7 @@ int VerifyChunkSnapshot(World *WorldVal, const Chunk *ChunkVal,
           int Gx = (ChunkVal->ChunkX * CHUNK_SIZE) + LocalX;
           int Gy = (ChunkVal->ChunkY * CHUNK_SIZE) + LocalY;
           int Gz = (ChunkVal->ChunkZ * CHUNK_SIZE) + LocalZ;
-          FromWorld = (unsigned char)GetBlockIDFromWorld(
+          FromWorld = (BlockID)GetBlockIDFromWorld(
               WorldVal, (Vec3){(float)Gx, (float)Gy, (float)Gz});
         }
 

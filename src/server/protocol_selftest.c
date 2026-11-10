@@ -3,6 +3,7 @@
 #include "core/log.h"
 #include "net/loopback.h"
 #include "net/protocol.h"
+#include "world/block_system.h"
 
 #include <math.h>
 #include <stdbool.h>
@@ -18,7 +19,8 @@ enum {
   LCG_MULTIPLIER = 1103515245,
   LCG_INCREMENT = 12345,
   LCG_SHIFT = 16,
-  RAW_BLOCK_ID_RANGE = 200,
+  RAW_BLOCK_ID_RANGE = BLOCK_REGISTRY_SIZE,
+  WIDE_BLOCK_ID = 300,
   WRAP_ITERATIONS = 400,
   WRAP_PACKET_BYTES = 3001,
   SMALL_PACKET_BYTES = 100,
@@ -33,6 +35,7 @@ enum {
   STONE_BLOCK_ID = 3,
   BYTE_MASK = 0xFF,
   BITS_PER_BYTE = 8,
+  RLE_RUN_BYTE_OFFSET = 2,
 };
 
 static uint8_t GPacketBuf[NET_MAX_PACKET_BYTES + GUARD_BYTES];
@@ -284,7 +287,7 @@ static bool TestPlayerState(void) {
 }
 
 static const PktServerBlockDelta SAMPLE_DELTA = {
-    .BlockX = -17, .BlockY = 22, .BlockZ = 1000001, .BlockId = 250};
+    .BlockX = -17, .BlockY = 22, .BlockZ = 1000001, .BlockId = WIDE_BLOCK_ID};
 
 static int EncodeSampleDelta(uint8_t *OutBuf, int Capacity) {
   return NetEncodeBlockDelta(&SAMPLE_DELTA, OutBuf, Capacity);
@@ -321,8 +324,15 @@ static void FillLayeredChunk(Chunk *ChunkVal) {
   for (int X = 0; X < CHUNK_SIZE; X++) {
     for (int Y = 0; Y < CHUNK_SIZE; Y++) {
       for (int Z = 0; Z < CHUNK_SIZE; Z++) {
-        ChunkVal->Data[X][Y][Z] =
-            (Y < STONE_LAYER_TOP) ? (unsigned char)STONE_BLOCK_ID : 0U;
+        // One layer above the stone carries an id past 8 bits, so the RLE
+        // path must preserve both id bytes.
+        BlockID Id = BLOCK_ID_AIR;
+        if (Y < STONE_LAYER_TOP) {
+          Id = (BlockID)STONE_BLOCK_ID;
+        } else if (Y == STONE_LAYER_TOP) {
+          Id = (BlockID)WIDE_BLOCK_ID;
+        }
+        ChunkVal->Data[X][Y][Z] = Id;
       }
     }
   }
@@ -339,10 +349,10 @@ static void FillNoisyChunk(Chunk *ChunkVal) {
   ChunkVal->ChunkY = SAMPLE_CHUNK_Y;
   ChunkVal->ChunkZ = 0;
   uint32_t State = 1U;
-  unsigned char *Flat = (unsigned char *)ChunkVal->Data;
+  BlockID *Flat = &ChunkVal->Data[0][0][0];
   for (int Idx = 0; Idx < (int)CHUNK_VOLUME; Idx++) {
     State = (State * (uint32_t)LCG_MULTIPLIER) + (uint32_t)LCG_INCREMENT;
-    Flat[Idx] = (unsigned char)((State >> LCG_SHIFT) % RAW_BLOCK_ID_RANGE);
+    Flat[Idx] = (BlockID)((State >> LCG_SHIFT) % RAW_BLOCK_ID_RANGE);
   }
   unsigned char *Biomes = (unsigned char *)ChunkVal->BiomeMap;
   for (int Idx = 0; Idx < NET_BIOME_MAP_BYTES; Idx++) {
@@ -351,7 +361,7 @@ static void FillNoisyChunk(Chunk *ChunkVal) {
 }
 
 static int CountSolid(const Chunk *ChunkVal) {
-  const unsigned char *Flat = (const unsigned char *)ChunkVal->Data;
+  const BlockID *Flat = &ChunkVal->Data[0][0][0];
   int Count = 0;
   for (int Idx = 0; Idx < (int)CHUNK_VOLUME; Idx++) {
     Count += (Flat[Idx] != 0U) ? 1 : 0;
@@ -392,7 +402,7 @@ static bool ChunkRejectsMalformed(const Chunk *Source, Chunk *Target) {
   }
 
   const uint8_t INVALID_RAW_FLAG = 2;
-  const int OVERSIZED_DATA_SIZE = (int)CHUNK_VOLUME + 1;
+  const int OVERSIZED_DATA_SIZE = CHUNK_SERIAL_MAX_BYTES + 1;
   memcpy(GScratchBuf, GPacketBuf, (size_t)Size);
   GScratchBuf[CHUNK_RAW_FLAG_OFFSET] = INVALID_RAW_FLAG;
   if (ProbeChunkHeader(GScratchBuf, Size)) {
@@ -418,10 +428,30 @@ static bool ChunkRejectsMalformed(const Chunk *Source, Chunk *Target) {
   // Corrupting the first RLE run length to zero passes the header checks but
   // must fail payload decoding and leave the target chunk untouched.
   memcpy(GScratchBuf, GPacketBuf, (size_t)Size);
-  GScratchBuf[NET_CHUNK_HEADER_BYTES + 1] = 0U;
+  GScratchBuf[NET_CHUNK_HEADER_BYTES + RLE_RUN_BYTE_OFFSET] = 0U;
   memset(Target->Data, 0, sizeof(Target->Data));
   bool Rejected = !NetDecodeChunkData(Target, GScratchBuf, Size);
-  return Rejected && CountSolid(Target) == 0;
+  if (!Rejected || CountSolid(Target) != 0) {
+    return false;
+  }
+
+  // Dropping the last payload byte (and shifting the biome map down) keeps the
+  // header consistent but leaves a run list that is not a multiple of 3 bytes.
+  int RleSize = Size - NET_CHUNK_HEADER_BYTES - NET_BIOME_MAP_BYTES;
+  if (RleSize < 2 || RleSize > CHUNK_SERIAL_MAX_BYTES) {
+    return false;
+  }
+  int ShortSize = RleSize - 1;
+  memcpy(GScratchBuf, GPacketBuf, (size_t)Size);
+  GScratchBuf[CHUNK_DATA_SIZE_OFFSET] =
+      (uint8_t)((unsigned)ShortSize & (unsigned)BYTE_MASK);
+  GScratchBuf[CHUNK_DATA_SIZE_OFFSET + 1] =
+      (uint8_t)((unsigned)ShortSize >> (unsigned)BITS_PER_BYTE);
+  memmove(&GScratchBuf[NET_CHUNK_HEADER_BYTES + ShortSize],
+          &GPacketBuf[NET_CHUNK_HEADER_BYTES + RleSize],
+          (size_t)NET_BIOME_MAP_BYTES);
+  return !NetDecodeChunkData(Target, GScratchBuf, Size - 1) &&
+         CountSolid(Target) == 0;
 }
 
 static int EncodeSampleChunk(uint8_t *OutBuf, int Capacity) {
@@ -812,7 +842,7 @@ static int FindPlaceableSlot(const Player *PlayerVal) {
 }
 
 static bool OnlyDeltaIs(const ClientInbox *Inbox, Vec3 BlockPos,
-                        unsigned char BlockId) {
+                        BlockID BlockId) {
   if (Inbox->DeltaCount != 1) {
     return false;
   }
@@ -864,7 +894,7 @@ static bool TestServerBreakAndPlace(ServerState *Server, NetLoopback *Channel,
     return false;
   }
 
-  unsigned char HandId = Server->PlayerVal.Hotbar[Slot];
+  BlockID HandId = Server->PlayerVal.Hotbar[Slot];
   PlayerInput Place = IdleInput();
   Place.Place = true;
   Sent = SendInput(Channel, (*NextTick)++, Place, LOOK_DOWN);
@@ -896,7 +926,7 @@ static bool TestServerChunkReplication(ServerState *Server,
 // Edits more blocks in one chunk than fit in a tick's delta list; the client
 // must then receive the whole chunk instead of any delta for it.
 static bool TestServerDeltaOverflow(ServerState *Server, NetLoopback *Channel,
-                                    ClientInbox *Inbox, unsigned char FillId) {
+                                    ClientInbox *Inbox, BlockID FillId) {
   int BaseX = Inbox->WantChunkX * CHUNK_SIZE;
   int BaseY = Inbox->WantChunkY * CHUNK_SIZE;
   int BaseZ = Inbox->WantChunkZ * CHUNK_SIZE;
@@ -906,7 +936,7 @@ static bool TestServerDeltaOverflow(ServerState *Server, NetLoopback *Channel,
       for (int Z = 0; Z < CHUNK_SIZE; Z++) {
         Vec3 Pos = {(float)(BaseX + X), (float)(BaseY + Y), (float)(BaseZ + Z)};
         int Current = GetBlockIDFromWorld(Server->WorldVal, Pos);
-        unsigned char NewId = (Current == (int)FillId) ? 0U : FillId;
+        BlockID NewId = (Current == (int)FillId) ? BLOCK_ID_AIR : FillId;
         SetBlockInWorld(Server->WorldVal, Pos, NewId);
         Changed++;
       }
