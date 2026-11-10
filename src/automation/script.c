@@ -799,6 +799,14 @@ static void ScriptAddProfilerJson(cJSON *Root) {
     ProfilerQuery((ProfileScope)Scope, &Stats);
     ScriptAddScopeJson(Node, GetProfileScopeName((ProfileScope)Scope), &Stats);
   }
+
+  uint64_t SolidSamples = 0;
+  float SolidOverdraw = 0.0F;
+  if (RenderQuerySolidSamples(&SolidSamples, &SolidOverdraw)) {
+    cJSON_AddNumberToObject(Node, "solidSamples", (double)SolidSamples);
+    cJSON_AddNumberToObject(Node, "solidOverdraw", (double)SolidOverdraw);
+  }
+
   cJSON_AddItemToObject(Root, "profiler", Node);
 }
 #endif

@@ -31,6 +31,12 @@
 #define MESHES_PER_CHUNK 3
 #define MESH_POOL_CAPACITY (MAX_ACTIVE_CHUNKS * MESHES_PER_CHUNK)
 
+#ifdef MINEGAME_PROFILE
+enum {
+  SOLID_QUERY_COUNT = 2
+};
+#endif
+
 typedef struct {
   Texture2D BlockAtlas;
   Texture2D UiAtlas;
@@ -59,6 +65,20 @@ typedef struct {
   // the pixels once that frame has been read back and is waiting to be taken.
   bool CaptureRequested;
   CoreImage Capture;
+
+#ifdef MINEGAME_PROFILE
+  // Double-buffered occlusion queries around the solid chunk pass. One slot is
+  // written by the current frame while the other, issued at least one frame
+  // earlier, is polled with GL_QUERY_RESULT_AVAILABLE so reading it never
+  // stalls the pipeline it is measuring.
+  unsigned int SolidQueries[SOLID_QUERY_COUNT];
+  bool SolidQueryPending[SOLID_QUERY_COUNT];
+  int SolidQueryCursor;
+  bool SolidPassNext;
+  bool SolidQueryActive;
+  bool HasSolidSamples;
+  uint64_t LastSolidSamples;
+#endif
 } BackendState;
 
 static BackendState *GetBackendState(void) {
@@ -270,6 +290,18 @@ void RenderBackendInit(void) {
     // Fill the free list in reverse so handles are handed out low-first.
     State->FreeList[IdxI] = (MeshHandle)(MESH_POOL_CAPACITY - 1 - IdxI);
   }
+
+#ifdef MINEGAME_PROFILE
+  glGenQueries(SOLID_QUERY_COUNT, State->SolidQueries);
+  for (int Idx = 0; Idx < SOLID_QUERY_COUNT; Idx++) {
+    State->SolidQueryPending[Idx] = false;
+  }
+  State->SolidQueryCursor = 0;
+  State->SolidPassNext = false;
+  State->SolidQueryActive = false;
+  State->HasSolidSamples = false;
+  State->LastSolidSamples = 0;
+#endif
 }
 
 void RenderBackendShutdown(void) {
@@ -292,6 +324,16 @@ void RenderBackendShutdown(void) {
     State->UiVao = 0;
     State->UiQuadCapacity = 0;
   }
+#ifdef MINEGAME_PROFILE
+  if (State->SolidQueries[0] != 0) {
+    glDeleteQueries(SOLID_QUERY_COUNT, State->SolidQueries);
+    for (int Idx = 0; Idx < SOLID_QUERY_COUNT; Idx++) {
+      State->SolidQueries[Idx] = 0;
+      State->SolidQueryPending[Idx] = false;
+    }
+  }
+  State->HasSolidSamples = false;
+#endif
   UnloadTexture(State->BlockAtlas);
   if (State->UiAtlas.id != 0) {
     UnloadTexture(State->UiAtlas);
@@ -362,6 +404,53 @@ void RenderFreeMesh(MeshHandle Handle) {
 // Custom draw — bypasses Raylib material/texture binding
 // ---------------------------------------------------------------------------
 
+#ifdef MINEGAME_PROFILE
+static void BeginSolidOcclusionQuery(BackendState *State) {
+  if (!State->SolidPassNext) {
+    return;
+  }
+  State->SolidPassNext = false;
+
+  int Slot = State->SolidQueryCursor;
+  if (State->SolidQueries[Slot] == 0) {
+    return;
+  }
+
+  // Harvest the earlier frame's result from this slot before reusing it. If
+  // the GPU has not finished that frame yet, skip issuing a new query rather
+  // than blocking on GL_QUERY_RESULT and stalling the pipeline we are trying
+  // to measure.
+  if (State->SolidQueryPending[Slot]) {
+    GLint Available = 0;
+    glGetQueryObjectiv(State->SolidQueries[Slot], GL_QUERY_RESULT_AVAILABLE,
+                       &Available);
+    if (Available == 0) {
+      return;
+    }
+    GLuint Passed = 0;
+    glGetQueryObjectuiv(State->SolidQueries[Slot], GL_QUERY_RESULT, &Passed);
+    State->LastSolidSamples = (uint64_t)Passed;
+    State->HasSolidSamples = true;
+    State->SolidQueryPending[Slot] = false;
+  }
+
+  glBeginQuery(GL_SAMPLES_PASSED, State->SolidQueries[Slot]);
+  State->SolidQueryActive = true;
+}
+
+static void EndSolidOcclusionQuery(BackendState *State) {
+  if (!State->SolidQueryActive) {
+    return;
+  }
+  glEndQuery(GL_SAMPLES_PASSED);
+  State->SolidQueryActive = false;
+
+  int Slot = State->SolidQueryCursor;
+  State->SolidQueryPending[Slot] = true;
+  State->SolidQueryCursor = (Slot + 1) % SOLID_QUERY_COUNT;
+}
+#endif
+
 // Everything shared by the chunks in a pass, bound once. What is left per chunk
 // is the vertex array and the draw -- the only two things that differ.
 void RenderBeginChunkPass(ChunkPassKind Kind) {
@@ -380,11 +469,48 @@ void RenderBeginChunkPass(ChunkPassKind Kind) {
 
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D_ARRAY, State->BlockArrayTexID);
+
+#ifdef MINEGAME_PROFILE
+  BeginSolidOcclusionQuery(State);
+#endif
 }
 
 void RenderEndChunkPass(void) {
+#ifdef MINEGAME_PROFILE
+  EndSolidOcclusionQuery(GetBackendState());
+#endif
   rlDisableShader();
   glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+}
+
+bool RenderQuerySolidSamples(uint64_t *OutSamples, float *OutOverdraw) {
+  if (OutSamples != (uint64_t *)0) {
+    *OutSamples = 0;
+  }
+  if (OutOverdraw != (float *)0) {
+    *OutOverdraw = 0.0F;
+  }
+#ifdef MINEGAME_PROFILE
+  const BackendState *State = GetBackendState();
+  if (!State->HasSolidSamples) {
+    return false;
+  }
+  int Width = GetRenderWidth();
+  int Height = GetRenderHeight();
+  if (Width <= 0 || Height <= 0) {
+    return false;
+  }
+  uint64_t Pixels = (uint64_t)Width * (uint64_t)Height;
+  if (OutSamples != (uint64_t *)0) {
+    *OutSamples = State->LastSolidSamples;
+  }
+  if (OutOverdraw != (float *)0) {
+    *OutOverdraw = (float)((double)State->LastSolidSamples / (double)Pixels);
+  }
+  return true;
+#else
+  return false;
+#endif
 }
 
 void RenderGetViewProjection(float OutMatrix[RENDER_MATRIX_ELEMENTS]) {
@@ -424,6 +550,9 @@ void RenderDrawMesh(MeshHandle Handle) {
 
 void RenderBeginFrame(RenderCamera Camera) {
   PROFILE_BEGIN(SetupStart);
+#ifdef MINEGAME_PROFILE
+  GetBackendState()->SolidPassNext = true;
+#endif
   Camera3D RlCamera = {0};
   RlCamera.position = Vec3ToRL(Camera.Position);
   RlCamera.target = Vec3ToRL(Camera.Target);

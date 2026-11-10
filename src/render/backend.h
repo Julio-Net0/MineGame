@@ -2,6 +2,7 @@
 #define RENDER_BACKEND_H
 
 #include <stdbool.h>
+#include <stdint.h>
 #include "core/vecmath.h"
 #include "core/mesh_handle.h"
 #include "core/color.h"
@@ -64,6 +65,13 @@ typedef enum {
 // them.
 void RenderBeginChunkPass(ChunkPassKind Kind);
 void RenderEndChunkPass(void);
+
+// Most recent completed occlusion query for the solid chunk pass: how many
+// fragments passed the depth test, and that count divided by the current
+// framebuffer's pixel count. Read from an earlier frame so the query never
+// stalls the pipeline; false before the first result is ready or when built
+// with profiling disabled.
+bool RenderQuerySolidSamples(uint64_t *OutSamples, float *OutOverdraw);
 
 // Combined view-projection for the current frame, column-major, so the engine
 // can derive frustum planes without knowing the backend's matrix type.

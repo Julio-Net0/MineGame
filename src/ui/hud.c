@@ -121,8 +121,11 @@ static int DrawDebugLine(UiContext *Ctx, const char *Text, int Y) {
 typedef struct {
   ProfileStats Stats[PROFILE_SCOPE_COUNT];
   ProfileStats FrameStats;
+  uint64_t SolidSamples;
+  float SolidOverdraw;
   double LastRefreshTime;
   bool HasSamples;
+  bool HasSolidSamples;
 } TimingPanelState;
 
 static TimingPanelState *GetTimingPanelState(void) {
@@ -162,13 +165,26 @@ static int DrawTimingPanel(UiContext *Ctx, int Y) {
   TimingPanelState *Panel = GetTimingPanelState();
 
   double Now = PlatformGetTime();
-  if (!Panel->HasSamples || (Now - Panel->LastRefreshTime) >= TIMING_REFRESH_INTERVAL) {
+  if (!Panel->HasSamples || !Panel->HasSolidSamples ||
+      (Now - Panel->LastRefreshTime) >= TIMING_REFRESH_INTERVAL) {
     for (int Scope = 0; Scope < PROFILE_SCOPE_COUNT; Scope++) {
       ProfilerQuery((ProfileScope)Scope, &Panel->Stats[Scope]);
     }
     ProfilerQueryFrame(&Panel->FrameStats);
+    Panel->HasSolidSamples =
+        RenderQuerySolidSamples(&Panel->SolidSamples, &Panel->SolidOverdraw);
     Panel->LastRefreshTime = Now;
     Panel->HasSamples = true;
+  }
+
+  if (Panel->HasSolidSamples) {
+    char OverdrawText[DEBUG_TEXT_CAPACITY];
+    snprintf(OverdrawText, sizeof(OverdrawText),
+             "Solid Samples: %llu (%.2fx)",
+             (unsigned long long)Panel->SolidSamples,
+             (double)Panel->SolidOverdraw);
+    Y = DrawDebugLine(Ctx, OverdrawText, Y);
+    Y += FONT_LINE_HEIGHT;
   }
 
   const char *const HEADER_CELLS[DEBUG_NUMBER_COLUMNS] = {"avg", "max", "1%low", "n"};
