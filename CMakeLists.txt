@@ -70,6 +70,8 @@ FetchContent_MakeAvailable(raylib)
 
 set(MINEGAME_SIM_SOURCES
   src/server/server.c
+  src/net/protocol.c
+  src/net/loopback.c
   src/world/world.c
   src/world/chunk.c
   src/world/chunk_worker.c
@@ -120,6 +122,7 @@ add_executable(${PROJECT_NAME}
 
 add_executable(MineGameServer
   src/server/server_main.c
+  src/server/protocol_selftest.c
   ${MINEGAME_SIM_SOURCES}
 )
 

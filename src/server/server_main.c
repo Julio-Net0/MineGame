@@ -3,6 +3,7 @@
 #include "persistence/world_save.h"
 #include "platform/os_limits.h"
 #include "platform/os_time.h"
+#include "server/protocol_selftest.h"
 #include "server/server.h"
 #include "world/chunk_worker.h"
 
@@ -28,6 +29,7 @@ typedef struct {
   long MaxTicks;
   bool HasMaxTicks;
   bool PaceRealtime;
+  bool TestProtocol;
   int CoreCount;
   double CpuSlowdown;
   size_t RamLimitMb;
@@ -106,6 +108,7 @@ static ServerLaunchOptions ParseServerOptions(int Argc, char **Argv) {
       .MaxTicks = 0,
       .HasMaxTicks = false,
       .PaceRealtime = false,
+      .TestProtocol = false,
       .CoreCount = 0,
       .CpuSlowdown = 1.0,
       .RamLimitMb = 0,
@@ -119,6 +122,10 @@ static ServerLaunchOptions ParseServerOptions(int Argc, char **Argv) {
     }
     if (strcmp(Arg, "--pace-realtime") == 0) {
       Options.PaceRealtime = true;
+      continue;
+    }
+    if (strcmp(Arg, "--test-protocol") == 0) {
+      Options.TestProtocol = true;
       continue;
     }
 
@@ -224,9 +231,23 @@ int main(int Argc, char **Argv) {
   ServerLaunchOptions Options = ParseServerOptions(Argc, Argv);
   ApplyProcessLimits(&Options);
 
+  if (Options.TestProtocol && !RunProtocolCodecSelfTest()) {
+    return EXIT_FAILURE;
+  }
+
   ServerState Server = {0};
   if (!ServerInit(&Server, &Options.Config)) {
     return EXIT_FAILURE;
+  }
+
+  if (Options.TestProtocol) {
+    bool Passed = RunProtocolServerSelfTest(&Server);
+    ServerShutdown(&Server);
+    if (!Passed) {
+      return EXIT_FAILURE;
+    }
+    LogInfo("PROTOCOL_TEST: PASS");
+    return EXIT_SUCCESS;
   }
 
   LogInfo("SERVER: started headless 20 TPS loop (seed=%llu)",

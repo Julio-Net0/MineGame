@@ -12,6 +12,11 @@
 
 typedef void (*ChunkEvictCallback)(Chunk *EvictedChunk);
 
+// Invoked by SetBlockInWorld after a loaded block's ID actually changes.
+// Terrain generation writes chunks directly and never triggers it.
+typedef void (*BlockChangeCallback)(void *UserData, int BlockX, int BlockY,
+                                    int BlockZ, unsigned char NewBlockId);
+
 typedef struct World {
   Chunk Chunks[MAX_ACTIVE_CHUNKS];
   int ChunkHashMap[CHUNK_MAP_SIZE];
@@ -26,6 +31,8 @@ typedef struct World {
   bool HasLoadedOnce;
 
   ChunkEvictCallback OnChunkEvict;
+  BlockChangeCallback OnBlockChange;
+  void *BlockChangeUserData;
 } World;
 
 typedef struct {
@@ -37,6 +44,8 @@ typedef struct {
 
 void InitWorld(World *WorldVal);
 void WorldSetChunkEvictCallback(World *WorldVal, ChunkEvictCallback Callback);
+void WorldSetBlockChangeCallback(World *WorldVal, BlockChangeCallback Callback,
+                                 void *UserData);
 void UpdateWorld(World *WorldVal, Vec3 PlayerPos, int RenderDist);
 void UpdateNeighborsDirtyFlag(World *WorldVal, int Cx, int Cy, int Cz);
 int GetBlockIDFromWorld(World *WorldVal, Vec3 GlobalPos);

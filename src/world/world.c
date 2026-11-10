@@ -49,10 +49,18 @@ void InitWorld(World *WorldVal){
   WorldVal->LastLoadRenderDist = 0;
   WorldVal->HasLoadedOnce = false;
   WorldVal->OnChunkEvict = (ChunkEvictCallback)0;
+  WorldVal->OnBlockChange = (BlockChangeCallback)0;
+  WorldVal->BlockChangeUserData = NULL;
 }
 
 void WorldSetChunkEvictCallback(World *WorldVal, ChunkEvictCallback Callback) {
   WorldVal->OnChunkEvict = Callback;
+}
+
+void WorldSetBlockChangeCallback(World *WorldVal, BlockChangeCallback Callback,
+                                 void *UserData) {
+  WorldVal->OnBlockChange = Callback;
+  WorldVal->BlockChangeUserData = UserData;
 }
 
 static void InsertChunkIntoMap(World *WorldVal, int ChunkIndex) {
@@ -252,6 +260,7 @@ void SetBlockInWorld(World *WorldVal, Vec3 Pos, unsigned char BlockId){
   if (LocalY < 0) { LocalY += CHUNK_SIZE; }
   if (LocalZ < 0) { LocalZ += CHUNK_SIZE; }
 
+  unsigned char PreviousId = ChunkVal->Data[LocalX][LocalY][LocalZ];
   SetBlockInChunk(ChunkVal, (Vec3){(float)LocalX, (float)LocalY, (float)LocalZ}, BlockId);
   ChunkVal->IsDirty = true;
   // A mesh already in flight was built from a snapshot taken before this edit,
@@ -283,6 +292,13 @@ void SetBlockInWorld(World *WorldVal, Vec3 Pos, unsigned char BlockId){
   else if (LocalZ == CHUNK_SIZE - 1) {
     Chunk *Neighbor = GetChunkFromWorld(WorldVal, ChunkVal->ChunkX, ChunkVal->ChunkY, ChunkVal->ChunkZ + 1);
     if (Neighbor != (Chunk *)0) { Neighbor->IsDirty = true; }
+  }
+
+  if (WorldVal->OnBlockChange != (BlockChangeCallback)0 && PreviousId != BlockId) {
+    WorldVal->OnBlockChange(WorldVal->BlockChangeUserData,
+                            (int)__builtin_floorf(Pos.x),
+                            (int)__builtin_floorf(Pos.y),
+                            (int)__builtin_floorf(Pos.z), BlockId);
   }
 }
 

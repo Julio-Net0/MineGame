@@ -40,8 +40,9 @@ typedef struct Chunk {
 
   unsigned char Data[CHUNK_SIZE][CHUNK_SIZE][CHUNK_SIZE];
 
-  // Derived from the seed, never serialized: FillChunkBiomeMap rebuilds it for
-  // chunks loaded from disk exactly as it does for generated ones.
+  // Derived from the seed and never saved to disk: FillChunkBiomeMap rebuilds it
+  // for chunks loaded from disk exactly as it does for generated ones. Network
+  // chunk packets do carry it, so clients can tint without knowing the seed.
   unsigned char BiomeMap[BIOME_CELLS_PER_CHUNK][BIOME_CELLS_PER_CHUNK]
                         [BIOME_CELLS_PER_CHUNK];
 

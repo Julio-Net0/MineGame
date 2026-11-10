@@ -17,6 +17,9 @@ PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 EXPECTED_WIDTH = 1280
 EXPECTED_HEIGHT = 720
 EXPECTED_SEED = "16412814131703521744"
+# Number of "PROTOCOL_TEST: ok" lines MineGameServer --test-protocol logs; a
+# mismatch means a check was silently skipped or added without updating this.
+EXPECTED_PROTOCOL_CHECKS = 33
 EXPECTED_ACTIVE_CHUNKS = 1331
 
 PROFILER_SCOPES = (
@@ -382,6 +385,61 @@ def run_headless_server_scenario(
     return elapsed
 
 
+def run_server_protocol_scenario(
+    server_binary: Path,
+    repo_root: Path,
+    out_root: Path,
+    timeout_seconds: int,
+) -> float:
+    out_dir = out_root / "server_protocol"
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        str(server_binary.resolve()),
+        "--test-protocol",
+        "--seed",
+        EXPECTED_SEED,
+        "--read-only",
+    ]
+
+    start = time.monotonic()
+    completed = subprocess.run(
+        cmd,
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        timeout=timeout_seconds,
+        check=False,
+    )
+    elapsed = time.monotonic() - start
+
+    combined_log = (completed.stdout or "") + (completed.stderr or "")
+    (out_dir / "server.log").write_text(combined_log, encoding="utf-8")
+
+    if completed.returncode != 0:
+        sys.stderr.write(f"\n--- server_protocol output ---\n{combined_log}\n")
+        raise RegressionFailure(
+            f"server_protocol exited with code {completed.returncode} (expected 0)"
+        )
+
+    require(
+        "PROTOCOL_TEST: FAIL" not in combined_log,
+        "server_protocol: a protocol check reported FAIL",
+    )
+    require(
+        "PROTOCOL_TEST: PASS" in combined_log,
+        "server_protocol: missing 'PROTOCOL_TEST: PASS' in server.log",
+    )
+    passed_checks = combined_log.count("PROTOCOL_TEST: ok ")
+    require(
+        passed_checks == EXPECTED_PROTOCOL_CHECKS,
+        f"server_protocol: expected {EXPECTED_PROTOCOL_CHECKS} passing checks, got {passed_checks}",
+    )
+    return elapsed
+
+
 def run_scenario(
     binary: Path,
     repo_root: Path,
@@ -492,6 +550,21 @@ def main() -> int:
         print(f"[FAIL] headless_server: {exc}", file=sys.stderr)
         return 1
 
+    sys.stdout.write(f"  -> {'server_protocol':<16} ({server_binary.name} --test-protocol) ... ")
+    sys.stdout.flush()
+    try:
+        protocol_elapsed = run_server_protocol_scenario(
+            server_binary=server_binary,
+            repo_root=repo_root,
+            out_root=out_root,
+            timeout_seconds=args.timeout,
+        )
+        print(f"PASS ({protocol_elapsed:.2f}s)")
+    except Exception as exc:  # noqa: BLE001
+        print("FAIL")
+        print(f"[FAIL] server_protocol: {exc}", file=sys.stderr)
+        return 1
+
     for name, script_rel, verifier in SCENARIOS:
         sys.stdout.write(f"  -> {name:<16} ({script_rel}) ... ")
         sys.stdout.flush()
@@ -512,7 +585,7 @@ def main() -> int:
             return 1
 
     total_elapsed = time.monotonic() - total_start
-    print(f"All {len(SCENARIOS) + 1} regression scenarios passed in {total_elapsed:.2f}s.")
+    print(f"All {len(SCENARIOS) + 2} regression scenarios passed in {total_elapsed:.2f}s.")
     return 0
 
 
