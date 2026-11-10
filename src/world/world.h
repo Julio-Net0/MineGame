@@ -10,6 +10,8 @@
 // Open-addressing hash map: ~25% load factor keeps probe chains short
 #define CHUNK_MAP_SIZE (MAX_ACTIVE_CHUNKS * 4)
 
+typedef void (*ChunkEvictCallback)(Chunk *EvictedChunk);
+
 typedef struct World {
   Chunk Chunks[MAX_ACTIVE_CHUNKS];
   int ChunkHashMap[CHUNK_MAP_SIZE];
@@ -22,6 +24,8 @@ typedef struct World {
   int LastLoadChunkZ;
   int LastLoadRenderDist;
   bool HasLoadedOnce;
+
+  ChunkEvictCallback OnChunkEvict;
 } World;
 
 typedef struct {
@@ -32,6 +36,7 @@ typedef struct {
 } RaycastResult;
 
 void InitWorld(World *WorldVal);
+void WorldSetChunkEvictCallback(World *WorldVal, ChunkEvictCallback Callback);
 void UpdateWorld(World *WorldVal, Vec3 PlayerPos, int RenderDist);
 void UpdateNeighborsDirtyFlag(World *WorldVal, int Cx, int Cy, int Cz);
 int GetBlockIDFromWorld(World *WorldVal, Vec3 GlobalPos);
@@ -47,6 +52,12 @@ RaycastResult RayCastToWorld(World *WorldVal, Vec3 RayOrigin, Vec3 RayDir, float
 Chunk *GetChunkFromWorld(World *WorldVal, int ChunkX, int ChunkY, int ChunkZ);
 Chunk *GetChunkAtPos(World *WorldVal, Vec3 Pos);
 bool AreNeighborsGenerated(World *WorldVal, Chunk *ChunkVal);
+
+// True when every chunk position within RenderDist around Center exists and
+// has finished background terrain/feature generation (with no pending
+// neighbour-dirty bookkeeping). Headless servers query this directly because
+// no mesher runs to clear IsDirty.
+bool WorldIsGenerationSettled(World *WorldVal, Vec3 Center, int RenderDist);
 
 // True when chunk loading around Center has nothing left to do: every position
 // within RenderDist exists, has finished generating, and is not waiting to be

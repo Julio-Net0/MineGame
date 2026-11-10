@@ -310,6 +310,78 @@ def find_default_binary(repo_root: Path) -> Path:
     )
 
 
+def find_server_binary(client_binary: Path, repo_root: Path) -> Path:
+    sibling_names = ("MineGameServer.exe", "MineGameServer")
+    for name in sibling_names:
+        sibling = client_binary.parent / name
+        if sibling.is_file():
+            return sibling
+    candidates = (
+        repo_root / "build" / "MineGameServer.exe",
+        repo_root / "build" / "MineGameServer",
+        repo_root / "dist" / "MineGame-linux-x86_64" / "MineGameServer",
+        repo_root / "dist" / "MineGame-windows-x86_64" / "MineGameServer.exe",
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError(
+        "could not locate MineGameServer binary; build the project first"
+    )
+
+
+def run_headless_server_scenario(
+    server_binary: Path,
+    repo_root: Path,
+    out_root: Path,
+    timeout_seconds: int,
+) -> float:
+    out_dir = out_root / "headless_server"
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        str(server_binary.resolve()),
+        "--ticks",
+        "100",
+        "--seed",
+        EXPECTED_SEED,
+        "--read-only",
+    ]
+
+    start = time.monotonic()
+    completed = subprocess.run(
+        cmd,
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        timeout=timeout_seconds,
+        check=False,
+    )
+    elapsed = time.monotonic() - start
+
+    combined_log = (completed.stdout or "") + (completed.stderr or "")
+    (out_dir / "server.log").write_text(combined_log, encoding="utf-8")
+
+    if completed.returncode != 0:
+        sys.stderr.write(f"\n--- headless_server output ---\n{combined_log}\n")
+        raise RegressionFailure(
+            f"headless_server exited with code {completed.returncode} (expected 0)"
+        )
+
+    expected_summary = (
+        f"SERVER: summary ticks=100 seed={EXPECTED_SEED} settled=true "
+        f"active={EXPECTED_ACTIVE_CHUNKS} generated={EXPECTED_ACTIVE_CHUNKS} "
+        f"generating=0 meshing=0 pos=(0.0, 22.5, 0.0) vel=(0.0, 0.0, 0.0) grounded=true"
+    )
+    require(
+        expected_summary in combined_log,
+        f"headless_server: missing expected summary '{expected_summary}' in server.log",
+    )
+    return elapsed
+
+
 def run_scenario(
     binary: Path,
     repo_root: Path,
@@ -390,6 +462,7 @@ def main() -> int:
 
     try:
         binary = args.binary.resolve() if args.binary else find_default_binary(repo_root)
+        server_binary = find_server_binary(binary, repo_root)
     except FileNotFoundError as exc:
         print(f"[FAIL] {exc}", file=sys.stderr)
         return 1
@@ -403,6 +476,21 @@ def main() -> int:
 
     print(f"Running regression suite with binary: {binary}")
     total_start = time.monotonic()
+
+    sys.stdout.write(f"  -> {'headless_server':<16} ({server_binary.name} --ticks 100) ... ")
+    sys.stdout.flush()
+    try:
+        server_elapsed = run_headless_server_scenario(
+            server_binary=server_binary,
+            repo_root=repo_root,
+            out_root=out_root,
+            timeout_seconds=args.timeout,
+        )
+        print(f"PASS ({server_elapsed:.2f}s)")
+    except Exception as exc:  # noqa: BLE001
+        print("FAIL")
+        print(f"[FAIL] headless_server: {exc}", file=sys.stderr)
+        return 1
 
     for name, script_rel, verifier in SCENARIOS:
         sys.stdout.write(f"  -> {name:<16} ({script_rel}) ... ")
@@ -424,7 +512,7 @@ def main() -> int:
             return 1
 
     total_elapsed = time.monotonic() - total_start
-    print(f"All {len(SCENARIOS)} regression scenarios passed in {total_elapsed:.2f}s.")
+    print(f"All {len(SCENARIOS) + 1} regression scenarios passed in {total_elapsed:.2f}s.")
     return 0
 
 

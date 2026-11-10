@@ -1,6 +1,5 @@
 #include "world/world.h"
 #include "world/chunk.h"
-#include "render/backend.h"
 #include "world/chunk_worker.h"
 #include "persistence/world_save.h"
 #include "core/profiler.h"
@@ -49,6 +48,11 @@ void InitWorld(World *WorldVal){
   WorldVal->LastLoadChunkZ = 0;
   WorldVal->LastLoadRenderDist = 0;
   WorldVal->HasLoadedOnce = false;
+  WorldVal->OnChunkEvict = (ChunkEvictCallback)0;
+}
+
+void WorldSetChunkEvictCallback(World *WorldVal, ChunkEvictCallback Callback) {
+  WorldVal->OnChunkEvict = Callback;
 }
 
 static void InsertChunkIntoMap(World *WorldVal, int ChunkIndex) {
@@ -141,20 +145,8 @@ static void EvictUnneededChunks(World *WorldVal, bool *KeepChunk){
     }
 
     Chunk *Evicted = &WorldVal->Chunks[IdxI];
-    if(Evicted->HasMesh){
-      RenderFreeMesh(Evicted->ChunkMesh);
-      Evicted->ChunkMesh = MESH_HANDLE_INVALID;
-      Evicted->HasMesh = false;
-    }
-    if(Evicted->HasCutoutMesh){
-      RenderFreeMesh(Evicted->CutoutMesh);
-      Evicted->CutoutMesh = MESH_HANDLE_INVALID;
-      Evicted->HasCutoutMesh = false;
-    }
-    if(Evicted->HasTranslucentMesh){
-      RenderFreeMesh(Evicted->TranslucentMesh);
-      Evicted->TranslucentMesh = MESH_HANDLE_INVALID;
-      Evicted->HasTranslucentMesh = false;
+    if(WorldVal->OnChunkEvict != (ChunkEvictCallback)0){
+      WorldVal->OnChunkEvict(Evicted);
     }
 
     RemoveChunkFromMap(WorldVal, OldX, OldY, OldZ);
@@ -449,7 +441,39 @@ bool AreNeighborsGenerated(World *WorldVal, Chunk *ChunkVal) {
   return true;
 }
 
+bool WorldIsGenerationSettled(World *WorldVal, Vec3 Center, int RenderDist) {
+  int Side = (2 * RenderDist) + 1;
+  if ((Side * Side * Side) > MAX_ACTIVE_CHUNKS) {
+    RenderDist = MAX_RENDER_DISTANCE;
+  }
+
+  int CenterX = (int)__builtin_floorf(Center.x / CHUNK_SIZE);
+  int CenterY = (int)__builtin_floorf(Center.y / CHUNK_SIZE);
+  int CenterZ = (int)__builtin_floorf(Center.z / CHUNK_SIZE);
+
+  for (int IdxX = CenterX - RenderDist; IdxX <= CenterX + RenderDist; IdxX++) {
+    for (int IdxY = CenterY - RenderDist; IdxY <= CenterY + RenderDist; IdxY++) {
+      for (int IdxZ = CenterZ - RenderDist; IdxZ <= CenterZ + RenderDist;
+           IdxZ++) {
+        Chunk *ChunkVal = GetChunkFromWorld(WorldVal, IdxX, IdxY, IdxZ);
+        if (ChunkVal == (Chunk *)0) {
+          return false;
+        }
+        if (!ChunkVal->IsGenerated || ChunkVal->IsGenerating ||
+            ChunkVal->TerrainJustGenerated) {
+          return false;
+        }
+      }
+    }
+  }
+  return true;
+}
+
 bool WorldIsSettled(World *WorldVal, Vec3 Center, int RenderDist) {
+  if (!WorldIsGenerationSettled(WorldVal, Center, RenderDist)) {
+    return false;
+  }
+
   int Side = (2 * RenderDist) + 1;
   if ((Side * Side * Side) > MAX_ACTIVE_CHUNKS) {
     RenderDist = MAX_RENDER_DISTANCE;
@@ -466,11 +490,7 @@ bool WorldIsSettled(World *WorldVal, Vec3 Center, int RenderDist) {
       for (int IdxZ = CenterZ - RenderDist; IdxZ <= CenterZ + RenderDist;
            IdxZ++) {
         Chunk *ChunkVal = GetChunkFromWorld(WorldVal, IdxX, IdxY, IdxZ);
-        if (ChunkVal == (Chunk *)0) {
-          return false;
-        }
-        if (!ChunkVal->IsGenerated || ChunkVal->IsGenerating ||
-            ChunkVal->IsDirty || ChunkVal->IsMeshing) {
+        if (ChunkVal == (Chunk *)0 || ChunkVal->IsDirty || ChunkVal->IsMeshing) {
           return false;
         }
       }

@@ -68,9 +68,8 @@ set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 
 FetchContent_MakeAvailable(raylib)
 
-add_executable(${PROJECT_NAME}
-  src/main.c
-  src/automation/script.c
+set(MINEGAME_SIM_SOURCES
+  src/server/server.c
   src/world/world.c
   src/world/chunk.c
   src/world/chunk_worker.c
@@ -83,9 +82,22 @@ add_executable(${PROJECT_NAME}
   src/persistence/world_save.c
   src/persistence/chunk_serial.c
   src/player/player.c
+  src/platform/os_limits.c
+  src/platform/os_time.c
+  src/core/utils.c
+  src/core/fileio.c
+  src/core/log.c
+  src/core/noise.c
+  src/core/profiler.c
+  src/third_party/cJSON.c
+)
+
+add_executable(${PROJECT_NAME}
+  src/main.c
+  src/automation/script.c
+  ${MINEGAME_SIM_SOURCES}
   src/input/input.c
   src/input/raylib_input.c
-  src/platform/os_limits.c
   src/platform/raylib_platform.c
   src/render/renderer.c
   src/render/raylib_backend.c
@@ -100,37 +112,45 @@ add_executable(${PROJECT_NAME}
   src/ui/chat.c
   src/ui/commands.c
   src/ui/debug.c
-  src/core/utils.c
-  src/core/fileio.c
   src/core/image.c
   src/core/resource_pack.c
   src/core/launch_options.c
-  src/core/log.c
-  src/core/noise.c
-  src/core/profiler.c
-  src/third_party/cJSON.c
   src/third_party/png_write.c
 )
 
-target_link_libraries(${PROJECT_NAME} raylib Threads::Threads)
+add_executable(MineGameServer
+  src/server/server_main.c
+  ${MINEGAME_SIM_SOURCES}
+)
 
-# Applied to the game target only, not to raylib. The cross-TU inlining worth
+target_link_libraries(${PROJECT_NAME} raylib Threads::Threads)
+target_link_libraries(MineGameServer Threads::Threads)
+if(WIN32)
+  target_link_libraries(MineGameServer psapi)
+endif()
+
+# Applied to the game targets only, not to raylib. The cross-TU inlining worth
 # having is within this project's own code; raylib is called once per draw,
 # where inlining buys nothing, and leaving it out avoids its build interacting
 # with LTO under MinGW. Debug keeps full inlining off so it stays debuggable.
 if(MINEGAME_IPO_SUPPORTED AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
   set_property(TARGET ${PROJECT_NAME}
                PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+  set_property(TARGET MineGameServer
+               PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
 endif()
 
 target_include_directories(${PROJECT_NAME} PUBLIC src ${raylib_SOURCE_DIR}/src)
+target_include_directories(MineGameServer PUBLIC src)
 
 if(MINEGAME_PROFILE)
   target_compile_definitions(${PROJECT_NAME} PRIVATE MINEGAME_PROFILE)
+  target_compile_definitions(MineGameServer PRIVATE MINEGAME_PROFILE)
 endif()
 
 if(MINEGAME_SNAPSHOT_VERIFY)
   target_compile_definitions(${PROJECT_NAME} PRIVATE MINEGAME_SNAPSHOT_VERIFY)
+  target_compile_definitions(MineGameServer PRIVATE MINEGAME_SNAPSHOT_VERIFY)
 endif()
 
 set_source_files_properties(src/platform/os_limits.c PROPERTIES

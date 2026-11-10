@@ -17,7 +17,9 @@
 #include "platform/platform.h"
 #include "player/player.h"
 #include "pthread.h"
+#include "render/backend.h"
 #include "render/renderer.h"
+#include "server/server.h"
 #include "core/launch_options.h"
 #include "core/log.h"
 #include "core/profiler.h"
@@ -67,6 +69,24 @@
 // time budget alone would leave that hazard open. Mesh building stops at
 // whichever limit is reached first.
 #define MAX_MESHES_PER_FRAME 96
+
+static void FreeEvictedChunkMeshes(Chunk *Evicted) {
+  if (Evicted->HasMesh) {
+    RenderFreeMesh(Evicted->ChunkMesh);
+    Evicted->ChunkMesh = MESH_HANDLE_INVALID;
+    Evicted->HasMesh = false;
+  }
+  if (Evicted->HasCutoutMesh) {
+    RenderFreeMesh(Evicted->CutoutMesh);
+    Evicted->CutoutMesh = MESH_HANDLE_INVALID;
+    Evicted->HasCutoutMesh = false;
+  }
+  if (Evicted->HasTranslucentMesh) {
+    RenderFreeMesh(Evicted->TranslucentMesh);
+    Evicted->TranslucentMesh = MESH_HANDLE_INVALID;
+    Evicted->HasTranslucentMesh = false;
+  }
+}
 
 // Returns false when startup could not complete; nothing is initialised in that
 // case, so the caller has nothing to tear down.
@@ -124,6 +144,7 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
   }
   InitWorldSave();
   InitWorld(*WorldVal);
+  WorldSetChunkEvictCallback(*WorldVal, FreeEvictedChunkMeshes);
   LogInfo("MAIN THREAD ID: %llu", (unsigned long long)pthread_self());
 
   int WorkerCount = (Options->WorkerCount > 0) ? Options->WorkerCount
@@ -208,16 +229,6 @@ static void UpdateCameras(GameCamera *PlayerCamera, GameCamera *FreeCamera,
   }
 
   *WasFreecam = GetDebugState()->Freecam;
-}
-
-static void UpdateWorldChunks(World *WorldVal) {
-  for (int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++) {
-    Chunk *ChunkVal = &WorldVal->Chunks[IdxI];
-    if (ChunkVal->IsGenerated && ChunkVal->TerrainJustGenerated) {
-      UpdateNeighborsDirtyFlag(WorldVal, ChunkVal->ChunkX, ChunkVal->ChunkY, ChunkVal->ChunkZ);
-      ChunkVal->TerrainJustGenerated = false;
-    }
-  }
 }
 
 // Hand dirty chunks to the workers. Capturing the snapshot is the only cost the
@@ -449,8 +460,10 @@ int main(int Argc, char **Argv) {
 
       PROFILE_BEGIN(PlayerStart);
       PlayerVal.PrevPosition = PlayerVal.Position;
-      PlayerView MoveView = PlayerViewFromCamera(PlayerCamera);
-      UpdatePlayer(&PlayerVal, WorldVal, MoveView, PendingInput, TICK_DT);
+      if (!GetDebugState()->Freecam) {
+        PlayerView MoveView = PlayerViewFromCamera(PlayerCamera);
+        UpdatePlayer(&PlayerVal, WorldVal, MoveView, PendingInput, TICK_DT);
+      }
 
       PlayerView InteractView = PlayerViewFromCamera(*ActiveCamera);
       HandlePlayerInteraction(&PlayerVal, WorldVal, InteractView, PendingInput);
@@ -462,7 +475,7 @@ int main(int Argc, char **Argv) {
       // workers finished, which is simulation state, and running it per frame
       // would repeat a full chunk scan for nothing. Mesh building runs after the
       // tick loop instead — see below.
-      UpdateWorldChunks(WorldVal);
+      ServerUpdateWorldChunks(WorldVal);
 
       Accumulator -= TICK_DT;
       Ticks++;

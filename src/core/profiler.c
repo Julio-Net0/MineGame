@@ -1,6 +1,6 @@
 #include "core/profiler.h"
 
-#include "platform/platform.h"
+#include "platform/os_time.h"
 
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -127,14 +127,14 @@ void ProfilerSetSlowdown(double Factor) {
   GetProfilerState()->SlowdownFactor = (Factor > 1.0) ? Factor : 1.0;
 }
 
-double ProfilerNow(void) { return PlatformGetTime(); }
+double ProfilerNow(void) { return OsGetTimeSeconds(); }
 
 void ProfilerRecord(ProfileScope Scope, double StartTime) {
   if (Scope < 0 || Scope >= PROFILE_SCOPE_COUNT) {
     return;
   }
 
-  double Now = PlatformGetTime();
+  double Now = OsGetTimeSeconds();
   double Elapsed = Now - StartTime;
   if (Elapsed < 0.0) {
     Elapsed = 0.0;
@@ -144,7 +144,7 @@ void ProfilerRecord(ProfileScope Scope, double StartTime) {
   if (State->SlowdownFactor > 1.0 && SCOPE_IS_CPU_BOUND[Scope] &&
       Elapsed > 0.0) {
     double TargetEnd = StartTime + (Elapsed * State->SlowdownFactor);
-    while ((Now = PlatformGetTime()) < TargetEnd) {
+    while ((Now = OsGetTimeSeconds()) < TargetEnd) {
     }
     Elapsed = Now - StartTime;
   }
@@ -168,7 +168,7 @@ void ProfilerEndFrame(void) {
   // Between boundaries, so it covers the whole frame including anything outside
   // every scope. The very first frame has no previous boundary to measure from
   // and records zero rather than a meaningless interval since process start.
-  double Now = PlatformGetTime();
+  double Now = OsGetTimeSeconds();
   double FrameSeconds =
       (State->LastFrameEndTime > 0.0) ? (Now - State->LastFrameEndTime) : 0.0;
   if (FrameSeconds < 0.0) {
@@ -487,7 +487,7 @@ bool ProfilerStartTimedCapture(char *OutPath, size_t PathCapacity,
     return false;
   }
   ProfilerState *State = GetProfilerState();
-  State->CaptureDeadline = PlatformGetTime() + Seconds;
+  State->CaptureDeadline = OsGetTimeSeconds() + Seconds;
   State->TimedStopPending = false;
   return true;
 }

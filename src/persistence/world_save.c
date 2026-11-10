@@ -1,5 +1,6 @@
 #include "persistence/world_save.h"
 #include "core/log.h"
+#include "platform/os_time.h"
 #include "world/chunk.h"
 #include "persistence/chunk_serial.h"
 #include <stdio.h>
@@ -11,14 +12,11 @@
 #define BYTE_MASK 0xFF
 #define BYTE_SHIFT 8
 
-#define MILLIS_PER_SECOND 1000U
-#define NANOS_PER_MILLI   1000000L
 #define MICROS_PER_SECOND 1000000ULL
 
 #ifdef _WIN32
 #include <direct.h>
 #include <intrin.h>
-#include <windows.h>
 #define make_dir(path) _mkdir(path)
 #else
 #include <sys/stat.h>
@@ -26,18 +24,6 @@
 #include <sys/time.h>
 #define make_dir(path) mkdir(path, 0777)
 #endif
-
-// Renderer-free millisecond sleep, replacing Raylib's WaitTime for the
-// region-file open retry back-off.
-static void SleepMillis(unsigned Millis) {
-#ifdef _WIN32
-  Sleep(Millis);
-#else
-  struct timespec Req = {.tv_sec = Millis / MILLIS_PER_SECOND,
-                         .tv_nsec = (long)(Millis % MILLIS_PER_SECOND) * NANOS_PER_MILLI};
-  nanosleep(&Req, (struct timespec *)0);
-#endif
-}
 
 typedef struct {
   char Magic[4];
@@ -249,7 +235,7 @@ static FILE* OpenFileWithRetry(const char *Path, const char *Mode) {
     if (errno == ENOENT) {
       break;
     }
-    SleepMillis(REGION_WAIT_ON_BUSY_MS);
+    OsSleepMillis(REGION_WAIT_ON_BUSY_MS);
   }
   return FileVal;
 }

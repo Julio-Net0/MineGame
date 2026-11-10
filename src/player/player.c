@@ -1,6 +1,5 @@
 #include "player/player.h"
 #include "core/vecmath.h"
-#include "ui/debug.h"
 #include "world/block_system.h"
 #include "world/world.h"
 
@@ -325,10 +324,6 @@ static Vec3 CalculateMoveDir(Vec3 ViewForward, float MoveX, float MoveForward) {
 
 void UpdatePlayer(Player *PlayerVal, World *WorldVal, PlayerView View,
                   PlayerInput Input, float Dt) {
-  if (GetDebugState()->Freecam) {
-    return;
-  }
-
   Vec3 MoveDir = CalculateMoveDir(View.Forward, Input.MoveX, Input.MoveForward);
 
   PlayerVal->Velocity.x = MoveDir.x * PlayerVal->Speed;

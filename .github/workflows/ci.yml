@@ -77,6 +77,7 @@ jobs:
           STAGE=dist/MineGame-linux-x86_64
           mkdir -p "$STAGE"
           cp build/MineGame "$STAGE/"
+          cp build/MineGameServer "$STAGE/"
           cp -r build/assets "$STAGE/assets"
           (cd dist && zip -r MineGame-linux-x86_64.zip MineGame-linux-x86_64)
 
@@ -206,7 +207,8 @@ jobs:
       - name: Verify no toolchain DLL dependencies
         run: |
           objdump -p build/MineGame.exe | grep 'DLL Name' | sort
-          if objdump -p build/MineGame.exe | grep -qiE 'lib(gcc|winpthread|stdc\+\+)'; then
+          objdump -p build/MineGameServer.exe | grep 'DLL Name' | sort
+          if objdump -p build/MineGame.exe build/MineGameServer.exe | grep -qiE 'lib(gcc|winpthread|stdc\+\+)'; then
             echo 'Binary links a MinGW runtime DLL that players will not have.'
             exit 1
           fi
@@ -216,6 +218,7 @@ jobs:
           STAGE=dist/MineGame-windows-x86_64
           mkdir -p "$STAGE"
           cp build/MineGame.exe "$STAGE/"
+          cp build/MineGameServer.exe "$STAGE/"
           cp -r build/assets "$STAGE/assets"
           (cd dist && zip -r MineGame-windows-x86_64.zip MineGame-windows-x86_64)
 
@@ -262,6 +265,7 @@ jobs:
         run: |
           unzip -q dist/MineGame-linux-x86_64.zip -d dist
           chmod +x dist/MineGame-linux-x86_64/MineGame
+          chmod +x dist/MineGame-linux-x86_64/MineGameServer
 
       - name: Run regression suite
         run: >
