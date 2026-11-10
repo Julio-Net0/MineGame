@@ -17,9 +17,7 @@
 #include <string.h>
 #include <math.h>
 
-#define VERTICES_PER_FACE 4
-#define FLOATS_PER_VERTEX 3
-#define COLOR_CHANNELS 4
+#define VERTICES_PER_FACE CHUNK_VERTICES_PER_QUAD
 #define OPAQUE_ALPHA_VALUE 255
 #define ROUND_BIAS 0.5F
 
@@ -29,16 +27,11 @@ enum {
   BIOME_CELL_CENTER = BIOME_CELL_SIZE / 2
 };
 #define CHUNK_CLOSE_DISTANCE_FACTOR 2.0F
-#define INDICES_PER_FACES 6
 
-// Sized to what the index type can address, not to the theoretical face count.
-// Indices are unsigned short, so no vertex beyond 65535 is referenceable; the
-// buffers previously held 98304, roughly half of which could never be reached.
-// That waste was tolerable as one global buffer and is not once there is one per
-// meshing thread.
-#define MAX_MESH_QUADS 16383
-#define MAX_MESH_VERTICES (MAX_MESH_QUADS * VERTICES_PER_FACE)
-#define MAX_MESH_INDICES (MAX_MESH_QUADS * INDICES_PER_FACES)
+// Sized to what the 16-bit shared index buffer can address (65532 vertices =
+// 16383 four-vertex quads).
+#define MAX_MESH_QUADS CHUNK_MAX_QUADS
+#define MAX_MESH_VERTICES CHUNK_MAX_VERTICES
 
 #define CHUNK_SPHERE_RADIUS 14.0F
 #define FRUSTUM_DOT_THRESHOLD 0.4F
@@ -61,14 +54,8 @@ typedef enum {
 // Backend-agnostic mesh-builder scratch for one target. Filled per chunk, then
 // handed to the render backend as MeshData. Holds no renderer (Raylib) types.
 typedef struct {
-  float TexCoords[MAX_MESH_VERTICES * 2];
-  float Vertices[MAX_MESH_VERTICES * FLOATS_PER_VERTEX];
-  unsigned short Indices[MAX_MESH_INDICES];
-  unsigned char Colors[MAX_MESH_VERTICES * COLOR_CHANNELS];
-  float TexLayers[MAX_MESH_VERTICES * 2];
-
+  ChunkVertex Vertices[MAX_MESH_VERTICES];
   int VCount;
-  int ICount;
 } MeshScratch;
 
 typedef struct {
@@ -268,8 +255,6 @@ static const int AO_OFFSETS[6][4][3][3] = {
     }
 };
 
-static const unsigned char AO_BRIGHTNESS[4] = {255, 210, 165, 120};
-
 static bool ComputeFaceAO(const ChunkSnapshot *Snap,
                            int LocalX, int LocalY, int LocalZ, BlockFace Face, int Ao[4]) {
     for (int V = 0; V < 4; V++) {
@@ -294,143 +279,153 @@ static bool ComputeFaceAO(const ChunkSnapshot *Snap,
 }
 
 // ---------------------------------------------------------------------------
-// Mesh builder primitives
+// Vertex packing & mesh builder primitives
 // ---------------------------------------------------------------------------
 
-static void AddFaceIndices(MesherState *State, MeshTarget Target, bool FlipQuad) {
-    MeshScratch *Set = &State->Sets[Target];
-    unsigned short Base = (unsigned short)Set->VCount;
+enum {
+    VERTEX_COORD_MASK = 31U,
+    VERTEX_AO_MASK = 3U,
+    VERTEX_NORMAL_MASK = 7U,
+    VERTEX_BYTE_MASK = 255U,
+    VERTEX_NO_OVERLAY_PACKED = 255U,
+    VERTEX_NORMAL_CROSS = 6,
 
+    VERTEX_SHIFT_Y = 5U,
+    VERTEX_SHIFT_Z = 10U,
+    VERTEX_SHIFT_U = 15U,
+    VERTEX_SHIFT_V = 20U,
+    VERTEX_SHIFT_AO = 25U,
+    VERTEX_SHIFT_NORMAL = 27U,
+
+    VERTEX_SHIFT_OVERLAY = 8U,
+    VERTEX_SHIFT_TINT = 16U,
+
+    RGB565_MAX_5 = 31U,
+    RGB565_MAX_6 = 63U,
+    RGB565_DIVISOR = 255U,
+    RGB565_ROUND = 127U,
+    RGB565_SHIFT_G = 5U,
+    RGB565_SHIFT_R = 11U
+};
+
+static uint16_t ColorToRgb565(Color8 Color) {
+    uint32_t R5 =
+        (((uint32_t)Color.R * RGB565_MAX_5) + RGB565_ROUND) / RGB565_DIVISOR;
+    uint32_t G6 =
+        (((uint32_t)Color.G * RGB565_MAX_6) + RGB565_ROUND) / RGB565_DIVISOR;
+    uint32_t B5 =
+        (((uint32_t)Color.B * RGB565_MAX_5) + RGB565_ROUND) / RGB565_DIVISOR;
+    return (uint16_t)((R5 << RGB565_SHIFT_R) | (G6 << RGB565_SHIFT_G) | B5);
+}
+
+static uint32_t PackVertexWord1(int TexLayer, int OverlayLayer,
+                                uint16_t Tint565) {
+    uint32_t BaseByte = (uint32_t)TexLayer & VERTEX_BYTE_MASK;
+    uint32_t OverlayByte = (OverlayLayer < 0)
+                               ? VERTEX_NO_OVERLAY_PACKED
+                               : ((uint32_t)OverlayLayer & VERTEX_BYTE_MASK);
+    return BaseByte | (OverlayByte << VERTEX_SHIFT_OVERLAY) |
+           ((uint32_t)Tint565 << VERTEX_SHIFT_TINT);
+}
+
+static ChunkVertex PackChunkVertex(int LocalX, int LocalY, int LocalZ,
+                                   int TileU, int TileV, int Ao, int Normal,
+                                   uint32_t Word1) {
+    uint32_t Word0 =
+        ((uint32_t)LocalX & VERTEX_COORD_MASK) |
+        (((uint32_t)LocalY & VERTEX_COORD_MASK) << VERTEX_SHIFT_Y) |
+        (((uint32_t)LocalZ & VERTEX_COORD_MASK) << VERTEX_SHIFT_Z) |
+        (((uint32_t)TileU & VERTEX_COORD_MASK) << VERTEX_SHIFT_U) |
+        (((uint32_t)TileV & VERTEX_COORD_MASK) << VERTEX_SHIFT_V) |
+        (((uint32_t)Ao & VERTEX_AO_MASK) << VERTEX_SHIFT_AO) |
+        (((uint32_t)Normal & VERTEX_NORMAL_MASK) << VERTEX_SHIFT_NORMAL);
+    return (ChunkVertex){.Word0 = Word0, .Word1 = Word1};
+}
+
+// Rotating the four emitted quad vertices (V0, V1, V2, V3) -> (V1, V2, V3, V0)
+// when FlipQuad is true makes the standard index split (0, 1, 2, 0, 2, 3) form
+// triangles (V1, V2, V3) and (V1, V3, V0), which is the exact same diagonal and
+// winding as the flipped index pattern (0, 1, 3, 1, 2, 3). Every quad in the
+// engine can then share a single static index buffer.
+static void EmitQuadVertices(MeshScratch *Set,
+                             const ChunkVertex Corners[VERTICES_PER_FACE],
+                             bool FlipQuad) {
+    ChunkVertex *Out = &Set->Vertices[Set->VCount];
     if (FlipQuad) {
-        Set->Indices[Set->ICount++] = Base + 0;
-        Set->Indices[Set->ICount++] = Base + 1;
-        Set->Indices[Set->ICount++] = Base + 3;
-        Set->Indices[Set->ICount++] = Base + 1;
-        Set->Indices[Set->ICount++] = Base + 2;
-        Set->Indices[Set->ICount++] = Base + 3;
+        Out[0] = Corners[1];
+        Out[1] = Corners[2];
+        Out[2] = Corners[3];
+        Out[3] = Corners[0];
     } else {
-        Set->Indices[Set->ICount++] = Base + 0;
-        Set->Indices[Set->ICount++] = Base + 1;
-        Set->Indices[Set->ICount++] = Base + 2;
-        Set->Indices[Set->ICount++] = Base + 0;
-        Set->Indices[Set->ICount++] = Base + 2;
-        Set->Indices[Set->ICount++] = Base + 3;
+        Out[0] = Corners[0];
+        Out[1] = Corners[1];
+        Out[2] = Corners[2];
+        Out[3] = Corners[3];
     }
-}
-
-// Tint and AO travel separately in the vertex colour: RGB carries the face's
-// biome tint, alpha carries per-vertex AO brightness. They are not
-// pre-multiplied here because the tint applies per texel — the shader decides
-// which texels take it — while AO applies to the whole face.
-//
-// The tint is one colour for the face (a merged quad carries a single tint by
-// construction, since MasksCompatible refuses to merge across two) while AO
-// still varies per vertex.
-static void AddFaceColors(MesherState *State, MeshTarget Target, const int Ao[4],
-                          Color8 Tint) {
-    MeshScratch *Set = &State->Sets[Target];
-    int ColIdx = Set->VCount * COLOR_CHANNELS;
-    for (int IdxI = 0; IdxI < 4; IdxI++) {
-        Set->Colors[ColIdx++] = Tint.R;
-        Set->Colors[ColIdx++] = Tint.G;
-        Set->Colors[ColIdx++] = Tint.B;
-        Set->Colors[ColIdx++] = AO_BRIGHTNESS[Ao[IdxI]];
-    }
-}
-
-// UV: raw tile-count coords [0..W, 0..H] — shader + array texture handles tiling
-static void AddGreedyFaceTexCoords(MesherState *State, MeshTarget Target,
-                                   float UMax, float VMax) {
-    MeshScratch *Set = &State->Sets[Target];
-    int UvIdx = Set->VCount * 2;
-    Set->TexCoords[UvIdx++] = 0.0F; Set->TexCoords[UvIdx++] = VMax;
-    Set->TexCoords[UvIdx++] = UMax; Set->TexCoords[UvIdx++] = VMax;
-    Set->TexCoords[UvIdx++] = UMax; Set->TexCoords[UvIdx++] = 0.0F;
-    Set->TexCoords[UvIdx++] = 0.0F; Set->TexCoords[UvIdx++] = 0.0F;
-}
-
-// texcoords2.x is the base texture array layer; .y is the optional overlay layer
-// composited over it, or NO_TEXTURE_OVERLAY when the face has none.
-static void AddFaceTexLayer(MesherState *State, MeshTarget Target, float Layer,
-                            float OverlayLayer) {
-    MeshScratch *Set = &State->Sets[Target];
-    int Tc2Idx = Set->VCount * 2;
-    for (int IdxI = 0; IdxI < 4; IdxI++) {
-        Set->TexLayers[Tc2Idx + (IdxI * 2) + 0] = Layer;
-        Set->TexLayers[Tc2Idx + (IdxI * 2) + 1] = OverlayLayer;
-    }
-}
-
-// Greedy quad vertices for a W×H merged face.
-static void AddGreedyFaceVertices(MesherState *State, MeshTarget Target,
-                                   BlockFace Face,
-                                   int Wx0, int Wy0, int Wz0,
-                                   int W, int H) {
-    MeshScratch *Set = &State->Sets[Target];
-    float *VArray = Set->Vertices;
-    int VIdx = Set->VCount * FLOATS_PER_VERTEX;
-
-    float X0 = (float)Wx0 - BLOCK_HALF_SIZE;
-    float Y0 = (float)Wy0 - BLOCK_HALF_SIZE;
-    float Z0 = (float)Wz0 - BLOCK_HALF_SIZE;
-    float Fw = (float)W;
-    float Fh = (float)H;
-
-    switch (Face) {
-        case FACE_TOP:    // u=X, v=Z
-            VArray[VIdx++] = X0;    VArray[VIdx++] = Y0+1.0F; VArray[VIdx++] = Z0+Fh;
-            VArray[VIdx++] = X0+Fw; VArray[VIdx++] = Y0+1.0F; VArray[VIdx++] = Z0+Fh;
-            VArray[VIdx++] = X0+Fw; VArray[VIdx++] = Y0+1.0F; VArray[VIdx++] = Z0;
-            VArray[VIdx++] = X0;    VArray[VIdx++] = Y0+1.0F; VArray[VIdx++] = Z0;
-            break;
-        case FACE_BOTTOM: // u=X, v=Z (winding reversed)
-            VArray[VIdx++] = X0;    VArray[VIdx++] = Y0; VArray[VIdx++] = Z0;
-            VArray[VIdx++] = X0+Fw; VArray[VIdx++] = Y0; VArray[VIdx++] = Z0;
-            VArray[VIdx++] = X0+Fw; VArray[VIdx++] = Y0; VArray[VIdx++] = Z0+Fh;
-            VArray[VIdx++] = X0;    VArray[VIdx++] = Y0; VArray[VIdx++] = Z0+Fh;
-            break;
-        case FACE_FRONT:  // u=X, v=Y
-            VArray[VIdx++] = X0;    VArray[VIdx++] = Y0;    VArray[VIdx++] = Z0+1.0F;
-            VArray[VIdx++] = X0+Fw; VArray[VIdx++] = Y0;    VArray[VIdx++] = Z0+1.0F;
-            VArray[VIdx++] = X0+Fw; VArray[VIdx++] = Y0+Fh; VArray[VIdx++] = Z0+1.0F;
-            VArray[VIdx++] = X0;    VArray[VIdx++] = Y0+Fh; VArray[VIdx++] = Z0+1.0F;
-            break;
-        case FACE_BACK:   // u=X reversed, v=Y
-            VArray[VIdx++] = X0+Fw; VArray[VIdx++] = Y0;    VArray[VIdx++] = Z0;
-            VArray[VIdx++] = X0;    VArray[VIdx++] = Y0;    VArray[VIdx++] = Z0;
-            VArray[VIdx++] = X0;    VArray[VIdx++] = Y0+Fh; VArray[VIdx++] = Z0;
-            VArray[VIdx++] = X0+Fw; VArray[VIdx++] = Y0+Fh; VArray[VIdx++] = Z0;
-            break;
-        case FACE_LEFT:   // u=Z, v=Y
-            VArray[VIdx++] = X0; VArray[VIdx++] = Y0;    VArray[VIdx++] = Z0;
-            VArray[VIdx++] = X0; VArray[VIdx++] = Y0;    VArray[VIdx++] = Z0+Fw;
-            VArray[VIdx++] = X0; VArray[VIdx++] = Y0+Fh; VArray[VIdx++] = Z0+Fw;
-            VArray[VIdx++] = X0; VArray[VIdx++] = Y0+Fh; VArray[VIdx++] = Z0;
-            break;
-        case FACE_RIGHT:  // u=Z reversed, v=Y
-            VArray[VIdx++] = X0+1.0F; VArray[VIdx++] = Y0;    VArray[VIdx++] = Z0+Fw;
-            VArray[VIdx++] = X0+1.0F; VArray[VIdx++] = Y0;    VArray[VIdx++] = Z0;
-            VArray[VIdx++] = X0+1.0F; VArray[VIdx++] = Y0+Fh; VArray[VIdx++] = Z0;
-            VArray[VIdx++] = X0+1.0F; VArray[VIdx++] = Y0+Fh; VArray[VIdx++] = Z0+Fw;
-            break;
-    }
+    Set->VCount += VERTICES_PER_FACE;
 }
 
 static void AddGreedyFaceToMeshBuilder(MesherState *State, MeshTarget Target,
-                                        BlockFace Face,
-                                        int Wx0, int Wy0, int Wz0,
-                                        int W, int H,
-                                        int TexIndex, int OverlayIndex,
-                                        const int Ao[4], Color8 Tint,
-                                        bool FlipQuad) {
+                                       BlockFace Face,
+                                       int Lx0, int Ly0, int Lz0,
+                                       int W, int H,
+                                       int TexIndex, int OverlayIndex,
+                                       const int Ao[4], uint16_t Tint565,
+                                       bool FlipQuad) {
     if (!MesherHasRoom(State, Target)) { return; }
-    AddFaceIndices(State, Target, FlipQuad);
-    AddGreedyFaceTexCoords(State, Target, (float)W, (float)H);
-    AddFaceColors(State, Target, Ao, Tint);
-    AddFaceTexLayer(State, Target, (float)TexIndex, (float)OverlayIndex);
-    AddGreedyFaceVertices(State, Target, Face, Wx0, Wy0, Wz0, W, H);
 
-    State->Sets[Target].VCount += VERTICES_PER_FACE;
+    int Coords[VERTICES_PER_FACE][3];
+    switch (Face) {
+        case FACE_TOP:    // u=X, v=Z
+            Coords[0][0] = Lx0;     Coords[0][1] = Ly0 + 1; Coords[0][2] = Lz0 + H;
+            Coords[1][0] = Lx0 + W; Coords[1][1] = Ly0 + 1; Coords[1][2] = Lz0 + H;
+            Coords[2][0] = Lx0 + W; Coords[2][1] = Ly0 + 1; Coords[2][2] = Lz0;
+            Coords[3][0] = Lx0;     Coords[3][1] = Ly0 + 1; Coords[3][2] = Lz0;
+            break;
+        case FACE_BOTTOM: // u=X, v=Z (winding reversed)
+            Coords[0][0] = Lx0;     Coords[0][1] = Ly0; Coords[0][2] = Lz0;
+            Coords[1][0] = Lx0 + W; Coords[1][1] = Ly0; Coords[1][2] = Lz0;
+            Coords[2][0] = Lx0 + W; Coords[2][1] = Ly0; Coords[2][2] = Lz0 + H;
+            Coords[3][0] = Lx0;     Coords[3][1] = Ly0; Coords[3][2] = Lz0 + H;
+            break;
+        case FACE_FRONT:  // u=X, v=Y
+            Coords[0][0] = Lx0;     Coords[0][1] = Ly0;     Coords[0][2] = Lz0 + 1;
+            Coords[1][0] = Lx0 + W; Coords[1][1] = Ly0;     Coords[1][2] = Lz0 + 1;
+            Coords[2][0] = Lx0 + W; Coords[2][1] = Ly0 + H; Coords[2][2] = Lz0 + 1;
+            Coords[3][0] = Lx0;     Coords[3][1] = Ly0 + H; Coords[3][2] = Lz0 + 1;
+            break;
+        case FACE_BACK:   // u=X reversed, v=Y
+            Coords[0][0] = Lx0 + W; Coords[0][1] = Ly0;     Coords[0][2] = Lz0;
+            Coords[1][0] = Lx0;     Coords[1][1] = Ly0;     Coords[1][2] = Lz0;
+            Coords[2][0] = Lx0;     Coords[2][1] = Ly0 + H; Coords[2][2] = Lz0;
+            Coords[3][0] = Lx0 + W; Coords[3][1] = Ly0 + H; Coords[3][2] = Lz0;
+            break;
+        case FACE_LEFT:   // u=Z, v=Y
+            Coords[0][0] = Lx0; Coords[0][1] = Ly0;     Coords[0][2] = Lz0;
+            Coords[1][0] = Lx0; Coords[1][1] = Ly0;     Coords[1][2] = Lz0 + W;
+            Coords[2][0] = Lx0; Coords[2][1] = Ly0 + H; Coords[2][2] = Lz0 + W;
+            Coords[3][0] = Lx0; Coords[3][1] = Ly0 + H; Coords[3][2] = Lz0;
+            break;
+        case FACE_RIGHT:  // u=Z reversed, v=Y
+            Coords[0][0] = Lx0 + 1; Coords[0][1] = Ly0;     Coords[0][2] = Lz0 + W;
+            Coords[1][0] = Lx0 + 1; Coords[1][1] = Ly0;     Coords[1][2] = Lz0;
+            Coords[2][0] = Lx0 + 1; Coords[2][1] = Ly0 + H; Coords[2][2] = Lz0;
+            Coords[3][0] = Lx0 + 1; Coords[3][1] = Ly0 + H; Coords[3][2] = Lz0 + W;
+            break;
+    }
+
+    int TileU[VERTICES_PER_FACE] = {0, W, W, 0};
+    int TileV[VERTICES_PER_FACE] = {H, H, 0, 0};
+    uint32_t Word1 = PackVertexWord1(TexIndex, OverlayIndex, Tint565);
+
+    ChunkVertex Corners[VERTICES_PER_FACE];
+    for (int Corner = 0; Corner < VERTICES_PER_FACE; Corner++) {
+        Corners[Corner] = PackChunkVertex(
+            Coords[Corner][0], Coords[Corner][1], Coords[Corner][2],
+            TileU[Corner], TileV[Corner], Ao[Corner], (int)Face, Word1);
+    }
+
+    EmitQuadVertices(&State->Sets[Target], Corners, FlipQuad);
 }
 
 // ---------------------------------------------------------------------------
@@ -440,7 +435,7 @@ static void AddGreedyFaceToMeshBuilder(MesherState *State, MeshTarget Target,
 typedef struct {
     unsigned char BlockId;
     unsigned char TexIndex;
-    Color8 Tint;
+    uint16_t Tint565;
     int Ao[4];
     bool FlipQuad;
     bool Used;
@@ -487,8 +482,7 @@ static bool MasksCompatible(const FaceMaskData *A, const FaceMaskData *B) {
     // A merged quad carries one tint, so two faces may only merge when they
     // already agree on it — otherwise the rectangle would take one block's
     // colour and paint it across the whole span.
-    if (A->Tint.R != B->Tint.R || A->Tint.G != B->Tint.G ||
-        A->Tint.B != B->Tint.B) { return false; }
+    if (A->Tint565 != B->Tint565) { return false; }
     for (int IdxI = 0; IdxI < VERTICES_PER_FACE; IdxI++) { if (A->Ao[IdxI] != B->Ao[IdxI]) { return false; } }
     return true;
 }
@@ -526,10 +520,10 @@ static void BuildGreedyFacePass(const ChunkSnapshot *Snap, const FaceDir *Fd, Me
                 Mask[U][V].TexIndex  = (unsigned char)GetFaceTex(Def, Fd->Face);
                 Mask[U][V].FlipQuad  = ComputeFaceAO(Snap, Lx, Ly, Lz,
                                                      Fd->Face, Mask[U][V].Ao);
-                Mask[U][V].Tint = GetFaceTint(
+                Mask[U][V].Tint565 = ColorToRgb565(GetFaceTint(
                     Snap, (Snap->ChunkX * CHUNK_SIZE) + Lx,
                     (Snap->ChunkY * CHUNK_SIZE) + Ly,
-                    (Snap->ChunkZ * CHUNK_SIZE) + Lz, Def, Fd->Face);
+                    (Snap->ChunkZ * CHUNK_SIZE) + Lz, Def, Fd->Face));
             }
         }
 
@@ -560,14 +554,11 @@ static void BuildGreedyFacePass(const ChunkSnapshot *Snap, const FaceDir *Fd, Me
                     }
                 }
 
-                // Compute world position of first block in merged region
+                // Chunk-local position of the first block in the merged region
                 int FirstLpos[3];
                 FirstLpos[Fd->NormalAxis] = Slice;
                 FirstLpos[Fd->UAxis] = U0;
                 FirstLpos[Fd->VAxis] = V0;
-                int Wx0 = (Snap->ChunkX * CHUNK_SIZE) + FirstLpos[0];
-                int Wy0 = (Snap->ChunkY * CHUNK_SIZE) + FirstLpos[1];
-                int Wz0 = (Snap->ChunkZ * CHUNK_SIZE) + FirstLpos[2];
 
                 // Every face in a merged rectangle shares a block id and a face
                 // direction, so its overlay layer is the same throughout and
@@ -576,9 +567,10 @@ static void BuildGreedyFacePass(const ChunkSnapshot *Snap, const FaceDir *Fd, Me
                     GetFaceOverlay(GetBlockDef(Origin->BlockId), Fd->Face);
 
                 AddGreedyFaceToMeshBuilder(State, MESH_TARGET_OPAQUE, Fd->Face,
-                                           Wx0, Wy0, Wz0, W, H,
+                                           FirstLpos[0], FirstLpos[1],
+                                           FirstLpos[2], W, H,
                                            Origin->TexIndex, OverlayIndex,
-                                           Origin->Ao, Origin->Tint,
+                                           Origin->Ao, Origin->Tint565,
                                            Origin->FlipQuad);
 
                 // Mark used
@@ -616,80 +608,75 @@ static void BuildTransparentFacePass(const ChunkSnapshot *Snap, MesherState *Sta
                 // This pass merges nothing, so tint applies straight to each
                 // face with no mask compatibility involved. Computed once per
                 // block: it does not vary by face for a foliage-tinted block.
-                Color8 Tint = ComputeBlockTint(Snap, Wx, Wy, Wz,
-                                               Def->Tint);
+                uint16_t Tint565 = ColorToRgb565(
+                    ComputeBlockTint(Snap, Wx, Wy, Wz, Def->Tint));
 
                 if (IsNeighbourTransparent(Snap, X, Y+1, Z, Id)) {
                     Flip = ComputeFaceAO(Snap, X, Y, Z, FACE_TOP, Ao);
                     AddGreedyFaceToMeshBuilder(State, MESH_TARGET_TRANSLUCENT, FACE_TOP,
-                                               Wx, Wy, Wz, 1, 1, Def->TexTop,
+                                               X, Y, Z, 1, 1, Def->TexTop,
                                                GetFaceOverlay(Def, FACE_TOP),
-                                               Ao, Tint, Flip);
+                                               Ao, Tint565, Flip);
                 }
                 if (IsNeighbourTransparent(Snap, X, Y-1, Z, Id)) {
                     Flip = ComputeFaceAO(Snap, X, Y, Z, FACE_BOTTOM, Ao);
                     AddGreedyFaceToMeshBuilder(State, MESH_TARGET_TRANSLUCENT, FACE_BOTTOM,
-                                               Wx, Wy, Wz, 1, 1, Def->TexBottom,
+                                               X, Y, Z, 1, 1, Def->TexBottom,
                                                GetFaceOverlay(Def, FACE_BOTTOM),
-                                               Ao, Tint, Flip);
+                                               Ao, Tint565, Flip);
                 }
                 if (IsNeighbourTransparent(Snap, X+1, Y, Z, Id)) {
                     Flip = ComputeFaceAO(Snap, X, Y, Z, FACE_RIGHT, Ao);
                     AddGreedyFaceToMeshBuilder(State, MESH_TARGET_TRANSLUCENT, FACE_RIGHT,
-                                               Wx, Wy, Wz, 1, 1, Def->TexSide,
+                                               X, Y, Z, 1, 1, Def->TexSide,
                                                GetFaceOverlay(Def, FACE_RIGHT),
-                                               Ao, Tint, Flip);
+                                               Ao, Tint565, Flip);
                 }
                 if (IsNeighbourTransparent(Snap, X-1, Y, Z, Id)) {
                     Flip = ComputeFaceAO(Snap, X, Y, Z, FACE_LEFT, Ao);
                     AddGreedyFaceToMeshBuilder(State, MESH_TARGET_TRANSLUCENT, FACE_LEFT,
-                                               Wx, Wy, Wz, 1, 1, Def->TexSide,
+                                               X, Y, Z, 1, 1, Def->TexSide,
                                                GetFaceOverlay(Def, FACE_LEFT),
-                                               Ao, Tint, Flip);
+                                               Ao, Tint565, Flip);
                 }
                 if (IsNeighbourTransparent(Snap, X, Y, Z+1, Id)) {
                     Flip = ComputeFaceAO(Snap, X, Y, Z, FACE_FRONT, Ao);
                     AddGreedyFaceToMeshBuilder(State, MESH_TARGET_TRANSLUCENT, FACE_FRONT,
-                                               Wx, Wy, Wz, 1, 1, Def->TexSide,
+                                               X, Y, Z, 1, 1, Def->TexSide,
                                                GetFaceOverlay(Def, FACE_FRONT),
-                                               Ao, Tint, Flip);
+                                               Ao, Tint565, Flip);
                 }
                 if (IsNeighbourTransparent(Snap, X, Y, Z-1, Id)) {
                     Flip = ComputeFaceAO(Snap, X, Y, Z, FACE_BACK, Ao);
                     AddGreedyFaceToMeshBuilder(State, MESH_TARGET_TRANSLUCENT, FACE_BACK,
-                                               Wx, Wy, Wz, 1, 1, Def->TexSide,
+                                               X, Y, Z, 1, 1, Def->TexSide,
                                                GetFaceOverlay(Def, FACE_BACK),
-                                               Ao, Tint, Flip);
+                                               Ao, Tint565, Flip);
                 }
             }
         }
     }
 }
 
-// One flat quad of a cross billboard: four corner positions, full-tile UVs, the
-// block's tint in RGB and full brightness in alpha (cross blocks carry no AO).
-// Emitted into the OPAQUE builder, not the translucent one: flora is an
-// alpha-cutout (the shader discards the transparent texels), so it wants depth
-// writes and depth testing on. Routing it through the blended, depth-write-off
-// translucent pass is what made distant flora draw over near geometry.
-static void AddCrossQuad(MesherState *State, const float Verts[4][3], int TexLayer, Color8 Tint) {
-    int AoFull[4] = {0, 0, 0, 0};
+// One flat quad of a cross billboard: four chunk-local integer corner
+// positions, full-tile UVs, the block's tint in RGB565 and full brightness in
+// AO (cross blocks carry no AO).
+static void AddCrossQuad(MesherState *State, const int Verts[4][3],
+                         int TexLayer, uint16_t Tint565) {
     if (!MesherHasRoom(State, MESH_TARGET_CUTOUT)) { return; }
 
-    MeshScratch *Set = &State->Sets[MESH_TARGET_CUTOUT];
-    AddFaceIndices(State, MESH_TARGET_CUTOUT, false);
-    AddGreedyFaceTexCoords(State, MESH_TARGET_CUTOUT, 1.0F, 1.0F);
-    AddFaceColors(State, MESH_TARGET_CUTOUT, AoFull, Tint);
-    AddFaceTexLayer(State, MESH_TARGET_CUTOUT, (float)TexLayer,
-                    (float)NO_TEXTURE_OVERLAY);
+    static const int TILE_U[VERTICES_PER_FACE] = {0, 1, 1, 0};
+    static const int TILE_V[VERTICES_PER_FACE] = {1, 1, 0, 0};
+    uint32_t Word1 = PackVertexWord1(TexLayer, NO_TEXTURE_OVERLAY, Tint565);
 
-    int VIdx = Set->VCount * FLOATS_PER_VERTEX;
-    for (int IdxI = 0; IdxI < VERTICES_PER_FACE; IdxI++) {
-        Set->Vertices[VIdx++] = Verts[IdxI][0];
-        Set->Vertices[VIdx++] = Verts[IdxI][1];
-        Set->Vertices[VIdx++] = Verts[IdxI][2];
+    ChunkVertex Corners[VERTICES_PER_FACE];
+    for (int Corner = 0; Corner < VERTICES_PER_FACE; Corner++) {
+        Corners[Corner] = PackChunkVertex(
+            Verts[Corner][0], Verts[Corner][1], Verts[Corner][2],
+            TILE_U[Corner], TILE_V[Corner], 0, VERTEX_NORMAL_CROSS, Word1);
     }
-    Set->VCount += VERTICES_PER_FACE;
+
+    EmitQuadVertices(&State->Sets[MESH_TARGET_CUTOUT], Corners, false);
 }
 
 // Per-block pass for cross billboards: two diagonals across the voxel, each
@@ -708,43 +695,39 @@ static void BuildCrossPass(const ChunkSnapshot *Snap, MesherState *State) {
                 int Wx = (Snap->ChunkX * CHUNK_SIZE) + X;
                 int Wy = (Snap->ChunkY * CHUNK_SIZE) + Y;
                 int Wz = (Snap->ChunkZ * CHUNK_SIZE) + Z;
-                Color8 Tint = ComputeBlockTint(Snap, Wx, Wy, Wz,
-                                               Def->Tint);
+                uint16_t Tint565 = ColorToRgb565(
+                    ComputeBlockTint(Snap, Wx, Wy, Wz, Def->Tint));
                 int Layer = Def->TexTop;
 
-                float X0 = (float)Wx - BLOCK_HALF_SIZE;
-                float Y0 = (float)Wy - BLOCK_HALF_SIZE;
-                float Z0 = (float)Wz - BLOCK_HALF_SIZE;
-                float X1 = X0 + 1.0F;
-                float Y1 = Y0 + 1.0F;
-                float Z1 = Z0 + 1.0F;
+                int X0 = X;
+                int Y0 = Y;
+                int Z0 = Z;
+                int X1 = X0 + 1;
+                int Y1 = Y0 + 1;
+                int Z1 = Z0 + 1;
 
                 // Diagonal A: (X0,Z0) -> (X1,Z1). Diagonal B: (X0,Z1) -> (X1,Z0).
-                float DiagA[4][3] = {
+                int DiagA[4][3] = {
                     {X0, Y0, Z0}, {X1, Y0, Z1}, {X1, Y1, Z1}, {X0, Y1, Z0}
                 };
-                float DiagArev[4][3] = {
+                int DiagArev[4][3] = {
                     {X1, Y0, Z1}, {X0, Y0, Z0}, {X0, Y1, Z0}, {X1, Y1, Z1}
                 };
-                float DiagB[4][3] = {
+                int DiagB[4][3] = {
                     {X0, Y0, Z1}, {X1, Y0, Z0}, {X1, Y1, Z0}, {X0, Y1, Z1}
                 };
-                float DiagBrev[4][3] = {
+                int DiagBrev[4][3] = {
                     {X1, Y0, Z0}, {X0, Y0, Z1}, {X0, Y1, Z1}, {X1, Y1, Z0}
                 };
 
-                AddCrossQuad(State, DiagA, Layer, Tint);
-                AddCrossQuad(State, DiagArev, Layer, Tint);
-                AddCrossQuad(State, DiagB, Layer, Tint);
-                AddCrossQuad(State, DiagBrev, Layer, Tint);
+                AddCrossQuad(State, DiagA, Layer, Tint565);
+                AddCrossQuad(State, DiagArev, Layer, Tint565);
+                AddCrossQuad(State, DiagB, Layer, Tint565);
+                AddCrossQuad(State, DiagBrev, Layer, Tint565);
             }
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// BuildChunkMesh
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Mesh job pool
@@ -772,21 +755,12 @@ enum {
   MESH_JOB_READY = 3
 };
 
-// The vertices a finished mesh actually used, copied out of the worker's scratch
-// so the worker can move on to the next chunk instead of waiting for the upload.
-//
-// One allocation per array rather than one block carved into five. Carving would
-// save four calls per mesh on a worker thread, where they cost the frame
-// nothing, in exchange for hand-written offset and alignment arithmetic and a
-// pointer cast the analyser rightly objects to. Not a trade worth making.
+// The packed vertices a finished mesh actually used, copied out of the worker's
+// scratch in a single allocation so the worker can move on to the next chunk
+// instead of waiting for the upload.
 typedef struct {
-  float *Vertices;
-  float *TexCoords;
-  float *TexLayers;
-  unsigned short *Indices;
-  unsigned char *Colors;
+  ChunkVertex *Vertices;
   int VertexCount;
-  int IndexCount;
 } MeshBufferSet;
 
 typedef struct {
@@ -814,57 +788,28 @@ static MeshJob *GetMeshJobs(void) {
 
 static void FreeMeshBufferSet(MeshBufferSet *Set) {
     free(Set->Vertices);
-    free(Set->TexCoords);
-    free(Set->TexLayers);
-    free(Set->Indices);
-    free(Set->Colors);
     Set->Vertices = NULL;
-    Set->TexCoords = NULL;
-    Set->TexLayers = NULL;
-    Set->Indices = NULL;
-    Set->Colors = NULL;
     Set->VertexCount = 0;
-    Set->IndexCount = 0;
 }
 
 // Copy the used portion of one scratch set into a fresh allocation. Returns
 // false only when the allocation fails, in which case the set is left empty and
 // the mesh is simply not produced.
-static bool CopyMeshBufferSet(MeshBufferSet *Set, int VertexCount, int IndexCount,
-                              const float *Vertices, const float *TexCoords,
-                              const float *TexLayers,
-                              const unsigned short *Indices,
-                              const unsigned char *Colors) {
+static bool CopyMeshBufferSet(MeshBufferSet *Set, int VertexCount,
+                              const ChunkVertex *Vertices) {
     FreeMeshBufferSet(Set);
-    if (VertexCount <= 0 || IndexCount <= 0) {
+    if (VertexCount <= 0) {
         return true;
     }
 
-    size_t PositionBytes = (size_t)VertexCount * FLOATS_PER_VERTEX * sizeof(float);
-    size_t PairBytes = (size_t)VertexCount * 2 * sizeof(float);
-    size_t IndexBytes = (size_t)IndexCount * sizeof(unsigned short);
-    size_t ColorBytes = (size_t)VertexCount * COLOR_CHANNELS;
-
-    Set->Vertices = (float *)malloc(PositionBytes);
-    Set->TexCoords = (float *)malloc(PairBytes);
-    Set->TexLayers = (float *)malloc(PairBytes);
-    Set->Indices = (unsigned short *)malloc(IndexBytes);
-    Set->Colors = (unsigned char *)malloc(ColorBytes);
-
-    if (Set->Vertices == NULL || Set->TexCoords == NULL ||
-        Set->TexLayers == NULL || Set->Indices == NULL || Set->Colors == NULL) {
-        FreeMeshBufferSet(Set);
+    size_t Bytes = (size_t)VertexCount * sizeof(ChunkVertex);
+    Set->Vertices = (ChunkVertex *)malloc(Bytes);
+    if (Set->Vertices == NULL) {
         return false;
     }
 
-    memcpy(Set->Vertices, Vertices, PositionBytes);
-    memcpy(Set->TexCoords, TexCoords, PairBytes);
-    memcpy(Set->TexLayers, TexLayers, PairBytes);
-    memcpy(Set->Indices, Indices, IndexBytes);
-    memcpy(Set->Colors, Colors, ColorBytes);
-
+    memcpy(Set->Vertices, Vertices, Bytes);
     Set->VertexCount = VertexCount;
-    Set->IndexCount = IndexCount;
     return true;
 }
 
@@ -874,12 +819,7 @@ static MeshHandle UploadMeshBufferSet(const MeshBufferSet *Set) {
     }
     MeshData Data = {
         .Vertices = Set->Vertices,
-        .Indices = Set->Indices,
-        .TexCoords = Set->TexCoords,
-        .Colors = Set->Colors,
-        .TexLayers = Set->TexLayers,
         .VertexCount = Set->VertexCount,
-        .IndexCount = Set->IndexCount,
     };
     return RenderUploadMesh(&Data);
 }
@@ -1015,7 +955,6 @@ void RendererBuildMeshJob(int JobId, int MesherSlot) {
 
     for (int Target = 0; Target < MESH_TARGET_COUNT; Target++) {
         State->Sets[Target].VCount = 0;
-        State->Sets[Target].ICount = 0;
     }
 
     static const int FACE_DIRS_COUNT = (int)(sizeof(FACE_DIRS) / sizeof(FACE_DIRS[0]));
@@ -1031,9 +970,7 @@ void RendererBuildMeshJob(int JobId, int MesherSlot) {
     // the main thread to consume its scratch.
     for (int Target = 0; Target < MESH_TARGET_COUNT; Target++) {
         const MeshScratch *Set = &State->Sets[Target];
-        (void)CopyMeshBufferSet(&Job->Sets[Target], Set->VCount, Set->ICount,
-                                Set->Vertices, Set->TexCoords, Set->TexLayers,
-                                Set->Indices, Set->Colors);
+        (void)CopyMeshBufferSet(&Job->Sets[Target], Set->VCount, Set->Vertices);
     }
 
     atomic_store_explicit(&Job->Stage, MESH_JOB_READY, memory_order_release);
@@ -1229,6 +1166,14 @@ static int ChunkDistanceBucket(int DeltaX, int DeltaY, int DeltaZ) {
     return Bucket;
 }
 
+static Vec3 GetChunkWorldOrigin(const Chunk *ChunkVal) {
+    return (Vec3){
+        (float)(ChunkVal->ChunkX * CHUNK_SIZE) - BLOCK_HALF_SIZE,
+        (float)(ChunkVal->ChunkY * CHUNK_SIZE) - BLOCK_HALF_SIZE,
+        (float)(ChunkVal->ChunkZ * CHUNK_SIZE) - BLOCK_HALF_SIZE,
+    };
+}
+
 void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
     PROFILE_BEGIN(DrawStart);
     if (GetDebugState()->Wireframe) { RenderSetWireframe(true); }
@@ -1303,7 +1248,7 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
     for (int IdxI = 0; IdxI < VisibleCount; IdxI++) {
         Chunk *ChunkVal = &WorldVal->Chunks[SolidOrder[IdxI]];
         if (!ChunkVal->HasMesh) { continue; }
-        RenderDrawMesh(ChunkVal->ChunkMesh);
+        RenderDrawMesh(ChunkVal->ChunkMesh, GetChunkWorldOrigin(ChunkVal));
         Rendered++;
     }
     RenderEndChunkPass();
@@ -1314,7 +1259,7 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
     for (int IdxI = 0; IdxI < VisibleCount; IdxI++) {
         Chunk *ChunkVal = &WorldVal->Chunks[SolidOrder[IdxI]];
         if (!ChunkVal->HasCutoutMesh) { continue; }
-        RenderDrawMesh(ChunkVal->CutoutMesh);
+        RenderDrawMesh(ChunkVal->CutoutMesh, GetChunkWorldOrigin(ChunkVal));
     }
     RenderEndChunkPass();
 
@@ -1343,7 +1288,7 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
     for (int IdxI = VisibleCount - 1; IdxI >= 0; IdxI--) {
         Chunk *ChunkVal = &WorldVal->Chunks[NearToFar[IdxI]];
         if (!ChunkVal->HasTranslucentMesh) { continue; }
-        RenderDrawMesh(ChunkVal->TranslucentMesh);
+        RenderDrawMesh(ChunkVal->TranslucentMesh, GetChunkWorldOrigin(ChunkVal));
     }
     RenderEndChunkPass();
 

@@ -20,9 +20,6 @@
 #include "external/glad.h"
 #include <rlgl.h>
 
-#define FLOATS_PER_VERTEX 3
-#define COLOR_CHANNELS 4
-
 #define BLOCK_HIGHLIGHT_SCALE (BLOCK_SIZE + 0.01F)
 
 // Three meshes per active chunk at most: solid faces, alpha-cutout flora, and
@@ -30,6 +27,20 @@
 // fragment shaders that differ on the alpha test.
 #define MESHES_PER_CHUNK 3
 #define MESH_POOL_CAPACITY (MAX_ACTIVE_CHUNKS * MESHES_PER_CHUNK)
+
+enum {
+  CHUNK_VERTEX_ATTRIB_LOC = 0,
+  CHUNK_VERTEX_WORDS = 2
+};
+
+// GPU-only chunk mesh handle record. Vertex data is uploaded straight to Vbo and
+// never retained in system RAM; every chunk Vao binds the single shared static
+// EBO populated at startup.
+typedef struct {
+  unsigned int Vao;
+  unsigned int Vbo;
+  int IndexCount;
+} ChunkGpuMesh;
 
 #ifdef MINEGAME_PROFILE
 enum {
@@ -55,8 +66,12 @@ typedef struct {
   // Same vertex shader, two fragment shaders differing only by the alpha test.
   Shader ChunkShaderOpaque;
   Shader ChunkShaderCutout;
+  int ChunkOriginLocOpaque;
+  int ChunkOriginLocCutout;
+  int ActiveChunkOriginLoc;
 
-  Mesh MeshPool[MESH_POOL_CAPACITY];
+  unsigned int ChunkSharedEbo;
+  ChunkGpuMesh MeshPool[MESH_POOL_CAPACITY];
   bool MeshSlotUsed[MESH_POOL_CAPACITY];
   MeshHandle FreeList[MESH_POOL_CAPACITY];
   int FreeCount;
@@ -261,6 +276,37 @@ static void LoadBlockTextureArray(void) {
 // Lifecycle
 // ---------------------------------------------------------------------------
 
+// Every quad in a chunk mesh uses the standard (0, 1, 2, 0, 2, 3) index split
+// (AO-flipped quads rotate their four vertices at emit time), so one static
+// 16-bit index buffer serves every chunk VAO in the engine.
+static void InitSharedChunkIndexBuffer(BackendState *State) {
+  unsigned short *Indices = (unsigned short *)malloc(
+      (size_t)CHUNK_MAX_INDICES * sizeof(unsigned short));
+  if (Indices == NULL) {
+    TraceLog(LOG_WARNING,
+             "RENDER: out of memory allocating shared chunk index buffer");
+    return;
+  }
+
+  static const unsigned short QUAD_PATTERN[CHUNK_INDICES_PER_QUAD] = {
+      0, 1, 2, 0, 2, 3};
+  for (int Quad = 0; Quad < CHUNK_MAX_QUADS; Quad++) {
+    unsigned short Base = (unsigned short)(Quad * CHUNK_VERTICES_PER_QUAD);
+    unsigned short *Out = &Indices[(size_t)Quad * CHUNK_INDICES_PER_QUAD];
+    for (int Corner = 0; Corner < CHUNK_INDICES_PER_QUAD; Corner++) {
+      Out[Corner] = (unsigned short)(Base + QUAD_PATTERN[Corner]);
+    }
+  }
+
+  glGenBuffers(1, &State->ChunkSharedEbo);
+  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, State->ChunkSharedEbo);
+  glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+               (long)((size_t)CHUNK_MAX_INDICES * sizeof(unsigned short)),
+               Indices, GL_STATIC_DRAW);
+  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+  free(Indices);
+}
+
 void RenderBackendInit(void) {
   BackendState *State = GetBackendState();
 
@@ -270,6 +316,11 @@ void RenderBackendInit(void) {
                                         "assets/shaders/chunk_opaque.frag");
   State->ChunkShaderCutout = LoadShader("assets/shaders/chunk.vert",
                                         "assets/shaders/chunk_cutout.frag");
+  State->ChunkOriginLocOpaque =
+      GetShaderLocation(State->ChunkShaderOpaque, "uChunkOrigin");
+  State->ChunkOriginLocCutout =
+      GetShaderLocation(State->ChunkShaderCutout, "uChunkOrigin");
+  State->ActiveChunkOriginLoc = -1;
 
   State->UiShader =
       LoadShader("assets/shaders/ui.vert", "assets/shaders/ui.frag");
@@ -284,8 +335,11 @@ void RenderBackendInit(void) {
                  GetShaderLocation(State->ChunkShaderCutout, "uBlockArray"),
                  &Unit, SHADER_UNIFORM_INT);
 
+  InitSharedChunkIndexBuffer(State);
+
   State->FreeCount = MESH_POOL_CAPACITY;
   for (int IdxI = 0; IdxI < MESH_POOL_CAPACITY; IdxI++) {
+    State->MeshPool[IdxI] = (ChunkGpuMesh){0};
     State->MeshSlotUsed[IdxI] = false;
     // Fill the free list in reverse so handles are handed out low-first.
     State->FreeList[IdxI] = (MeshHandle)(MESH_POOL_CAPACITY - 1 - IdxI);
@@ -310,9 +364,15 @@ void RenderBackendShutdown(void) {
   State->CaptureRequested = false;
   for (int IdxI = 0; IdxI < MESH_POOL_CAPACITY; IdxI++) {
     if (State->MeshSlotUsed[IdxI]) {
-      UnloadMesh(State->MeshPool[IdxI]);
+      glDeleteVertexArrays(1, &State->MeshPool[IdxI].Vao);
+      glDeleteBuffers(1, &State->MeshPool[IdxI].Vbo);
+      State->MeshPool[IdxI] = (ChunkGpuMesh){0};
       State->MeshSlotUsed[IdxI] = false;
     }
+  }
+  if (State->ChunkSharedEbo != 0) {
+    glDeleteBuffers(1, &State->ChunkSharedEbo);
+    State->ChunkSharedEbo = 0;
   }
   UnloadShader(State->ChunkShaderOpaque);
   UnloadShader(State->ChunkShaderCutout);
@@ -347,38 +407,39 @@ void RenderBackendShutdown(void) {
 
 MeshHandle RenderUploadMesh(const MeshData *Data) {
   BackendState *State = GetBackendState();
+  if (Data == NULL || Data->Vertices == NULL || Data->VertexCount <= 0) {
+    return MESH_HANDLE_INVALID;
+  }
   if (State->FreeCount == 0) {
     TraceLog(LOG_WARNING, "RENDER: mesh pool exhausted");
     return MESH_HANDLE_INVALID;
   }
 
-  // Covers the staging copies and the driver handoff both, so this scope and
-  // the mesh-build scope together account for the whole cost of turning a dirty
-  // chunk into a drawable one while staying separable.
+  // Covers the driver handoff so this scope and the mesh-build scope together
+  // account for the whole cost of turning a dirty chunk into a drawable one
+  // while staying separable.
   PROFILE_BEGIN(UploadStart);
 
   MeshHandle Handle = State->FreeList[--State->FreeCount];
-  Mesh MeshVal = {0};
-  MeshVal.vertexCount = Data->VertexCount;
-  MeshVal.triangleCount = Data->IndexCount / 3;
+  ChunkGpuMesh MeshVal = {0};
+  int QuadCount = Data->VertexCount / CHUNK_VERTICES_PER_QUAD;
+  MeshVal.IndexCount = QuadCount * CHUNK_INDICES_PER_QUAD;
 
-  size_t VCount = (size_t)Data->VertexCount;
-  MeshVal.vertices = (float *)MemAlloc(VCount * FLOATS_PER_VERTEX * sizeof(float));
-  memcpy(MeshVal.vertices, Data->Vertices, VCount * FLOATS_PER_VERTEX * sizeof(float));
+  glGenVertexArrays(1, &MeshVal.Vao);
+  glGenBuffers(1, &MeshVal.Vbo);
 
-  MeshVal.indices = (unsigned short *)MemAlloc((size_t)Data->IndexCount * sizeof(unsigned short));
-  memcpy(MeshVal.indices, Data->Indices, (size_t)Data->IndexCount * sizeof(unsigned short));
-
-  MeshVal.texcoords = (float *)MemAlloc(VCount * 2 * sizeof(float));
-  memcpy(MeshVal.texcoords, Data->TexCoords, VCount * 2 * sizeof(float));
-
-  MeshVal.colors = (unsigned char *)MemAlloc(VCount * COLOR_CHANNELS * sizeof(unsigned char));
-  memcpy(MeshVal.colors, Data->Colors, VCount * COLOR_CHANNELS * sizeof(unsigned char));
-
-  MeshVal.texcoords2 = (float *)MemAlloc(VCount * 2 * sizeof(float));
-  memcpy(MeshVal.texcoords2, Data->TexLayers, VCount * 2 * sizeof(float));
-
-  UploadMesh(&MeshVal, false);
+  glBindVertexArray(MeshVal.Vao);
+  glBindBuffer(GL_ARRAY_BUFFER, MeshVal.Vbo);
+  glBufferData(GL_ARRAY_BUFFER,
+               (long)((size_t)Data->VertexCount * sizeof(ChunkVertex)),
+               Data->Vertices, GL_STATIC_DRAW);
+  glEnableVertexAttribArray(CHUNK_VERTEX_ATTRIB_LOC);
+  glVertexAttribIPointer(CHUNK_VERTEX_ATTRIB_LOC, CHUNK_VERTEX_WORDS,
+                         GL_UNSIGNED_INT, (int)sizeof(ChunkVertex),
+                         (const void *)0);
+  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, State->ChunkSharedEbo);
+  glBindVertexArray(0);
+  glBindBuffer(GL_ARRAY_BUFFER, 0);
 
   State->MeshPool[Handle] = MeshVal;
   State->MeshSlotUsed[Handle] = true;
@@ -395,7 +456,9 @@ void RenderFreeMesh(MeshHandle Handle) {
   if (!State->MeshSlotUsed[Handle]) {
     return;
   }
-  UnloadMesh(State->MeshPool[Handle]);
+  glDeleteVertexArrays(1, &State->MeshPool[Handle].Vao);
+  glDeleteBuffers(1, &State->MeshPool[Handle].Vbo);
+  State->MeshPool[Handle] = (ChunkGpuMesh){0};
   State->MeshSlotUsed[Handle] = false;
   State->FreeList[State->FreeCount++] = Handle;
 }
@@ -452,11 +515,14 @@ static void EndSolidOcclusionQuery(BackendState *State) {
 #endif
 
 // Everything shared by the chunks in a pass, bound once. What is left per chunk
-// is the vertex array and the draw -- the only two things that differ.
+// is the chunk origin uniform, the vertex array, and the draw.
 void RenderBeginChunkPass(ChunkPassKind Kind) {
   BackendState *State = GetBackendState();
   Shader *Active = (Kind == CHUNK_PASS_CUTOUT) ? &State->ChunkShaderCutout
                                                : &State->ChunkShaderOpaque;
+  State->ActiveChunkOriginLoc = (Kind == CHUNK_PASS_CUTOUT)
+                                    ? State->ChunkOriginLocCutout
+                                    : State->ChunkOriginLocOpaque;
 
   // Raylib batches its own immediate-mode geometry and flushes it lazily. Left
   // pending, it would be drawn later under this pass's shader.
@@ -476,9 +542,11 @@ void RenderBeginChunkPass(ChunkPassKind Kind) {
 }
 
 void RenderEndChunkPass(void) {
+  BackendState *State = GetBackendState();
 #ifdef MINEGAME_PROFILE
-  EndSolidOcclusionQuery(GetBackendState());
+  EndSolidOcclusionQuery(State);
 #endif
+  State->ActiveChunkOriginLoc = -1;
   rlDisableShader();
   glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
 }
@@ -526,7 +594,7 @@ void RenderGetViewProjection(float OutMatrix[RENDER_MATRIX_ELEMENTS]) {
   memcpy(OutMatrix, Source, sizeof(Source));
 }
 
-void RenderDrawMesh(MeshHandle Handle) {
+void RenderDrawMesh(MeshHandle Handle, Vec3 ChunkOrigin) {
   BackendState *State = GetBackendState();
   if (Handle == MESH_HANDLE_INVALID || Handle >= (MeshHandle)MESH_POOL_CAPACITY) {
     return;
@@ -534,13 +602,18 @@ void RenderDrawMesh(MeshHandle Handle) {
   if (!State->MeshSlotUsed[Handle]) {
     return;
   }
-  Mesh *MeshVal = &State->MeshPool[Handle];
-  if (MeshVal->vaoId == 0) {
+  ChunkGpuMesh *MeshVal = &State->MeshPool[Handle];
+  if (MeshVal->Vao == 0 || MeshVal->IndexCount <= 0) {
     return;
   }
 
-  rlEnableVertexArray(MeshVal->vaoId);
-  rlDrawVertexArrayElements(0, MeshVal->triangleCount * 3, 0);
+  if (State->ActiveChunkOriginLoc >= 0) {
+    glUniform3f(State->ActiveChunkOriginLoc, ChunkOrigin.x, ChunkOrigin.y,
+                ChunkOrigin.z);
+  }
+
+  rlEnableVertexArray(MeshVal->Vao);
+  rlDrawVertexArrayElements(0, MeshVal->IndexCount, 0);
   rlDisableVertexArray();
 }
 

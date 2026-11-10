@@ -14,16 +14,29 @@
 // render/raylib_backend.c) fulfils them. This header exposes no renderer
 // (Raylib) types, so it can be implemented by any backend (e.g. Vulkan later).
 
-// Backend-agnostic geometry to upload. Arrays are borrowed for the duration of
-// the RenderUploadMesh call (the backend copies what it needs).
+// Sized to what a 16-bit index buffer can address (65532 vertices = 16383
+// four-vertex quads). Shared between the mesher and the backend's static EBO.
+enum {
+  CHUNK_VERTICES_PER_QUAD = 4,
+  CHUNK_INDICES_PER_QUAD = 6,
+  CHUNK_MAX_QUADS = 16383,
+  CHUNK_MAX_VERTICES = CHUNK_MAX_QUADS * CHUNK_VERTICES_PER_QUAD,
+  CHUNK_MAX_INDICES = CHUNK_MAX_QUADS * CHUNK_INDICES_PER_QUAD
+};
+
+// 8-byte packed chunk vertex (uvec2 in chunk.vert):
+//   Word0: X(5b) | Y(5b) | Z(5b) | U(5b) | V(5b) | AO(2b) | Normal(3b)
+//   Word1: TexLayer(8b) | OverlayLayer(8b, 255 = none) | TintRGB565(16b)
 typedef struct {
-  const float *Vertices;          // VertexCount * 3
-  const unsigned short *Indices;  // IndexCount
-  const float *TexCoords;         // VertexCount * 2
-  const unsigned char *Colors;    // VertexCount * 4
-  const float *TexLayers;         // VertexCount * 2 (texture array layer index)
+  uint32_t Word0;
+  uint32_t Word1;
+} ChunkVertex;
+
+// Backend-agnostic geometry to upload. Borrowed for the duration of the
+// RenderUploadMesh call (the backend uploads it directly to the GPU).
+typedef struct {
+  const ChunkVertex *Vertices;
   int VertexCount;
-  int IndexCount;
 } MeshData;
 
 // Abstract camera for frame setup; the backend derives view/projection.
@@ -42,10 +55,10 @@ void RenderBackendShutdown(void);
 MeshHandle RenderUploadMesh(const MeshData *Data);
 void RenderFreeMesh(MeshHandle Handle);
 
-// Draws one chunk mesh. Valid only between RenderBeginChunkPass and
-// RenderEndChunkPass, which establish the shader, texture and matrix every chunk
-// shares.
-void RenderDrawMesh(MeshHandle Handle);
+// Draws one chunk mesh at its world-space origin. Valid only between
+// RenderBeginChunkPass and RenderEndChunkPass, which establish the shader,
+// texture and matrix every chunk shares.
+void RenderDrawMesh(MeshHandle Handle, Vec3 ChunkOrigin);
 
 // Which fragment shader a chunk pass binds. The opaque variant omits the alpha
 // test so the hardware keeps early depth rejection; the cutout variant keeps it
