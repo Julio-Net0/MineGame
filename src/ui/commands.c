@@ -80,6 +80,7 @@ static void DebugWireframe(CommandContext *Ctx, bool State);
 static void DebugChunkBorders(CommandContext *Ctx, bool State);
 static void DebugFreeCam(CommandContext *Ctx, bool State);
 static void DebugForceCutout(CommandContext *Ctx, bool State);
+static void DebugSortChunks(CommandContext *Ctx, bool State);
 
 static const DebugToggle AVAILABLEDEBUGS[] = {
     {"aabb", "Show collision boxes", DebugAABB},
@@ -88,6 +89,8 @@ static const DebugToggle AVAILABLEDEBUGS[] = {
     {"freecam", "Enable freecam", DebugFreeCam},
     {"forcecutout", "Draw solid blocks with the cutout shader (measurement)",
      DebugForceCutout},
+    {"sortchunks", "Draw solid chunks nearest first (on by default)",
+     DebugSortChunks},
 };
 
 static const int AVAILABLEDEBUGSCOUNT =
@@ -144,8 +147,15 @@ static char *GetRemainingString(char **Context) {
   return Start;
 }
 
+static CommandOutputSink OutputSink = (CommandOutputSink)0;
+
+void SetCommandOutputSink(CommandOutputSink Sink) { OutputSink = Sink; }
+
 static void ReturnCommand(ChatState *Chat, int LogLevel, const char *Message) {
   AddChatHistory(Chat, Message);
+  if (OutputSink != (CommandOutputSink)0) {
+    OutputSink(Message);
+  }
   switch (LogLevel) {
   case LOG_LEVEL_WARN:
     LogWarn("%s", Message);
@@ -435,6 +445,11 @@ static void CommandFillChat(const char *Args, CommandContext *Ctx) {
 
 static void CommandSave(const char *Args, CommandContext *Ctx) {
   (void)Args;
+  if (WorldSaveIsReadOnly()) {
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_WARN,
+                  "World is read-only in this run; nothing was saved");
+    return;
+  }
   int SavedCount = 0;
   int WorldChunkCount = Ctx->World->ChunkCount;
   int TargetCount = WorldChunkCount < MAX_ACTIVE_CHUNKS ? WorldChunkCount : MAX_ACTIVE_CHUNKS;
@@ -760,6 +775,11 @@ static void DebugForceCutout(CommandContext *Ctx, bool State) {
   GetDebugState()->ForceCutoutShader = State;
 }
 
+static void DebugSortChunks(CommandContext *Ctx, bool State) {
+  (void)Ctx;
+  GetDebugState()->SortChunks = State;
+}
+
 static void CommandDebug(const char *Args, CommandContext *Ctx) {
   if (Args == (void*)0) {
     ReturnCommand(
@@ -816,7 +836,7 @@ static void CommandDebug(const char *Args, CommandContext *Ctx) {
                 "Incorrect Format. try: /debug <command> <1/0> or /debug help");
 }
 
-void CommandHandler(char *Command, ChatState *Chat, GameCamera *Camera,
+bool CommandHandler(char *Command, ChatState *Chat, GameCamera *Camera,
                     Player *Player, World *World) {
   CommandContext Ctx = {
       .Chat = Chat,
@@ -834,7 +854,7 @@ void CommandHandler(char *Command, ChatState *Chat, GameCamera *Camera,
   char *CommandName = TokenizeSpace(&SavePtr);
 
   if (CommandName == (void*)0) {
-    return;
+    return false;
   }
 
   char *Args = GetRemainingString(&SavePtr);
@@ -842,12 +862,13 @@ void CommandHandler(char *Command, ChatState *Chat, GameCamera *Camera,
   for (int Index = 0; Index < AVAILABLECOMMANDSCOUNT; Index++) {
     if (CompareString(CommandName, AVAILABLECOMMANDS[Index].Name) == 0) {
       AVAILABLECOMMANDS[Index].Function(Args, &Ctx);
-      return;
+      return true;
     }
   }
   char Msg[MSG_BUFFER_SIZE];
   snprintf(Msg, sizeof(Msg), "Unknown command: %s. Type /help", CommandName);
   ReturnCommand(Chat, LOG_LEVEL_WARN, Msg);
+  return false;
 }
 
 void PollCommandEvents(ChatState *Chat) {

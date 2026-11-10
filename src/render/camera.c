@@ -84,6 +84,29 @@ void UpdateGameCamera(GameCamera *Camera, Vec2 LookDelta) {
   Camera->Target = Vec3Add(Camera->Position, ViewVector);
 }
 
+static void ApplyAim(CameraState *State, GameCamera *Camera, float YawDegrees,
+                     float PitchDegrees) {
+  State->Yaw = YawDegrees;
+  State->Pitch = PitchDegrees;
+
+  if (State->Pitch > CAMERA_PITCH_LIMIT) {
+    State->Pitch = CAMERA_PITCH_LIMIT;
+  }
+  if (State->Pitch < -CAMERA_PITCH_LIMIT) {
+    State->Pitch = -CAMERA_PITCH_LIMIT;
+  }
+
+  Camera->Target = Vec3Add(Camera->Position, ViewVectorFromState(State));
+}
+
+void CameraSetAim(GameCamera *Camera, float YawDegrees, float PitchDegrees) {
+  ApplyAim(GetCameraState(), Camera, YawDegrees, PitchDegrees);
+}
+
+void FreeCameraSetAim(GameCamera *Camera, float YawDegrees, float PitchDegrees) {
+  ApplyAim(GetFreeCameraState(), Camera, YawDegrees, PitchDegrees);
+}
+
 void CameraFollowTarget(GameCamera *Camera, Vec3 PlayerPos, float HeadOffset) {
   Vec3 ViewVector = Vec3Sub(Camera->Target, Camera->Position);
 

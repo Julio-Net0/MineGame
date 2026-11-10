@@ -70,6 +70,7 @@ FetchContent_MakeAvailable(raylib)
 
 add_executable(${PROJECT_NAME}
   src/main.c
+  src/automation/script.c
   src/world/world.c
   src/world/chunk.c
   src/world/chunk_worker.c
@@ -84,6 +85,7 @@ add_executable(${PROJECT_NAME}
   src/player/player.c
   src/input/input.c
   src/input/raylib_input.c
+  src/platform/os_limits.c
   src/platform/raylib_platform.c
   src/render/renderer.c
   src/render/raylib_backend.c
@@ -102,10 +104,12 @@ add_executable(${PROJECT_NAME}
   src/core/fileio.c
   src/core/image.c
   src/core/resource_pack.c
+  src/core/launch_options.c
   src/core/log.c
   src/core/noise.c
   src/core/profiler.c
   src/third_party/cJSON.c
+  src/third_party/png_write.c
 )
 
 target_link_libraries(${PROJECT_NAME} raylib Threads::Threads)
@@ -128,6 +132,9 @@ endif()
 if(MINEGAME_SNAPSHOT_VERIFY)
   target_compile_definitions(${PROJECT_NAME} PRIVATE MINEGAME_SNAPSHOT_VERIFY)
 endif()
+
+set_source_files_properties(src/platform/os_limits.c PROPERTIES
+  COMPILE_DEFINITIONS _GNU_SOURCE)
 
 # Mirror assets into the build tree on every build. file(COPY) at configure time
 # never prunes, so a renamed or deleted source asset would linger in the build

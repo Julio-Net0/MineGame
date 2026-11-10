@@ -86,7 +86,7 @@ typedef struct {
 // meshing leaves the main thread, which is what the snapshot design exists to
 // allow.
 enum {
-  MESHER_SLOT_COUNT = CHUNK_WORKER_THREAD_COUNT
+  MESHER_SLOT_COUNT = CHUNK_WORKER_MAX_THREADS
 };
 
 static MesherState *GetMesherStateSlot(int Slot) {
@@ -902,6 +902,17 @@ void UnloadChunkMesh(Chunk *ChunkVal) {
     }
 }
 
+bool RendererHasPendingMeshWork(void) {
+    MeshJob *Jobs = GetMeshJobs();
+    for (int Idx = 0; Idx < MESH_JOB_SLOT_COUNT; Idx++) {
+        if (atomic_load_explicit(&Jobs[Idx].Stage, memory_order_acquire) !=
+            MESH_JOB_FREE) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool RendererHasMeshJobCapacity(void) {
     MeshJob *Jobs = GetMeshJobs();
     for (int Idx = 0; Idx < MESH_JOB_SLOT_COUNT; Idx++) {
@@ -1182,27 +1193,39 @@ int GetLastRenderedChunkCount(void) { return *GetRenderedChunkCounter(); }
 
 // Back-to-front ordering for the translucent pass.
 //
-// Alpha blending needs approximate depth ordering, not an exact one, and the
-// distances fall in a range bounded by the render distance. Bucketing by
-// quantised distance is linear, where the comparison sort it replaces was
-// superlinear over as many as MAX_ACTIVE_CHUNKS entries every frame. Two chunks
-// close enough to share a bucket are not distinguishable by their draw order.
+// Both orderings the frame needs come from these buckets. Alpha blending needs
+// approximate depth ordering and the solid pass needs occluders to generally
+// precede what they occlude; neither needs a total order. Bucketing is linear,
+// where the comparison sort it replaces was superlinear over as many as
+// MAX_ACTIVE_CHUNKS entries every frame.
+//
+// The bucket is the squared distance between the two chunks' grid coordinates,
+// which is exact rather than quantised: squared distance is monotonic in
+// distance, so ordering by it orders by distance, and only chunks genuinely
+// equidistant on the grid tie. The earlier version took the world-space distance
+// between chunk centres, took its square root and divided by the chunk width,
+// which tied everything within a chunk-width of the same distance and cost a
+// `sqrtf` per visible chunk per frame -- affordable when only chunks carrying a
+// translucent mesh needed it, less so now that the solid pass wants every
+// visible chunk ordered.
+//
+// The bucket count bounds the render distance this can express: with dx, dy and
+// dz each up to r, the largest value is 3r^2, so 256 buckets cover a render
+// distance of 9. Beyond that the clamp puts the far chunks in one bucket and
+// they draw in arbitrary order relative to each other, which is degradation
+// rather than breakage.
 enum {
-    TRANSLUCENT_BUCKETS = 64
+    CHUNK_DISTANCE_BUCKETS = 256
 };
 
 typedef struct {
     int Index;
     int Bucket;
-} TranslucentEntry;
+} ChunkOrderEntry;
 
-static int DistanceBucket(float DistanceSq) {
-    // One bucket per chunk-width of distance, clamped. Beyond the last bucket
-    // everything is far enough that relative order stops mattering.
-    float Distance = sqrtf(DistanceSq);
-    int Bucket = (int)(Distance / (float)CHUNK_SIZE);
-    if (Bucket < 0) { Bucket = 0; }
-    if (Bucket >= TRANSLUCENT_BUCKETS) { Bucket = TRANSLUCENT_BUCKETS - 1; }
+static int ChunkDistanceBucket(int DeltaX, int DeltaY, int DeltaZ) {
+    int Bucket = (DeltaX * DeltaX) + (DeltaY * DeltaY) + (DeltaZ * DeltaZ);
+    if (Bucket >= CHUNK_DISTANCE_BUCKETS) { Bucket = CHUNK_DISTANCE_BUCKETS - 1; }
     return Bucket;
 }
 
@@ -1217,31 +1240,80 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
     BuildRenderFrustum(&Frustum);
 
     static bool Visible[MAX_ACTIVE_CHUNKS];
+    static ChunkOrderEntry VisibleChunks[MAX_ACTIVE_CHUNKS];
+    static int NearToFar[MAX_ACTIVE_CHUNKS];
+    static int SlotOrder[MAX_ACTIVE_CHUNKS];
+
+    int BucketCounts[CHUNK_DISTANCE_BUCKETS] = {0};
+    int VisibleCount = 0;
     int ChunkCount = WorldVal->ChunkCount;
+
+    // The camera's own chunk, so the per-chunk work below is integer subtraction
+    // rather than anything in world space.
+    int CameraChunkX = (int)__builtin_floorf(CameraVal.Position.x / CHUNK_SIZE);
+    int CameraChunkY = (int)__builtin_floorf(CameraVal.Position.y / CHUNK_SIZE);
+    int CameraChunkZ = (int)__builtin_floorf(CameraVal.Position.z / CHUNK_SIZE);
+
+    // Visibility and distance in one sweep. The bucket is what every pass sorts
+    // on, so deriving it here costs three integer multiplies per visible chunk
+    // per frame rather than one per chunk per pass.
     for (int IdxI = 0; IdxI < ChunkCount; IdxI++) {
-        Visible[IdxI] = IsChunkVisible(&Frustum, &WorldVal->Chunks[IdxI]);
+        Chunk *ChunkVal = &WorldVal->Chunks[IdxI];
+        Visible[IdxI] = IsChunkVisible(&Frustum, ChunkVal);
+        if (!Visible[IdxI]) { continue; }
+
+        VisibleChunks[VisibleCount].Index = IdxI;
+        VisibleChunks[VisibleCount].Bucket =
+            ChunkDistanceBucket(ChunkVal->ChunkX - CameraChunkX,
+                                ChunkVal->ChunkY - CameraChunkY,
+                                ChunkVal->ChunkZ - CameraChunkZ);
+        BucketCounts[VisibleChunks[VisibleCount].Bucket]++;
+        SlotOrder[VisibleCount] = IdxI;
+        VisibleCount++;
     }
+
+    // Counting sort walked from the near bucket up, so the output runs nearest
+    // to farthest. The translucent pass reads the same array backwards.
+    int Offsets[CHUNK_DISTANCE_BUCKETS];
+    int Running = 0;
+    for (int B = 0; B < CHUNK_DISTANCE_BUCKETS; B++) {
+        Offsets[B] = Running;
+        Running += BucketCounts[B];
+    }
+    for (int IdxI = 0; IdxI < VisibleCount; IdxI++) {
+        NearToFar[Offsets[VisibleChunks[IdxI].Bucket]++] = VisibleChunks[IdxI].Index;
+    }
+
+    // The solid and cutout passes are the ones the toggle governs; SlotOrder is
+    // the visible chunks in the order the slots happen to sit in, which is what
+    // they traversed before this change.
+    const int *SolidOrder = GetDebugState()->SortChunks ? NearToFar : SlotOrder;
 
     int Rendered = 0;
 
-    // Solid faces, with the shader that keeps early depth rejection. The debug
-    // toggle routes them back through the cutout shader instead, restoring the
-    // pre-split behaviour so the two can be measured against each other.
+    // Solid faces, nearest first, with the shader that keeps early depth
+    // rejection. Order is what gives that rejection something to reject: an
+    // occluded chunk drawn before its occluder is shaded and then overwritten.
+    //
+    // The ForceCutoutShader toggle routes them back through the cutout shader,
+    // restoring the pre-split behaviour so the two can be measured against each
+    // other.
     RenderBeginChunkPass(GetDebugState()->ForceCutoutShader ? CHUNK_PASS_CUTOUT
                                                             : CHUNK_PASS_OPAQUE);
-    for (int IdxI = 0; IdxI < ChunkCount; IdxI++) {
-        Chunk *ChunkVal = &WorldVal->Chunks[IdxI];
-        if (!Visible[IdxI] || !ChunkVal->HasMesh) { continue; }
+    for (int IdxI = 0; IdxI < VisibleCount; IdxI++) {
+        Chunk *ChunkVal = &WorldVal->Chunks[SolidOrder[IdxI]];
+        if (!ChunkVal->HasMesh) { continue; }
         RenderDrawMesh(ChunkVal->ChunkMesh);
         Rendered++;
     }
     RenderEndChunkPass();
 
-    // Alpha-cutout flora, which needs the test the opaque shader drops.
+    // Alpha-cutout flora, which needs the test the opaque shader drops. Ordered
+    // with the solid pass; it runs after it and tests against the depth it wrote.
     RenderBeginChunkPass(CHUNK_PASS_CUTOUT);
-    for (int IdxI = 0; IdxI < ChunkCount; IdxI++) {
-        Chunk *ChunkVal = &WorldVal->Chunks[IdxI];
-        if (!Visible[IdxI] || !ChunkVal->HasCutoutMesh) { continue; }
+    for (int IdxI = 0; IdxI < VisibleCount; IdxI++) {
+        Chunk *ChunkVal = &WorldVal->Chunks[SolidOrder[IdxI]];
+        if (!ChunkVal->HasCutoutMesh) { continue; }
         RenderDrawMesh(ChunkVal->CutoutMesh);
     }
     RenderEndChunkPass();
@@ -1261,47 +1333,17 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
         }
     }
 
-    // Translucent pass, back to front.
+    // Translucent pass, back to front -- the near-to-far ordering walked in
+    // reverse. Alpha blending is order-dependent, so this pass stays sorted
+    // whatever the solid pass is doing; defeating it would be a rendering fault
+    // rather than a measurement.
     RenderBeginTranslucentPass();
 
-    static TranslucentEntry VisibleChunks[MAX_ACTIVE_CHUNKS];
-    int BucketCounts[TRANSLUCENT_BUCKETS] = {0};
-    int VisibleCount = 0;
-
-    for (int IdxI = 0; IdxI < ChunkCount; IdxI++) {
-        Chunk *ChunkVal = &WorldVal->Chunks[IdxI];
-        if (!ChunkVal->HasTranslucentMesh || !Visible[IdxI]) { continue; }
-
-        float const H = CHUNK_SIZE / 2.0F;
-        Vec3 Center = {
-            (float)(ChunkVal->ChunkX * CHUNK_SIZE) + H,
-            (float)(ChunkVal->ChunkY * CHUNK_SIZE) + H,
-            (float)(ChunkVal->ChunkZ * CHUNK_SIZE) + H,
-        };
-        Vec3 V = Vec3Sub(Center, CameraVal.Position);
-
-        VisibleChunks[VisibleCount].Index = IdxI;
-        VisibleChunks[VisibleCount].Bucket = DistanceBucket(Vec3Dot(V, V));
-        BucketCounts[VisibleChunks[VisibleCount].Bucket]++;
-        VisibleCount++;
-    }
-
-    // Counting sort, walked from the far bucket down so the output is ordered
-    // back to front.
-    static int Ordered[MAX_ACTIVE_CHUNKS];
-    int Offsets[TRANSLUCENT_BUCKETS];
-    int Running = 0;
-    for (int B = TRANSLUCENT_BUCKETS - 1; B >= 0; B--) {
-        Offsets[B] = Running;
-        Running += BucketCounts[B];
-    }
-    for (int IdxI = 0; IdxI < VisibleCount; IdxI++) {
-        Ordered[Offsets[VisibleChunks[IdxI].Bucket]++] = VisibleChunks[IdxI].Index;
-    }
-
     RenderBeginChunkPass(CHUNK_PASS_CUTOUT);
-    for (int IdxI = 0; IdxI < VisibleCount; IdxI++) {
-        RenderDrawMesh(WorldVal->Chunks[Ordered[IdxI]].TranslucentMesh);
+    for (int IdxI = VisibleCount - 1; IdxI >= 0; IdxI--) {
+        Chunk *ChunkVal = &WorldVal->Chunks[NearToFar[IdxI]];
+        if (!ChunkVal->HasTranslucentMesh) { continue; }
+        RenderDrawMesh(ChunkVal->TranslucentMesh);
     }
     RenderEndChunkPass();
 

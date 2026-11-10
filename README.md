@@ -133,6 +133,69 @@ For a capture that outlives the window:
 
 Files land next to the executable as `profile_NNN.csv`, never overwriting a previous capture. A timed capture is the one to compare across changes, since every run then covers the same span. `/fillchat [lines]` fills the chat history with identical lines, 20 by default, so a capture with chat open always draws the same text.
 
+### Low-spec simulation
+
+Launch flags constrain the process to approximate weaker hardware in a repeatable, per-run way, and can be combined in any order with the optional `<width> <height>` window size:
+
+```powershell
+./build/MineGame.exe 1280 720 --workers 2 --cores 2 --cpu-slowdown 3 --ram-limit 512
+```
+
+| Flag | Range | Effect |
+|---|---|---|
+| `--workers <N>` | `1` .. `4` (`CHUNK_WORKER_MAX_THREADS`) | Spawn `N` chunk worker threads instead of the default 4. |
+| `--cores <N>` | `>= 1` (clamped to physical cores) | Pin the process to one logical processor on each of the first `N` physical cores so SMT siblings are not counted as separate cores. |
+| `--cpu-slowdown <K>` | `1.0` .. `16.0` | Busy-wait at the end of every CPU-bound profiler scope until `K` times its measured wall duration has elapsed, recording the stretched duration. Requires `MINEGAME_PROFILE=ON`. |
+| `--ram-limit <MB>` | `>= 1` (MB) | Cap process memory through the OS (a Job Object commit limit on Windows, `RLIMIT_DATA` on Linux) before the world is allocated. |
+
+Every active flag is logged at startup with its applied value and displayed on the **F3** overlay (`SIM: workers 2 cores 2 cpu x3.0 ram 512 MB`), so screenshots and captures taken under simulation are never mistaken for unconstrained runs. On exit, the engine logs the peak process memory (`committed` on Windows, `resident` on Linux) whether or not `--ram-limit` was set.
+
+**Limitations:**
+* `--cpu-slowdown` is a uniform wall-clock multiplier on profiled CPU-bound scopes (`Present` is excluded). It does not simulate GPU performance, cache size, memory latency, IPC differences, or OS paging, and work outside a profiler scope runs at full speed.
+* Neither `--cores` nor `--cpu-slowdown` simulates the target hardware's instruction set (catching accidental SSSE3/SSE4 instructions requires building for baseline `x86-64` or running under an instruction-set emulator).
+* Windows reports and caps **committed** memory, while Linux reports **resident** peak (`ru_maxrss`) and caps the data segment (`RLIMIT_DATA`), so the two numbers measure different quantities.
+
+### Script automation
+
+A plain-text scenario script (`--script`) drives the game inside the normal frame loop, captures screenshots and JSON state dumps, and exits on its own so runs and benchmarks can be repeated unattended:
+
+```powershell
+./build/MineGame.exe --script scripts/spawn_overview.mgs --script-out automation_out --script-timeout 120
+```
+
+| Flag | Default / Range | Effect |
+|---|---|---|
+| `--script <file>` | — | Parse `<file>` before opening the window and run it in script mode. |
+| `--script-out <dir>` | `automation_out` | Directory where `run.log`, `<name>.png` and `<name>.json` are written (created if missing). |
+| `--script-timeout <seconds>` | `120` (`1` .. `3600`) | Watchdog wall-clock limit for the entire run. |
+
+Script mode opens a `1280x720` window (unless `<width> <height>` is given on the command line), never starts fullscreen, leaves the cursor uncaptured, and ignores physical keyboard and mouse input so moving the mouse cannot perturb the run. The world is switched to **read-only** for the duration of the run — chunk eviction, `/save` and shutdown saves are skipped, leaving `world/` untouched.
+
+The entire script is parsed before the window, OpenGL context or worker threads are created (`#` starts a comment, blank lines are ignored, one statement per line):
+
+| Statement | Effect |
+|---|---|
+| `/...` | Any chat command, dispatched verbatim (`/tp 0 90 0`, `/debug wireframe 1`, `/profile start 10`). |
+| `wait loaded` | Blocks until all chunks within the render distance are generated, meshed and uploaded for 8 consecutive frames. |
+| `wait ticks <N>` / `wait frames <N>` | Blocks for `N` simulation ticks (20 TPS) or `N` rendered frames. |
+| `look <yaw> <pitch>` | Sets the active camera aim in degrees (`yaw 0` faces `+Z`, pitch clamped like mouse look). |
+| `hold <forward\|back\|left\|right\|ascend\|descend> <ticks>` | Holds a movement axis for `N` ticks through the standard `PlayerInput` path (non-blocking; holds can overlap). |
+| `press <jump\|break\|place>` | Latches an action edge for the next simulation tick. |
+| `hotbar <1-9>` | Selects hotbar slot `1` .. `9`. |
+| `screenshot <name>` | Captures the finished frame (UI included) to `<out>/<name>.png`. |
+| `state <name>` | Writes player, camera, targeted block, chunk-load counts, settled flag and profiler averages to `<out>/<name>.json`. |
+| `quit` | Ends the run with exit code `0` (reaching end of file is equivalent). |
+
+Output `<name>` arguments are restricted to `[A-Za-z0-9_-]`. Every executed statement, every chat command response line, and the final run status are recorded in `<out>/run.log`.
+
+**Exit codes:**
+* `0` — Script reached `quit` or end of file.
+* `1` — Engine startup failure.
+* `2` — Script could not be read or parsed, or a statement failed at runtime (unknown `/` command, capture or file write failure).
+* `3` — `--script-timeout` elapsed before the script finished (the blocking line is logged in `run.log`).
+
+See [`scripts/spawn_overview.mgs`](scripts/spawn_overview.mgs) for a ready-to-run example.
+
 ### ❗Known Issues/Limitations
 * **WSL Compatibility:** The cursor might not be disabled as expected when running this project on Windows Subsystem for Linux (WSL).
 
@@ -146,7 +209,7 @@ This project is made possible thanks to these amazing open-source libraries:
     * *License:* [MIT](https://github.com/DaveGamble/cJSON/blob/master/LICENSE)
 * **[stb_perlin](https://github.com/nothings/stb)** - A single-file C implementation of Perlin noise.
     * *License:* Public Domain / MIT (Dual-licensed)
-* **[stb_image](https://github.com/nothings/stb)** - A single-file C image loader, used for renderer-independent PNG decoding and resource pack inflation.
+* **[stb_image & stb_image_write](https://github.com/nothings/stb)** - Single-file C image loader and PNG writer, used for renderer-independent PNG decoding, resource pack inflation and frame capture.
     * *License:* Public Domain / MIT (Dual-licensed)
 
 Special thanks to **Ramon Santamaria (@raysan5)** for creating Raylib and the community for the continuous support.

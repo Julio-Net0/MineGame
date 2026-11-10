@@ -1,0 +1,45 @@
+# Group 4 check: synthetic input through the real simulation.
+#
+#   build/MineGame.exe --script scripts/interact.mgs --script-timeout 180
+#
+# Walks, falls, breaks and places, dumping state around each step. Every dump
+# is a number to compare, which is what makes this checkable without looking at
+# the screenshots.
+
+/tp 0 90 0
+wait loaded
+
+# Fall to the ground with gravity and collision doing the work.
+wait ticks 60
+state landed
+
+# Face north (yaw 0 is +Z) and slightly down, then walk for three seconds.
+# How far the player actually gets depends on the terrain: collision is real
+# here, and a one-block rise stops the walk the same way it stops a player.
+look 0 -10
+state before_walk
+hold forward 60
+wait ticks 60
+state after_walk
+
+# Look straight down at the block underfoot and break it.
+look 0 -89
+wait ticks 1
+state before_break
+press break
+wait ticks 2
+state after_break
+screenshot after_break
+
+# Put one back from the hotbar's third slot.
+hotbar 3
+press place
+wait ticks 2
+state after_place
+screenshot after_place
+
+press jump
+wait ticks 2
+state after_jump
+
+quit

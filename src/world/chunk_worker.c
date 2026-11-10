@@ -26,8 +26,9 @@ typedef struct ChunkWorkerState {
   int MeshHead;
   int MeshTail;
 
-  pthread_t WorkerThreads[CHUNK_WORKER_THREAD_COUNT];
-  int WorkerIndices[CHUNK_WORKER_THREAD_COUNT];
+  pthread_t WorkerThreads[CHUNK_WORKER_MAX_THREADS];
+  int WorkerIndices[CHUNK_WORKER_MAX_THREADS];
+  int ThreadCount;
   pthread_mutex_t QueueMutex;
   pthread_cond_t WorkAvail;
   atomic_bool WorkerRunning;
@@ -40,6 +41,7 @@ static ChunkWorkerState *GetWorkerState(void) {
     .GenerationTail = 0,
     .MeshHead = 0,
     .MeshTail = 0,
+    .ThreadCount = 0,
     .WorkerRunning = false,
     .MeshRunner = (MeshJobRunner)0
   };
@@ -123,12 +125,20 @@ void SetChunkWorkerMeshRunner(MeshJobRunner Runner) {
   GetWorkerState()->MeshRunner = Runner;
 }
 
-void InitChunkWorker(void) {
+void InitChunkWorker(int ThreadCount) {
   ChunkWorkerState *State = GetWorkerState();
+  int ClampedCount = ThreadCount;
+  if (ClampedCount < 1) {
+    ClampedCount = 1;
+  } else if (ClampedCount > CHUNK_WORKER_MAX_THREADS) {
+    ClampedCount = CHUNK_WORKER_MAX_THREADS;
+  }
+
+  State->ThreadCount = ClampedCount;
   atomic_store(&State->WorkerRunning, true);
   pthread_mutex_init(&State->QueueMutex, (const pthread_mutexattr_t *)0);
   pthread_cond_init(&State->WorkAvail, (const pthread_condattr_t *)0);
-  for (int Idx = 0; Idx < CHUNK_WORKER_THREAD_COUNT; Idx++) {
+  for (int Idx = 0; Idx < State->ThreadCount; Idx++) {
     // Each worker owns a mesher scratch, identified by this index. The storage
     // is the state struct's own, so it outlives the thread that reads it.
     State->WorkerIndices[Idx] = Idx;
@@ -141,9 +151,10 @@ void CloseChunkWorker(void) {
   ChunkWorkerState *State = GetWorkerState();
   atomic_store(&State->WorkerRunning, false);
   pthread_cond_broadcast(&State->WorkAvail);
-  for (int Idx = 0; Idx < CHUNK_WORKER_THREAD_COUNT; Idx++) {
+  for (int Idx = 0; Idx < State->ThreadCount; Idx++) {
     pthread_join(State->WorkerThreads[Idx], (void **)0);
   }
+  State->ThreadCount = 0;
   pthread_cond_destroy(&State->WorkAvail);
   pthread_mutex_destroy(&State->QueueMutex);
 }

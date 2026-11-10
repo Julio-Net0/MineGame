@@ -445,3 +445,62 @@ bool AreNeighborsGenerated(World *WorldVal, Chunk *ChunkVal) {
 
   return true;
 }
+
+bool WorldIsSettled(World *WorldVal, Vec3 Center, int RenderDist) {
+  int Side = (2 * RenderDist) + 1;
+  if ((Side * Side * Side) > MAX_ACTIVE_CHUNKS) {
+    RenderDist = MAX_RENDER_DISTANCE;
+  }
+
+  // The same coordinate derivation UpdateWorld uses to decide what to load, so
+  // this asks about exactly the set that was asked for.
+  int CenterX = (int)__builtin_floorf(Center.x / CHUNK_SIZE);
+  int CenterY = (int)__builtin_floorf(Center.y / CHUNK_SIZE);
+  int CenterZ = (int)__builtin_floorf(Center.z / CHUNK_SIZE);
+
+  for (int IdxX = CenterX - RenderDist; IdxX <= CenterX + RenderDist; IdxX++) {
+    for (int IdxY = CenterY - RenderDist; IdxY <= CenterY + RenderDist; IdxY++) {
+      for (int IdxZ = CenterZ - RenderDist; IdxZ <= CenterZ + RenderDist;
+           IdxZ++) {
+        Chunk *ChunkVal = GetChunkFromWorld(WorldVal, IdxX, IdxY, IdxZ);
+        if (ChunkVal == (Chunk *)0) {
+          return false;
+        }
+        if (!ChunkVal->IsGenerated || ChunkVal->IsGenerating ||
+            ChunkVal->IsDirty || ChunkVal->IsMeshing) {
+          return false;
+        }
+      }
+    }
+  }
+  return true;
+}
+
+void WorldGetLoadCounts(World *WorldVal, int *OutGenerated, int *OutGenerating,
+                        int *OutDirty, int *OutMeshing) {
+  int Generated = 0;
+  int Generating = 0;
+  int Dirty = 0;
+  int Meshing = 0;
+
+  for (int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++) {
+    Chunk *ChunkVal = &WorldVal->Chunks[IdxI];
+    if (ChunkVal->IsGenerated) {
+      Generated++;
+    }
+    if (ChunkVal->IsGenerating) {
+      Generating++;
+    }
+    if (ChunkVal->IsDirty) {
+      Dirty++;
+    }
+    if (ChunkVal->IsMeshing) {
+      Meshing++;
+    }
+  }
+
+  if (OutGenerated != (int *)0) { *OutGenerated = Generated; }
+  if (OutGenerating != (int *)0) { *OutGenerating = Generating; }
+  if (OutDirty != (int *)0) { *OutDirty = Dirty; }
+  if (OutMeshing != (int *)0) { *OutMeshing = Meshing; }
+}

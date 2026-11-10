@@ -18,6 +18,11 @@ typedef struct {
 // Decode PNG bytes into RGBA8. On failure Out is zeroed and false is returned.
 bool CoreImageDecodePng(const unsigned char *Data, int Size, CoreImage *Out);
 
+// Write Image to Path as an RGBA8 PNG, creating or truncating the file. Returns
+// false (and logs the path) when the image is empty or the file cannot be
+// written; the image itself is never modified.
+bool CoreImageEncodePng(const CoreImage *Image, const char *Path);
+
 void CoreImageFree(CoreImage *Image);
 
 // Inflate a raw DEFLATE stream (zip method 8, no zlib header) into a heap

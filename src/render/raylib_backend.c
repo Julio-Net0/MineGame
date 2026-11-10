@@ -2,6 +2,7 @@
 #include "render/rl_compat.h"
 #include "core/fileio.h"
 #include "core/image.h"
+#include "core/log.h"
 #include "core/resource_pack.h"
 #include "core/profiler.h"
 #include "world/biome.h"
@@ -53,6 +54,11 @@ typedef struct {
   bool MeshSlotUsed[MESH_POOL_CAPACITY];
   MeshHandle FreeList[MESH_POOL_CAPACITY];
   int FreeCount;
+
+  // Frame capture: Requested is set while a frame is being built, Capture holds
+  // the pixels once that frame has been read back and is waiting to be taken.
+  bool CaptureRequested;
+  CoreImage Capture;
 } BackendState;
 
 static BackendState *GetBackendState(void) {
@@ -268,6 +274,8 @@ void RenderBackendInit(void) {
 
 void RenderBackendShutdown(void) {
   BackendState *State = GetBackendState();
+  CoreImageFree(&State->Capture);
+  State->CaptureRequested = false;
   for (int IdxI = 0; IdxI < MESH_POOL_CAPACITY; IdxI++) {
     if (State->MeshSlotUsed[IdxI]) {
       UnloadMesh(State->MeshPool[IdxI]);
@@ -431,11 +439,79 @@ void RenderBeginFrame(RenderCamera Camera) {
 
 void RenderEnd3D(void) { EndMode3D(); }
 
+void RenderRequestCapture(void) {
+  GetBackendState()->CaptureRequested = true;
+}
+
+bool RenderTakeCapture(CoreImage *Out) {
+  BackendState *State = GetBackendState();
+  if (Out == (CoreImage *)0 || State->Capture.Pixels == (unsigned char *)0) {
+    return false;
+  }
+  *Out = State->Capture;
+  State->Capture = (CoreImage){0};
+  return true;
+}
+
+// Reads the frame back before it is swapped away. Left outside the present
+// scope below on purpose: the read is a full GPU sync, and folding it into the
+// present timing would make the one frame that captures look like a stall in
+// the profiler's numbers for every frame.
+static void CaptureFrameIfRequested(void) {
+  BackendState *State = GetBackendState();
+  if (!State->CaptureRequested) {
+    return;
+  }
+  State->CaptureRequested = false;
+
+  // The UI is still sitting in rlgl's batch at this point. EndDrawing would
+  // flush it, but the read has to happen before the swap, so the flush does
+  // too -- otherwise the capture shows the 3D scene without the UI over it.
+  rlDrawRenderBatchActive();
+
+  int Width = GetScreenWidth();
+  int Height = GetScreenHeight();
+  if (Width <= 0 || Height <= 0) {
+    return;
+  }
+
+  // rlReadScreenPixels already flips the rows glReadPixels returns bottom-up
+  // and forces alpha to 255, which is exactly CoreImage's layout.
+  unsigned char *Pixels = rlReadScreenPixels(Width, Height);
+  if (Pixels == (unsigned char *)0) {
+    LogError("RENDER: frame capture failed to read %dx%d pixels", Width, Height);
+    return;
+  }
+
+  // Copied out of Raylib's allocator into ours: a CoreImage is freed with
+  // CoreImageFree wherever it ends up, which must not depend on how the
+  // renderer was configured to allocate.
+  size_t Bytes = (size_t)Width * (size_t)Height * CORE_IMAGE_CHANNELS;
+  unsigned char *Owned = (unsigned char *)malloc(Bytes);
+  if (Owned == (unsigned char *)0) {
+    LogError("RENDER: out of memory copying a %dx%d frame capture", Width,
+             Height);
+    MemFree(Pixels);
+    return;
+  }
+  memcpy(Owned, Pixels, Bytes);
+  MemFree(Pixels);
+
+  // A capture nobody took yet is replaced, not leaked: the newer frame is the
+  // one that was asked for.
+  CoreImageFree(&State->Capture);
+  State->Capture.Width = Width;
+  State->Capture.Height = Height;
+  State->Capture.Pixels = Owned;
+}
+
 // EndDrawing is the buffer swap plus the platform's input-event pump, so this
 // scope covers everything the driver and the OS can make the frame wait on.
 // With no vsync and the GPU queue kept full it is the likeliest home of a stall
 // that no other scope accounts for.
 void RenderEndFrame(void) {
+  CaptureFrameIfRequested();
+
   PROFILE_BEGIN(PresentStart);
   EndDrawing();
   PROFILE_END(PresentStart, PROFILE_PRESENT);

@@ -16,6 +16,14 @@ typedef struct {
   // time it buys can be measured on one machine in one sitting, which is the
   // only way to see it -- the development machine's GPU is not the bottleneck.
   bool ForceCutoutShader;
+
+  // Measurement aid, like ForceCutoutShader above, and the only flag here that
+  // defaults to enabled -- it names an optimization rather than an overlay, so
+  // clearing it is what costs something. Off, the solid and cutout passes walk
+  // chunk slots in whatever order the hash map left them, which is what they did
+  // before the ordering existed. The translucent pass ignores it: unordered
+  // blending is a rendering fault, not an alternative worth measuring.
+  bool SortChunks;
 } DebugState;
 
 DebugState *GetDebugState(void);

@@ -1,0 +1,22 @@
+# Group 3 check: wait for the world instead of guessing at a frame count.
+#
+#   build/MineGame.exe --script scripts/loaded.mgs --script-timeout 120
+#
+# Writes automation_out/far.png and automation_out/far.json. The same script
+# should produce the same fully meshed view on a fast and a slow machine, which
+# is what `wait loaded` buys over `wait frames`.
+
+/noclip 1
+/tp 500 90 500
+
+wait loaded
+
+screenshot far
+state far
+
+# Ticks are simulation time, so this advances the world by exactly two seconds
+# at the 20 Hz tick rate no matter what the framerate is.
+wait ticks 40
+state after_ticks
+
+quit

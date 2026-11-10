@@ -33,7 +33,15 @@ typedef struct {
   DebugFunc Func;
 } DebugToggle;
 
-void CommandHandler(char *Command, ChatState *Chat, GameCamera *Camera, Player *Player, World *World);
+// Runs one chat command. False means the command name was not recognized,
+// which a scripted run treats as a failed step; a recognized command that
+// rejects its own arguments still returns true, having reported why.
+bool CommandHandler(char *Command, ChatState *Chat, GameCamera *Camera, Player *Player, World *World);
+
+// Optional sink for every line a command reports, so a scripted run can record
+// what the commands answered without the chat being visible. Null clears it.
+typedef void (*CommandOutputSink)(const char *Message);
+void SetCommandOutputSink(CommandOutputSink Sink);
 
 // Once per frame: reports to the chat anything a command started that has
 // since finished on its own, such as a timed profiler capture.

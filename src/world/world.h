@@ -48,4 +48,15 @@ Chunk *GetChunkFromWorld(World *WorldVal, int ChunkX, int ChunkY, int ChunkZ);
 Chunk *GetChunkAtPos(World *WorldVal, Vec3 Pos);
 bool AreNeighborsGenerated(World *WorldVal, Chunk *ChunkVal);
 
+// True when chunk loading around Center has nothing left to do: every position
+// within RenderDist exists, has finished generating, and is not waiting to be
+// meshed. It reports only what the world itself knows; whether the meshes those
+// chunks produced have reached the GPU is the renderer's to answer.
+bool WorldIsSettled(World *WorldVal, Vec3 Center, int RenderDist);
+
+// How many active chunks are generated, and how many of those are still waiting
+// on generation or meshing. Any out parameter may be null.
+void WorldGetLoadCounts(World *WorldVal, int *OutGenerated, int *OutGenerating,
+                        int *OutDirty, int *OutMeshing);
+
 #endif

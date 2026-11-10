@@ -1,4 +1,7 @@
 #include "core/image.h"
+
+#include "core/log.h"
+
 #include <stdlib.h>
 
 // Ceiling on any buffer stb_image grows while inflating. A corrupt or hostile
@@ -36,6 +39,10 @@ static void *BoundedRealloc(void *Ptr, size_t NewSize) {
 #include "third_party/stb_image.h"
 #pragma GCC diagnostic pop
 
+// The PNG encoder is instantiated in its own translation unit; see the header
+// for why it is not included here the way the loader above is.
+#include "third_party/png_write.h"
+
 bool CoreImageDecodePng(const unsigned char *Data, int Size, CoreImage *Out) {
   if (Out == NULL) {
     return false;
@@ -60,6 +67,23 @@ bool CoreImageDecodePng(const unsigned char *Data, int Size, CoreImage *Out) {
   Out->Width = Width;
   Out->Height = Height;
   Out->Pixels = Pixels;
+  return true;
+}
+
+bool CoreImageEncodePng(const CoreImage *Image, const char *Path) {
+  if (Image == NULL || Path == NULL || Image->Pixels == NULL ||
+      Image->Width <= 0 || Image->Height <= 0) {
+    LogError("IMAGE: refusing to write an empty image to \"%s\"",
+             (Path != NULL) ? Path : "(null)");
+    return false;
+  }
+
+  int Stride = Image->Width * CORE_IMAGE_CHANNELS;
+  if (!StbWritePng(Path, Image->Width, Image->Height, CORE_IMAGE_CHANNELS,
+                   Image->Pixels, Stride)) {
+    LogError("IMAGE: failed to write PNG \"%s\"", Path);
+    return false;
+  }
   return true;
 }
 

@@ -1,0 +1,24 @@
+# Automated overview of the spawn area.
+#
+# Run from the repository root:
+#   ./build/MineGame.exe --script scripts/spawn_overview.mgs
+#
+# Writes automation_out/spawn.png, automation_out/spawn_wireframe.png,
+# automation_out/spawn.json, and automation_out/run.log without modifying world/.
+
+/noclip 1
+/tp 0 90 0
+look 0 -20
+
+wait loaded
+
+screenshot spawn
+state spawn
+
+/debug wireframe 1
+wait frames 2
+screenshot spawn_wireframe
+/debug wireframe 0
+
+quit
+

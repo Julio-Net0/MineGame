@@ -1,0 +1,20 @@
+# Group 2 check: the same view drawn normally and in wireframe.
+#
+#   build/MineGame.exe --script scripts/capture.mgs --script-timeout 60
+#
+# Writes automation_out/spawn.png and automation_out/spawn_wireframe.png.
+
+/noclip 1
+/tp 0 80 0
+
+# wait frames is all there is until `wait loaded` arrives, so this is a guess at
+# how long the world needs, not a guarantee that it finished loading.
+wait frames 400
+
+screenshot spawn
+
+/debug wireframe 1
+wait frames 5
+screenshot spawn_wireframe
+
+quit

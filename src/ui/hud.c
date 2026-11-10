@@ -7,6 +7,7 @@
 #include "ui/block_icon.h"
 #include "ui/font.h"
 #include "world/world.h"
+#include "core/launch_options.h"
 #include "core/profiler.h"
 #include <stdio.h>
 
@@ -209,6 +210,38 @@ static int DrawTimingPanel(UiContext *Ctx, int Y) {
 
 #endif
 
+static int DrawSimulationDebugLine(UiContext *Ctx, int Y) {
+  const LaunchOptions *Options = GetLaunchOptions();
+  bool HasWorkers = (Options->WorkerCount > 0);
+  bool HasCores = (Options->CoreCount > 0);
+  bool HasSlowdown = (Options->CpuSlowdown > 1.0);
+  bool HasRam = (Options->RamLimitMb > 0);
+  if (!HasWorkers && !HasCores && !HasSlowdown && !HasRam) {
+    return Y;
+  }
+
+  char Line[DEBUG_TEXT_CAPACITY];
+  int Pos = snprintf(Line, sizeof(Line), "SIM:");
+  if (HasWorkers && Pos > 0 && (size_t)Pos < sizeof(Line)) {
+    Pos += snprintf(Line + Pos, sizeof(Line) - (size_t)Pos, " workers %d",
+                    Options->WorkerCount);
+  }
+  if (HasCores && Pos > 0 && (size_t)Pos < sizeof(Line)) {
+    Pos += snprintf(Line + Pos, sizeof(Line) - (size_t)Pos, " cores %d",
+                    Options->CoreCount);
+  }
+  if (HasSlowdown && Pos > 0 && (size_t)Pos < sizeof(Line)) {
+    Pos += snprintf(Line + Pos, sizeof(Line) - (size_t)Pos, " cpu x%.1f",
+                    Options->CpuSlowdown);
+  }
+  if (HasRam && Pos > 0 && (size_t)Pos < sizeof(Line)) {
+    (void)snprintf(Line + Pos, sizeof(Line) - (size_t)Pos, " ram %zu MB",
+                   Options->RamLimitMb);
+  }
+
+  return DrawDebugLine(Ctx, Line, Y);
+}
+
 static void DrawDebugScreen(UiContext *Ctx, Player *PlayerVal, World *WorldVal) {
   char DebugText[DEBUG_TEXT_CAPACITY];
   int Y = DEBUG_MARGIN;
@@ -242,6 +275,7 @@ static void DrawDebugScreen(UiContext *Ctx, Player *PlayerVal, World *WorldVal) 
   snprintf(DebugText, sizeof(DebugText), "Rendered Chunks: %d / %d",
            GetLastRenderedChunkCount(), MAX_ACTIVE_CHUNKS);
   Y = DrawDebugLine(Ctx, DebugText, Y);
+  Y = DrawSimulationDebugLine(Ctx, Y);
 
 #ifdef MINEGAME_PROFILE
   DrawTimingPanel(Ctx, Y + FONT_LINE_HEIGHT);

@@ -33,6 +33,13 @@ bool RendererUploadFinishedMesh(void);
 void RendererAbandonMeshJob(int JobId);
 
 bool RendererHasMeshJobCapacity(void);
+
+// True while any mesh job slot is still occupied: queued, being built by a
+// worker, or finished and waiting for this thread to upload it. A caller asking
+// whether the world has finished loading needs this as well as the chunk flags,
+// because a chunk stops being dirty the moment its job is queued, long before
+// the mesh it produces reaches the GPU.
+bool RendererHasPendingMeshWork(void);
 void UnloadChunkMesh(Chunk *ChunkVal);
 void DrawWorld(World *WorldVal, RenderCamera CameraVal);
 void DrawAABBDebug(World *WorldVal, Player *PlayerVal);

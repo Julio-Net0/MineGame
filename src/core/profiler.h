@@ -62,7 +62,15 @@ const char *GetProfileScopeName(ProfileScope Scope);
 // and must be excluded from the frame-remainder arithmetic.
 bool IsProfileScopeWorkerSide(ProfileScope Scope);
 
+// True when the scope measures CPU work rather than GPU/swap presentation wait.
+bool IsProfileScopeCpuBound(ProfileScope Scope);
+
 #ifdef MINEGAME_PROFILE
+
+// Stretch every CPU-bound scope by Factor (in [1.0, 16.0]) by busy-waiting at
+// the end of the scope before recording. Must be set once before worker threads
+// are created.
+void ProfilerSetSlowdown(double Factor);
 
 typedef enum {
   PROFILER_DUMP_OK = 0,

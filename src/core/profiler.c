@@ -32,11 +32,35 @@ static const bool SCOPE_IS_WORKER_SIDE[PROFILE_SCOPE_COUNT] = {
     true   /* Worker gen   */
 };
 
+// Every scope is CPU-bound except Present, whose wall time is waiting on the
+// GPU and swap. Kept beside SCOPE_NAMES and SCOPE_IS_WORKER_SIDE so the three
+// tables stay aligned when scopes are added or reordered.
+static const bool SCOPE_IS_CPU_BOUND[PROFILE_SCOPE_COUNT] = {
+    true,  /* Mesh build   */
+    true,  /* Mesh snap    */
+    true,  /* Mesh upload  */
+    true,  /* World draw   */
+    true,  /* World update */
+    true,  /* Frame setup  */
+    true,  /* UI build     */
+    true,  /* UI submit    */
+    false, /* Present      */
+    true,  /* Player       */
+    true   /* Worker gen   */
+};
+
 bool IsProfileScopeWorkerSide(ProfileScope Scope) {
   if (Scope < 0 || Scope >= PROFILE_SCOPE_COUNT) {
     return false;
   }
   return SCOPE_IS_WORKER_SIDE[Scope];
+}
+
+bool IsProfileScopeCpuBound(ProfileScope Scope) {
+  if (Scope < 0 || Scope >= PROFILE_SCOPE_COUNT) {
+    return false;
+  }
+  return SCOPE_IS_CPU_BOUND[Scope];
 }
 
 const char *GetProfileScopeName(ProfileScope Scope) {
@@ -88,11 +112,19 @@ typedef struct {
   double CaptureDeadline;
   bool TimedStopPending;
   int TimedStopFrames;
+
+  // Written once before worker threads are spawned; read by all threads in
+  // ProfilerRecord.
+  double SlowdownFactor;
 } ProfilerState;
 
 static ProfilerState *GetProfilerState(void) {
   static ProfilerState State;
   return &State;
+}
+
+void ProfilerSetSlowdown(double Factor) {
+  GetProfilerState()->SlowdownFactor = (Factor > 1.0) ? Factor : 1.0;
 }
 
 double ProfilerNow(void) { return PlatformGetTime(); }
@@ -102,12 +134,21 @@ void ProfilerRecord(ProfileScope Scope, double StartTime) {
     return;
   }
 
-  double Elapsed = PlatformGetTime() - StartTime;
+  double Now = PlatformGetTime();
+  double Elapsed = Now - StartTime;
   if (Elapsed < 0.0) {
     Elapsed = 0.0;
   }
 
   ProfilerState *State = GetProfilerState();
+  if (State->SlowdownFactor > 1.0 && SCOPE_IS_CPU_BOUND[Scope] &&
+      Elapsed > 0.0) {
+    double TargetEnd = StartTime + (Elapsed * State->SlowdownFactor);
+    while ((Now = PlatformGetTime()) < TargetEnd) {
+    }
+    Elapsed = Now - StartTime;
+  }
+
   uint_least64_t ElapsedUs = (uint_least64_t)(Elapsed * MICROSECONDS_PER_SECOND);
 
   atomic_fetch_add_explicit(&State->AccumUs[Scope], ElapsedUs,

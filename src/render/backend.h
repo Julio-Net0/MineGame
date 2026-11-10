@@ -78,6 +78,19 @@ void RenderBeginFrame(RenderCamera Camera);
 void RenderEnd3D(void);
 void RenderEndFrame(void);
 
+// Frame capture, for an automated run that has to look at what was drawn.
+// RenderRequestCapture marks the frame currently being built to be read back;
+// RenderEndFrame performs the read after the UI is submitted and before the
+// buffers are swapped, so the pixels are exactly the frame being presented, UI
+// included, and a frame nobody asked about reads nothing back.
+//
+// RenderTakeCapture then hands those pixels over once: on true it has written a
+// top-row-first RGBA8 image into Out and given up ownership of it, so the caller
+// releases it with CoreImageFree. False means no capture is waiting, which is
+// also the answer while the requested frame has not finished yet.
+void RenderRequestCapture(void);
+bool RenderTakeCapture(CoreImage *Out);
+
 // Translucent pass state (depth-mask off, color blend on, batch flush).
 void RenderBeginTranslucentPass(void);
 void RenderEndTranslucentPass(void);

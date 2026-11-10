@@ -1,0 +1,17 @@
+# Group 1 smoke test: chat commands, a frame wait, and quit.
+#
+# Run from the repository root:
+#   build/MineGame.exe --script scripts/smoke.mgs --script-timeout 60
+#
+# Results land in automation_out/run.log. Exit code 0 means the script ran to
+# its end; 2 means a statement failed, 3 means the timeout elapsed first.
+
+/noclip 1
+/tp 0 80 0
+
+wait frames 60
+
+/pos
+/seed
+
+quit

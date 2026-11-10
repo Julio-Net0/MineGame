@@ -80,7 +80,7 @@ static void HandleChatAction(ChatState *Chat, UiTextAction Action,
   }
   if (Action == UI_TEXT_SUBMIT) {
     if (Chat->InputText[0] == '/') {
-      CommandHandler(Chat->InputText, Chat, Camera, Player, World);
+      (void)CommandHandler(Chat->InputText, Chat, Camera, Player, World);
     } else {
       LogInfo("%s", Chat->InputText);
       AddChatHistory(Chat, Chat->InputText);

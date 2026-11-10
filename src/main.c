@@ -1,3 +1,4 @@
+#include "automation/script.h"
 #include "world/block_system.h"
 #include "world/biome.h"
 #include "world/prefab.h"
@@ -12,10 +13,12 @@
 #include "ui/font.h"
 #include "ui/pause_menu.h"
 #include "input/input.h"
+#include "platform/os_limits.h"
 #include "platform/platform.h"
 #include "player/player.h"
 #include "pthread.h"
 #include "render/renderer.h"
+#include "core/launch_options.h"
 #include "core/log.h"
 #include "core/profiler.h"
 #include "core/resource_pack.h"
@@ -24,31 +27,11 @@
 #include <stdbool.h>
 #include <stdlib.h>
 
-#define INITIAL_WIDTH 1280
-#define INITIAL_HEIGHT 720
-
-// Bounds on a framebuffer size given on the command line. The lower bound only
-// has to keep the HUD from being degenerate; the upper one is 8K.
-#define MIN_REQUESTED_DIMENSION 160
-#define MAX_REQUESTED_DIMENSION 7680
-#define DECIMAL_BASE 10
-
-// How the window is sized at startup.
-//
-// Fullscreen is the normal path and the framebuffer is then the monitor's, which
-// is what makes the default INITIAL_WIDTH/HEIGHT above nearly invisible. An
-// explicit size exists to measure whether GPU time scales with pixel count:
-// fill-rate cost does, cost bound on vertex bandwidth does not, and running the
-// same camera position at two very different framebuffer sizes separates them.
-typedef struct {
-  int Width;
-  int Height;
-  bool Fullscreen;
-} WindowRequest;
-
 #define PLAYER_SPAWN_X 0.0F
 #define PLAYER_SPAWN_Y 25.0F
 #define PLAYER_SPAWN_Z 0.0F
+
+#define BYTES_PER_MEGABYTE (1024ULL * 1024ULL)
 
 #define TICK_RATE 20
 #define TICK_DT (1.0F / (float)TICK_RATE)
@@ -89,7 +72,7 @@ typedef struct {
 // case, so the caller has nothing to tear down.
 static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCamera,
                      ChatState *ChatVal, GameCamera *FreeCamera,
-                     WindowRequest Window) {
+                     const LaunchOptions *Options) {
   // First, before the window and the registries: a failure here then costs no
   // teardown of a live GL context and no unloading of already-parsed assets.
   *WorldVal = (World *)malloc(sizeof(World));
@@ -98,9 +81,11 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
     return false;
   }
 
-  PlatformInit(Window.Width, Window.Height, "MineGame Beta 4");
-  PlatformSetCursorDisabled(true);
-  if (Window.Fullscreen) { PlatformToggleFullscreen(); }
+  PlatformInit(Options->Window.Width, Options->Window.Height, "MineGame Beta 4");
+  // A scripted run ignores the mouse, so capturing the cursor would only take it
+  // away from whoever is watching the run.
+  PlatformSetCursorDisabled(!ScriptIsActive());
+  if (Options->Window.Fullscreen) { PlatformToggleFullscreen(); }
 
   InitBlockRegistry();
   LoadAllBlockDefinitions("assets/blocks");
@@ -128,11 +113,29 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
 
   InitTerrainGeneration();
 
+  // Before InitWorldSave, which creates the level metadata of a world that does
+  // not exist yet: a scripted run must not write even that.
+  if (ScriptIsActive()) {
+    WorldSaveSetReadOnly(true);
+    LogInfo("MAIN: script mode; the world is read-only for this run");
+  }
   InitWorldSave();
   InitWorld(*WorldVal);
   LogInfo("MAIN THREAD ID: %llu", (unsigned long long)pthread_self());
+
+  int WorkerCount = (Options->WorkerCount > 0) ? Options->WorkerCount
+                                               : CHUNK_WORKER_MAX_THREADS;
+  if (Options->WorkerCount > 0) {
+    LogInfo("MAIN: simulation --workers %d", WorkerCount);
+  }
+#ifdef MINEGAME_PROFILE
+  if (Options->CpuSlowdown > 1.0) {
+    ProfilerSetSlowdown(Options->CpuSlowdown);
+    LogInfo("MAIN: simulation --cpu-slowdown %.2f", Options->CpuSlowdown);
+  }
+#endif
   SetChunkWorkerMeshRunner(RendererBuildMeshJob);
-  InitChunkWorker();
+  InitChunkWorker(WorkerCount);
 
   *PlayerVal =
       InitPlayer((Vec3){PLAYER_SPAWN_X, PLAYER_SPAWN_Y, PLAYER_SPAWN_Z});
@@ -159,6 +162,13 @@ static void CleanupGame(World *WorldVal) {
   CloseRenderer();
   ResourcePacksShutdown();
   PlatformShutdown();
+
+  size_t PeakBytes = OsGetPeakProcessMemory();
+  if (PeakBytes > 0) {
+    double PeakMb = (double)PeakBytes / (double)BYTES_PER_MEGABYTE;
+    LogInfo("MAIN: peak process memory (%s): %.1f MB",
+            OsGetPeakProcessMemoryKind(), PeakMb);
+  }
 }
 
 static void UpdateSystemInputs(bool *ShowDebug, const ChatState *Chat) {
@@ -180,18 +190,18 @@ static void UpdateSystemInputs(bool *ShowDebug, const ChatState *Chat) {
 
 static void UpdateCameras(GameCamera *PlayerCamera, GameCamera *FreeCamera,
                            bool *WasFreecam, bool HasControl,
-                           GameCamera **ActiveCamera, PlayerInput Move) {
+                           GameCamera **ActiveCamera, PlayerInput Move,
+                           Vec2 LookDelta) {
   *ActiveCamera = PlayerCamera;
 
   if (GetDebugState()->Freecam) {
     if (!*WasFreecam) {
       *FreeCamera = *PlayerCamera;
     }
-    UpdateFreeCamera(FreeCamera, InputGetLookDelta(), Move,
-                     PlatformGetFrameTime());
+    UpdateFreeCamera(FreeCamera, LookDelta, Move, PlatformGetFrameTime());
     *ActiveCamera = FreeCamera;
   } else if (HasControl) {
-    UpdateGameCamera(PlayerCamera, InputGetLookDelta());
+    UpdateGameCamera(PlayerCamera, LookDelta);
   }
 
   *WasFreecam = GetDebugState()->Freecam;
@@ -340,49 +350,6 @@ static PlayerInput ClearInputEdges(PlayerInput Pending) {
   return Pending;
 }
 
-// Parses an optional "<width> <height>" pair. Anything else -- no arguments, a
-// wrong count, a non-number, a dimension out of range -- leaves the request
-// fullscreen, so a malformed invocation starts the game normally rather than
-// failing or silently measuring at a size nobody asked for.
-static WindowRequest ParseWindowRequest(int Argc, char **Argv) {
-  WindowRequest Request = {
-    .Width = INITIAL_WIDTH,
-    .Height = INITIAL_HEIGHT,
-    .Fullscreen = true,
-  };
-
-  if (Argc != 3) {
-    if (Argc > 1) {
-      LogWarn("MAIN: expected \"<width> <height>\" or no arguments; starting fullscreen");
-    }
-    return Request;
-  }
-
-  char *WidthEnd = (char *)0;
-  char *HeightEnd = (char *)0;
-  long Width = strtol(Argv[1], &WidthEnd, DECIMAL_BASE);
-  long Height = strtol(Argv[2], &HeightEnd, DECIMAL_BASE);
-
-  bool Parsed = (WidthEnd != Argv[1]) && (*WidthEnd == '\0') &&
-                (HeightEnd != Argv[2]) && (*HeightEnd == '\0');
-  bool InRange = (Width >= MIN_REQUESTED_DIMENSION) &&
-                 (Width <= MAX_REQUESTED_DIMENSION) &&
-                 (Height >= MIN_REQUESTED_DIMENSION) &&
-                 (Height <= MAX_REQUESTED_DIMENSION);
-
-  if (!Parsed || !InRange) {
-    LogWarn("MAIN: window size must be two integers in [%d, %d]; starting fullscreen",
-            MIN_REQUESTED_DIMENSION, MAX_REQUESTED_DIMENSION);
-    return Request;
-  }
-
-  Request.Width = (int)Width;
-  Request.Height = (int)Height;
-  Request.Fullscreen = false;
-  LogInfo("MAIN: windowed at %dx%d", Request.Width, Request.Height);
-  return Request;
-}
-
 int main(int Argc, char **Argv) {
   World *WorldVal = (World *)0;
   Player PlayerVal;
@@ -392,29 +359,80 @@ int main(int Argc, char **Argv) {
   ChatState ChatVal;
   bool ShowDebug = false;
 
-  WindowRequest Window = ParseWindowRequest(Argc, Argv);
+  ParseLaunchOptions(Argc, Argv);
+  const LaunchOptions *Options = GetLaunchOptions();
+  if (Options->CoreCount > 0) {
+    int AppliedCores = 0;
+    if (OsLimitPhysicalCores(Options->CoreCount, &AppliedCores)) {
+      SetAppliedCoreCount(AppliedCores);
+      LogInfo("MAIN: simulation --cores %d", AppliedCores);
+    } else {
+      SetAppliedCoreCount(0);
+    }
+  }
+  if (Options->RamLimitMb > 0) {
+    // Log before applying the cap so stdio and console buffers are committed
+    // while the process is still unconstrained; otherwise a cap smaller than
+    // the static .bss image prevents the subsequent out-of-memory log from
+    // allocating its first console write buffer.
+    LogInfo("MAIN: simulation --ram-limit %zu MB", Options->RamLimitMb);
+    if (!OsLimitProcessMemory(Options->RamLimitMb * BYTES_PER_MEGABYTE)) {
+      SetAppliedRamLimitMb(0);
+    }
+  }
+
+  // Parsed before the window exists: a script that cannot be read or has a
+  // syntax error then costs no startup at all, and the paths it was given still
+  // resolve against the directory the run was launched from.
+  if (Options->ScriptPath != (const char *)0 &&
+      !ScriptLoad(Options->ScriptPath, Options->ScriptOutDir,
+                  Options->ScriptTimeoutSeconds)) {
+    int ExitCode = ScriptExitCode();
+    ScriptShutdown();
+    return ExitCode;
+  }
 
   if (!InitGame(&WorldVal, &PlayerVal, &PlayerCamera, &ChatVal, &FreeCamera,
-                Window)) {
+                Options)) {
+    ScriptShutdown();
     return EXIT_FAILURE;
   }
 
   PlayerInput PendingInput = {0};
   PendingInput.HotbarSelect = -1;
   float Accumulator = 0.0F;
+  GameCamera *ActiveCamera = &PlayerCamera;
 
-  while (!PlatformShouldClose() && !PauseMenuQuitRequested()) {
-    UpdateSystemInputs(&ShowDebug, &ChatVal);
+  while (!PlatformShouldClose() && !PauseMenuQuitRequested() &&
+         !ScriptRunEnded()) {
+    // Before input is polled, so a statement takes effect on the frame it is
+    // reached rather than the next one.
+    ScriptStep(&ChatVal, ActiveCamera, &PlayerVal, WorldVal);
+
+    // Real input is ignored for the duration of a scripted run, so a key or a
+    // mouse movement from whoever is watching cannot change its result. The
+    // window's close button still ends the process.
+    bool ScriptDriven = ScriptIsActive();
+    if (!ScriptDriven) {
+      UpdateSystemInputs(&ShowDebug, &ChatVal);
+    }
 
     // An open menu or chat owns the keyboard and mouse, so nothing typed or
     // clicked there also moves the player or breaks a block.
-    bool HasControl = !ChatVal.IsActive && !PauseMenuIsOpen();
+    bool HasControl = !ChatVal.IsActive && !PauseMenuIsOpen() && !ScriptDriven;
     PendingInput = AccumulateInput(PendingInput, PollPlayerInput(HasControl));
 
+    // A script's intent is folded in the same way the polled intent is, so it
+    // reaches the simulation through the one path and exercises the same
+    // movement, collision and interaction code a player would.
+    if (ScriptDriven) {
+      PendingInput = AccumulateInput(PendingInput, ScriptPollInput());
+    }
+
     // Mouse-look and active-camera selection run per frame for responsiveness.
-    GameCamera *ActiveCamera = (GameCamera *)0;
+    Vec2 LookDelta = ScriptDriven ? (Vec2){0.0F, 0.0F} : InputGetLookDelta();
     UpdateCameras(&PlayerCamera, &FreeCamera, &WasFreecam, HasControl,
-                  &ActiveCamera, PendingInput);
+                  &ActiveCamera, PendingInput, LookDelta);
 
     // Fixed-timestep simulation: step the world at a constant rate regardless
     // of framerate, catching up via an accumulator (capped to avoid spiral).
@@ -449,6 +467,7 @@ int main(int Argc, char **Argv) {
     if (Ticks >= MAX_TICKS_PER_FRAME) {
       Accumulator = 0.0F;
     }
+    ScriptRecordTicks(Ticks);
 
     // Once per frame, after the ticks so it sees this frame's bookkeeping.
     // Queueing costs the frame only the snapshot captures; the mask scanning
@@ -480,8 +499,13 @@ int main(int Argc, char **Argv) {
     // After rendering, so the frame's own work is fully accounted for before
     // its samples are folded into the profiler's window.
     PROFILE_FRAME_END();
+    ScriptEndFrame();
   }
 
+  // Shut the runner down first: it decides the exit code of a run the loop left
+  // for a reason of its own, such as the window being closed.
+  ScriptShutdown();
+  int ExitCode = ScriptExitCode();
   CleanupGame(WorldVal);
-  return 0;
+  return ExitCode;
 }

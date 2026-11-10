@@ -7,6 +7,7 @@ DebugState *GetDebugState(void) {
     .Aabb = false,
     .Freecam = false,
     .ForceCutoutShader = false,
+    .SortChunks = true,
   };
   return &SDebug;
 }
