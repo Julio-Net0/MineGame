@@ -39,6 +39,7 @@ Every push to `master` is built for Linux and Windows automatically. Pick a perm
 * **Graphics API:** [Raylib 5.5](https://www.raylib.com/) (OpenGL 3.3)
 * **JSON:** [cJSON 1.7.19](https://github.com/DaveGamble/cJSON)
 * **Noise:** [FastNoiseLite 1.1.1](https://github.com/Auburn/FastNoiseLite)
+* **Image I/O:** [stb_image & stb_image_write](https://github.com/nothings/stb)
 * **Threading:** POSIX threads
 * **Build System:** CMake (with FetchContent for zero-install dependency management)
 * **Static Analysis:** Clang-Tidy, enforced as a CI gate
@@ -207,7 +208,9 @@ See [`scripts/spawn_overview.mgs`](scripts/spawn_overview.mgs) for a ready-to-ru
 
 ## 🤝 Credits & Acknowledgments
 
-This project is made possible thanks to these amazing open-source libraries:
+This project is made possible thanks to these amazing open-source projects, artists, and research work:
+
+### Open-Source Libraries
 
 * **[raylib](https://github.com/raysan5/raylib)** - A simple and easy-to-use library to enjoy videogames programming.
     * *License:* [zlib/libpng](https://github.com/raysan5/raylib/blob/master/LICENSE)
@@ -217,5 +220,20 @@ This project is made possible thanks to these amazing open-source libraries:
     * *License:* [MIT](https://github.com/Auburn/FastNoiseLite/blob/master/LICENSE)
 * **[stb_image & stb_image_write](https://github.com/nothings/stb)** - Single-file C image loader and PNG writer, used for renderer-independent PNG decoding, resource pack inflation and frame capture.
     * *License:* Public Domain / MIT (Dual-licensed)
+
+### Art, Textures & Fonts
+
+* **[Pixel Perfection Legacy](https://modrinth.com/resourcepack/pixel-perfection-legacy)** - Base block, GUI and widget textures.
+    * *Original pack:* **Pixel Perfection** by **XSSheep**
+    * *Maintenance & legacy continuation:* **Nova_Wostra**, with contributions from **freejusticehere** and **HexaBlu**.
+    * *License:* [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). See [`textures/CREDITS.md`](textures/CREDITS.md) for full details.
+* **[GNU Unifont](https://unifoundry.com/unifont/)** - Bitmap font glyphs for extended Unicode text rendering.
+    * *Author:* Roman Czyborra / Unifoundry
+    * *License:* [SIL Open Font License 1.1 / GPLv2+ with Font Exception](https://unifoundry.com/unifont/)
+
+### Algorithms & Research
+
+* **Greedy Meshing & Vertex Ambient Occlusion** - Conceptual foundation and voxel ambient occlusion techniques by **Mikola Lysenko** ([0fps.net](https://0fps.net/)).
+* **Fast Voxel Traversal Algorithm (DDA)** - Raycasting traversal technique by **John Amanatides & Andrew Woo (1987)** (*"A Fast Voxel Traversal Algorithm for Ray Tracing"*).
 
 Special thanks to **Ramon Santamaria (@raysan5)** for creating Raylib and the community for the continuous support.
