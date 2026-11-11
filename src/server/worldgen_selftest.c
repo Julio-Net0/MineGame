@@ -5,6 +5,7 @@
 #include "world/chunk.h"
 #include "world/feature.h"
 #include "world/block_system.h"
+#include "world/shape_modifiers.h"
 #include "world/stone_filler.h"
 #include "world/surface.h"
 #include "world/terrain_density.h"
@@ -48,6 +49,10 @@ typedef struct {
   int FloodedWater;
   int BiomeCells;
 } SelfTestScratch;
+
+// Largest weight change allowed between neighbouring lattice columns, measured
+// at the biome-shape-modifiers group 3 gate with margin.
+#define MODIFIER_MAX_WEIGHT_STEP 0.25F
 
 enum {
   // Every Nth block of a MIXED cube is probed: a fixed, spread-out subset that
@@ -572,9 +577,149 @@ static bool CheckFillerRegion(SelfTestScratch *Scratch, uint64_t Seed) {
   return false;
 }
 
+// The climate weight on synthetic points: 1 inside every range, 0.5 halfway
+// into a fade margin, 0 beyond it. And wherever no loaded modifier has weight,
+// the column shape must equal the unmodified one bit for bit.
+static bool CheckShapeModifiers(uint64_t Seed) {
+  enum { GRID = 64, SPACING = 64 };
+  const float HALF = 0.5F;
+  const float TOLERANCE = 1.0e-4F;
+  const float T_MIN = 0.4F;
+  const float T_MAX = 0.6F;
+  const float T_FADE = 0.1F;
+  const float PV_MIN = 0.2F;
+  const float PV_MAX = 0.7F;
+  const float PV_FADE = 0.2F;
+  ShapeModifier Test = {.Type = SHAPE_MODIFIER_SHATTERED};
+  Test.Axes[MODIFIER_AXIS_TEMPERATURE] =
+      (ModifierAxis){.Declared = true, .Min = T_MIN, .Max = T_MAX, .Fade = T_FADE};
+  Test.Axes[MODIFIER_AXIS_PEAKS_VALLEYS] = (ModifierAxis){
+      .Declared = true, .Min = PV_MIN, .Max = PV_MAX, .Fade = PV_FADE};
+  // Temperature inside, halfway into its fade, and past it; PV always inside.
+  float Climate[SHAPE_MODIFIER_AXES] = {0};
+  Climate[MODIFIER_AXIS_PEAKS_VALLEYS] = (PV_MIN + PV_MAX) * HALF;
+  Climate[MODIFIER_AXIS_TEMPERATURE] = (T_MIN + T_MAX) * HALF;
+  float WInside = ShapeModifierWeightOf(&Test, Climate);
+  Climate[MODIFIER_AXIS_TEMPERATURE] = T_MAX + (T_FADE * HALF);
+  float WHalf = ShapeModifierWeightOf(&Test, Climate);
+  Climate[MODIFIER_AXIS_TEMPERATURE] = T_MAX + T_FADE + T_FADE;
+  float WBeyond = ShapeModifierWeightOf(&Test, Climate);
+  if (WInside != 1.0F || fabsf(WHalf - HALF) > TOLERANCE || WBeyond != 0.0F) {
+    LogError("WORLDGEN_TEST: FAIL modifier weight gives %.4f inside, %.4f at "
+             "mid-fade, %.4f beyond (expected 1, 0.5, 0)",
+             (double)WInside, (double)WHalf, (double)WBeyond);
+    return false;
+  }
+
+  int Unweighted = 0;
+  for (int Gx = 0; Gx < GRID; Gx++) {
+    for (int Gz = 0; Gz < GRID; Gz++) {
+      int X = (Gx - (GRID / 2)) * SPACING;
+      int Z = (Gz - (GRID / 2)) * SPACING;
+      ColumnShape Raw = EvaluateColumnShapeUnmodified(X, Z, Seed);
+      bool Weighted = false;
+      for (int Idx = 0; Idx < GetShapeModifierCount(); Idx++) {
+        Weighted |= ShapeModifierWeightAt(Idx, X, Z, Seed) > 0.0F;
+      }
+      if (Weighted) {
+        continue;
+      }
+      ColumnShape Shape = EvaluateColumnShape(X, Z, Seed);
+      if (Shape.Base != Raw.Base || Shape.Variation != Raw.Variation ||
+          Shape.ShellDepth != Raw.ShellDepth) {
+        LogError("WORLDGEN_TEST: FAIL lattice column (%d, %d) has no modifier "
+                 "weight but its shape differs from the unmodified one",
+                 X, Z);
+        return false;
+      }
+      Unweighted++;
+    }
+  }
+  LogInfo("WORLDGEN_TEST: ok modifier weights (1, 0.5, 0) and %d unweighted "
+          "lattice columns equal their unmodified shape",
+          Unweighted);
+  return true;
+}
+
+// The largest weight change between neighbouring lattice columns along the
+// row and the column through (X, Z), each 1024 blocks long: the weight must
+// fade in, not jump, at the landform's edge.
+static float MaxWeightStep(int Index, int X, int Z, uint64_t Seed) {
+  enum { HALF_SPAN = 512 };
+  float Largest = 0.0F;
+  for (int Axis = 0; Axis < 2; Axis++) {
+    float Previous = -1.0F;
+    for (int Offset = -HALF_SPAN; Offset <= HALF_SPAN;
+         Offset += SHAPE_LATTICE_STEP) {
+      int Px = (Axis == 0) ? X + Offset : X;
+      int Pz = (Axis == 0) ? Z : Z + Offset;
+      float Weight = ShapeModifierWeightAt(Index, Px, Pz, Seed);
+      if (Previous >= 0.0F) {
+        Largest = fmaxf(Largest, fabsf(Weight - Previous));
+      }
+      Previous = Weight;
+    }
+  }
+  return Largest;
+}
+
+// The fixed test columns need not cross any landform, so each loaded modifier
+// is searched for: the nearest chunk column (on a coarse spiral) whose origin
+// lattice column has full weight. The cubes around its surface go through the
+// three-way comparison and, when MIXED, the probe and fluid checks.
+static bool CheckModifierRegions(SelfTestScratch *Scratch, uint64_t Seed) {
+  enum { SEARCH_CHUNKS = 192, SEARCH_STEP = 3 };
+  for (int Idx = 0; Idx < GetShapeModifierCount(); Idx++) {
+    bool Found = false;
+    for (int Ring = 0; Ring <= SEARCH_CHUNKS && !Found; Ring += SEARCH_STEP) {
+      for (int Cx = -Ring; Cx <= Ring && !Found; Cx += SEARCH_STEP) {
+        for (int Cz = -Ring; Cz <= Ring && !Found; Cz += SEARCH_STEP) {
+          if (abs(Cx) != Ring && abs(Cz) != Ring) {
+            continue;
+          }
+          int X = Cx * CHUNK_SIZE;
+          int Z = Cz * CHUNK_SIZE;
+          if (ShapeModifierWeightAt(Idx, X, Z, Seed) < 1.0F) {
+            continue;
+          }
+          Found = true;
+          int SurfaceChunk = FloorDivChunk(GetPreliminarySurface(X, Z, Seed));
+          for (int Cy = SurfaceChunk - 1; Cy <= SurfaceChunk + 1; Cy++) {
+            ColumnEntryFill(Scratch->Fresh, Cx, Cz, Seed);
+            const ColumnEntry *Entry = ColumnCacheLookup(
+                GetColumnCache(COLUMN_CACHE_MAIN_SLOT), Cx, Cz, Seed);
+            if (!CheckCube(Scratch, Cx, Cy, Cz, Entry)) {
+              return false;
+            }
+          }
+          float Jump = MaxWeightStep(Idx, X, Z, Seed);
+          if (Jump > MODIFIER_MAX_WEIGHT_STEP) {
+            LogError("WORLDGEN_TEST: FAIL %s weight jumps by %.3f between "
+                     "neighbouring lattice columns near (%d, %d)",
+                     GetShapeModifier(Idx)->Biome, (double)Jump, X, Z);
+            return false;
+          }
+          LogInfo("WORLDGEN_TEST: ok %s landform at (%d, %d), surface %d: "
+                  "its surface cubes match the per-block path and the probe; "
+                  "largest neighbour weight step %.3f",
+                  GetShapeModifier(Idx)->Biome, X, Z,
+                  GetPreliminarySurface(X, Z, Seed), (double)Jump);
+        }
+      }
+    }
+    if (!Found) {
+      LogError("WORLDGEN_TEST: FAIL no full-weight column of modifier %d (%s) "
+               "within %d chunks",
+               Idx, GetShapeModifier(Idx)->Biome, SEARCH_CHUNKS);
+      return false;
+    }
+  }
+  return true;
+}
+
 static bool RunChecks(SelfTestScratch *Scratch) {
   enum { PREPARED_SAMPLES = 512 };
-  if (!CheckSplines()) {
+  if (!CheckSplines() || !CheckShapeModifiers(GetWorldSeed())) {
     return false;
   }
   if (!NoisePreparedMatches(PREPARED_SAMPLES)) {
@@ -597,7 +742,8 @@ static bool RunChecks(SelfTestScratch *Scratch) {
   }
 
   if (!CheckStructureRegion(Scratch, Seed) ||
-      !CheckFloodRegion(Scratch, Seed) || !CheckFillerRegion(Scratch, Seed)) {
+      !CheckFloodRegion(Scratch, Seed) || !CheckFillerRegion(Scratch, Seed) ||
+      !CheckModifierRegions(Scratch, Seed)) {
     return false;
   }
 

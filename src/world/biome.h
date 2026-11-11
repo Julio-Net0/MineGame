@@ -163,6 +163,16 @@ BiomeClimate SampleColumnClimate(int X, int Z, int Surface, uint64_t Seed);
 
 int ResolveBiome(const BiomeClimate *Climate);
 
+// How decisively BiomeId wins at Climate: the square root of the nearest other
+// depth-eligible biome's distance minus the square root of BiomeId's own.
+// Positive inside the biome's selected region and continuous there; 0 on its
+// border. Outside it the result is only guaranteed to be <= 0: the scan stops at
+// the first biome at least as near.
+float BiomeSelectionMargin(int BiomeId, const BiomeClimate *Climate);
+
+// Registry id of the loaded biome named Name, or -1.
+int FindBiomeByName(const char *Name);
+
 // Depths over which the set of depth-eligible biomes equals the set at depth 0,
 // so a surface resolution made at depth 0 holds for the whole band.
 bool BiomeInSurfaceBand(int Depth);

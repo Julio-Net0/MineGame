@@ -1,0 +1,29 @@
+{
+  "id": 26,
+  "name": "Shattered Hills",
+  "family": "highland",
+  "depth": [-1000.0, 11.0],
+  "temperature": [0.35, 0.65],
+  "weirdness": [-1.0, -0.45],
+  "continentalness": [0.05, 1.0],
+  "peaksValleys": [0.2, 0.7],
+  "surfaceBlock": "Grass",
+  "subsurfaceBlock": "Dirt",
+  "underwaterBlock": "gravel",
+  "subsurfaceDepth": 3,
+  "steepBlock": "Stone",
+  "grassTint": [138, 170, 110],
+  "foliageTint": [110, 150, 90],
+  "previewColor": [125, 145, 115],
+  "floraDensity": 0.12,
+  "flora": [
+    {
+      "block": "TallGrass",
+      "weight": 6
+    },
+    {
+      "block": "short_dry_grass",
+      "weight": 1
+    }
+  ]
+}

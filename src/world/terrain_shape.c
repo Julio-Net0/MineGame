@@ -1,9 +1,11 @@
 #include "world/terrain_shape.h"
 #include "core/fileio.h"
+#include "core/hash.h"
 #include "core/log.h"
 #include "core/noise.h"
 #include "third_party/cJSON.h"
 #include "world/cave_fields.h"
+#include "world/shape_modifiers.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -479,10 +481,13 @@ ShapeCoords SampleShapeCoords(int GlobalX, int GlobalZ, uint64_t Seed) {
   return Coords;
 }
 
-ColumnShape EvaluateColumnShape(int LatticeX, int LatticeZ, uint64_t Seed) {
+// Splines and the jagged term, before any landform modifier.
+static ColumnShape SplineShape(int LatticeX, int LatticeZ, uint64_t Seed,
+                               ShapeCoords *OutCoords) {
   const ShapeState *State = GetShapeState();
   const ShapeData *Data = &State->Data;
   ShapeCoords Coords = SampleShapeCoords(LatticeX, LatticeZ, Seed);
+  *OutCoords = Coords;
 
   ColumnShape Shape;
   Shape.Base = EvaluateSpline(Data, Data->BaseRoot, &Coords);
@@ -497,6 +502,63 @@ ColumnShape EvaluateColumnShape(int LatticeX, int LatticeZ, uint64_t Seed) {
     const float DIP_SCALE = 0.5F;
     Shape.Base += Jaggedness * ((Jag >= 0.0F) ? Jag : (Jag * DIP_SCALE));
   }
+  Shape.ShellDepth = 0.0F;
+  return Shape;
+}
+
+ColumnShape EvaluateColumnShapeUnmodified(int LatticeX, int LatticeZ,
+                                          uint64_t Seed) {
+  ShapeCoords Coords;
+  ColumnShape Shape = SplineShape(LatticeX, LatticeZ, Seed, &Coords);
+  Shape.ShellDepth = CaveShellDepth(LatticeX, LatticeZ, Shape.Base, Seed);
+  return Shape;
+}
+
+// Per-thread memo of recent lattice columns. Neighbouring chunk columns share
+// their edge lattice corners, and the structure pass probes the same columns
+// repeatedly; the function is pure, so a hit returns exactly what a fresh
+// evaluation would.
+enum {
+  SHAPE_MEMO_SLOTS = 512
+};
+
+typedef struct {
+  int X;
+  int Z;
+  uint64_t Seed;
+  bool Valid;
+  ColumnShape Shape;
+} ShapeMemoEntry;
+
+static ColumnShape EvaluateColumnShapeFresh(int LatticeX, int LatticeZ,
+                                            uint64_t Seed);
+
+ColumnShape EvaluateColumnShape(int LatticeX, int LatticeZ, uint64_t Seed) {
+  static _Thread_local ShapeMemoEntry SMemo[SHAPE_MEMO_SLOTS];
+  const unsigned int HALF_BITS = 32U;
+  uint64_t Key = ((uint64_t)(uint32_t)LatticeX << HALF_BITS) |
+                 (uint64_t)(uint32_t)LatticeZ;
+  ShapeMemoEntry *Entry =
+      &SMemo[SplitMix64(Key ^ Seed) % (uint64_t)SHAPE_MEMO_SLOTS];
+  if (Entry->Valid && Entry->X == LatticeX && Entry->Z == LatticeZ &&
+      Entry->Seed == Seed) {
+    return Entry->Shape;
+  }
+  ColumnShape Shape = EvaluateColumnShapeFresh(LatticeX, LatticeZ, Seed);
+  *Entry = (ShapeMemoEntry){.X = LatticeX,
+                            .Z = LatticeZ,
+                            .Seed = Seed,
+                            .Valid = true,
+                            .Shape = Shape};
+  return Shape;
+}
+
+static ColumnShape EvaluateColumnShapeFresh(int LatticeX, int LatticeZ,
+                                            uint64_t Seed) {
+  ShapeCoords Coords;
+  ColumnShape Shape = SplineShape(LatticeX, LatticeZ, Seed, &Coords);
+  // Landforms last, so the cave shell follows the modified surface.
+  ApplyShapeModifiers(LatticeX, LatticeZ, &Shape.Base, &Shape.Variation, Seed);
   Shape.ShellDepth = CaveShellDepth(LatticeX, LatticeZ, Shape.Base, Seed);
   return Shape;
 }

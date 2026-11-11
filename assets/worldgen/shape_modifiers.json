@@ -1,0 +1,49 @@
+{
+  "modifiers": [
+    {
+      "type": "terraces",
+      "biome": "Badlands",
+      "margin": 0.03,
+      "erosion": [-1.0, 0.0],
+      "continentalness": [-0.15, 1.0],
+      "peaksValleys": [-1.0, 0.5],
+      "lift": 28,
+      "step": 12,
+      "power": 4,
+      "damp": 0.85
+    },
+    {
+      "type": "spires",
+      "biome": "Stony Peaks",
+      "margin": 0.03,
+      "erosion": [-1.0, 0.0],
+      "continentalness": [-0.05, 1.0],
+      "peaksValleys": [0.4, 1.0],
+      "height": 80,
+      "power": 6,
+      "damp": 0.5
+    },
+    {
+      "type": "shattered",
+      "biome": "Shattered Hills",
+      "margin": 0.03,
+      "continentalness": [-0.05, 1.0],
+      "peaksValleys": [0.0, 1.0],
+      "lift": 10,
+      "amplify": 1.6
+    },
+    {
+      "type": "dunes",
+      "biome": "Desert",
+      "margin": 0.03,
+      "continentalness": [-0.15, 1.0],
+      "peaksValleys": [-1.0, 0.5],
+      "height": 5,
+      "wavelength": 28,
+      "direction": 35,
+      "warp": 18,
+      "windward": 0.75,
+      "damp": 0.6
+    }
+  ]
+}

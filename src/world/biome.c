@@ -1,5 +1,6 @@
 #include "world/biome.h"
 #include "world/block_system.h"
+#include "world/climate.h"
 #include "world/prefab.h"
 #include "world/terrain_shape.h"
 #include "third_party/cJSON.h"
@@ -13,6 +14,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 enum {
   MAX_FILES_LIMIT = 1024,
@@ -24,7 +26,6 @@ enum {
   DEFAULT_WATER_TINT_B = 228
 };
 
-#define NOISE_MIDPOINT 0.5F
 #define UNIT_MIN 0.0F
 #define UNIT_MAX 1.0F
 
@@ -168,46 +169,10 @@ const BiomeType *GetBiomeDef(int BiomeId) {
 // Climate sampling
 // ---------------------------------------------------------------------------
 
-// Each axis is its own salted field, so temperature, humidity, and the terrain
-// fields never sample correlated noise.
-#define TEMPERATURE_FIELD_SALT 0xC11A7E0000000001ULL
-#define HUMIDITY_FIELD_SALT 0xC11A7E0000000002ULL
-
-typedef struct {
-  NoiseField Temperature;
-  NoiseField Humidity;
-} ClimateFields;
-
-static ClimateFields *GetClimateFields(void) {
-  static ClimateFields SFields = {.Temperature = NOISE_FIELD_INVALID,
-                                  .Humidity = NOISE_FIELD_INVALID};
-  return &SFields;
-}
-
 static void DefineClimateFields(void) {
   const BiomeParams *Params = GetParamsPtr();
-  ClimateFields *Climate = GetClimateFields();
-  if (!NoiseFieldDefine(&Climate->Temperature, &Params->Temperature,
-                        TEMPERATURE_FIELD_SALT) ||
-      !NoiseFieldDefine(&Climate->Humidity, &Params->Humidity,
-                        HUMIDITY_FIELD_SALT)) {
-    LogError("BIOME: noise field table is full; a climate axis is flat");
-  }
-}
-
-static float ClampUnit(float Value) {
-  if (Value < UNIT_MIN) {
-    return UNIT_MIN;
-  }
-  if (Value > UNIT_MAX) {
-    return UNIT_MAX;
-  }
-  return Value;
-}
-
-static float SampleUnitField(NoiseField Field, int X, int Z, uint64_t Seed) {
-  float Raw = NoiseSample2D(Field, Seed, (float)X, (float)Z);
-  return (Raw + UNIT_MAX) * NOISE_MIDPOINT;
+  ClimateConfigure(&Params->Temperature, &Params->Humidity, Params->Lapse,
+                   Params->LapseStart);
 }
 
 int BiomeCellCenter(int Coord) {
@@ -219,18 +184,12 @@ int BiomeCellCenter(int Coord) {
 }
 
 BiomeClimate SampleColumnClimate(int X, int Z, int Surface, uint64_t Seed) {
-  const BiomeParams *Params = GetParamsPtr();
-  const ClimateFields *Fields = GetClimateFields();
   ShapeCoords Coords = SampleShapeCoords(X, Z, Seed);
 
-  float Altitude = fmaxf(0.0F, (float)Surface - Params->LapseStart);
-  float Temperature = SampleUnitField(Fields->Temperature, X, Z, Seed) -
-                      (Params->Lapse * Altitude);
-
   BiomeClimate Climate;
-  Climate.Axes[CLIMATE_TEMPERATURE] = ClampUnit(Temperature);
-  Climate.Axes[CLIMATE_HUMIDITY] =
-      ClampUnit(SampleUnitField(Fields->Humidity, X, Z, Seed));
+  Climate.Axes[CLIMATE_TEMPERATURE] =
+      ClimateTemperature(X, Z, (float)Surface, Seed);
+  Climate.Axes[CLIMATE_HUMIDITY] = ClimateHumidity(X, Z, Seed);
   Climate.Axes[CLIMATE_CONTINENTALNESS] =
       Coords.Values[SHAPE_COORD_CONTINENTALNESS];
   Climate.Axes[CLIMATE_EROSION] = Coords.Values[SHAPE_COORD_EROSION];
@@ -281,6 +240,55 @@ int ResolveBiome(const BiomeClimate *Climate) {
     }
   }
   return BestId;
+}
+
+// Weighted squared distance from Climate to Biome's ranges.
+static float ClimateDistance(const BiomeType *Biome, const BiomeClimate *Climate) {
+  const float *Weights = GetParamsPtr()->AxisWeights;
+  float Distance = 0.0F;
+  for (int Axis = 0; Axis < CLIMATE_AXIS_COUNT; Axis++) {
+    float Gap = RangeGap(Biome->Ranges[Axis], Climate->Axes[Axis]);
+    Distance += Weights[Axis] * Gap * Gap;
+  }
+  return Distance;
+}
+
+float BiomeSelectionMargin(int BiomeId, const BiomeClimate *Climate) {
+  const float NOT_ELIGIBLE = -1.0e9F;
+  const BiomeType *Registry = GetBiomeRegistry();
+  if (BiomeId < 0 || BiomeId >= BIOME_REGISTRY_SIZE ||
+      Registry[BiomeId].Id == -1 ||
+      !RangeContains(Registry[BiomeId].Depth, Climate->Depth)) {
+    return NOT_ELIGIBLE;
+  }
+  float Own = ClimateDistance(&Registry[BiomeId], Climate);
+  float Other = -1.0F;
+  for (int Idx = 0; Idx < BIOME_REGISTRY_SIZE; Idx++) {
+    const BiomeType *Biome = &Registry[Idx];
+    if (Idx == BiomeId || Biome->Id == -1 ||
+        !RangeContains(Biome->Depth, Climate->Depth)) {
+      continue;
+    }
+    float Distance = ClimateDistance(Biome, Climate);
+    if (Distance <= Own) {
+      return 0.0F;
+    }
+    Other = (Other < 0.0F || Distance < Other) ? Distance : Other;
+  }
+  if (Other < 0.0F) {
+    return -NOT_ELIGIBLE;
+  }
+  return sqrtf(Other) - sqrtf(Own);
+}
+
+int FindBiomeByName(const char *Name) {
+  const BiomeType *Registry = GetBiomeRegistry();
+  for (int Idx = 0; Idx < BIOME_REGISTRY_SIZE; Idx++) {
+    if (Registry[Idx].Id != -1 && strcmp(Registry[Idx].Name, Name) == 0) {
+      return Idx;
+    }
+  }
+  return -1;
 }
 
 bool BiomeInSurfaceBand(int Depth) {

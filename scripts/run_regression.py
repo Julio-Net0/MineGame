@@ -96,15 +96,15 @@ def assert_png(path: Path, width: int = EXPECTED_WIDTH, height: int = EXPECTED_H
 EXPECTED_RENDERED: dict[int, dict[str, int]] = {
     # Only the current generator's counts are kept: every terrain change
     # replaces them, and an older version's numbers could only mislead.
-    4: {
-        "spawn": 357,
+    5: {
+        "spawn": 367,
         "far": 33,
         "after_ticks": 33,
         "landed": 239,
-        "after_walk": 334,
-        "after_break": 313,
+        "after_walk": 339,
+        "after_break": 312,
         "after_place": 303,
-        "after_jump": 315,
+        "after_jump": 314,
     },
 }
 
@@ -408,6 +408,9 @@ BIOME_MAP_SIDE = 512
 BIOME_MIN_DISTINCT = 14
 BIOME_MAX_LAND_SHARE = 0.35
 BIOME_MIN_FAMILY_MATCH = 0.9
+# Landform modifiers shipped in assets/worldgen/shape_modifiers.json.
+EXPECTED_MODIFIER_BIOMES = ("Badlands", "Stony Peaks", "Shattered Hills", "Desert")
+MODIFIER_MIN_AGREEMENT = 0.95
 
 
 def verify_worldgen(out_dir: Path, _run_log: str) -> None:
@@ -456,6 +459,18 @@ def verify_worldgen(out_dir: Path, _run_log: str) -> None:
         coverage["peakHighFraction"] >= BIOME_MIN_FAMILY_MATCH,
         f"worldgen: only {coverage['peakHighFraction']:.3f} of peak-biome cells lie above sea level + 64",
     )
+    modifiers = {modifier["biome"]: modifier for modifier in coverage["modifiers"]}
+    for biome in EXPECTED_MODIFIER_BIOMES:
+        modifier = modifiers.get(biome)
+        require(modifier is not None, f"worldgen: no landform modifier for {biome}")
+        require(
+            modifier["positiveFraction"] > 0.0 and modifier["fullFraction"] > 0.0,
+            f"worldgen: the {biome} landform never reaches full weight on the biome map",
+        )
+        require(
+            modifier["biomeAgreement"] >= MODIFIER_MIN_AGREEMENT,
+            f"worldgen: only {modifier['biomeAgreement']:.3f} of full-weight {biome} landform cells are {biome}",
+        )
 
     state = load_json(out_dir / "worldgen.json")
     classes = state["worldgen"]["cubeClasses"]

@@ -41,6 +41,22 @@
     "improveXZ": true,
     "verticalScale": 2.0
   },
+  "spire": {
+    "kind": "opensimplex2",
+    "fractal": "none",
+    "octaves": 1,
+    "frequency": 0.03,
+    "lacunarity": 2.0,
+    "gain": 0.5
+  },
+  "duneWarp": {
+    "kind": "opensimplex2",
+    "fractal": "none",
+    "octaves": 1,
+    "frequency": 0.01,
+    "lacunarity": 2.0,
+    "gain": 0.5
+  },
   "caveCheese": {
     "kind": "opensimplex2",
     "fractal": "fbm",

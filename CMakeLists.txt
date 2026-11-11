@@ -78,11 +78,13 @@ set(MINEGAME_SIM_SOURCES
   src/world/chunk_snapshot.c
   src/world/block_system.c
   src/world/biome.c
+  src/world/climate.c
   src/world/prefab.c
   src/world/prefab_capture.c
   src/world/feature.c
   src/world/surface.c
   src/world/terrain_shape.c
+  src/world/shape_modifiers.c
   src/world/terrain_density.c
   src/world/cave_fields.c
   src/world/stone_filler.c

@@ -10,6 +10,7 @@
 #include "world/block_system.h"
 #include "world/chunk.h"
 #include "world/feature.h"
+#include "world/shape_modifiers.h"
 #include "world/stone_filler.h"
 #include "world/surface.h"
 #include "world/terrain_shape.h"
@@ -630,7 +631,34 @@ typedef struct {
   int OceanWet;
   int PeakCells;
   int PeakHigh;
+  // Per landform modifier: samples with positive and with full weight, and
+  // full-weight samples whose biome is the modifier's own.
+  int ModifierPositive[SHAPE_MODIFIER_MAX];
+  int ModifierFull[SHAPE_MODIFIER_MAX];
+  int ModifierAgree[SHAPE_MODIFIER_MAX];
 } BiomeCoverage;
+
+// Weights at the lattice column under the sample, as EvaluateColumnShape
+// computes them.
+static void CountModifiers(BiomeCoverage *Coverage, int X, int Z, int BiomeId,
+                           uint64_t Seed) {
+  int Count = GetShapeModifierCount();
+  if (Count == 0) {
+    return;
+  }
+  int LatticeX = FloorDiv(X, SHAPE_LATTICE_STEP) * SHAPE_LATTICE_STEP;
+  int LatticeZ = FloorDiv(Z, SHAPE_LATTICE_STEP) * SHAPE_LATTICE_STEP;
+  const char *BiomeName = GetBiomeDef(BiomeId)->Name;
+  for (int Idx = 0; Idx < Count; Idx++) {
+    float Weight = ShapeModifierWeightAt(Idx, LatticeX, LatticeZ, Seed);
+    Coverage->ModifierPositive[Idx] += (Weight > 0.0F) ? 1 : 0;
+    if (Weight >= 1.0F) {
+      Coverage->ModifierFull[Idx]++;
+      Coverage->ModifierAgree[Idx] +=
+          (strcmp(GetShapeModifier(Idx)->Biome, BiomeName) == 0) ? 1 : 0;
+    }
+  }
+}
 
 static bool FamilyIs(const BiomeType *Biome, const char *Family) {
   return strcmp(Biome->Family, Family) == 0;
@@ -697,6 +725,27 @@ static bool WriteCoverage(const char *OutDir, const char *Name,
   cJSON_AddNumberToObject(Root, "peakHighFraction",
                           Fraction(Coverage->PeakHigh, Coverage->PeakCells));
 
+  cJSON *Modifiers = cJSON_CreateArray();
+  for (int Idx = 0; Modifiers != NULL && Idx < GetShapeModifierCount(); Idx++) {
+    cJSON *Entry = cJSON_CreateObject();
+    if (Entry == NULL) {
+      continue;
+    }
+    cJSON_AddStringToObject(Entry, "biome", GetShapeModifier(Idx)->Biome);
+    cJSON_AddNumberToObject(Entry, "type", (double)GetShapeModifier(Idx)->Type);
+    cJSON_AddNumberToObject(
+        Entry, "positiveFraction",
+        Fraction(Coverage->ModifierPositive[Idx], Coverage->TotalCells));
+    cJSON_AddNumberToObject(
+        Entry, "fullFraction",
+        Fraction(Coverage->ModifierFull[Idx], Coverage->TotalCells));
+    cJSON_AddNumberToObject(
+        Entry, "biomeAgreement",
+        Fraction(Coverage->ModifierAgree[Idx], Coverage->ModifierFull[Idx]));
+    cJSON_AddItemToArray(Modifiers, Entry);
+  }
+  cJSON_AddItemToObject(Root, "modifiers", Modifiers);
+
   char *Text = cJSON_Print(Root);
   cJSON_Delete(Root);
   if (Text == NULL) {
@@ -743,6 +792,7 @@ bool WorldgenBiomeMapWrite(const char *OutDir, const char *Name, int CenterX,
       int BiomeId = SampleBiomeAt(X, Surface, Z, Seed, NULL);
       PutPixel(Pixels, Side, Px, Pz, BiomePreviewColor(BiomeId));
       CountCoverage(Coverage, BiomeId, Surface);
+      CountModifiers(Coverage, X, Z, BiomeId, Seed);
     }
   }
   Ok = Ok && WritePng(OutDir, Name, "biomes", Side, Side, Pixels) &&

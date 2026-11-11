@@ -64,6 +64,11 @@ ShapeCoords SampleShapeCoords(int GlobalX, int GlobalZ, uint64_t Seed);
 // density probe all call it, so they cannot diverge.
 ColumnShape EvaluateColumnShape(int LatticeX, int LatticeZ, uint64_t Seed);
 
+// The same column before the landform modifiers (splines and jagged term only);
+// for tools and the self-test.
+ColumnShape EvaluateColumnShapeUnmodified(int LatticeX, int LatticeZ,
+                                          uint64_t Seed);
+
 float GetCeilingTaper(void);
 
 // The preliminary surface: the bilinear blend of Base between the four lattice

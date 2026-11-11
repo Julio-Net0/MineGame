@@ -5,6 +5,7 @@
   "depth": [-1000.0, 11.0],
   "temperature": [0.35, 1.0],
   "continentalness": [0.05, 1.0],
+  "weirdness": [-0.45, 1.0],
   "peaksValleys": [0.2, 0.7],
   "surfaceBlock": "Grass",
   "subsurfaceBlock": "Dirt",
