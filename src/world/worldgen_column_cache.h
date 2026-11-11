@@ -35,6 +35,7 @@ typedef struct ColumnEntry {
   // and column belong to the neighbouring column too, so values are shared.
   float CornerBase[COLUMN_SHAPE_CORNERS][COLUMN_SHAPE_CORNERS];
   float CornerVariation[COLUMN_SHAPE_CORNERS][COLUMN_SHAPE_CORNERS];
+  float CornerShell[COLUMN_SHAPE_CORNERS][COLUMN_SHAPE_CORNERS];
   // Bounds of Base +- TERRAIN_NOISE_BOUND * Variation over those corners: no
   // overworld block of the column can be solid above BoundHigh or non-solid
   // below BoundLow.

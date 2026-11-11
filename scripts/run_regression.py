@@ -94,17 +94,17 @@ def assert_png(path: Path, width: int = EXPECTED_WIDTH, height: int = EXPECTED_H
 # in the dumps); a version with no entry fails instead of comparing against
 # another generator's numbers.
 EXPECTED_RENDERED: dict[int, dict[str, int]] = {
-    # Version 1 (heightmap) was dropped with it: spawn_overview.mgs moved to a
-    # spawn-relative pose at the same time, so its counts no longer apply.
-    2: {
-        "spawn": 337,
+    # Only the current generator's counts are kept: every terrain change
+    # replaces them, and an older version's numbers could only mislead.
+    3: {
+        "spawn": 357,
         "far": 33,
         "after_ticks": 33,
-        "landed": 209,
-        "after_walk": 298,
-        "after_break": 236,
-        "after_place": 236,
-        "after_jump": 238,
+        "landed": 239,
+        "after_walk": 334,
+        "after_break": 313,
+        "after_place": 303,
+        "after_jump": 315,
     },
 }
 
@@ -424,6 +424,12 @@ def verify_worldgen(out_dir: Path, _run_log: str) -> None:
         stats["surfaceMax"] < stats["generationCeiling"],
         f"worldgen: surface reaches {stats['surfaceMax']}, at or above the ceiling",
     )
+    require(
+        any(band["fraction"] > 0.0 for band in stats["caveOpenByBand"]),
+        "worldgen: no cave space opens in any Y band of the slice",
+    )
+    require(stats["lavaBlocks"] > 0, "worldgen: the slice holds no lava")
+    require(stats["caveWaterBlocks"] > 0, "worldgen: the slice holds no flooded cave water")
 
     state = load_json(out_dir / "worldgen.json")
     classes = state["worldgen"]["cubeClasses"]

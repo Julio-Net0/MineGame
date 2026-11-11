@@ -3,6 +3,7 @@
 #include "world/biome.h"
 #include "world/prefab.h"
 #include "world/surface.h"
+#include "world/cave_fields.h"
 #include "world/terrain_shape.h"
 #include "world/worldgen_strata.h"
 #include "render/camera.h"
@@ -26,6 +27,7 @@
 #include "server/server.h"
 #include "core/launch_options.h"
 #include "core/log.h"
+#include "core/noise.h"
 #include "core/profiler.h"
 #include "core/resource_pack.h"
 #include "world/world.h"
@@ -138,6 +140,9 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
   LoadTerrainShape("assets/worldgen/terrain_shape.json");
   InitStrata();
   LoadStrata("assets/worldgen/strata.json");
+  InitCaveFields();
+  LoadCaveNoise("assets/worldgen/noise.json");
+  LoadCaveParams("assets/worldgen/caves.json");
 
   InitTerrainGeneration();
 
@@ -151,6 +156,9 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
     LogInfo("MAIN: script mode; the world is read-only for this run");
   }
   InitWorldSave();
+  // Every field is defined and the seed is final: prepare the fields for it
+  // before the chunk workers start sampling.
+  NoisePrepareSeed(GetWorldSeed());
   InitWorld(*WorldVal);
   WorldSetChunkEvictCallback(*WorldVal, FreeEvictedChunkMeshes);
   LogInfo("MAIN THREAD ID: %llu", (unsigned long long)pthread_self());

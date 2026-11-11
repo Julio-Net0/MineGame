@@ -9,8 +9,21 @@
 #include "third_party/FastNoiseLite.h"
 
 typedef struct {
+  float X;
+  float Y;
+  float Z;
+} DomainOffset;
+
+typedef struct {
   fnl_state Template;
   uint64_t Salt;
+  // The template already seeded and shifted for one world seed, so samples
+  // with that seed skip the per-sample copy and hashing. Written only by
+  // NoisePrepareSeed, before any worker thread exists.
+  bool HasPrepared;
+  uint64_t PreparedSeed;
+  fnl_state Prepared;
+  DomainOffset PreparedOffset;
 } NoiseSlot;
 
 typedef struct {
@@ -94,15 +107,10 @@ bool NoiseFieldDefine(NoiseField *Field, const NoiseFieldDesc *Desc,
 
   Table->Slots[Index].Template = State;
   Table->Slots[Index].Salt = Salt;
+  Table->Slots[Index].HasPrepared = false;
   *Field = Index;
   return true;
 }
-
-typedef struct {
-  float X;
-  float Y;
-  float Z;
-} DomainOffset;
 
 // Gradient noise is exactly zero on its lattice, so sampled unshifted every
 // seed would put the same value at the world origin (and spawn at the same
@@ -145,7 +153,64 @@ static bool PrepareState(NoiseField Field, uint64_t Seed, fnl_state *Out,
   return true;
 }
 
+void NoisePrepareSeed(uint64_t Seed) {
+  NoiseTable *Table = GetNoiseTable();
+  for (int Index = 0; Index < Table->Count; Index++) {
+    NoiseSlot *Slot = &Table->Slots[Index];
+    Slot->HasPrepared = PrepareState(Index, Seed, &Slot->Prepared,
+                                     &Slot->PreparedOffset);
+    Slot->PreparedSeed = Seed;
+  }
+}
+
+// The prepared slot for Seed, or NULL when samples must prepare their own.
+// FastNoiseLite never writes the state it samples, so threads share it.
+static NoiseSlot *PreparedSlot(NoiseField Field, uint64_t Seed) {
+  NoiseTable *Table = GetNoiseTable();
+  if (Field < 0 || Field >= Table->Count) {
+    return NULL;
+  }
+  NoiseSlot *Slot = &Table->Slots[Field];
+  return (Slot->HasPrepared && Slot->PreparedSeed == Seed) ? Slot : NULL;
+}
+
+bool NoisePreparedMatches(int SamplesPerField) {
+  NoiseTable *Table = GetNoiseTable();
+  // Coprime wraps spread the samples over a 3D region rather than a line.
+  const float STEP = 7.37F;
+  const int WRAP_Y = 61;
+  const int WRAP_Z = 97;
+  for (int Index = 0; Index < Table->Count; Index++) {
+    NoiseSlot *Slot = &Table->Slots[Index];
+    if (!Slot->HasPrepared) {
+      continue;
+    }
+    fnl_state Fresh;
+    DomainOffset Offset;
+    (void)PrepareState(Index, Slot->PreparedSeed, &Fresh, &Offset);
+    for (int Sample = 0; Sample < SamplesPerField; Sample++) {
+      float X = (float)Sample * STEP;
+      float Y = (float)(Sample % WRAP_Y) * STEP;
+      float Z = (float)(Sample % WRAP_Z) * -STEP;
+      float Prepared = fnlGetNoise3D(&Slot->Prepared, X + Slot->PreparedOffset.X,
+                                     Y + Slot->PreparedOffset.Y,
+                                     Z + Slot->PreparedOffset.Z);
+      float Reference =
+          fnlGetNoise3D(&Fresh, X + Offset.X, Y + Offset.Y, Z + Offset.Z);
+      if (Prepared != Reference) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 float NoiseSample2D(NoiseField Field, uint64_t Seed, float X, float Z) {
+  NoiseSlot *Slot = PreparedSlot(Field, Seed);
+  if (Slot != NULL) {
+    return fnlGetNoise2D(&Slot->Prepared, X + Slot->PreparedOffset.X,
+                         Z + Slot->PreparedOffset.Z);
+  }
   fnl_state State;
   DomainOffset Offset;
   if (!PrepareState(Field, Seed, &State, &Offset)) {
@@ -156,6 +221,11 @@ float NoiseSample2D(NoiseField Field, uint64_t Seed, float X, float Z) {
 
 float NoiseSample3D(NoiseField Field, uint64_t Seed, float X, float Y,
                     float Z) {
+  NoiseSlot *Slot = PreparedSlot(Field, Seed);
+  if (Slot != NULL) {
+    return fnlGetNoise3D(&Slot->Prepared, X + Slot->PreparedOffset.X,
+                         Y + Slot->PreparedOffset.Y, Z + Slot->PreparedOffset.Z);
+  }
   fnl_state State;
   DomainOffset Offset;
   if (!PrepareState(Field, Seed, &State, &Offset)) {

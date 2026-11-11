@@ -6,6 +6,7 @@
 #include "third_party/cJSON.h"
 #include "third_party/png_write.h"
 #include "world/biome.h"
+#include "world/cave_fields.h"
 #include "world/block_system.h"
 #include "world/chunk.h"
 #include "world/feature.h"
@@ -43,7 +44,13 @@ typedef struct {
   int GrassId;
   int DirtId;
   int SandId;
+  int LavaId;
 } PreviewPalette;
+
+enum {
+  CAVE_BAND_HEIGHT = 64,
+  CAVE_BAND_COUNT = 9
+};
 
 typedef struct {
   int AirCubes;
@@ -59,6 +66,16 @@ typedef struct {
   double MixedTerrainSeconds;
   bool BedrockFloorComplete;
   int SolidAboveCeiling;
+  // Per 64-block band from the overworld floor up to sea level: positions
+  // deeper than the cave shell below the preliminary surface, and how many of
+  // them are open (air, water, or lava).
+  int CaveBandTotal[CAVE_BAND_COUNT];
+  int CaveBandOpen[CAVE_BAND_COUNT];
+  int CaveBandMinY;
+  int WaterBlocks;
+  // Water below the ocean band: flooded caves.
+  int CaveWaterBlocks;
+  int LavaBlocks;
 } SliceStats;
 
 static int FloorDiv(int Numerator, int Denominator) {
@@ -93,6 +110,7 @@ static PreviewColor BlockColor(const PreviewPalette *Palette, int BlockId) {
   const PreviewColor GRASS = {90, 160, 60};
   const PreviewColor DIRT = {130, 90, 50};
   const PreviewColor SAND = {220, 210, 150};
+  const PreviewColor LAVA = {230, 90, 20};
 
   if (BlockId == 0) {
     return SKY;
@@ -111,6 +129,9 @@ static PreviewColor BlockColor(const PreviewPalette *Palette, int BlockId) {
   }
   if (BlockId == Palette->DirtId) {
     return DIRT;
+  }
+  if (BlockId == Palette->LavaId) {
+    return LAVA;
   }
   if (BlockId == Palette->SandId) {
     return SAND;
@@ -257,6 +278,7 @@ static void ResolvePalette(PreviewPalette *Palette) {
   Palette->GrassId = GetBlockIdByName("Grass");
   Palette->DirtId = GetBlockIdByName("Dirt");
   Palette->SandId = GetBlockIdByName("Sand");
+  Palette->LavaId = GetBlockIdByName("Lava");
 }
 
 static bool WriteSlice(const char *OutDir, const char *Name, int OriginX,
@@ -277,6 +299,12 @@ static bool WriteSlice(const char *OutDir, const char *Name, int OriginX,
 
   int ChunkZ = FloorDiv(CenterZ, CHUNK_SIZE);
   int LocalZ = CenterZ - (ChunkZ * CHUNK_SIZE);
+  uint64_t Seed = GetWorldSeed();
+  int ShellBase = (int)GetCaveParams()->ShellBase;
+  int OverworldFloor = FloorY;
+  int OverworldTop = 0;
+  (void)GetStratumRange(STRATUM_GEN_OVERWORLD, &OverworldFloor, &OverworldTop);
+  Stats->CaveBandMinY = OverworldFloor;
   int FirstChunkX = FloorDiv(OriginX, CHUNK_SIZE);
   int LastChunkX = FloorDiv(OriginX + Size - 1, CHUNK_SIZE);
   int FirstChunkY = FloorDiv(FloorY, CHUNK_SIZE);
@@ -292,6 +320,9 @@ static bool WriteSlice(const char *OutDir, const char *Name, int OriginX,
         if (Px < 0 || Px >= Size) {
           continue;
         }
+        int CaveTop = GetPreliminarySurface((ChunkX * CHUNK_SIZE) + LocalX,
+                                            CenterZ, Seed) -
+                      ShellBase;
         for (int LocalY = 0; LocalY < CHUNK_SIZE; LocalY++) {
           int GlobalY = (ChunkY * CHUNK_SIZE) + LocalY;
           if (GlobalY < FloorY || GlobalY > CeilingY) {
@@ -304,6 +335,18 @@ static bool WriteSlice(const char *OutDir, const char *Name, int OriginX,
           if (GlobalY >= CeilingY && BlockId != 0) {
             Stats->SolidAboveCeiling++;
           }
+          Stats->WaterBlocks += (BlockId == Palette.WaterId) ? 1 : 0;
+          Stats->LavaBlocks += (BlockId == Palette.LavaId) ? 1 : 0;
+          Stats->CaveWaterBlocks +=
+              (BlockId == Palette.WaterId && GlobalY < CaveTop) ? 1 : 0;
+          int Band = (GlobalY - OverworldFloor) / CAVE_BAND_HEIGHT;
+          if (GlobalY >= OverworldFloor && GlobalY < CaveTop &&
+              GlobalY <= SEA_LEVEL && Band < CAVE_BAND_COUNT) {
+            bool Open = BlockId == 0 || BlockId == Palette.WaterId ||
+                        BlockId == Palette.LavaId;
+            Stats->CaveBandTotal[Band]++;
+            Stats->CaveBandOpen[Band] += Open ? 1 : 0;
+          }
           PutPixel(Pixels, Size, Px, CeilingY - GlobalY,
                    BlockColor(&Palette, BlockId));
         }
@@ -315,6 +358,29 @@ static bool WriteSlice(const char *OutDir, const char *Name, int OriginX,
   free(Pixels);
   free(Scratch);
   return Ok;
+}
+
+static void AddCaveSummary(cJSON *Root, const SliceStats *Stats) {
+  cJSON *Bands = cJSON_CreateArray();
+  for (int Band = 0; Bands != NULL && Band < CAVE_BAND_COUNT; Band++) {
+    if (Stats->CaveBandTotal[Band] == 0) {
+      continue;
+    }
+    cJSON *Entry = cJSON_CreateObject();
+    if (Entry == NULL) {
+      continue;
+    }
+    cJSON_AddNumberToObject(Entry, "minY",
+                            Stats->CaveBandMinY + (Band * CAVE_BAND_HEIGHT));
+    cJSON_AddNumberToObject(Entry, "fraction",
+                            (double)Stats->CaveBandOpen[Band] /
+                                (double)Stats->CaveBandTotal[Band]);
+    cJSON_AddItemToArray(Bands, Entry);
+  }
+  cJSON_AddItemToObject(Root, "caveOpenByBand", Bands);
+  cJSON_AddNumberToObject(Root, "waterBlocks", Stats->WaterBlocks);
+  cJSON_AddNumberToObject(Root, "caveWaterBlocks", Stats->CaveWaterBlocks);
+  cJSON_AddNumberToObject(Root, "lavaBlocks", Stats->LavaBlocks);
 }
 
 static double MeanMicros(double Seconds, int Count) {
@@ -461,6 +527,7 @@ static bool WriteStats(const char *OutDir, const char *Name, int SurfaceMin,
                         Stats->BedrockFloorComplete);
   cJSON_AddNumberToObject(Root, "solidAboveCeiling", Stats->SolidAboveCeiling);
   AddShapeSummary(Root, Summary);
+  AddCaveSummary(Root, Stats);
 
   char *Text = cJSON_Print(Root);
   cJSON_Delete(Root);

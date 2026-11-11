@@ -1,0 +1,10 @@
+{
+  "id": 649,
+  "name": "Lava",
+  "displayName": "Lava",
+  "category": "none",
+  "texTop": "lava_still",
+  "texBottom": "lava_still",
+  "texSide": "lava_still",
+  "isSolid": false
+}

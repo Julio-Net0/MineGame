@@ -84,6 +84,7 @@ set(MINEGAME_SIM_SOURCES
   src/world/surface.c
   src/world/terrain_shape.c
   src/world/terrain_density.c
+  src/world/cave_fields.c
   src/world/worldgen_strata.c
   src/world/worldgen_column_cache.c
   src/persistence/world_save.c

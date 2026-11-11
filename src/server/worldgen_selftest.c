@@ -1,5 +1,6 @@
 #include "server/worldgen_selftest.h"
 #include "core/log.h"
+#include "core/noise.h"
 #include "persistence/world_save.h"
 #include "world/chunk.h"
 #include "world/feature.h"
@@ -7,6 +8,7 @@
 #include "world/terrain_density.h"
 #include "world/terrain_shape.h"
 #include "world/worldgen_column_cache.h"
+#include "world/worldgen_strata.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,6 +42,8 @@ typedef struct {
   int ProbedBlocks;
   int NoiseSamples;
   float MaxNoise;
+  int FluidProbes;
+  int FloodedWater;
 } SelfTestScratch;
 
 enum {
@@ -82,6 +86,8 @@ static bool ShapeCornersEqual(const ColumnEntry *Left,
     for (int CornerZ = 0; CornerZ < COLUMN_SHAPE_CORNERS; CornerZ++) {
       if (Left->CornerBase[CornerX][CornerZ] !=
               Right->CornerBase[CornerX][CornerZ] ||
+          Left->CornerShell[CornerX][CornerZ] !=
+              Right->CornerShell[CornerX][CornerZ] ||
           Left->CornerVariation[CornerX][CornerZ] !=
               Right->CornerVariation[CornerX][CornerZ]) {
         return false;
@@ -174,6 +180,63 @@ static bool CheckProbe(SelfTestScratch *Scratch, int ChunkX, int ChunkY,
   return true;
 }
 
+// Fluids of the classified run against the probe, and flooded cave water never
+// beside dry air. A block a feature replaced is no longer a fluid and is
+// skipped; so is anything outside the overworld layer.
+static bool CheckFluids(SelfTestScratch *Scratch, int ChunkX, int ChunkY,
+                        int ChunkZ, const ColumnEntry *Column) {
+  const Chunk *Cube = Scratch->Reference;
+  BlockID Water = TerrainFluidBlock(CAVE_FLUID_WATER);
+  BlockID Lava = TerrainFluidBlock(CAVE_FLUID_LAVA);
+  const int STEP_X[4] = {1, -1, 0, 0};
+  const int STEP_Z[4] = {0, 0, 1, -1};
+  for (int Index = 0; Index < (int)CHUNK_VOLUME; Index++) {
+    int LocalX = Index / (CHUNK_SIZE * CHUNK_SIZE);
+    int LocalY = (Index / CHUNK_SIZE) % CHUNK_SIZE;
+    int LocalZ = Index % CHUNK_SIZE;
+    int Y = (ChunkY * CHUNK_SIZE) + LocalY;
+    BlockID Block = Cube->Data[LocalX][LocalY][LocalZ];
+    bool IsFluid = Block == 0 || Block == Water || Block == Lava;
+    if (!IsFluid || ResolveStratum(Y) != STRATUM_GEN_OVERWORLD ||
+        Y >= GetGenerationCeiling() || !(Scratch->Density[Index] <= 0.0F)) {
+      continue;
+    }
+    int X = (ChunkX * CHUNK_SIZE) + LocalX;
+    int Z = (ChunkZ * CHUNK_SIZE) + LocalZ;
+    if (Index % PROBE_STRIDE == 0) {
+      BlockID Expected =
+          TerrainFluidBlock((int)SampleTerrainFluid(X, Y, Z, Column->Seed));
+      if (Expected != Block) {
+        LogError("WORLDGEN_TEST: FAIL fluid at (%d, %d, %d) is block %d, the "
+                 "probe gives %d",
+                 X, Y, Z, (int)Block, (int)Expected);
+        return false;
+      }
+      Scratch->FluidProbes++;
+    }
+    if (Block != Water ||
+        !CaveFloodZone(Y, Column->Surface[LocalX][LocalZ])) {
+      continue;
+    }
+    Scratch->FloodedWater++;
+    for (int Side = 0; Side < 4; Side++) {
+      int NearX = LocalX + STEP_X[Side];
+      int NearZ = LocalZ + STEP_Z[Side];
+      if (NearX < 0 || NearX >= CHUNK_SIZE || NearZ < 0 ||
+          NearZ >= CHUNK_SIZE) {
+        continue;
+      }
+      if (Cube->Data[NearX][LocalY][NearZ] == 0) {
+        LogError("WORLDGEN_TEST: FAIL flooded water at (%d, %d, %d) borders "
+                 "dry air",
+                 X, Y, Z);
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 // The bound tier of classification assumes |n3| <= TERRAIN_NOISE_BOUND; sample
 // the 3D field at every grid corner of the cube to back that up.
 static bool CheckNoiseBound(SelfTestScratch *Scratch, int ChunkX, int ChunkY,
@@ -222,7 +285,8 @@ static bool CheckCube(SelfTestScratch *Scratch, int ChunkX, int ChunkY,
 
   if (Class == CUBE_CLASS_MIXED &&
       (!CheckProbe(Scratch, ChunkX, ChunkY, ChunkZ, Cached->Seed) ||
-       !CheckNoiseBound(Scratch, ChunkX, ChunkY, ChunkZ, Cached->Seed))) {
+       !CheckNoiseBound(Scratch, ChunkX, ChunkY, ChunkZ, Cached->Seed) ||
+       !CheckFluids(Scratch, ChunkX, ChunkY, ChunkZ, Cached))) {
     return false;
   }
 
@@ -348,10 +412,60 @@ static bool CheckStructureRegion(SelfTestScratch *Scratch, uint64_t Seed) {
   return true;
 }
 
+// The fixed test cubes need not reach a flooded cave. This walks cubes below
+// the origin whose flood lattice point is well above the threshold until one
+// really holds flooded water, so the fluid checks always see some.
+static bool CheckFloodRegion(SelfTestScratch *Scratch, uint64_t Seed) {
+  enum { SEARCH_RADIUS = 3, SEARCH_DEPTH = 28, MAX_CANDIDATES = 24 };
+  const float MARGIN = 0.1F;
+  float Wanted = GetCaveParams()->FloodThreshold + MARGIN;
+  int Candidates = 0;
+  int Before = Scratch->FloodedWater;
+  for (int ChunkY = -2; ChunkY >= -SEARCH_DEPTH; ChunkY--) {
+    for (int ChunkX = -SEARCH_RADIUS; ChunkX <= SEARCH_RADIUS; ChunkX++) {
+      for (int ChunkZ = -SEARCH_RADIUS; ChunkZ <= SEARCH_RADIUS; ChunkZ++) {
+        if (CaveFloodLattice(ChunkX * CHUNK_SIZE, ChunkY * CHUNK_SIZE,
+                             ChunkZ * CHUNK_SIZE, Seed) < Wanted) {
+          continue;
+        }
+        ColumnEntryFill(Scratch->Fresh, ChunkX, ChunkZ, Seed);
+        const ColumnEntry *Entry = ColumnCacheLookup(
+            GetColumnCache(COLUMN_CACHE_MAIN_SLOT), ChunkX, ChunkZ, Seed);
+        if (!CheckCube(Scratch, ChunkX, ChunkY, ChunkZ, Entry)) {
+          return false;
+        }
+        if (Scratch->FloodedWater > Before) {
+          LogInfo("WORLDGEN_TEST: ok flooded cube (%d, %d, %d) matches its "
+                  "probe and has no water beside dry air",
+                  ChunkX, ChunkY, ChunkZ);
+          return true;
+        }
+        if (++Candidates >= MAX_CANDIDATES) {
+          LogError("WORLDGEN_TEST: FAIL no flooded cave water in %d candidate "
+                   "cubes, so the flood checks went unchecked",
+                   MAX_CANDIDATES);
+          return false;
+        }
+      }
+    }
+  }
+  LogError("WORLDGEN_TEST: FAIL no flood candidate cube below the origin");
+  return false;
+}
+
 static bool RunChecks(SelfTestScratch *Scratch) {
+  enum { PREPARED_SAMPLES = 512 };
   if (!CheckSplines()) {
     return false;
   }
+  if (!NoisePreparedMatches(PREPARED_SAMPLES)) {
+    LogError("WORLDGEN_TEST: FAIL a noise field prepared for the world seed "
+             "samples differently from one prepared afresh");
+    return false;
+  }
+  LogInfo("WORLDGEN_TEST: ok prepared noise fields match fresh preparation at "
+          "%d samples each",
+          PREPARED_SAMPLES);
 
   uint64_t Seed = GetWorldSeed();
   for (int Index = 0; Index < TEST_COLUMN_COUNT; Index++) {
@@ -363,7 +477,8 @@ static bool RunChecks(SelfTestScratch *Scratch) {
     }
   }
 
-  if (!CheckStructureRegion(Scratch, Seed)) {
+  if (!CheckStructureRegion(Scratch, Seed) ||
+      !CheckFloodRegion(Scratch, Seed)) {
     return false;
   }
 
@@ -387,6 +502,9 @@ static bool RunChecks(SelfTestScratch *Scratch) {
   }
   LogInfo("WORLDGEN_TEST: ok density probe equals the generator at %d blocks",
           Scratch->ProbedBlocks);
+  LogInfo("WORLDGEN_TEST: ok fluids match the probe at %d blocks; %d flooded "
+          "water blocks, none beside dry air",
+          Scratch->FluidProbes, Scratch->FloodedWater);
   LogInfo("WORLDGEN_TEST: ok 3D terrain noise within bound at %d corners (max "
           "|n3| = %.4f, bound %.2f)",
           Scratch->NoiseSamples, (double)Scratch->MaxNoise,
@@ -404,7 +522,9 @@ bool RunWorldgenSelfTest(void) {
       .ClassCounts = {0},
       .ProbedBlocks = 0,
       .NoiseSamples = 0,
-      .MaxNoise = 0.0F};
+      .MaxNoise = 0.0F,
+      .FluidProbes = 0,
+      .FloodedWater = 0};
 
   bool Passed = false;
   if (Scratch.Reference == NULL || Scratch.PerBlock == NULL ||

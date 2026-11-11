@@ -40,5 +40,91 @@
     "gain": 0.5,
     "improveXZ": true,
     "verticalScale": 2.0
+  },
+  "caveCheese": {
+    "kind": "opensimplex2",
+    "fractal": "fbm",
+    "octaves": 2,
+    "frequency": 0.008,
+    "lacunarity": 2.0,
+    "gain": 0.5,
+    "improveXZ": true,
+    "verticalScale": 1.6
+  },
+  "caveSpagPath": {
+    "kind": "opensimplex2",
+    "fractal": "none",
+    "octaves": 1,
+    "frequency": 0.008,
+    "lacunarity": 2.0,
+    "gain": 0.5,
+    "improveXZ": false
+  },
+  "caveSpagElevation": {
+    "kind": "opensimplex2",
+    "fractal": "none",
+    "octaves": 1,
+    "frequency": 0.008,
+    "lacunarity": 2.0,
+    "gain": 0.5,
+    "improveXZ": false
+  },
+  "caveSpagWidth": {
+    "kind": "opensimplex2",
+    "fractal": "none",
+    "octaves": 1,
+    "frequency": 0.02,
+    "lacunarity": 2.0,
+    "gain": 0.5,
+    "improveXZ": false
+  },
+  "caveNoodleA": {
+    "kind": "opensimplex2",
+    "fractal": "none",
+    "octaves": 1,
+    "frequency": 0.03,
+    "lacunarity": 2.0,
+    "gain": 0.5,
+    "improveXZ": true,
+    "verticalScale": 0.6
+  },
+  "caveNoodleB": {
+    "kind": "opensimplex2",
+    "fractal": "none",
+    "octaves": 1,
+    "frequency": 0.03,
+    "lacunarity": 2.0,
+    "gain": 0.5,
+    "improveXZ": true,
+    "verticalScale": 0.6
+  },
+  "caveNoodleToggle": {
+    "kind": "opensimplex2",
+    "fractal": "none",
+    "octaves": 1,
+    "frequency": 0.008,
+    "lacunarity": 2.0,
+    "gain": 0.5,
+    "improveXZ": true,
+    "verticalScale": 1.0
+  },
+  "caveEntrance": {
+    "kind": "opensimplex2",
+    "fractal": "none",
+    "octaves": 1,
+    "frequency": 0.01,
+    "lacunarity": 2.0,
+    "gain": 0.5,
+    "improveXZ": false
+  },
+  "caveFlood": {
+    "kind": "opensimplex2",
+    "fractal": "none",
+    "octaves": 1,
+    "frequency": 0.006,
+    "lacunarity": 2.0,
+    "gain": 0.5,
+    "improveXZ": true,
+    "verticalScale": 1.0
   }
 }

@@ -29,7 +29,7 @@ enum {
   // Incremented by every change that alters generated terrain. Saved in
   // level.bin so a world from another generator is moved aside instead of
   // regenerating seams next to its saved chunks.
-  WORLDGEN_VERSION = 2
+  WORLDGEN_VERSION = 3
 };
 
 typedef struct Chunk {
@@ -125,6 +125,9 @@ unsigned char GetChunkBiomeAtLocal(const Chunk *ChunkVal, int LocalX,
                                    int LocalY, int LocalZ);
 
 void SetBlockInChunk(Chunk *ChunkVal, Vec3 Pos, BlockID BlockId);
+
+// Block of a terrain fluid (CaveFluid value): air, water, or lava.
+BlockID TerrainFluidBlock(int Fluid);
 int GetBlockIdInChunk(Chunk *ChunkVal, Vec3 Pos);
 
 #endif

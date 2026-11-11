@@ -37,6 +37,7 @@ void ColumnEntryFill(ColumnEntry *Entry, int ColumnX, int ColumnZ,
                               OriginZ + (CornerZ * SHAPE_LATTICE_STEP), Seed);
       Entry->CornerBase[CornerX][CornerZ] = Shape.Base;
       Entry->CornerVariation[CornerX][CornerZ] = Shape.Variation;
+      Entry->CornerShell[CornerX][CornerZ] = Shape.ShellDepth;
       float Reach = TERRAIN_NOISE_BOUND * Shape.Variation;
       bool First = (CornerX == 0 && CornerZ == 0);
       BoundHigh = (First || Shape.Base + Reach > BoundHigh) ? Shape.Base + Reach

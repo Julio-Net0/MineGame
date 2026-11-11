@@ -1,0 +1,31 @@
+{
+  "cheese": true,
+  "spaghetti": true,
+  "noodle": true,
+  "caveScale": 32,
+  "cheeseThresholdByY": [
+    [-511, 0.6],
+    [-470, 0.22],
+    [-300, 0.18],
+    [-160, 0.25],
+    [-60, 0.35],
+    [0, 0.45],
+    [200, 0.5],
+    [640, 0.6]
+  ],
+  "spaghettiWidth": 0.1,
+  "spaghettiWidthVariation": 0.02,
+  "spaghettiLayerSpacing": 48,
+  "spaghettiHalfHeight": 5,
+  "spaghettiElevationAmplitude": 10,
+  "noodleWidth": 0.07,
+  "noodleToggle": 0.3,
+  "shellBase": 10,
+  "shellUnderwater": 26,
+  "entranceDepth": 14,
+  "caveFloor": -508,
+  "floorFade": 12,
+  "lavaLevel": -480,
+  "floodThreshold": 0.45,
+  "barrierBand": 0.03
+}

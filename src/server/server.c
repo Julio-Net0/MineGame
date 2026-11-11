@@ -1,6 +1,7 @@
 #include "server/server.h"
 
 #include "core/log.h"
+#include "core/noise.h"
 #include "core/profiler.h"
 #include "core/vecmath.h"
 #include "net/loopback.h"
@@ -9,6 +10,7 @@
 #include "platform/os_time.h"
 #include "world/biome.h"
 #include "world/surface.h"
+#include "world/cave_fields.h"
 #include "world/terrain_shape.h"
 #include "world/worldgen_strata.h"
 #include "world/block_system.h"
@@ -263,6 +265,9 @@ bool ServerInit(ServerState *Server, const ServerConfig *Config) {
   LoadTerrainShape("assets/worldgen/terrain_shape.json");
   InitStrata();
   LoadStrata("assets/worldgen/strata.json");
+  InitCaveFields();
+  LoadCaveNoise("assets/worldgen/noise.json");
+  LoadCaveParams("assets/worldgen/caves.json");
 
   InitTerrainGeneration();
 
@@ -274,6 +279,9 @@ bool ServerInit(ServerState *Server, const ServerConfig *Config) {
     LogInfo("SERVER: read-only mode enabled for this run");
   }
   InitWorldSave();
+  // Every field is defined and the seed is final: prepare the fields for it
+  // before the chunk workers start sampling.
+  NoisePrepareSeed(GetWorldSeed());
   InitWorld(Server->WorldVal);
 
   int WorkerCount = (Config->WorkerCount > 0) ? Config->WorkerCount

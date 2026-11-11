@@ -1,6 +1,7 @@
 #ifndef WORLD_TERRAIN_SHAPE_H
 #define WORLD_TERRAIN_SHAPE_H
 
+#include "core/noise.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -42,6 +43,8 @@ typedef struct {
   float Base;
   // How far, in blocks, 3D noise may push the surface up or down.
   float Variation;
+  // How far below Base no cave may open (see cave_fields.h).
+  float ShellDepth;
 } ColumnShape;
 
 // Installs the built-in fields and shape. Must run before the loaders.
@@ -65,6 +68,13 @@ float GetCeilingTaper(void);
 
 // The 3D terrain field n3, with its vertical scale applied to Y.
 float SampleTerrainNoise3D(int X, int Y, int Z, uint64_t Seed);
+
+// Reads a noise field description (kind, fractal, octaves, frequency,
+// lacunarity, gain, improveXZ) from a JSON object, keeping Desc's values for
+// anything absent; shared by every worldgen loader of noise.json.
+struct cJSON;
+void ReadNoiseFieldDesc(const struct cJSON *Object, NoiseFieldDesc *Desc,
+                        const char *FilePath);
 
 // Verifies every spline reproduces each numeric control point at its location
 // and is continuous there. On failure writes a description and returns false.

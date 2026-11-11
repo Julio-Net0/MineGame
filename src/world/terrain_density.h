@@ -1,6 +1,7 @@
 #ifndef WORLD_TERRAIN_DENSITY_H
 #define WORLD_TERRAIN_DENSITY_H
 
+#include "world/cave_fields.h"
 #include <stdint.h>
 
 // Overworld terrain as a 3D density field, in blocks:
@@ -26,27 +27,46 @@ enum {
 };
 
 // Density at a lattice corner (X, Z multiples of 4, Y a multiple of 8) given the
-// column shape there.
-float TerrainCornerDensity(float Base, float Variation, int X, int Y, int Z,
-                           uint64_t Seed);
+// column shape there, caves included.
+float TerrainCornerDensity(float Base, float Variation, float ShellDepth, int X,
+                           int Y, int Z, uint64_t Seed);
 
-// Trilinear blend of a cell's corners. Corner index = x + 2*y + 4*z, each 0 or
-// 1. One definition, so every caller performs the same operations in the same
-// order.
+// Cell corner indices, x + 2*y + 4*z with each of x, y, z 0 or 1.
+enum {
+  CELL_X0Y0Z0 = 0,
+  CELL_X1Y0Z0 = 1,
+  CELL_X0Y1Z0 = 2,
+  CELL_X1Y1Z0 = 3,
+  CELL_X0Y0Z1 = 4,
+  CELL_X1Y0Z1 = 5,
+  CELL_X0Y1Z1 = 6,
+  CELL_X1Y1Z1 = 7
+};
+
+// Trilinear blend of a cell's corners. One definition, so every caller
+// performs the same operations in the same order.
 static inline float TrilinearDensity(const float Corners[DENSITY_CELL_CORNERS],
                                      float Fx, float Fy, float Fz) {
-  float X00 = Corners[0] + ((Corners[1] - Corners[0]) * Fx);
-  float X10 = Corners[2] + ((Corners[3] - Corners[2]) * Fx);
-  float X01 = Corners[4] + ((Corners[5] - Corners[4]) * Fx);
-  float X11 = Corners[6] + ((Corners[7] - Corners[6]) * Fx);
+  float X00 = Corners[CELL_X0Y0Z0] +
+              ((Corners[CELL_X1Y0Z0] - Corners[CELL_X0Y0Z0]) * Fx);
+  float X10 = Corners[CELL_X0Y1Z0] +
+              ((Corners[CELL_X1Y1Z0] - Corners[CELL_X0Y1Z0]) * Fx);
+  float X01 = Corners[CELL_X0Y0Z1] +
+              ((Corners[CELL_X1Y0Z1] - Corners[CELL_X0Y0Z1]) * Fx);
+  float X11 = Corners[CELL_X0Y1Z1] +
+              ((Corners[CELL_X1Y1Z1] - Corners[CELL_X0Y1Z1]) * Fx);
   float Y0 = X00 + ((X10 - X00) * Fy);
   float Y1 = X01 + ((X11 - X01) * Fy);
   return Y0 + ((Y1 - Y0) * Fz);
 }
 
-// Interpolated overworld density at a block, bit-identical to what terrain
-// generation computes for it.
+// Overworld density at a block, flood barriers included, bit-identical to what
+// terrain generation computes for it.
 float SampleTerrainDensity(int X, int Y, int Z, uint64_t Seed);
+
+// Fluid of a non-solid overworld position below the ceiling, decided exactly
+// as terrain generation decides it. Meaningless where the density is positive.
+CaveFluid SampleTerrainFluid(int X, int Y, int Z, uint64_t Seed);
 
 // Y of the highest overworld block of the column with density > 0, ignoring
 // structures and flora; one below the overworld floor if the column has none.

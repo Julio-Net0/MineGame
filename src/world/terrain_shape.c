@@ -3,6 +3,7 @@
 #include "core/log.h"
 #include "core/noise.h"
 #include "third_party/cJSON.h"
+#include "world/cave_fields.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -115,8 +116,8 @@ static void ReadFloat(const cJSON *Object, const char *Key, float *Out) {
   }
 }
 
-static void ReadFieldDesc(const cJSON *Object, NoiseFieldDesc *Desc,
-                          const char *FilePath) {
+void ReadNoiseFieldDesc(const cJSON *Object, NoiseFieldDesc *Desc,
+                        const char *FilePath) {
   const cJSON *KindItem = cJSON_GetObjectItemCaseSensitive(Object, "kind");
   if (cJSON_IsString(KindItem) != 0 &&
       !NoiseParseKind(KindItem->valuestring, &Desc->Kind)) {
@@ -168,7 +169,7 @@ void LoadTerrainNoise(const char *FilePath) {
       const cJSON *Item =
           cJSON_GetObjectItemCaseSensitive(Json, FIELD_KEYS[Field]);
       if (cJSON_IsObject(Item) != 0) {
-        ReadFieldDesc(Item, &State->FieldDescs[Field], FilePath);
+        ReadNoiseFieldDesc(Item, &State->FieldDescs[Field], FilePath);
       } else {
         LogWarn("SHAPE: %s has no \"%s\" field, keeping its default", FilePath,
                 FIELD_KEYS[Field]);
@@ -496,6 +497,7 @@ ColumnShape EvaluateColumnShape(int LatticeX, int LatticeZ, uint64_t Seed) {
     const float DIP_SCALE = 0.5F;
     Shape.Base += Jaggedness * ((Jag >= 0.0F) ? Jag : (Jag * DIP_SCALE));
   }
+  Shape.ShellDepth = CaveShellDepth(LatticeX, LatticeZ, Shape.Base, Seed);
   return Shape;
 }
 
