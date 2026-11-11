@@ -7,6 +7,7 @@
 #include "ui/block_icon.h"
 #include "ui/font.h"
 #include "world/world.h"
+#include "world/worldgen_column_cache.h"
 #include "core/launch_options.h"
 #include "core/profiler.h"
 #include <stdio.h>
@@ -161,6 +162,29 @@ static int DrawTimingRow(UiContext *Ctx, int Y, const char *Name,
   return Y + FONT_LINE_HEIGHT;
 }
 
+// Counts, not timings: how often generation short-circuited a cube and how often
+// a cube found its column's 2D data already cached. Read next to "Worker gen"
+// they explain a change in its cost.
+static int DrawWorldgenCountersLine(UiContext *Ctx, int Y) {
+  const double PERCENT = 100.0;
+  uint64_t Classes[CUBE_CLASS_COUNT] = {0};
+  GetCubeClassCounts(Classes);
+  uint64_t Hits = 0;
+  uint64_t Misses = 0;
+  ColumnCacheGetTotals(&Hits, &Misses);
+  uint64_t Lookups = Hits + Misses;
+  double HitRate =
+      (Lookups > 0) ? (PERCENT * (double)Hits / (double)Lookups) : 0.0;
+
+  char Line[DEBUG_TEXT_CAPACITY];
+  snprintf(Line, sizeof(Line),
+           "Gen cubes: air %llu solid %llu mixed %llu | column cache %.1f%%",
+           (unsigned long long)Classes[CUBE_CLASS_AIR],
+           (unsigned long long)Classes[CUBE_CLASS_SOLID],
+           (unsigned long long)Classes[CUBE_CLASS_MIXED], HitRate);
+  return DrawDebugLine(Ctx, Line, Y);
+}
+
 static int DrawTimingPanel(UiContext *Ctx, int Y) {
   TimingPanelState *Panel = GetTimingPanelState();
 
@@ -186,6 +210,8 @@ static int DrawTimingPanel(UiContext *Ctx, int Y) {
     Y = DrawDebugLine(Ctx, OverdrawText, Y);
     Y += FONT_LINE_HEIGHT;
   }
+
+  Y = DrawWorldgenCountersLine(Ctx, Y);
 
   const char *const HEADER_CELLS[DEBUG_NUMBER_COLUMNS] = {"avg", "max", "1%low", "n"};
   Y = DrawTimingRow(Ctx, Y, "us/frame", HEADER_CELLS, "");

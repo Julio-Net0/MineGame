@@ -4,6 +4,7 @@
 #include "platform/os_limits.h"
 #include "platform/os_time.h"
 #include "server/protocol_selftest.h"
+#include "server/worldgen_selftest.h"
 #include "server/server.h"
 #include "world/chunk_worker.h"
 
@@ -30,6 +31,7 @@ typedef struct {
   bool HasMaxTicks;
   bool PaceRealtime;
   bool TestProtocol;
+  bool TestWorldgen;
   int CoreCount;
   double CpuSlowdown;
   size_t RamLimitMb;
@@ -109,6 +111,7 @@ static ServerLaunchOptions ParseServerOptions(int Argc, char **Argv) {
       .HasMaxTicks = false,
       .PaceRealtime = false,
       .TestProtocol = false,
+      .TestWorldgen = false,
       .CoreCount = 0,
       .CpuSlowdown = 1.0,
       .RamLimitMb = 0,
@@ -126,6 +129,10 @@ static ServerLaunchOptions ParseServerOptions(int Argc, char **Argv) {
     }
     if (strcmp(Arg, "--test-protocol") == 0) {
       Options.TestProtocol = true;
+      continue;
+    }
+    if (strcmp(Arg, "--test-worldgen") == 0) {
+      Options.TestWorldgen = true;
       continue;
     }
 
@@ -240,6 +247,16 @@ int main(int Argc, char **Argv) {
     return EXIT_FAILURE;
   }
 
+  if (Options.TestWorldgen) {
+    bool Passed = RunWorldgenSelfTest();
+    ServerShutdown(&Server);
+    if (!Passed) {
+      return EXIT_FAILURE;
+    }
+    LogInfo("WORLDGEN_TEST: PASS");
+    return EXIT_SUCCESS;
+  }
+
   if (Options.TestProtocol) {
     bool Passed = RunProtocolServerSelfTest(&Server);
     ServerShutdown(&Server);
@@ -274,6 +291,10 @@ int main(int Argc, char **Argv) {
         }
       }
     }
+  }
+
+  if (!Paced) {
+    (void)ServerWaitForWorldSettle(&Server, Options.Config.SettleTimeoutSeconds);
   }
 
   int Generated = 0;

@@ -1,5 +1,8 @@
 #include "world/feature.h"
+#include "core/hash.h"
 #include "world/chunk.h"
+#include "world/surface.h"
+#include "world/worldgen_column_cache.h"
 #include "world/biome.h"
 #include "world/prefab.h"
 #include "persistence/world_save.h"
@@ -20,23 +23,6 @@ enum {
 #define STRUCTURE_EXIST_SALT 0x57A0C7DE00000001ULL
 #define STRUCTURE_KIND_SALT 0x57A0C7DE00000002ULL
 #define STRUCTURE_ORIENT_SALT 0x57A0C7DE00000003ULL
-
-// SplitMix64: one multiply-xor-shift round per stage, enough to turn adjacent
-// seeds and cell indices into uncorrelated bits. Same construction the biome
-// sampler uses, kept local so the feature layer pulls in nothing extra.
-static uint64_t SplitMix64(uint64_t Value) {
-  const uint64_t GOLDEN_GAMMA = 0x9E3779B97F4A7C15ULL;
-  const uint64_t MIX_A = 0xBF58476D1CE4E5B9ULL;
-  const uint64_t MIX_B = 0x94D049BB133111EBULL;
-  const unsigned int SHIFT_A = 30U;
-  const unsigned int SHIFT_B = 27U;
-  const unsigned int SHIFT_C = 31U;
-
-  Value += GOLDEN_GAMMA;
-  Value = (Value ^ (Value >> SHIFT_A)) * MIX_A;
-  Value = (Value ^ (Value >> SHIFT_B)) * MIX_B;
-  return Value ^ (Value >> SHIFT_C);
-}
 
 // Fold the seed and both cell coordinates into one 64-bit value whose disjoint
 // bit fields drive existence and the in-cell jitter.
@@ -161,7 +147,7 @@ void PlaceChunkFeatures(Chunk *ChunkVal) {
 
       // Skip submerged columns using the same threshold generation floods with;
       // the clip test in the stamp then drops any cell outside this chunk.
-      int Surface = GetTerrainHeightAt(WorldX, WorldZ, Seed);
+      int Surface = GetPreliminarySurface(WorldX, WorldZ, Seed);
       if (Surface <= SEA_LEVEL) {
         continue;
       }
@@ -225,17 +211,24 @@ static int PickFloraBlock(const BiomeType *Biome, uint64_t Hash) {
   return Biome->Flora[0].BlockId;
 }
 
-void PlaceChunkFlora(Chunk *ChunkVal) {
+void PlaceChunkFlora(Chunk *ChunkVal, const ColumnEntry *Column) {
   uint64_t Seed = GetWorldSeed();
   const uint64_t MASK16 = 0xFFFFULL;
   const float DENSITY_SCALE = 65536.0F;
+
+  // A surface block and the flora voxel above it must both lie in this cube, so
+  // a cube the column's surface range cannot reach has nothing to place.
+  int BaseY = ChunkVal->ChunkY * CHUNK_SIZE;
+  if (Column->MaxSurface < BaseY || Column->MinSurface > BaseY + CHUNK_SIZE - 2) {
+    return;
+  }
 
   for (int Lx = 0; Lx < CHUNK_SIZE; Lx++) {
     for (int Lz = 0; Lz < CHUNK_SIZE; Lz++) {
       int WorldX = (ChunkVal->ChunkX * CHUNK_SIZE) + Lx;
       int WorldZ = (ChunkVal->ChunkZ * CHUNK_SIZE) + Lz;
 
-      int Surface = GetTerrainHeightAt(WorldX, WorldZ, Seed);
+      int Surface = Column->Surface[Lx][Lz];
       if (Surface <= SEA_LEVEL) {
         continue;
       }

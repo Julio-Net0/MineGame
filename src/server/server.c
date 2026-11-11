@@ -8,6 +8,8 @@
 #include "persistence/world_save.h"
 #include "platform/os_time.h"
 #include "world/biome.h"
+#include "world/surface.h"
+#include "world/worldgen_strata.h"
 #include "world/block_system.h"
 #include "world/chunk.h"
 #include "world/chunk_worker.h"
@@ -203,8 +205,7 @@ void ServerUpdateWorldChunks(World *WorldVal) {
   }
 }
 
-static bool WaitForInitialWorldSettle(ServerState *Server,
-                                      double TimeoutSeconds) {
+bool ServerWaitForWorldSettle(ServerState *Server, double TimeoutSeconds) {
   double Timeout = (TimeoutSeconds > 0.0) ? TimeoutSeconds
                                           : DEFAULT_SETTLE_TIMEOUT_SECONDS;
   double Deadline = OsGetTimeSeconds() + Timeout;
@@ -256,6 +257,11 @@ bool ServerInit(ServerState *Server, const ServerConfig *Config) {
   LoadBiomeParams("assets/biome_params.json");
   LoadAllBiomeDefinitions("assets/biomes");
 
+  InitSurfaceParams();
+  LoadSurfaceParams("assets/worldgen/noise.json");
+  InitStrata();
+  LoadStrata("assets/worldgen/strata.json");
+
   InitTerrainGeneration();
 
   if (Config->HasSeed) {
@@ -273,16 +279,18 @@ bool ServerInit(ServerState *Server, const ServerConfig *Config) {
   SetChunkWorkerMeshRunner((MeshJobRunner)0);
   InitChunkWorker(WorkerCount);
 
-  Server->PlayerVal = InitPlayer(
-      (Vec3){SERVER_SPAWN_X, SERVER_SPAWN_Y, SERVER_SPAWN_Z});
+  SpawnPoint Spawn = FindSpawnColumn(GetWorldSeed());
+  LogInfo("SERVER: spawn column (%d, %d) surface %d", Spawn.X, Spawn.Z,
+          Spawn.Surface);
+  Server->PlayerVal = InitPlayer(Spawn.FeetPosition);
   Server->View = (PlayerView){
-      .EyePosition = {SERVER_SPAWN_X,
-                      SERVER_SPAWN_Y + Server->PlayerVal.HeadOffset,
-                      SERVER_SPAWN_Z},
+      .EyePosition = {Spawn.FeetPosition.x,
+                      Spawn.FeetPosition.y + Server->PlayerVal.HeadOffset,
+                      Spawn.FeetPosition.z},
       .Forward = {0.0F, -1.0F, 0.0F},
   };
 
-  if (!WaitForInitialWorldSettle(Server, Config->SettleTimeoutSeconds)) {
+  if (!ServerWaitForWorldSettle(Server, Config->SettleTimeoutSeconds)) {
     LogError("SERVER: timed out waiting for initial spawn chunks to generate");
     ServerShutdown(Server);
     return false;

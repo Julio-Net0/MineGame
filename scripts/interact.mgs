@@ -6,12 +6,13 @@
 # is a number to compare, which is what makes this checkable without looking at
 # the screenshots.
 
-/tp 0 90 0
+# The player starts at the generator-derived spawn, a few blocks above the
+# surface of the spawn column. Every expected coordinate is derived from the
+# worldgen block of the dumps, so a terrain change does not break these checks.
 wait loaded
 
-# Fall to the ground with gravity and collision doing the work. Crossing four
-# vertical chunks on the way down streams in the underground layers around
-# Y=21.5, so wait for those to settle before sampling the landed state.
+# Fall to the ground with gravity and collision doing the work, then let the
+# layers around the landing height settle before sampling the landed state.
 wait ticks 60
 wait loaded
 state landed

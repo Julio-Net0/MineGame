@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 import shutil
 import struct
@@ -88,6 +89,34 @@ def assert_png(path: Path, width: int = EXPECTED_WIDTH, height: int = EXPECTED_H
     return data
 
 
+# Frustum-culled chunk counts per camera pose. They depend on the generated
+# terrain, so they are recorded per generator version (worldgen.generatorVersion
+# in the dumps); a version with no entry fails instead of comparing against
+# another generator's numbers.
+EXPECTED_RENDERED: dict[int, dict[str, int]] = {
+    1: {
+        "spawn": 76,
+        "far": 129,
+        "after_ticks": 129,
+        "landed": 219,
+        "after_walk": 204,
+        "after_break": 255,
+        "after_place": 255,
+        "after_jump": 255,
+    },
+}
+
+
+def expected_rendered(state: dict[str, Any], pose: str) -> int:
+    version = state.get("worldgen", {}).get("generatorVersion")
+    table = EXPECTED_RENDERED.get(version)
+    require(
+        table is not None,
+        f"no expected rendered chunk counts recorded for generator version {version}",
+    )
+    return table[pose]
+
+
 def assert_settled_chunks(state: dict[str, Any], label: str, expected_rendered: int) -> None:
     require(state.get("settled") is True, f"{label}: expected settled == true")
     require(state.get("renderDistance") == 5, f"{label}: expected renderDistance == 5")
@@ -154,7 +183,7 @@ def verify_spawn_overview(out_dir: Path, _run_log: str) -> None:
     )
 
     spawn = load_json(out_dir / "spawn.json")
-    assert_settled_chunks(spawn, "spawn.json", expected_rendered=121)
+    assert_settled_chunks(spawn, "spawn.json", expected_rendered=expected_rendered(spawn, "spawn"))
     assert_idle_profiler(spawn, "spawn.json")
 
     player = spawn["player"]
@@ -168,8 +197,8 @@ def verify_loaded(out_dir: Path, _run_log: str) -> None:
     far = load_json(out_dir / "far.json")
     after_ticks = load_json(out_dir / "after_ticks.json")
 
-    assert_settled_chunks(far, "far.json", expected_rendered=202)
-    assert_settled_chunks(after_ticks, "after_ticks.json", expected_rendered=202)
+    assert_settled_chunks(far, "far.json", expected_rendered=expected_rendered(far, "far"))
+    assert_settled_chunks(after_ticks, "after_ticks.json", expected_rendered=expected_rendered(after_ticks, "after_ticks"))
     assert_idle_profiler(far, "far.json")
     assert_idle_profiler(after_ticks, "after_ticks.json")
 
@@ -209,19 +238,29 @@ def verify_interact(out_dir: Path, _run_log: str) -> None:
     after_place = load_json(out_dir / "after_place.json")
     after_jump = load_json(out_dir / "after_jump.json")
 
-    # 1. Gravity & ground collision after falling from (0, 90, 0).
-    assert_settled_chunks(landed, "landed.json", expected_rendered=181)
+    # Expected coordinates come from the generator, not from literals: the
+    # spawn column and the surface the dump reports for it.
+    spawn = landed["worldgen"]["spawn"]
+    sx = float(spawn["x"])
+    sz = float(spawn["z"])
+    surface = float(landed["worldgen"]["surfaceY"])
+    require(
+        int(surface) == int(spawn["surface"]),
+        f"landed.json: player column surface {surface} differs from spawn surface {spawn['surface']}",
+    )
+
+    # 1. Gravity & ground collision after falling from the spawn height. Blocks
+    #    are centered on integer coordinates, so feet rest at surface + 0.5.
+    assert_settled_chunks(landed, "landed.json", expected_rendered=expected_rendered(landed, "landed"))
     assert_idle_profiler(landed, "landed.json")
     require(landed["player"]["grounded"] is True, "landed.json: expected player.grounded == true")
     require(landed["player"]["noclip"] is False, "landed.json: expected player.noclip == false")
-    assert_vec3(landed["player"]["position"], 0.0, 21.5, 0.0, "landed.json player.position")
+    assert_vec3(landed["player"]["position"], sx, surface + 0.5, sz, "landed.json player.position")
     assert_vec3(landed["player"]["velocity"], 0.0, 0.0, 0.0, "landed.json player.velocity", tol=1e-4)
     require(landed["targetBlock"]["hit"] is True, "landed.json: expected targetBlock.hit == true")
-    require(landed["targetBlock"]["blockId"] == 1, "landed.json: expected targetBlock.blockId == 1 (Grass)")
-    assert_vec3(landed["targetBlock"]["position"], 0.0, 22.0, 0.0, "landed.json targetBlock.position")
 
     # 2. Walking forward along +Z with real collision.
-    assert_settled_chunks(after_walk, "after_walk.json", expected_rendered=186)
+    assert_settled_chunks(after_walk, "after_walk.json", expected_rendered=expected_rendered(after_walk, "after_walk"))
     require(after_walk["player"]["grounded"] is True, "after_walk.json: expected player.grounded == true")
     z_before = float(before_walk["player"]["position"]["z"])
     z_after = float(after_walk["player"]["position"]["z"])
@@ -230,55 +269,49 @@ def verify_interact(out_dir: Path, _run_log: str) -> None:
         f"interact: expected forward walk to increase Z ({z_before} -> {z_after})",
     )
 
-    # 3. Breaking the grass block underfoot at (0, 22, 0) exposes dirt at (0, 21, 0).
-    require(before_break["targetBlock"]["hit"] is True, "before_break.json: expected targetBlock.hit == true")
-    assert_vec3(
-        before_break["targetBlock"]["position"],
-        0.0,
-        22.0,
-        0.0,
-        "before_break.json targetBlock.position",
-    )
+    # 3. Looking straight down hits either the surface block of the player's
+    #    column or flora standing on it. Breaking it must expose the block one
+    #    below, whichever of the two was hit.
+    target = before_break["targetBlock"]
+    require(target["hit"] is True, "before_break.json: expected targetBlock.hit == true")
+    bx = float(target["position"]["x"])
+    by = float(target["position"]["y"])
+    bz = float(target["position"]["z"])
+    break_surface = float(before_break["worldgen"]["surfaceY"])
     require(
-        before_break["targetBlock"]["blockId"] == 1,
-        f"before_break.json: expected Grass (1), got {before_break['targetBlock']['blockId']}",
+        by in (break_surface, break_surface + 1.0),
+        f"before_break.json: expected target at surface {break_surface} or the flora above it, got y={by}",
     )
+    if by == break_surface:
+        require(
+            target["blockName"] == before_break["worldgen"]["surfaceBlock"],
+            f"before_break.json: expected {before_break['worldgen']['surfaceBlock']}, got {target.get('blockName')}",
+        )
 
-    assert_settled_chunks(after_break, "after_break.json", expected_rendered=183)
+    assert_settled_chunks(after_break, "after_break.json", expected_rendered=expected_rendered(after_break, "after_break"))
     require(after_break["targetBlock"]["hit"] is True, "after_break.json: expected targetBlock.hit == true")
-    assert_vec3(
-        after_break["targetBlock"]["position"],
-        0.0,
-        21.0,
-        0.0,
-        "after_break.json targetBlock.position",
-    )
+    assert_vec3(after_break["targetBlock"]["position"], bx, by - 1.0, bz, "after_break.json targetBlock.position")
     require(
-        after_break["targetBlock"]["blockId"] == 2,
-        f"after_break.json: expected Dirt (2), got {after_break['targetBlock']['blockId']}",
+        after_break["targetBlock"]["blockId"] != 0,
+        "after_break.json: expected a solid block under the broken one",
     )
 
-    # 4. Selecting hotbar slot 3 (index 2, Stone) and placing it back at (0, 22, 0).
-    assert_settled_chunks(after_place, "after_place.json", expected_rendered=183)
+    # 4. Selecting hotbar slot 3 (index 2, Stone) and placing it where the broken
+    #    block was.
+    assert_settled_chunks(after_place, "after_place.json", expected_rendered=expected_rendered(after_place, "after_place"))
     require(
         after_place["player"]["hotbarSlot"] == 2,
         f"after_place.json: expected hotbarSlot == 2, got {after_place['player']['hotbarSlot']}",
     )
     require(after_place["targetBlock"]["hit"] is True, "after_place.json: expected targetBlock.hit == true")
-    assert_vec3(
-        after_place["targetBlock"]["position"],
-        0.0,
-        22.0,
-        0.0,
-        "after_place.json targetBlock.position",
-    )
+    assert_vec3(after_place["targetBlock"]["position"], bx, by, bz, "after_place.json targetBlock.position")
     require(
         after_place["targetBlock"]["blockId"] == 3,
         f"after_place.json: expected Stone (3), got {after_place['targetBlock']['blockId']}",
     )
 
     # 5. Jumping leaves the ground with positive vertical velocity.
-    assert_settled_chunks(after_jump, "after_jump.json", expected_rendered=183)
+    assert_settled_chunks(after_jump, "after_jump.json", expected_rendered=expected_rendered(after_jump, "after_jump"))
     require(after_jump["player"]["grounded"] is False, "after_jump.json: expected player.grounded == false")
     require(
         float(after_jump["player"]["velocity"]["y"]) > 0.0,
@@ -356,12 +389,50 @@ def verify_inventory(out_dir: Path, _run_log: str) -> None:
     )
 
 
+WORLDGEN_PREVIEW_SIZE = 256
+# One pixel per Y from the bedrock floor (-516) to the generation ceiling (640).
+WORLDGEN_SLICE_HEIGHT = 1157
+OVERWORLD_MIN_Y = -511
+
+
+def verify_worldgen(out_dir: Path, _run_log: str) -> None:
+    for suffix in ("height", "biome"):
+        assert_png(out_dir / f"spawn_{suffix}.png", WORLDGEN_PREVIEW_SIZE, WORLDGEN_PREVIEW_SIZE)
+    assert_png(out_dir / "spawn_slice.png", WORLDGEN_PREVIEW_SIZE, WORLDGEN_SLICE_HEIGHT)
+
+    stats = load_json(out_dir / "spawn_worldgen.json")
+    require(stats["bedrockFloorComplete"] is True, "worldgen: a slice column has no bedrock at Y=-516")
+    require(
+        stats["solidAboveCeiling"] == 0,
+        f"worldgen: {stats['solidAboveCeiling']} non-air blocks at or above the generation ceiling",
+    )
+    require(
+        stats["surfaceMin"] >= OVERWORLD_MIN_Y,
+        f"worldgen: surface reaches {stats['surfaceMin']}, below the overworld floor {OVERWORLD_MIN_Y}",
+    )
+    require(
+        stats["surfaceMax"] < stats["generationCeiling"],
+        f"worldgen: surface reaches {stats['surfaceMax']}, at or above the ceiling",
+    )
+
+    state = load_json(out_dir / "worldgen.json")
+    classes = state["worldgen"]["cubeClasses"]
+    for cube_class in ("air", "solid", "mixed"):
+        require(
+            classes[cube_class] > 0,
+            f"worldgen.json: expected some {cube_class.upper()} cubes, got {classes[cube_class]}",
+        )
+    cache = state["worldgen"]["columnCache"]
+    require(cache["hits"] > 0, "worldgen.json: the column cache recorded no hits")
+
+
 SCENARIOS: tuple[tuple[str, str, Callable[[Path, str], None]], ...] = (
     ("smoke", "scripts/smoke.mgs", verify_smoke),
     ("spawn_overview", "scripts/spawn_overview.mgs", verify_spawn_overview),
     ("loaded", "scripts/loaded.mgs", verify_loaded),
     ("interact", "scripts/interact.mgs", verify_interact),
     ("inventory", "scripts/inventory.mgs", verify_inventory),
+    ("worldgen", "scripts/worldgen.mgs", verify_worldgen),
 )
 
 
@@ -440,10 +511,14 @@ def run_headless_server_scenario(
             f"headless_server exited with code {completed.returncode} (expected 0)"
         )
 
+    spawn_match = re.search(r"SERVER: spawn column \((-?\d+), (-?\d+)\) surface (-?\d+)", combined_log)
+    require(spawn_match is not None, "headless_server: missing 'SERVER: spawn column' line in server.log")
+    spawn_x, spawn_z, spawn_surface = (int(value) for value in spawn_match.groups())
     expected_summary = (
         f"SERVER: summary ticks=100 seed={EXPECTED_SEED} settled=true "
         f"active={EXPECTED_ACTIVE_CHUNKS} generated={EXPECTED_ACTIVE_CHUNKS} "
-        f"generating=0 meshing=0 pos=(0.0, 22.5, 0.0) vel=(0.0, 0.0, 0.0) grounded=true"
+        f"generating=0 meshing=0 pos=({spawn_x:.1f}, {spawn_surface + 0.5:.1f}, {spawn_z:.1f}) "
+        f"vel=(0.0, 0.0, 0.0) grounded=true"
     )
     require(
         expected_summary in combined_log,
@@ -452,24 +527,22 @@ def run_headless_server_scenario(
     return elapsed
 
 
-def run_server_protocol_scenario(
+def run_server_selftest(
     server_binary: Path,
     repo_root: Path,
     out_root: Path,
     timeout_seconds: int,
-) -> float:
-    out_dir = out_root / "server_protocol"
+    name: str,
+    flag: str,
+    marker: str,
+) -> tuple[float, str]:
+    """Runs MineGameServer with a self-test flag and checks its PASS/FAIL lines."""
+    out_dir = out_root / name
     if out_dir.exists():
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    cmd = [
-        str(server_binary.resolve()),
-        "--test-protocol",
-        "--seed",
-        EXPECTED_SEED,
-        "--read-only",
-    ]
+    cmd = [str(server_binary.resolve()), flag, "--seed", EXPECTED_SEED, "--read-only"]
 
     start = time.monotonic()
     completed = subprocess.run(
@@ -486,23 +559,45 @@ def run_server_protocol_scenario(
     (out_dir / "server.log").write_text(combined_log, encoding="utf-8")
 
     if completed.returncode != 0:
-        sys.stderr.write(f"\n--- server_protocol output ---\n{combined_log}\n")
-        raise RegressionFailure(
-            f"server_protocol exited with code {completed.returncode} (expected 0)"
-        )
+        sys.stderr.write(f"\n--- {name} output ---\n{combined_log}\n")
+        raise RegressionFailure(f"{name} exited with code {completed.returncode} (expected 0)")
 
-    require(
-        "PROTOCOL_TEST: FAIL" not in combined_log,
-        "server_protocol: a protocol check reported FAIL",
-    )
-    require(
-        "PROTOCOL_TEST: PASS" in combined_log,
-        "server_protocol: missing 'PROTOCOL_TEST: PASS' in server.log",
+    require(f"{marker}: FAIL" not in combined_log, f"{name}: a check reported FAIL")
+    require(f"{marker}: PASS" in combined_log, f"{name}: missing '{marker}: PASS' in server.log")
+    return elapsed, combined_log
+
+
+def run_server_protocol_scenario(
+    server_binary: Path,
+    repo_root: Path,
+    out_root: Path,
+    timeout_seconds: int,
+) -> float:
+    elapsed, combined_log = run_server_selftest(
+        server_binary, repo_root, out_root, timeout_seconds,
+        "server_protocol", "--test-protocol", "PROTOCOL_TEST",
     )
     passed_checks = combined_log.count("PROTOCOL_TEST: ok ")
     require(
         passed_checks == EXPECTED_PROTOCOL_CHECKS,
         f"server_protocol: expected {EXPECTED_PROTOCOL_CHECKS} passing checks, got {passed_checks}",
+    )
+    return elapsed
+
+
+def run_server_worldgen_scenario(
+    server_binary: Path,
+    repo_root: Path,
+    out_root: Path,
+    timeout_seconds: int,
+) -> float:
+    elapsed, combined_log = run_server_selftest(
+        server_binary, repo_root, out_root, timeout_seconds,
+        "server_worldgen", "--test-worldgen", "WORLDGEN_TEST",
+    )
+    require(
+        "WORLDGEN_TEST: ok every class exercised" in combined_log,
+        "server_worldgen: the class-coverage check did not run",
     )
     return elapsed
 
@@ -632,6 +727,21 @@ def main() -> int:
         print(f"[FAIL] server_protocol: {exc}", file=sys.stderr)
         return 1
 
+    sys.stdout.write(f"  -> {'server_worldgen':<16} ({server_binary.name} --test-worldgen) ... ")
+    sys.stdout.flush()
+    try:
+        worldgen_elapsed = run_server_worldgen_scenario(
+            server_binary=server_binary,
+            repo_root=repo_root,
+            out_root=out_root,
+            timeout_seconds=args.timeout,
+        )
+        print(f"PASS ({worldgen_elapsed:.2f}s)")
+    except Exception as exc:  # noqa: BLE001
+        print("FAIL")
+        print(f"[FAIL] server_worldgen: {exc}", file=sys.stderr)
+        return 1
+
     for name, script_rel, verifier in SCENARIOS:
         sys.stdout.write(f"  -> {name:<16} ({script_rel}) ... ")
         sys.stdout.flush()
@@ -652,7 +762,7 @@ def main() -> int:
             return 1
 
     total_elapsed = time.monotonic() - total_start
-    print(f"All {len(SCENARIOS) + 2} regression scenarios passed in {total_elapsed:.2f}s.")
+    print(f"All {len(SCENARIOS) + 3} regression scenarios passed in {total_elapsed:.2f}s.")
     return 0
 
 

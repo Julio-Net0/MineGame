@@ -81,6 +81,9 @@ set(MINEGAME_SIM_SOURCES
   src/world/prefab.c
   src/world/prefab_capture.c
   src/world/feature.c
+  src/world/surface.c
+  src/world/worldgen_strata.c
+  src/world/worldgen_column_cache.c
   src/persistence/world_save.c
   src/persistence/chunk_serial.c
   src/player/player.c
@@ -97,6 +100,7 @@ set(MINEGAME_SIM_SOURCES
 add_executable(${PROJECT_NAME}
   src/main.c
   src/automation/script.c
+  src/automation/worldgen_preview.c
   ${MINEGAME_SIM_SOURCES}
   src/input/input.c
   src/input/raylib_input.c
@@ -124,6 +128,7 @@ add_executable(${PROJECT_NAME}
 add_executable(MineGameServer
   src/server/server_main.c
   src/server/protocol_selftest.c
+  src/server/worldgen_selftest.c
   ${MINEGAME_SIM_SOURCES}
 )
 
@@ -163,6 +168,12 @@ endif()
 set_source_files_properties(src/platform/os_limits.c PROPERTIES
   COMPILE_DEFINITIONS _GNU_SOURCE)
 
+# FastNoiseLite hashes lattice coordinates with signed int multiplies that are
+# meant to wrap. Signed overflow is undefined in C, and -O3 with LTO is free to
+# exploit that, so the one file instantiating it gets defined wrapping.
+set_source_files_properties(src/core/noise.c PROPERTIES
+  COMPILE_OPTIONS -fwrapv)
+
 # clock_gettime, nanosleep and readlink need POSIX.1-2008 under -std=c17.
 if(NOT WIN32)
   set_source_files_properties(src/platform/os_time.c PROPERTIES
@@ -189,6 +200,7 @@ add_custom_target(minegame_sync_assets ALL
           ${CMAKE_CURRENT_BINARY_DIR}/assets/blocks
           ${CMAKE_CURRENT_BINARY_DIR}/assets/prefabs
           ${CMAKE_CURRENT_BINARY_DIR}/assets/shaders
+          ${CMAKE_CURRENT_BINARY_DIR}/assets/worldgen
           ${CMAKE_CURRENT_BINARY_DIR}/assets/biome_params.json
   COMMAND ${CMAKE_COMMAND} -E copy_directory
           ${CMAKE_CURRENT_SOURCE_DIR}/assets ${CMAKE_CURRENT_BINARY_DIR}/assets

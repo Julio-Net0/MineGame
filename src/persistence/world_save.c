@@ -4,6 +4,7 @@
 #include "world/chunk.h"
 #include "persistence/chunk_serial.h"
 #include <stdio.h>
+#include <string.h>
 #include <time.h>
 #include <errno.h>
 #include <stdint.h>
@@ -25,11 +26,23 @@
 #define make_dir(path) mkdir(path, 0777)
 #endif
 
+// Every format version starts with this prefix, so a file of any version can be
+// identified before the rest of it is read. Reading a newer, longer layout in
+// one go would fail on an older file and fall through to "create a new world"
+// inside the old world's directory, next to its region files.
 typedef struct {
   char Magic[4];
   uint32_t Version;
   uint64_t Seed;
-} LevelMetadata;
+} LevelHeader;
+
+// Version 3 appends the generator that produced the world, so worlds from
+// another generator are moved aside rather than regenerating seams next to
+// their saved chunks.
+typedef struct {
+  uint32_t GeneratorVersion;
+  uint32_t Reserved;
+} LevelGeneratorInfo;
 
 // Region file locks are striped, not keyed: a fixed set of mutexes, all
 // initialised at startup, chosen by hashing the region coordinate. Two regions
@@ -50,7 +63,8 @@ typedef struct {
 // takes, rather than multiplied as int and widened afterwards.
 #define REGION_HEADER_SIZE     ((long)REGION_TOTAL_CHUNKS * REGION_HEADER_ENTRY_BYTES)
 #define REGION_SLOT_SIZE       CHUNK_SERIAL_MAX_BYTES
-#define LEVEL_FORMAT_VERSION   2U
+#define LEVEL_FORMAT_VERSION   3U
+#define LEVEL_MAGIC            "MGWL"
 #define MAX_BACKUP_SUFFIX      100
 #define REGION_PATH_BUF_SIZE   256
 #define REGION_COORD_BITS      20
@@ -136,29 +150,90 @@ static uint64_t GenerateRandomSeed(void) {
 }
 
 // Region files of another format version cannot be read with this slot layout,
-// so the whole directory is kept intact under a backup name instead of being
-// loaded or overwritten.
-static bool MoveOutdatedWorldAside(uint32_t OldVersion) {
+// and chunks of another generator would sit next to regenerated terrain with
+// seams, so the whole directory is kept intact under a backup name instead of
+// being loaded or overwritten. Kind is "v" (format) or "gen" (generator).
+static bool MoveWorldAside(const char *Kind, uint32_t OldVersion,
+                           uint32_t CurrentVersion) {
   char BackupPath[REGION_PATH_BUF_SIZE];
   for (int Suffix = 0; Suffix < MAX_BACKUP_SUFFIX; Suffix++) {
     if (Suffix == 0) {
-      snprintf(BackupPath, sizeof(BackupPath), "world_v%u_backup",
+      snprintf(BackupPath, sizeof(BackupPath), "world_%s%u_backup", Kind,
                (unsigned)OldVersion);
     } else {
-      snprintf(BackupPath, sizeof(BackupPath), "world_v%u_backup_%d",
+      snprintf(BackupPath, sizeof(BackupPath), "world_%s%u_backup_%d", Kind,
                (unsigned)OldVersion, Suffix);
     }
     if (rename("world", BackupPath) == 0) {
-      LogError("WORLD_SAVE: world format version %u is not supported (expected "
-               "%u); moved it to %s and creating a new world",
-               (unsigned)OldVersion, (unsigned)LEVEL_FORMAT_VERSION, BackupPath);
+      LogError("WORLD_SAVE: world %s%u is not supported (current %s%u); moved "
+               "it to %s and creating a new world",
+               Kind, (unsigned)OldVersion, Kind, (unsigned)CurrentVersion,
+               BackupPath);
       return true;
     }
   }
-  LogError("WORLD_SAVE: world format version %u is not supported and the world "
-           "directory could not be moved aside; running without saving",
-           (unsigned)OldVersion);
+  LogError("WORLD_SAVE: world %s%u is not supported and the world directory "
+           "could not be moved aside; running without saving",
+           Kind, (unsigned)OldVersion);
   return false;
+}
+
+typedef enum {
+  LEVEL_MISSING,
+  LEVEL_LOADED,
+  LEVEL_OUTDATED_FORMAT,
+  LEVEL_OTHER_GENERATOR
+} LevelStatus;
+
+// Reads level.bin and says what to do with the world directory. On
+// LEVEL_OUTDATED_FORMAT / LEVEL_OTHER_GENERATOR, *OldVersion holds the version
+// that did not match.
+static LevelStatus ReadLevelFile(uint64_t *Seed, uint32_t *OldVersion) {
+  FILE *FileVal = fopen("world/level.bin", "rb");
+  if (FileVal == (FILE *)0) {
+    return LEVEL_MISSING;
+  }
+
+  LevelStatus Status = LEVEL_MISSING;
+  LevelHeader Header;
+  LevelGeneratorInfo Generator;
+  if (fread(&Header, sizeof(Header), 1, FileVal) != 1) {
+    LogWarn("WORLD_SAVE: Failed to read level.bin");
+  } else if (memcmp(Header.Magic, LEVEL_MAGIC, sizeof(Header.Magic)) != 0) {
+    LogWarn("WORLD_SAVE: Invalid magic in level.bin");
+  } else if (Header.Version != LEVEL_FORMAT_VERSION) {
+    *OldVersion = Header.Version;
+    Status = LEVEL_OUTDATED_FORMAT;
+  } else if (fread(&Generator, sizeof(Generator), 1, FileVal) != 1) {
+    LogWarn("WORLD_SAVE: level.bin is truncated before its generator version");
+  } else if (Generator.GeneratorVersion != (uint32_t)WORLDGEN_VERSION) {
+    *OldVersion = Generator.GeneratorVersion;
+    Status = LEVEL_OTHER_GENERATOR;
+  } else {
+    *Seed = Header.Seed;
+    Status = LEVEL_LOADED;
+  }
+
+  fclose(FileVal);
+  return Status;
+}
+
+static void WriteLevelFile(uint64_t Seed) {
+  FILE *FileVal = fopen("world/level.bin", "wb");
+  if (FileVal == (FILE *)0) {
+    LogWarn("WORLD_SAVE: Failed to create level.bin");
+    return;
+  }
+
+  LevelHeader Header = {.Version = LEVEL_FORMAT_VERSION, .Seed = Seed};
+  memcpy(Header.Magic, LEVEL_MAGIC, sizeof(Header.Magic));
+  LevelGeneratorInfo Generator = {
+      .GeneratorVersion = (uint32_t)WORLDGEN_VERSION, .Reserved = 0};
+  if (fwrite(&Header, sizeof(Header), 1, FileVal) != 1 ||
+      fwrite(&Generator, sizeof(Generator), 1, FileVal) != 1) {
+    LogWarn("WORLD_SAVE: Failed to write level.bin");
+  }
+  fclose(FileVal);
 }
 
 void InitWorldSave(void) {
@@ -179,37 +254,24 @@ void InitWorldSave(void) {
 
   make_dir("world");
 
-  LevelMetadata Meta;
-  bool Loaded = false;
-  bool OutdatedFormat = false;
+  uint64_t LoadedSeed = 0;
+  uint32_t OldVersion = 0;
+  LevelStatus Status = ReadLevelFile(&LoadedSeed, &OldVersion);
 
-  FILE *FileVal = fopen("world/level.bin", "rb");
-  if (FileVal != (FILE *)0) {
-    if (fread(&Meta, sizeof(LevelMetadata), 1, FileVal) == 1) {
-      bool MagicMatch = true;
-      for (int IdxI = 0; IdxI < 4; IdxI++) {
-        if (Meta.Magic[IdxI] != "MGWL"[IdxI]) {
-          MagicMatch = false;
-        }
-      }
-      if (MagicMatch && Meta.Version == LEVEL_FORMAT_VERSION) {
-        State->WorldSeed = Meta.Seed;
-        Loaded = true;
-        LogInfo("WORLD_SAVE: Loaded existing world seed: %llu", (unsigned long long)State->WorldSeed);
-      } else if (MagicMatch) {
-        OutdatedFormat = true;
-      } else {
-        LogWarn("WORLD_SAVE: Invalid magic in level.bin");
-      }
-    } else {
-      LogWarn("WORLD_SAVE: Failed to read level.bin");
-    }
-    fclose(FileVal);
+  if (Status == LEVEL_LOADED) {
+    State->WorldSeed = LoadedSeed;
+    LogInfo("WORLD_SAVE: Loaded existing world seed: %llu",
+            (unsigned long long)State->WorldSeed);
+    return;
   }
 
-  if (OutdatedFormat) {
-    if (!MoveOutdatedWorldAside(Meta.Version)) {
-      // Never mix the old regions with new-format writes or reads.
+  if (Status == LEVEL_OUTDATED_FORMAT || Status == LEVEL_OTHER_GENERATOR) {
+    bool IsFormat = (Status == LEVEL_OUTDATED_FORMAT);
+    bool Moved = IsFormat ? MoveWorldAside("v", OldVersion, LEVEL_FORMAT_VERSION)
+                          : MoveWorldAside("gen", OldVersion,
+                                           (uint32_t)WORLDGEN_VERSION);
+    if (!Moved) {
+      // Never mix the old regions with new writes or reads.
       State->ReadOnly = true;
       State->WorldSeed =
           State->HasSeedOverride ? State->SeedOverride : GenerateRandomSeed();
@@ -218,26 +280,11 @@ void InitWorldSave(void) {
     make_dir("world");
   }
 
-  if (!Loaded) {
-    State->WorldSeed =
-        State->HasSeedOverride ? State->SeedOverride : GenerateRandomSeed();
-    LogInfo("WORLD_SAVE: Generated new random world seed: %llu", (unsigned long long)State->WorldSeed);
-
-    FileVal = fopen("world/level.bin", "wb");
-    if (FileVal != (FILE *)0) {
-      for (int IdxI = 0; IdxI < 4; IdxI++) {
-        Meta.Magic[IdxI] = "MGWL"[IdxI];
-      }
-      Meta.Version = LEVEL_FORMAT_VERSION;
-      Meta.Seed = State->WorldSeed;
-      if (fwrite(&Meta, sizeof(LevelMetadata), 1, FileVal) != 1) {
-        LogWarn("WORLD_SAVE: Failed to write level.bin");
-      }
-      fclose(FileVal);
-    } else {
-      LogWarn("WORLD_SAVE: Failed to create level.bin");
-    }
-  }
+  State->WorldSeed =
+      State->HasSeedOverride ? State->SeedOverride : GenerateRandomSeed();
+  LogInfo("WORLD_SAVE: Generated new random world seed: %llu",
+          (unsigned long long)State->WorldSeed);
+  WriteLevelFile(State->WorldSeed);
 }
 
 void CloseWorldSave(void) {

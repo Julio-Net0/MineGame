@@ -14,8 +14,9 @@
 // enough to sample the exact biome function the game uses, which is what lets an
 // external biome visualizer/editor reuse it without linking the engine.
 //
-// Climate has three axes. Temperature and Humidity come from independent 2D fBm
-// noise fields over (X, Z), normalized to [0,1]. Depth is TerrainHeight - Y and
+// Climate has three axes. Temperature and Humidity come from independent, salted
+// 2D fBm noise fields over (X, Z), mapped to [0,1]. Depth is
+// PreliminarySurface - Y and
 // costs no noise sample at all — it is what makes biome selection a function of
 // Y as well as X and Z, so surface and cave biomes can share a column.
 //
@@ -122,10 +123,14 @@ const BiomeType *GetBiomeDef(int BiomeId);
 const BiomeNoiseParams *GetBiomeNoiseParams(void);
 int GetLoadedBiomesCount(void);
 
-BiomeClimate SampleBiomeClimate(int X, int Y, int Z, int TerrainHeight,
+// Deepest subsurface layer any biome slot declares. Terrain classification uses
+// it to prove a cube lies entirely below every biome's palette layers.
+int GetMaxBiomeSubsurfaceDepth(void);
+
+BiomeClimate SampleBiomeClimate(int X, int Y, int Z, int PreliminarySurface,
                                 uint64_t Seed);
 int ResolveBiome(BiomeClimate Climate);
-int SampleBiomeAt(int X, int Y, int Z, int TerrainHeight, uint64_t Seed);
+int SampleBiomeAt(int X, int Y, int Z, int PreliminarySurface, uint64_t Seed);
 
 // Biome tint for a face declaring Source. White for TINT_NONE or an unloaded
 // biome, so an untinted face multiplies by 1 and keeps its current color.

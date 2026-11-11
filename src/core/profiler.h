@@ -22,9 +22,13 @@
 // mesh build that is noise, against a per-face or per-block loop it would be
 // the measurement. Scopes belong around whole subsystem operations only.
 
-// Scopes must not nest. The frame total minus the sum of the MAIN-THREAD scopes
-// is read as "time in no scope at all", which is how an unaccounted stall gets
-// found; a nested scope would be counted twice and make that remainder lie.
+// Main-thread scopes must not nest. The frame total minus the sum of the
+// MAIN-THREAD scopes is read as "time in no scope at all", which is how an
+// unaccounted stall gets found; a nested scope would be counted twice and make
+// that remainder lie. The generation sub-scopes are the one exception: they are
+// worker-side (outside the remainder), nest inside "Worker gen" to split it by
+// stage, and are not CPU-bound so --cpu-slowdown does not stretch the same time
+// twice.
 //
 // Which side a scope runs on is data, not a name to recognise. Mesh building
 // moved from the main thread to the workers, and anything that had hardcoded
@@ -42,6 +46,9 @@ typedef enum {
   PROFILE_PRESENT,
   PROFILE_PLAYER,
   PROFILE_WORKER_GENERATION,
+  PROFILE_GEN_COLUMN,
+  PROFILE_GEN_TERRAIN,
+  PROFILE_GEN_FEATURES,
   PROFILE_SCOPE_COUNT
 } ProfileScope;
 

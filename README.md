@@ -38,7 +38,7 @@ Every push to `master` is built for Linux and Windows automatically. Pick a perm
 * **Language:** C17
 * **Graphics API:** [Raylib 5.5](https://www.raylib.com/) (OpenGL 3.3)
 * **JSON:** [cJSON 1.7.19](https://github.com/DaveGamble/cJSON)
-* **Noise:** [stb_perlin](https://github.com/nothings/stb)
+* **Noise:** [FastNoiseLite 1.1.1](https://github.com/Auburn/FastNoiseLite)
 * **Threading:** POSIX threads
 * **Build System:** CMake (with FetchContent for zero-install dependency management)
 * **Static Analysis:** Clang-Tidy, enforced as a CI gate
@@ -213,8 +213,8 @@ This project is made possible thanks to these amazing open-source libraries:
     * *License:* [zlib/libpng](https://github.com/raysan5/raylib/blob/master/LICENSE)
 * **[cJSON](https://github.com/DaveGamble/cJSON)** - Ultralightweight JSON parser in ANSI C.
     * *License:* [MIT](https://github.com/DaveGamble/cJSON/blob/master/LICENSE)
-* **[stb_perlin](https://github.com/nothings/stb)** - A single-file C implementation of Perlin noise.
-    * *License:* Public Domain / MIT (Dual-licensed)
+* **[FastNoiseLite](https://github.com/Auburn/FastNoiseLite)** - Portable single-header noise library (OpenSimplex2, fractals, domain warp), used for terrain and climate fields.
+    * *License:* [MIT](https://github.com/Auburn/FastNoiseLite/blob/master/LICENSE)
 * **[stb_image & stb_image_write](https://github.com/nothings/stb)** - Single-file C image loader and PNG writer, used for renderer-independent PNG decoding, resource pack inflation and frame capture.
     * *License:* Public Domain / MIT (Dual-licensed)
 

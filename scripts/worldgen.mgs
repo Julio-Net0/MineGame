@@ -1,0 +1,15 @@
+# World generation check: renders the terrain around the spawn column to images
+# and statistics, then dumps state.
+#
+#   build/MineGame.exe --script scripts/worldgen.mgs --script-out automation_out/worldgen
+#
+# spawn_height.png / spawn_biome.png: 256x256 preliminary surface and biome.
+# spawn_slice.png: X-Y slice through the spawn column from the bedrock floor to
+# the generation ceiling, produced by the real generator into scratch chunks.
+# spawn_worldgen.json: surface range, cube classes, timing, and the bedrock-floor
+# and ceiling checks the regression runner asserts.
+
+wait loaded
+worldgen_preview spawn spawn spawn 256
+state worldgen
+quit

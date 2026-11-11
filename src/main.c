@@ -2,6 +2,8 @@
 #include "world/block_system.h"
 #include "world/biome.h"
 #include "world/prefab.h"
+#include "world/surface.h"
+#include "world/worldgen_strata.h"
 #include "render/camera.h"
 #include "ui/chat.h"
 #include "ui/commands.h"
@@ -30,9 +32,6 @@
 #include <stdbool.h>
 #include <stdlib.h>
 
-#define PLAYER_SPAWN_X 0.0F
-#define PLAYER_SPAWN_Y 25.0F
-#define PLAYER_SPAWN_Z 0.0F
 
 #define BYTES_PER_MEGABYTE (1024ULL * 1024ULL)
 
@@ -133,6 +132,11 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
   LoadBiomeParams("assets/biome_params.json");
   LoadAllBiomeDefinitions("assets/biomes");
 
+  InitSurfaceParams();
+  LoadSurfaceParams("assets/worldgen/noise.json");
+  InitStrata();
+  LoadStrata("assets/worldgen/strata.json");
+
   InitTerrainGeneration();
 
   // Before InitWorldSave, which creates the level metadata of a world that does
@@ -163,8 +167,10 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
   SetChunkWorkerMeshRunner(RendererBuildMeshJob);
   InitChunkWorker(WorkerCount);
 
-  *PlayerVal =
-      InitPlayer((Vec3){PLAYER_SPAWN_X, PLAYER_SPAWN_Y, PLAYER_SPAWN_Z});
+  SpawnPoint Spawn = FindSpawnColumn(GetWorldSeed());
+  LogInfo("MAIN: spawn column (%d, %d) surface %d", Spawn.X, Spawn.Z,
+          Spawn.Surface);
+  *PlayerVal = InitPlayer(Spawn.FeetPosition);
   *PlayerCamera = CreateGameCamera();
   *FreeCamera = CreateGameCamera();
   InitChat(ChatVal);

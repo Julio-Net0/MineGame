@@ -1,4 +1,5 @@
 #include "automation/script.h"
+#include "automation/worldgen_preview.h"
 
 #include "core/fileio.h"
 #include "core/image.h"
@@ -13,7 +14,11 @@
 #include "ui/commands.h"
 #include "ui/creative_inventory.h"
 #include "ui/debug.h"
+#include "persistence/world_save.h"
 #include "world/block_system.h"
+#include "world/chunk.h"
+#include "world/surface.h"
+#include "world/worldgen_column_cache.h"
 
 #include <errno.h>
 #include <math.h>
@@ -39,7 +44,9 @@ enum {
   SCRIPT_MAX_STEPS = 512,
   SCRIPT_MAX_TEXT = CHAT_MAX_INPUT_CHARS,
   SCRIPT_MAX_NAME = 64,
-  SCRIPT_MAX_TOKENS = 4,
+  // worldgen_preview <name> <centerX> <centerZ> <size> is the longest form.
+  WORLDGEN_PREVIEW_TOKENS = 5,
+  SCRIPT_MAX_TOKENS = WORLDGEN_PREVIEW_TOKENS,
   SCRIPT_LOG_LINE_CHARS = 512,
   SCRIPT_DECIMAL_BASE = 10,
 
@@ -74,6 +81,7 @@ typedef enum {
   SCRIPT_OP_SCREENSHOT,
   SCRIPT_OP_STATE,
   SCRIPT_OP_INVENTORY,
+  SCRIPT_OP_WORLDGEN_PREVIEW,
   SCRIPT_OP_QUIT
 } ScriptOpKind;
 
@@ -118,6 +126,11 @@ typedef struct {
   int Index;
   float Yaw;
   float Pitch;
+  // worldgen_preview center column, or the generator-derived spawn column when
+  // PreviewAtSpawn is set; its size travels in Count.
+  int PreviewX;
+  int PreviewZ;
+  bool PreviewAtSpawn;
   char Name[SCRIPT_MAX_NAME];
   char Text[SCRIPT_MAX_TEXT];
 } ScriptStatement;
@@ -402,6 +415,45 @@ static bool IsSafeOutputName(const char *Name) {
 // "inventory <action> [argument]". Arguments are validated here; whether the
 // action can apply (the screen open, the entry present) is only known when the
 // statement runs.
+static bool ParseWorldgenPreview(char **Tokens, int TokenCount, int LineNumber,
+                                 const char *LineText) {
+  if (TokenCount != WORLDGEN_PREVIEW_TOKENS) {
+    ParseError(LineNumber, "expected \"worldgen_preview <name> <centerX> "
+                           "<centerZ> <size>\" (center may be \"spawn spawn\")");
+    return false;
+  }
+  if (!IsSafeOutputName(Tokens[1])) {
+    ParseError(LineNumber, "worldgen_preview name must be 1-63 characters of "
+                           "[A-Za-z0-9_-]");
+    return false;
+  }
+
+  int CenterX = 0;
+  int CenterZ = 0;
+  int Size = 0;
+  bool AtSpawn = CompareString(Tokens[2], "spawn") == 0 &&
+                 CompareString(Tokens[3], "spawn") == 0;
+  if ((!AtSpawn && (!ParseSignedInt(Tokens[2], &CenterX) ||
+                    !ParseSignedInt(Tokens[3], &CenterZ))) ||
+      !ParseSignedInt(Tokens[4], &Size)) {
+    ParseError(LineNumber, "worldgen_preview center must be two integers or "
+                           "\"spawn spawn\", and size an integer");
+    return false;
+  }
+  if (Size < WORLDGEN_PREVIEW_MIN_SIZE || Size > WORLDGEN_PREVIEW_MAX_SIZE) {
+    ParseError(LineNumber, "worldgen_preview size must be within 1..1024");
+    return false;
+  }
+
+  return AppendStatement((ScriptStatement){.Kind = SCRIPT_OP_WORLDGEN_PREVIEW,
+                                           .Line = LineNumber,
+                                           .Count = Size,
+                                           .PreviewX = CenterX,
+                                           .PreviewZ = CenterZ,
+                                           .PreviewAtSpawn = AtSpawn},
+                         Tokens[1], LineText);
+}
+
 static bool ParseInventoryStatement(char **Tokens, int TokenCount,
                                     int LineNumber, const char *LineText) {
   static const char *const USAGE =
@@ -575,6 +627,10 @@ static bool ParseStatement(char *Statement, int LineNumber) {
 
   if (CompareString(Tokens[0], "inventory") == 0) {
     return ParseInventoryStatement(Tokens, TokenCount, LineNumber, LineText);
+  }
+
+  if (CompareString(Tokens[0], "worldgen_preview") == 0) {
+    return ParseWorldgenPreview(Tokens, TokenCount, LineNumber, LineText);
   }
 
   bool IsScreenshot = CompareString(Tokens[0], "screenshot") == 0;
@@ -861,6 +917,63 @@ static void ScriptAddTargetBlockJson(cJSON *Root, const ScriptContext *Ctx) {
   cJSON_AddItemToObject(Root, "targetBlock", Node);
 }
 
+// Generator-derived reference points, so checks can be written against the
+// terrain that was actually generated instead of literals that break whenever
+// the generator changes.
+static void ScriptAddWorldgenJson(cJSON *Root, const ScriptContext *Ctx) {
+  cJSON *Node = cJSON_CreateObject();
+  if (Node == (cJSON *)0) {
+    return;
+  }
+
+  uint64_t Seed = GetWorldSeed();
+  SpawnPoint Spawn = FindSpawnColumn(Seed);
+  cJSON *SpawnNode = cJSON_CreateObject();
+  if (SpawnNode != (cJSON *)0) {
+    cJSON_AddNumberToObject(SpawnNode, "x", Spawn.X);
+    cJSON_AddNumberToObject(SpawnNode, "z", Spawn.Z);
+    cJSON_AddNumberToObject(SpawnNode, "surface", Spawn.Surface);
+    cJSON_AddNumberToObject(SpawnNode, "feetY", (double)Spawn.FeetPosition.y);
+    cJSON_AddItemToObject(Node, "spawn", SpawnNode);
+  }
+
+  int ColumnX = (int)floorf(Ctx->PlayerVal->Position.x + BLOCK_HALF_SIZE);
+  int ColumnZ = (int)floorf(Ctx->PlayerVal->Position.z + BLOCK_HALF_SIZE);
+  int SurfaceY = GetPreliminarySurface(ColumnX, ColumnZ, Seed);
+  int SurfaceBlock = GetBlockIDFromWorld(
+      Ctx->WorldVal, (Vec3){(float)ColumnX, (float)SurfaceY, (float)ColumnZ});
+  const BlockType *SurfaceDef = GetBlockDef(SurfaceBlock);
+
+  uint64_t Classes[CUBE_CLASS_COUNT] = {0};
+  GetCubeClassCounts(Classes);
+  cJSON *ClassNode = cJSON_CreateObject();
+  if (ClassNode != (cJSON *)0) {
+    cJSON_AddNumberToObject(ClassNode, "air", (double)Classes[CUBE_CLASS_AIR]);
+    cJSON_AddNumberToObject(ClassNode, "solid",
+                            (double)Classes[CUBE_CLASS_SOLID]);
+    cJSON_AddNumberToObject(ClassNode, "mixed",
+                            (double)Classes[CUBE_CLASS_MIXED]);
+    cJSON_AddItemToObject(Node, "cubeClasses", ClassNode);
+  }
+
+  uint64_t Hits = 0;
+  uint64_t Misses = 0;
+  ColumnCacheGetTotals(&Hits, &Misses);
+  cJSON *CacheNode = cJSON_CreateObject();
+  if (CacheNode != (cJSON *)0) {
+    cJSON_AddNumberToObject(CacheNode, "hits", (double)Hits);
+    cJSON_AddNumberToObject(CacheNode, "misses", (double)Misses);
+    cJSON_AddItemToObject(Node, "columnCache", CacheNode);
+  }
+
+  cJSON_AddNumberToObject(Node, "generatorVersion", WORLDGEN_VERSION);
+  cJSON_AddNumberToObject(Node, "surfaceY", SurfaceY);
+  cJSON_AddStringToObject(Node, "surfaceBlock",
+                          (SurfaceDef != (BlockType *)0) ? SurfaceDef->Name
+                                                         : "unknown");
+  cJSON_AddItemToObject(Root, "worldgen", Node);
+}
+
 static void ScriptAddChunksJson(cJSON *Root, const ScriptContext *Ctx) {
   int Generated = 0;
   int Generating = 0;
@@ -945,6 +1058,7 @@ static bool ScriptWriteState(const ScriptContext *Ctx, const char *Name,
   ScriptAddCameraJson(Root, Ctx);
   ScriptAddTargetBlockJson(Root, Ctx);
   ScriptAddChunksJson(Root, Ctx);
+  ScriptAddWorldgenJson(Root, Ctx);
   ScriptAddInventoryJson(Root);
   ScriptAddRenderJson(Root);
 #ifdef MINEGAME_PROFILE
@@ -1188,6 +1302,25 @@ void ScriptStep(ChatState *Chat, GameCamera *Camera, Player *PlayerVal,
         return;
       }
       break;
+    case SCRIPT_OP_WORLDGEN_PREVIEW: {
+      char Reason[WORLDGEN_PREVIEW_ERROR_CHARS];
+      int CenterX = Step->PreviewX;
+      int CenterZ = Step->PreviewZ;
+      if (Step->PreviewAtSpawn) {
+        SpawnPoint Spawn = FindSpawnColumn(GetWorldSeed());
+        CenterX = Spawn.X;
+        CenterZ = Spawn.Z;
+      }
+      if (!WorldgenPreviewWrite(State->OutDir, Step->Name, CenterX, CenterZ,
+                                Step->Count, Reason, (int)sizeof(Reason))) {
+        ScriptFail(Step->Line, Reason);
+        return;
+      }
+      ScriptLog("      | wrote %s_height.png, %s_biome.png, %s_slice.png and "
+                "%s_worldgen.json",
+                Step->Name, Step->Name, Step->Name, Step->Name);
+      break;
+    }
     case SCRIPT_OP_SCREENSHOT:
       // The frame this statement is reached on is the one captured, so every
       // statement above it has already taken effect on what gets drawn.

@@ -19,10 +19,10 @@ enum {
   DEFAULT_WATER_TINT_R = 63,
   DEFAULT_WATER_TINT_G = 118,
   DEFAULT_WATER_TINT_B = 228,
-  // Climate axis indices. Each gets its own hashed noise offsets so the fields
-  // stay decorrelated from each other and from the terrain-height field.
+  // Climate axis indices, one salted noise field each.
   AXIS_TEMPERATURE = 0,
-  AXIS_HUMIDITY = 1
+  AXIS_HUMIDITY = 1,
+  AXIS_COUNT = 2
 };
 
 #define DEFAULT_NOISE_SCALE 0.008F
@@ -40,6 +40,8 @@ enum {
 #define RANGE_UNBOUNDED_MAX (1.0e9F)
 
 #define DEFAULT_SUBSURFACE_DEPTH 3
+
+static void DefineClimateFields(void);
 
 static BiomeType *GetBiomeRegistry(void) {
   static BiomeType SBiomeRegistry[BIOME_REGISTRY_SIZE];
@@ -63,6 +65,19 @@ static BiomeNoiseParams *GetNoiseParamsPtr(void) {
 const BiomeNoiseParams *GetBiomeNoiseParams(void) { return GetNoiseParamsPtr(); }
 
 int GetLoadedBiomesCount(void) { return *GetLoadedBiomesCountPtr(); }
+
+// Unloaded slots are included on purpose: GetBiomeDef can fall back to one, and
+// its default subsurface depth is then the one generation uses.
+int GetMaxBiomeSubsurfaceDepth(void) {
+  const BiomeType *Registry = GetBiomeRegistry();
+  int MaxDepth = 0;
+  for (int Idx = 0; Idx < BIOME_REGISTRY_SIZE; Idx++) {
+    if (Registry[Idx].SubsurfaceDepth > MaxDepth) {
+      MaxDepth = Registry[Idx].SubsurfaceDepth;
+    }
+  }
+  return MaxDepth;
+}
 
 void InitBiomeRegistry(void) {
   BiomeType *Registry = GetBiomeRegistry();
@@ -93,6 +108,10 @@ void InitBiomeRegistry(void) {
     Registry[Idx].StructureDensity = 0.0F;
   }
   *GetLoadedBiomesCountPtr() = 0;
+
+  // Defaults first, so climate sampling is defined even when no params file
+  // loads; LoadBiomeParams redefines the same fields in place.
+  DefineClimateFields();
 }
 
 const BiomeType *GetBiomeDef(int BiomeId) {
@@ -110,52 +129,38 @@ const BiomeType *GetBiomeDef(int BiomeId) {
 // Climate sampling
 // ---------------------------------------------------------------------------
 
-// SplitMix64: one multiply-xor-shift round per stage, enough to turn adjacent
-// seeds and axis indices into uncorrelated offsets.
-static uint64_t SplitMix64(uint64_t Value) {
-  const uint64_t GOLDEN_GAMMA = 0x9E3779B97F4A7C15ULL;
-  const uint64_t MIX_A = 0xBF58476D1CE4E5B9ULL;
-  const uint64_t MIX_B = 0x94D049BB133111EBULL;
-  const unsigned int SHIFT_A = 30U;
-  const unsigned int SHIFT_B = 27U;
-  const unsigned int SHIFT_C = 31U;
+// Each axis is its own salted field, so temperature, humidity, and the terrain
+// surface field never sample correlated noise.
+#define TEMPERATURE_FIELD_SALT 0xC11A7E0000000001ULL
+#define HUMIDITY_FIELD_SALT 0xC11A7E0000000002ULL
 
-  Value += GOLDEN_GAMMA;
-  Value = (Value ^ (Value >> SHIFT_A)) * MIX_A;
-  Value = (Value ^ (Value >> SHIFT_B)) * MIX_B;
-  return Value ^ (Value >> SHIFT_C);
+typedef struct {
+  NoiseField Fields[AXIS_COUNT];
+} ClimateFields;
+
+static ClimateFields *GetClimateFields(void) {
+  static ClimateFields SFields = {
+      .Fields = {NOISE_FIELD_INVALID, NOISE_FIELD_INVALID}};
+  return &SFields;
 }
 
-static float OffsetFromHash(uint64_t Hash) {
-  const uint64_t OFFSET_RANGE = 100000ULL;
-  const float OFFSET_HALF = 50000.0F;
-  return (float)(Hash % OFFSET_RANGE) - OFFSET_HALF;
-}
+static void DefineClimateFields(void) {
+  const BiomeNoiseParams *Params = GetNoiseParamsPtr();
+  NoiseFieldDesc Desc = NoiseDefaultDesc();
+  Desc.Octaves = Params->Octaves;
+  Desc.Frequency = Params->Scale;
+  Desc.Lacunarity = Params->Lacunarity;
+  Desc.Gain = Params->Gain;
 
-// Two offsets per axis, hashed from the seed. Sampling each axis at a different
-// place in the same noise field is what keeps temperature, humidity, and the
-// terrain-height field independent of one another.
-static void GetAxisOffsets(uint64_t Seed, int Axis, float *OffX, float *OffZ) {
-  const uint64_t AXIS_SPREAD = 0x9E3779B97F4A7C15ULL;
-  const uint64_t SALT_X = 0x11ULL;
-  const uint64_t SALT_Z = 0x22ULL;
-
-  uint64_t Base = Seed ^ ((uint64_t)Axis * AXIS_SPREAD);
-  *OffX = OffsetFromHash(SplitMix64(Base + SALT_X));
-  *OffZ = OffsetFromHash(SplitMix64(Base + SALT_Z));
-}
-
-// NoiseFbm3 sums octaves without normalizing, so its range grows with octave
-// count and gain. Dividing by the amplitude sum brings it back to roughly
-// [-1, 1] regardless of how the params are tuned.
-static float NoiseAmplitudeSum(const BiomeNoiseParams *Params) {
-  float Amplitude = 1.0F;
-  float Sum = 0.0F;
-  for (int Idx = 0; Idx < Params->Octaves; Idx++) {
-    Sum += Amplitude;
-    Amplitude *= Params->Gain;
+  ClimateFields *Climate = GetClimateFields();
+  const uint64_t SALTS[AXIS_COUNT] = {TEMPERATURE_FIELD_SALT,
+                                      HUMIDITY_FIELD_SALT};
+  for (int Axis = 0; Axis < AXIS_COUNT; Axis++) {
+    if (!NoiseFieldDefine(&Climate->Fields[Axis], &Desc, SALTS[Axis])) {
+      LogError("BIOME: noise field table is full; climate axis %d is flat",
+               Axis);
+    }
   }
-  return (Sum > 0.0F) ? Sum : 1.0F;
 }
 
 static float ClampUnit(float Value) {
@@ -170,26 +175,18 @@ static float ClampUnit(float Value) {
 
 static float SampleClimateAxis(int GlobalX, int GlobalZ, int Axis,
                                uint64_t Seed) {
-  const BiomeNoiseParams *Params = GetNoiseParamsPtr();
-  float OffX = 0.0F;
-  float OffZ = 0.0F;
-  GetAxisOffsets(Seed, Axis, &OffX, &OffZ);
-
-  float Raw = NoiseFbm3(((float)GlobalX + OffX) * Params->Scale, 0.0F,
-                        ((float)GlobalZ + OffZ) * Params->Scale,
-                        Params->Lacunarity, Params->Gain, Params->Octaves);
-
-  float Normalized = ((Raw / NoiseAmplitudeSum(Params)) + UNIT_MAX) * NOISE_MIDPOINT;
-  return ClampUnit(Normalized);
+  float Raw = NoiseSample2D(GetClimateFields()->Fields[Axis], Seed,
+                            (float)GlobalX, (float)GlobalZ);
+  return ClampUnit((Raw + UNIT_MAX) * NOISE_MIDPOINT);
 }
 
-BiomeClimate SampleBiomeClimate(int X, int Y, int Z, int TerrainHeight,
+BiomeClimate SampleBiomeClimate(int X, int Y, int Z, int PreliminarySurface,
                                 uint64_t Seed) {
   BiomeClimate Climate;
   Climate.Temperature = SampleClimateAxis(X, Z, AXIS_TEMPERATURE, Seed);
   Climate.Humidity = SampleClimateAxis(X, Z, AXIS_HUMIDITY, Seed);
   // Derived, not sampled: distance below the surface of this column.
-  Climate.Depth = (float)(TerrainHeight - Y);
+  Climate.Depth = (float)(PreliminarySurface - Y);
   return Climate;
 }
 
@@ -227,8 +224,8 @@ int ResolveBiome(BiomeClimate Climate) {
   return BestId;
 }
 
-int SampleBiomeAt(int X, int Y, int Z, int TerrainHeight, uint64_t Seed) {
-  return ResolveBiome(SampleBiomeClimate(X, Y, Z, TerrainHeight, Seed));
+int SampleBiomeAt(int X, int Y, int Z, int PreliminarySurface, uint64_t Seed) {
+  return ResolveBiome(SampleBiomeClimate(X, Y, Z, PreliminarySurface, Seed));
 }
 
 Color8 GetBiomeTint(int BiomeId, TintSource Source) {
@@ -573,6 +570,8 @@ void LoadBiomeParams(const char *FilePath) {
   LogInfo("BIOME: noise params scale=%.4f octaves=%d lacunarity=%.2f gain=%.2f",
           (double)Params->Scale, Params->Octaves, (double)Params->Lacunarity,
           (double)Params->Gain);
+
+  DefineClimateFields();
 
   cJSON_Delete(Json);
   free(FileContent);

@@ -1,4 +1,5 @@
 #include "world/chunk_worker.h"
+#include "world/worldgen_column_cache.h"
 #include "world/feature.h"
 #include "persistence/world_save.h"
 #include "core/profiler.h"
@@ -54,21 +55,34 @@ static bool HasWork(const ChunkWorkerState *State) {
          (State->MeshHead != State->MeshTail);
 }
 
-static void RunGeneration(Chunk *Target) {
+static void RunGeneration(Chunk *Target, int WorkerIndex) {
   PROFILE_BEGIN(GenerationStart);
+
+  // Every cube of a column shares this entry, so its 2D noise is sampled once
+  // per column on this worker rather than once per cube.
+  const ColumnEntry *Column =
+      ColumnCacheLookup(GetColumnCache(WorkerIndex), Target->ChunkX,
+                        Target->ChunkZ, GetWorldSeed());
 
   // Before the branch, not after it: generation reads the biome map to choose
   // its blocks, and a chunk read back from disk needs one just the same. A
   // single call ahead of both paths is what stops them from drifting apart.
-  FillChunkBiomeMap(Target);
+  FillChunkBiomeMap(Target, Column);
 
   // Trees are procedural, not persisted: stamp them only on the fresh-
   // generation path, never after a disk load, so player edits (a chopped
   // tree) survive and the save format stays untouched.
   if (!LoadChunkFromDisk(Target)) {
-    GenerateChunkTerrain(Target);
+    const TerrainGenOptions OPTIONS = {.AllowClassification = true,
+                                       .CountClasses = true};
+    PROFILE_BEGIN(TerrainStart);
+    (void)GenerateChunkTerrainEx(Target, Column, &OPTIONS);
+    PROFILE_END(TerrainStart, PROFILE_GEN_TERRAIN);
+
+    PROFILE_BEGIN(FeaturesStart);
     PlaceChunkFeatures(Target);
-    PlaceChunkFlora(Target);
+    PlaceChunkFlora(Target, Column);
+    PROFILE_END(FeaturesStart, PROFILE_GEN_FEATURES);
   }
 
   PROFILE_END(GenerationStart, PROFILE_WORKER_GENERATION);
@@ -113,7 +127,7 @@ static void *WorkerLoop(void *Arg) {
     pthread_mutex_unlock(&State->QueueMutex);
 
     if (GenerationTarget != (Chunk *)0) {
-      RunGeneration(GenerationTarget);
+      RunGeneration(GenerationTarget, WorkerIndex);
     } else if (MeshJobId >= 0 && Runner != (MeshJobRunner)0) {
       Runner(MeshJobId, WorkerIndex);
     }

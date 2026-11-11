@@ -11,10 +11,6 @@
 #define SERVER_TICK_DT (1.0F / (float)SERVER_TICK_RATE)
 #define SERVER_TICK_MS 50U
 
-#define SERVER_SPAWN_X 0.0F
-#define SERVER_SPAWN_Y 25.0F
-#define SERVER_SPAWN_Z 0.0F
-
 typedef struct {
   int WorkerCount;
   int RenderDistance;
@@ -68,6 +64,13 @@ bool ServerInit(ServerState *Server, const ServerConfig *Config);
 // Clear TerrainJustGenerated flags and mark neighbour chunks dirty on any
 // chunks the worker threads finished since the last scan.
 void ServerUpdateWorldChunks(World *WorldVal);
+
+// Loads the chunk set around the player and blocks until its generation has
+// settled or TimeoutSeconds (a default when <= 0) passes. Returns whether it
+// settled. Init uses it for the spawn area; an unpaced --ticks run uses it
+// before its summary, because ticks there outrun the generation workers and a
+// player who crossed a chunk layer would otherwise be reported unsettled.
+bool ServerWaitForWorldSettle(ServerState *Server, double TimeoutSeconds);
 
 // Attach a transport (or detach with NULL). While attached, ServerStepTick
 // consumes PKT_CLIENT_INPUT packets and emits block deltas, chunk resends and

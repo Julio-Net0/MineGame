@@ -24,6 +24,7 @@ void PlaceChunkFeatures(Chunk *ChunkVal);
 // flora block is placed one voxel above the surface when the biome declares a
 // flora set, the surface is above sea level and is the biome's own surface
 // block, and both the surface and the voxel above it lie inside this chunk.
-void PlaceChunkFlora(Chunk *ChunkVal);
+// Column is the cache entry for this chunk's column; the surface comes from it.
+void PlaceChunkFlora(Chunk *ChunkVal, const struct ColumnEntry *Column);
 
 #endif

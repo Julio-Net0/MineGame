@@ -1,0 +1,8 @@
+{
+  "generationCeiling": 640,
+  "strata": [
+    { "name": "overworld", "generator": "overworld",    "minY": -511 },
+    { "name": "bedrock",   "generator": "bedrock_band", "minY": -516, "maxY": -512 },
+    { "name": "reserved",  "generator": "void",                       "maxY": -517 }
+  ]
+}

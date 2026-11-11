@@ -4,6 +4,7 @@
 #include "world/chunk.h"
 #include "world/prefab.h"
 #include "world/prefab_capture.h"
+#include "world/surface.h"
 #include "ui/chat.h"
 #include "ui/debug.h"
 #include "ui/ui.h"
@@ -376,7 +377,7 @@ static void CommandBiome(const char *Args, CommandContext *Ctx) {
   uint64_t SeedVal = GetWorldSeed();
   // The Depth axis is measured against the terrain surface, so the height must
   // come from the same field generation used, not from the player's own Y.
-  int TerrainHeight = GetTerrainHeightAt(PosX, PosZ, SeedVal);
+  int TerrainHeight = GetPreliminarySurface(PosX, PosZ, SeedVal);
 
   BiomeClimate Climate =
       SampleBiomeClimate(PosX, PosY, PosZ, TerrainHeight, SeedVal);
