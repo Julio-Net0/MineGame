@@ -1,0 +1,10 @@
+{
+  "id": 335,
+  "name": "cherry_log",
+  "displayName": "Cherry Log",
+  "category": "building",
+  "texTop": "cherry_log_top",
+  "texBottom": "cherry_log_top",
+  "texSide": "cherry_log",
+  "isTransparent": false
+}

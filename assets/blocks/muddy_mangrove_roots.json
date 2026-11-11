@@ -1,0 +1,10 @@
+{
+  "id": 540,
+  "name": "muddy_mangrove_roots",
+  "displayName": "Muddy Mangrove Roots",
+  "category": "natural",
+  "texTop": "muddy_mangrove_roots_top",
+  "texBottom": "muddy_mangrove_roots_top",
+  "texSide": "muddy_mangrove_roots_side",
+  "isTransparent": false
+}

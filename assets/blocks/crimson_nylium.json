@@ -1,0 +1,10 @@
+{
+  "id": 517,
+  "name": "crimson_nylium",
+  "displayName": "Crimson Nylium",
+  "category": "natural",
+  "texTop": "crimson_nylium",
+  "texBottom": "netherrack",
+  "texSide": "crimson_nylium_side",
+  "isTransparent": false
+}

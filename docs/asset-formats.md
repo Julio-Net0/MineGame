@@ -141,7 +141,33 @@ The biome map is **derived, never saved**. It is recomputed from the seed whenev
 
 A block's `"id"` is its registry slot, `0`–`4095`, and is stored as a 16-bit value in chunks, saves and network packets. Ids must be unique: a file whose id is already taken is rejected with an error naming the block that holds it, and the first block keeps the slot. Saves store raw ids, so changing a block's id changes what existing worlds contain.
 
-Up to **4096 distinct texture names** can be registered across all blocks (12 bits in the packed vertex). The renderer also checks the driver's `GL_MAX_ARRAY_TEXTURE_LAYERS` at startup and logs a warning when more textures are registered than the GPU can hold.
+Up to **4096 distinct texture names** can be registered across all blocks (12 bits in the packed vertex). The renderer also checks the driver's `GL_MAX_ARRAY_TEXTURE_LAYERS` at startup and logs a warning when more textures are registered than the GPU can hold. A texture that resolves from no source is drawn as a magenta checkerboard and counted; scripted runs report the count as `render.missingBlockTextures`, and the regression suite requires it to be `0`.
+
+The bundled catalog uses fixed id ranges per family, so related blocks sit together in the inventory and new blocks have room to grow:
+
+| Ids | Family |
+|---|---|
+| `0`–`11` | the original blocks (air, grass, dirt, stone, sand, water, glass, oak leaves, oak log, dandelion, poppy, short grass) |
+| `100`–`199` | stone, bricks and stone-like blocks |
+| `200`–`299` | ores, minerals, metal and raw blocks |
+| `300`–`399` | woods: logs, wood, stripped variants, planks, bamboo, nether stems |
+| `400`–`499` | colored: wool, concrete, concrete powder, terracotta, stained glass |
+| `500`–`599` | natural and miscellaneous cubes, leaves |
+| `600`–`699` | cross plants |
+
+`"name"` is the block's reference key: biome palettes, flora sets and prefab palettes resolve blocks by it, so it should not change once used. The optional `"displayName"` (up to 47 characters) is the label shown in the inventory tooltip, falling back to `"name"`:
+
+```json
+{
+  "id": 8,
+  "name": "Oak",
+  "displayName": "Oak Log",
+  "category": "building",
+  "texTop": "oak_log_top",
+  "texBottom": "oak_log_top",
+  "texSide": "oak_log"
+}
+```
 
 ## Creative inventory category
 
@@ -176,7 +202,8 @@ Blocks opt into biome colouring with an optional `"tint"` property in `assets/bl
 |---|---|---|
 | `"grass"` | the biome's `grassTint` | top and sides (not the bottom) |
 | `"foliage"` | the biome's `foliageTint` | all six faces |
-| `"none"`, absent, or unrecognized | none | none — the texture keeps its own colours |
+| `"#RRGGBB"` | that fixed colour, the same in every biome (spruce leaves use `#619961`, birch `#80A755`) | all six faces |
+| `"none"`, absent, unrecognized, or a malformed colour | none | none — the texture keeps its own colours |
 
 A tinted block's texture should be authored **grayscale** where it is meant to take colour, since the tint is a multiply: grey × green reads as green, but brown × green reads as mud.
 

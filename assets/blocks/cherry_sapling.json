@@ -1,0 +1,11 @@
+{
+  "id": 621,
+  "name": "cherry_sapling",
+  "displayName": "Cherry Sapling",
+  "category": "natural",
+  "texTop": "cherry_sapling",
+  "texBottom": "cherry_sapling",
+  "texSide": "cherry_sapling",
+  "isTransparent": true,
+  "render": "cross"
+}

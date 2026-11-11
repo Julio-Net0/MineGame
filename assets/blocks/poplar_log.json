@@ -1,0 +1,10 @@
+{
+  "id": 345,
+  "name": "poplar_log",
+  "displayName": "Poplar Log",
+  "category": "building",
+  "texTop": "poplar_log_top",
+  "texBottom": "poplar_log_top",
+  "texSide": "poplar_log",
+  "isTransparent": false
+}

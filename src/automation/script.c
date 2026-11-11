@@ -808,6 +808,16 @@ static void ScriptAddPlayerJson(cJSON *Root, const ScriptContext *Ctx) {
   cJSON_AddItemToObject(Root, "player", Node);
 }
 
+static void ScriptAddRenderJson(cJSON *Root) {
+  cJSON *Node = cJSON_CreateObject();
+  if (Node == (cJSON *)0) {
+    return;
+  }
+  cJSON_AddNumberToObject(Node, "missingBlockTextures",
+                          RenderGetMissingBlockTextureCount());
+  cJSON_AddItemToObject(Root, "render", Node);
+}
+
 static void ScriptAddInventoryJson(cJSON *Root) {
   cJSON *Node = cJSON_CreateObject();
   if (Node == (cJSON *)0) {
@@ -936,6 +946,7 @@ static bool ScriptWriteState(const ScriptContext *Ctx, const char *Name,
   ScriptAddTargetBlockJson(Root, Ctx);
   ScriptAddChunksJson(Root, Ctx);
   ScriptAddInventoryJson(Root);
+  ScriptAddRenderJson(Root);
 #ifdef MINEGAME_PROFILE
   ScriptAddProfilerJson(Root);
 #endif

@@ -1,0 +1,11 @@
+{
+  "id": 623,
+  "name": "poplar_sapling",
+  "displayName": "Poplar Sapling",
+  "category": "natural",
+  "texTop": "poplar_sapling",
+  "texBottom": "poplar_sapling",
+  "texSide": "poplar_sapling",
+  "isTransparent": true,
+  "render": "cross"
+}

@@ -1,0 +1,10 @@
+{
+  "id": 243,
+  "name": "weathered_copper_grate",
+  "displayName": "Weathered Copper Grate",
+  "category": "building",
+  "texTop": "weathered_copper_grate",
+  "texBottom": "weathered_copper_grate",
+  "texSide": "weathered_copper_grate",
+  "isTransparent": true
+}

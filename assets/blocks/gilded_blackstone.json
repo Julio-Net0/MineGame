@@ -1,0 +1,10 @@
+{
+  "id": 133,
+  "name": "gilded_blackstone",
+  "displayName": "Gilded Blackstone",
+  "category": "building",
+  "texTop": "gilded_blackstone",
+  "texBottom": "gilded_blackstone",
+  "texSide": "gilded_blackstone",
+  "isTransparent": false
+}

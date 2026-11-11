@@ -1,0 +1,11 @@
+{
+  "id": 557,
+  "name": "spruce_leaves",
+  "displayName": "Spruce Leaves",
+  "category": "natural",
+  "texTop": "spruce_leaves",
+  "texBottom": "spruce_leaves",
+  "texSide": "spruce_leaves",
+  "tint": "#619961",
+  "isTransparent": true
+}

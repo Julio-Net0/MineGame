@@ -1,0 +1,10 @@
+{
+  "id": 475,
+  "name": "cyan_stained_glass",
+  "displayName": "Cyan Stained Glass",
+  "category": "colored",
+  "texTop": "cyan_stained_glass",
+  "texBottom": "cyan_stained_glass",
+  "texSide": "cyan_stained_glass",
+  "isTransparent": true
+}

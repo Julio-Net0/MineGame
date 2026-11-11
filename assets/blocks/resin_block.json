@@ -1,0 +1,10 @@
+{
+  "id": 165,
+  "name": "resin_block",
+  "displayName": "Resin Block",
+  "category": "building",
+  "texTop": "resin_block",
+  "texBottom": "resin_block",
+  "texSide": "resin_block",
+  "isTransparent": false
+}

@@ -1,0 +1,10 @@
+{
+  "id": 461,
+  "name": "blue_terracotta",
+  "displayName": "Blue Terracotta",
+  "category": "colored",
+  "texTop": "blue_terracotta",
+  "texBottom": "blue_terracotta",
+  "texSide": "blue_terracotta",
+  "isTransparent": false
+}

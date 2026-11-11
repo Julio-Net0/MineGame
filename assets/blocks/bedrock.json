@@ -1,0 +1,10 @@
+{
+  "id": 538,
+  "name": "bedrock",
+  "displayName": "Bedrock",
+  "category": "natural",
+  "texTop": "bedrock",
+  "texBottom": "bedrock",
+  "texSide": "bedrock",
+  "isTransparent": false
+}

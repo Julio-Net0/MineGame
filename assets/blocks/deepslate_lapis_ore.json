@@ -1,0 +1,10 @@
+{
+  "id": 213,
+  "name": "deepslate_lapis_ore",
+  "displayName": "Deepslate Lapis Ore",
+  "category": "natural",
+  "texTop": "deepslate_lapis_ore",
+  "texBottom": "deepslate_lapis_ore",
+  "texSide": "deepslate_lapis_ore",
+  "isTransparent": false
+}

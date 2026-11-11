@@ -1,0 +1,10 @@
+{
+  "id": 107,
+  "name": "granite",
+  "displayName": "Granite",
+  "category": "building",
+  "texTop": "granite",
+  "texBottom": "granite",
+  "texSide": "granite",
+  "isTransparent": false
+}

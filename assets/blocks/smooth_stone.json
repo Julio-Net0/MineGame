@@ -1,0 +1,10 @@
+{
+  "id": 102,
+  "name": "smooth_stone",
+  "displayName": "Smooth Stone",
+  "category": "building",
+  "texTop": "smooth_stone",
+  "texBottom": "smooth_stone",
+  "texSide": "smooth_stone",
+  "isTransparent": false
+}

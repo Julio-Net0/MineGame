@@ -1,0 +1,12 @@
+{
+  "id": 629,
+  "name": "fern",
+  "displayName": "Fern",
+  "category": "natural",
+  "texTop": "fern",
+  "texBottom": "fern",
+  "texSide": "fern",
+  "tint": "grass",
+  "isTransparent": true,
+  "render": "cross"
+}

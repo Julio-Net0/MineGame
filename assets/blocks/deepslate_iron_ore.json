@@ -1,0 +1,10 @@
+{
+  "id": 203,
+  "name": "deepslate_iron_ore",
+  "displayName": "Deepslate Iron Ore",
+  "category": "natural",
+  "texTop": "deepslate_iron_ore",
+  "texBottom": "deepslate_iron_ore",
+  "texSide": "deepslate_iron_ore",
+  "isTransparent": false
+}

@@ -1,0 +1,10 @@
+{
+  "id": 501,
+  "name": "rooted_dirt",
+  "displayName": "Rooted Dirt",
+  "category": "natural",
+  "texTop": "rooted_dirt",
+  "texBottom": "rooted_dirt",
+  "texSide": "rooted_dirt",
+  "isTransparent": false
+}

@@ -1,0 +1,10 @@
+{
+  "id": 320,
+  "name": "acacia_log",
+  "displayName": "Acacia Log",
+  "category": "building",
+  "texTop": "acacia_log_top",
+  "texBottom": "acacia_log_top",
+  "texSide": "acacia_log",
+  "isTransparent": false
+}

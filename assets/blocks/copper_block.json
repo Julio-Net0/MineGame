@@ -1,0 +1,10 @@
+{
+  "id": 232,
+  "name": "copper_block",
+  "displayName": "Copper Block",
+  "category": "building",
+  "texTop": "copper_block",
+  "texBottom": "copper_block",
+  "texSide": "copper_block",
+  "isTransparent": false
+}

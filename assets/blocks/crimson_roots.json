@@ -1,0 +1,11 @@
+{
+  "id": 634,
+  "name": "crimson_roots",
+  "displayName": "Crimson Roots",
+  "category": "natural",
+  "texTop": "crimson_roots",
+  "texBottom": "crimson_roots",
+  "texSide": "crimson_roots",
+  "isTransparent": true,
+  "render": "cross"
+}

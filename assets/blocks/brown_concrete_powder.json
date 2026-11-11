@@ -1,0 +1,10 @@
+{
+  "id": 436,
+  "name": "brown_concrete_powder",
+  "displayName": "Brown Concrete Powder",
+  "category": "colored",
+  "texTop": "brown_concrete_powder",
+  "texBottom": "brown_concrete_powder",
+  "texSide": "brown_concrete_powder",
+  "isTransparent": false
+}

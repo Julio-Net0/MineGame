@@ -1,0 +1,10 @@
+{
+  "id": 412,
+  "name": "blue_wool",
+  "displayName": "Blue Wool",
+  "category": "colored",
+  "texTop": "blue_wool",
+  "texBottom": "blue_wool",
+  "texSide": "blue_wool",
+  "isTransparent": false
+}

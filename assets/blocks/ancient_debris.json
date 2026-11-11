@@ -1,0 +1,10 @@
+{
+  "id": 218,
+  "name": "ancient_debris",
+  "displayName": "Ancient Debris",
+  "category": "natural",
+  "texTop": "ancient_debris_top",
+  "texBottom": "ancient_debris_top",
+  "texSide": "ancient_debris_side",
+  "isTransparent": false
+}

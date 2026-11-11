@@ -1,0 +1,10 @@
+{
+  "id": 352,
+  "name": "bamboo_planks",
+  "displayName": "Bamboo Planks",
+  "category": "building",
+  "texTop": "bamboo_planks",
+  "texBottom": "bamboo_planks",
+  "texSide": "bamboo_planks",
+  "isTransparent": false
+}

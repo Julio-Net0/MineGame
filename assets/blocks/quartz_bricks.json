@@ -1,0 +1,10 @@
+{
+  "id": 152,
+  "name": "quartz_bricks",
+  "displayName": "Quartz Bricks",
+  "category": "building",
+  "texTop": "quartz_bricks",
+  "texBottom": "quartz_bricks",
+  "texSide": "quartz_bricks",
+  "isTransparent": false
+}

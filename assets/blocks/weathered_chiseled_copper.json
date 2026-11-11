@@ -1,0 +1,10 @@
+{
+  "id": 242,
+  "name": "weathered_chiseled_copper",
+  "displayName": "Weathered Chiseled Copper",
+  "category": "building",
+  "texTop": "weathered_chiseled_copper",
+  "texBottom": "weathered_chiseled_copper",
+  "texSide": "weathered_chiseled_copper",
+  "isTransparent": false
+}

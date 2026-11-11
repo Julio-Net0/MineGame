@@ -1,0 +1,11 @@
+{
+  "id": 617,
+  "name": "birch_sapling",
+  "displayName": "Birch Sapling",
+  "category": "natural",
+  "texTop": "birch_sapling",
+  "texBottom": "birch_sapling",
+  "texSide": "birch_sapling",
+  "isTransparent": true,
+  "render": "cross"
+}

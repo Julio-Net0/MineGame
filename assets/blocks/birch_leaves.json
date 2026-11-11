@@ -1,0 +1,11 @@
+{
+  "id": 558,
+  "name": "birch_leaves",
+  "displayName": "Birch Leaves",
+  "category": "natural",
+  "texTop": "birch_leaves",
+  "texBottom": "birch_leaves",
+  "texSide": "birch_leaves",
+  "tint": "#80A755",
+  "isTransparent": true
+}

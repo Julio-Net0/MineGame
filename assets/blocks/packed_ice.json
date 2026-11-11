@@ -1,0 +1,10 @@
+{
+  "id": 510,
+  "name": "packed_ice",
+  "displayName": "Packed Ice",
+  "category": "natural",
+  "texTop": "packed_ice",
+  "texBottom": "packed_ice",
+  "texSide": "packed_ice",
+  "isTransparent": false
+}

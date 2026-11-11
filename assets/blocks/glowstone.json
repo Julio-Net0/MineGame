@@ -1,0 +1,10 @@
+{
+  "id": 527,
+  "name": "glowstone",
+  "displayName": "Glowstone",
+  "category": "natural",
+  "texTop": "glowstone",
+  "texBottom": "glowstone",
+  "texSide": "glowstone",
+  "isTransparent": false
+}

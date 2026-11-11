@@ -1,0 +1,10 @@
+{
+  "id": 121,
+  "name": "tuff",
+  "displayName": "Tuff",
+  "category": "building",
+  "texTop": "tuff",
+  "texBottom": "tuff",
+  "texSide": "tuff",
+  "isTransparent": false
+}

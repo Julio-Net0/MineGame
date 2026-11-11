@@ -1,0 +1,10 @@
+{
+  "id": 512,
+  "name": "moss_block",
+  "displayName": "Moss Block",
+  "category": "natural",
+  "texTop": "moss_block",
+  "texBottom": "moss_block",
+  "texSide": "moss_block",
+  "isTransparent": false
+}

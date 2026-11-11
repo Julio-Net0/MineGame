@@ -1,0 +1,10 @@
+{
+  "id": 563,
+  "name": "cherry_leaves",
+  "displayName": "Cherry Leaves",
+  "category": "natural",
+  "texTop": "cherry_leaves",
+  "texBottom": "cherry_leaves",
+  "texSide": "cherry_leaves",
+  "isTransparent": true
+}

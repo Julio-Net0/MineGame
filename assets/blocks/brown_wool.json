@@ -1,0 +1,10 @@
+{
+  "id": 404,
+  "name": "brown_wool",
+  "displayName": "Brown Wool",
+  "category": "colored",
+  "texTop": "brown_wool",
+  "texBottom": "brown_wool",
+  "texSide": "brown_wool",
+  "isTransparent": false
+}

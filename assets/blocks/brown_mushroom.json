@@ -1,0 +1,11 @@
+{
+  "id": 625,
+  "name": "brown_mushroom",
+  "displayName": "Brown Mushroom",
+  "category": "natural",
+  "texTop": "brown_mushroom",
+  "texBottom": "brown_mushroom",
+  "texSide": "brown_mushroom",
+  "isTransparent": true,
+  "render": "cross"
+}

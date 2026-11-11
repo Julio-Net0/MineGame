@@ -1,0 +1,10 @@
+{
+  "id": 410,
+  "name": "cyan_wool",
+  "displayName": "Cyan Wool",
+  "category": "colored",
+  "texTop": "cyan_wool",
+  "texBottom": "cyan_wool",
+  "texSide": "cyan_wool",
+  "isTransparent": false
+}

@@ -1,0 +1,10 @@
+{
+  "id": 472,
+  "name": "yellow_stained_glass",
+  "displayName": "Yellow Stained Glass",
+  "category": "colored",
+  "texTop": "yellow_stained_glass",
+  "texBottom": "yellow_stained_glass",
+  "texSide": "yellow_stained_glass",
+  "isTransparent": true
+}

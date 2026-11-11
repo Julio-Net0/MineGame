@@ -1,0 +1,11 @@
+{
+  "id": 618,
+  "name": "jungle_sapling",
+  "displayName": "Jungle Sapling",
+  "category": "natural",
+  "texTop": "jungle_sapling",
+  "texBottom": "jungle_sapling",
+  "texSide": "jungle_sapling",
+  "isTransparent": true,
+  "render": "cross"
+}

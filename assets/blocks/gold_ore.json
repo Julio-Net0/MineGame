@@ -1,0 +1,10 @@
+{
+  "id": 206,
+  "name": "gold_ore",
+  "displayName": "Gold Ore",
+  "category": "natural",
+  "texTop": "gold_ore",
+  "texBottom": "gold_ore",
+  "texSide": "gold_ore",
+  "isTransparent": false
+}

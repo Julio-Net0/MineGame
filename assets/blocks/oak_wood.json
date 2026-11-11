@@ -1,0 +1,10 @@
+{
+  "id": 301,
+  "name": "oak_wood",
+  "displayName": "Oak Wood",
+  "category": "building",
+  "texTop": "oak_log",
+  "texBottom": "oak_log",
+  "texSide": "oak_log",
+  "isTransparent": false
+}

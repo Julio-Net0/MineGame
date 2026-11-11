@@ -1,0 +1,11 @@
+{
+  "id": 603,
+  "name": "azure_bluet",
+  "displayName": "Azure Bluet",
+  "category": "natural",
+  "texTop": "azure_bluet",
+  "texBottom": "azure_bluet",
+  "texSide": "azure_bluet",
+  "isTransparent": true,
+  "render": "cross"
+}

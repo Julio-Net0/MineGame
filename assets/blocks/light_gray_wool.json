@@ -1,0 +1,10 @@
+{
+  "id": 401,
+  "name": "light_gray_wool",
+  "displayName": "Light Gray Wool",
+  "category": "colored",
+  "texTop": "light_gray_wool",
+  "texBottom": "light_gray_wool",
+  "texSide": "light_gray_wool",
+  "isTransparent": false
+}

@@ -1,0 +1,10 @@
+{
+  "id": 237,
+  "name": "exposed_cut_copper",
+  "displayName": "Exposed Cut Copper",
+  "category": "building",
+  "texTop": "exposed_cut_copper",
+  "texBottom": "exposed_cut_copper",
+  "texSide": "exposed_cut_copper",
+  "isTransparent": false
+}

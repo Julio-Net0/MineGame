@@ -1,0 +1,10 @@
+{
+  "id": 108,
+  "name": "polished_granite",
+  "displayName": "Polished Granite",
+  "category": "building",
+  "texTop": "polished_granite",
+  "texBottom": "polished_granite",
+  "texSide": "polished_granite",
+  "isTransparent": false
+}

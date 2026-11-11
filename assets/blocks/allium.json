@@ -1,0 +1,11 @@
+{
+  "id": 602,
+  "name": "allium",
+  "displayName": "Allium",
+  "category": "natural",
+  "texTop": "allium",
+  "texBottom": "allium",
+  "texSide": "allium",
+  "isTransparent": true,
+  "render": "cross"
+}

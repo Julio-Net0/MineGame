@@ -1,0 +1,11 @@
+{
+  "id": 615,
+  "name": "oak_sapling",
+  "displayName": "Oak Sapling",
+  "category": "natural",
+  "texTop": "oak_sapling",
+  "texBottom": "oak_sapling",
+  "texSide": "oak_sapling",
+  "isTransparent": true,
+  "render": "cross"
+}

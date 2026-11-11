@@ -1,0 +1,10 @@
+{
+  "id": 477,
+  "name": "blue_stained_glass",
+  "displayName": "Blue Stained Glass",
+  "category": "colored",
+  "texTop": "blue_stained_glass",
+  "texBottom": "blue_stained_glass",
+  "texSide": "blue_stained_glass",
+  "isTransparent": true
+}

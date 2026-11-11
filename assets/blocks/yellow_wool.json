@@ -1,0 +1,10 @@
+{
+  "id": 407,
+  "name": "yellow_wool",
+  "displayName": "Yellow Wool",
+  "category": "colored",
+  "texTop": "yellow_wool",
+  "texBottom": "yellow_wool",
+  "texSide": "yellow_wool",
+  "isTransparent": false
+}

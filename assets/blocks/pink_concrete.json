@@ -1,0 +1,10 @@
+{
+  "id": 431,
+  "name": "pink_concrete",
+  "displayName": "Pink Concrete",
+  "category": "colored",
+  "texTop": "pink_concrete",
+  "texBottom": "pink_concrete",
+  "texSide": "pink_concrete",
+  "isTransparent": false
+}

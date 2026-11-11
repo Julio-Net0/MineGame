@@ -1,0 +1,10 @@
+{
+  "id": 323,
+  "name": "stripped_acacia_wood",
+  "displayName": "Stripped Acacia Wood",
+  "category": "building",
+  "texTop": "stripped_acacia_log",
+  "texBottom": "stripped_acacia_log",
+  "texSide": "stripped_acacia_log",
+  "isTransparent": false
+}

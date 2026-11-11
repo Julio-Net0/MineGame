@@ -1,0 +1,10 @@
+{
+  "id": 128,
+  "name": "blackstone",
+  "displayName": "Blackstone",
+  "category": "building",
+  "texTop": "blackstone_top",
+  "texBottom": "blackstone_top",
+  "texSide": "blackstone",
+  "isTransparent": false
+}

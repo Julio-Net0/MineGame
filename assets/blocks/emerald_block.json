@@ -1,0 +1,10 @@
+{
+  "id": 223,
+  "name": "emerald_block",
+  "displayName": "Emerald Block",
+  "category": "building",
+  "texTop": "emerald_block",
+  "texBottom": "emerald_block",
+  "texSide": "emerald_block",
+  "isTransparent": false
+}

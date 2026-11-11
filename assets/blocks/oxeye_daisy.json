@@ -1,0 +1,11 @@
+{
+  "id": 608,
+  "name": "oxeye_daisy",
+  "displayName": "Oxeye Daisy",
+  "category": "natural",
+  "texTop": "oxeye_daisy",
+  "texBottom": "oxeye_daisy",
+  "texSide": "oxeye_daisy",
+  "isTransparent": true,
+  "render": "cross"
+}

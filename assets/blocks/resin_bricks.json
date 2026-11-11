@@ -1,0 +1,10 @@
+{
+  "id": 166,
+  "name": "resin_bricks",
+  "displayName": "Resin Bricks",
+  "category": "building",
+  "texTop": "resin_bricks",
+  "texBottom": "resin_bricks",
+  "texSide": "resin_bricks",
+  "isTransparent": false
+}

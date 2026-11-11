@@ -1,0 +1,10 @@
+{
+  "id": 358,
+  "name": "stripped_warped_stem",
+  "displayName": "Stripped Warped Stem",
+  "category": "building",
+  "texTop": "stripped_warped_stem_top",
+  "texBottom": "stripped_warped_stem_top",
+  "texSide": "stripped_warped_stem",
+  "isTransparent": false
+}

@@ -7,7 +7,12 @@
 #include <stdlib.h>
 
 enum {
-  MAX_FILES_LIMIT = 1024
+  MAX_FILES_LIMIT = 1024,
+  HEX_COLOR_CHANNELS = 3,
+  HEX_COLOR_LENGTH = 7,
+  HEX_DIGIT_BASE = 16,
+  HEX_DIGIT_TEN = 10,
+  COLOR_ALPHA_OPAQUE = 255
 };
 
 static int *GetLoadedBlocksCountPtr(void) {
@@ -91,6 +96,8 @@ void InitBlockRegistry(void) {
   for (int Idx = 0; Idx < BLOCK_REGISTRY_SIZE; Idx++) {
     BlockRegistry[Idx].Id = -1;
     BlockRegistry[Idx].Name[0] = '\0';
+    BlockRegistry[Idx].DisplayName[0] = '\0';
+    BlockRegistry[Idx].TintColor = COLOR_WHITE;
     BlockRegistry[Idx].TexTop = 0;
     BlockRegistry[Idx].TexSide = 0;
     BlockRegistry[Idx].TexBottom = 0;
@@ -157,10 +164,48 @@ static void AssignSideOverlay(BlockType *Block, const char *Name,
 // Optional "tint" property. An absent, non-string, or unrecognized value takes
 // TINT_NONE rather than failing the block: an untinted block is a meaningful
 // default, and the rest of the definition is still worth loading.
-static TintSource ParseTintSource(const cJSON *Json) {
+static int HexDigitValue(char Digit) {
+  if (Digit >= '0' && Digit <= '9') {
+    return Digit - '0';
+  }
+  if (Digit >= 'a' && Digit <= 'f') {
+    return Digit - 'a' + HEX_DIGIT_TEN;
+  }
+  if (Digit >= 'A' && Digit <= 'F') {
+    return Digit - 'A' + HEX_DIGIT_TEN;
+  }
+  return -1;
+}
+
+// "#RRGGBB", exactly. Anything else is rejected so a typo cannot tint a block
+// with a half-parsed colour.
+static bool ParseHexColor(const char *Text, Color8 *OutColor) {
+  if (Text[0] != '#') {
+    return false;
+  }
+  unsigned char Channels[HEX_COLOR_CHANNELS];
+  for (int Channel = 0; Channel < HEX_COLOR_CHANNELS; Channel++) {
+    int High = HexDigitValue(Text[1 + (Channel * 2)]);
+    int Low = (High < 0) ? -1 : HexDigitValue(Text[2 + (Channel * 2)]);
+    if (Low < 0) {
+      return false;
+    }
+    Channels[Channel] = (unsigned char)((High * HEX_DIGIT_BASE) + Low);
+  }
+  if (Text[HEX_COLOR_LENGTH] != '\0') {
+    return false;
+  }
+  *OutColor = (Color8){Channels[0], Channels[1], Channels[2], COLOR_ALPHA_OPAQUE};
+  return true;
+}
+
+static TintSource ParseTintSource(const cJSON *Json, Color8 *OutColor) {
   cJSON *TintItem = cJSON_GetObjectItemCaseSensitive(Json, "tint");
   if (cJSON_IsString(TintItem) == 0) {
     return TINT_NONE;
+  }
+  if (ParseHexColor(TintItem->valuestring, OutColor)) {
+    return TINT_CONSTANT;
   }
   if (CompareString(TintItem->valuestring, "grass") == 0) {
     return TINT_GRASS;
@@ -275,6 +320,14 @@ void ParseBlockFile(const char *FilePath) {
   if (cJSON_IsString(NameItem) != 0) {
     SafeStrncpy(Block->Name, NameItem->valuestring, MAX_BLOCK_NAME_SIZE);
   }
+  cJSON *DisplayNameItem = cJSON_GetObjectItemCaseSensitive(Json, "displayName");
+  if (cJSON_IsString(DisplayNameItem) != 0 &&
+      DisplayNameItem->valuestring[0] != '\0') {
+    SafeStrncpy(Block->DisplayName, DisplayNameItem->valuestring,
+                MAX_BLOCK_NAME_SIZE);
+  } else {
+    SafeStrncpy(Block->DisplayName, Block->Name, MAX_BLOCK_NAME_SIZE);
+  }
 
   cJSON *TexTopItem = cJSON_GetObjectItemCaseSensitive(Json, "texTop");
   if (cJSON_IsString(TexTopItem) != 0 && TexTopItem->valuestring[0] != '\0') {
@@ -308,7 +361,8 @@ void ParseBlockFile(const char *FilePath) {
     Block->SideOverlaySlot = NO_OVERLAY_SLOT;
   }
 
-  Block->Tint = ParseTintSource(Json);
+  Block->TintColor = COLOR_WHITE;
+  Block->Tint = ParseTintSource(Json, &Block->TintColor);
   Block->Category = ParseCategory(Json);
 
   cJSON *IsBlockTransparent =
@@ -339,8 +393,9 @@ void ParseBlockFile(const char *FilePath) {
     Block->RenderType = BLOCK_RENDER_CUBE;
   }
 
-  fprintf(stderr, "BLOCK_SYSTEM: Loaded [%d] %s\n", ParsedId, Block->Name);
-
+  // No per-block line: with hundreds of definitions, writing one line each to
+  // a visible Windows console costs about a second of startup. The loader logs
+  // the total, and errors are still reported per file.
   cJSON_Delete(Json);
   free(FileContent);
 }

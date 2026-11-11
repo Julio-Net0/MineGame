@@ -1,0 +1,10 @@
+{
+  "id": 354,
+  "name": "crimson_planks",
+  "displayName": "Crimson Planks",
+  "category": "building",
+  "texTop": "crimson_planks",
+  "texBottom": "crimson_planks",
+  "texSide": "crimson_planks",
+  "isTransparent": false
+}

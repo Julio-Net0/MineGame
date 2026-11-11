@@ -1,0 +1,10 @@
+{
+  "id": 520,
+  "name": "warped_wart_block",
+  "displayName": "Warped Wart Block",
+  "category": "natural",
+  "texTop": "warped_wart_block",
+  "texBottom": "warped_wart_block",
+  "texSide": "warped_wart_block",
+  "isTransparent": false
+}

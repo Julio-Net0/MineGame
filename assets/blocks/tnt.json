@@ -1,0 +1,10 @@
+{
+  "id": 552,
+  "name": "tnt",
+  "displayName": "TNT",
+  "category": "building",
+  "texTop": "tnt_top",
+  "texBottom": "tnt_bottom",
+  "texSide": "tnt_side",
+  "isTransparent": false
+}

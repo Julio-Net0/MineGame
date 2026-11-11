@@ -1,0 +1,10 @@
+{
+  "id": 462,
+  "name": "purple_terracotta",
+  "displayName": "Purple Terracotta",
+  "category": "colored",
+  "texTop": "purple_terracotta",
+  "texBottom": "purple_terracotta",
+  "texSide": "purple_terracotta",
+  "isTransparent": false
+}

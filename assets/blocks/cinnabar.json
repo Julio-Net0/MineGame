@@ -1,0 +1,10 @@
+{
+  "id": 170,
+  "name": "cinnabar",
+  "displayName": "Cinnabar",
+  "category": "building",
+  "texTop": "cinnabar",
+  "texBottom": "cinnabar",
+  "texSide": "cinnabar",
+  "isTransparent": false
+}

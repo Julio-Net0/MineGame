@@ -1,0 +1,10 @@
+{
+  "id": 100,
+  "name": "cobblestone",
+  "displayName": "Cobblestone",
+  "category": "building",
+  "texTop": "cobblestone",
+  "texBottom": "cobblestone",
+  "texSide": "cobblestone",
+  "isTransparent": false
+}

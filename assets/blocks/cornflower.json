@@ -1,0 +1,11 @@
+{
+  "id": 609,
+  "name": "cornflower",
+  "displayName": "Cornflower",
+  "category": "natural",
+  "texTop": "cornflower",
+  "texBottom": "cornflower",
+  "texSide": "cornflower",
+  "isTransparent": true,
+  "render": "cross"
+}

@@ -1,0 +1,10 @@
+{
+  "id": 135,
+  "name": "polished_basalt",
+  "displayName": "Polished Basalt",
+  "category": "building",
+  "texTop": "polished_basalt_top",
+  "texBottom": "polished_basalt_top",
+  "texSide": "polished_basalt_side",
+  "isTransparent": false
+}

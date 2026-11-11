@@ -1,0 +1,10 @@
+{
+  "id": 541,
+  "name": "tube_coral_block",
+  "displayName": "Tube Coral Block",
+  "category": "natural",
+  "texTop": "tube_coral_block",
+  "texBottom": "tube_coral_block",
+  "texSide": "tube_coral_block",
+  "isTransparent": false
+}

@@ -1,0 +1,11 @@
+{
+  "id": 648,
+  "name": "dead_horn_coral",
+  "displayName": "Dead Horn Coral",
+  "category": "natural",
+  "texTop": "dead_horn_coral",
+  "texBottom": "dead_horn_coral",
+  "texSide": "dead_horn_coral",
+  "isTransparent": true,
+  "render": "cross"
+}

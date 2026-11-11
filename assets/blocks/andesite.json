@@ -1,0 +1,10 @@
+{
+  "id": 111,
+  "name": "andesite",
+  "displayName": "Andesite",
+  "category": "building",
+  "texTop": "andesite",
+  "texBottom": "andesite",
+  "texSide": "andesite",
+  "isTransparent": false
+}

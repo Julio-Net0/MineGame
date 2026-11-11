@@ -1,0 +1,11 @@
+{
+  "id": 635,
+  "name": "warped_roots",
+  "displayName": "Warped Roots",
+  "category": "natural",
+  "texTop": "warped_roots",
+  "texBottom": "warped_roots",
+  "texSide": "warped_roots",
+  "isTransparent": true,
+  "render": "cross"
+}

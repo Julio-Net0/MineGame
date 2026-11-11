@@ -1,0 +1,10 @@
+{
+  "id": 136,
+  "name": "smooth_basalt",
+  "displayName": "Smooth Basalt",
+  "category": "building",
+  "texTop": "smooth_basalt",
+  "texBottom": "smooth_basalt",
+  "texSide": "smooth_basalt",
+  "isTransparent": false
+}

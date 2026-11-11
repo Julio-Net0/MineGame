@@ -137,9 +137,15 @@ static Color8 BilinearTint(Color8 T00, Color8 T10, Color8 T01, Color8 T11,
 // construction, which is what keeps greedy merging alive there, while inside a
 // biome every block still resolves to the palette's exact declared colour.
 static Color8 ComputeBlockTint(const ChunkSnapshot *Snap, int Wx, int Wy,
-                                int Wz, TintSource Source) {
+                                int Wz, const BlockType *Def) {
+    TintSource Source = Def->Tint;
     if (Source == TINT_NONE) {
         return COLOR_WHITE;
+    }
+    // A constant tint is the block's own, the same in every biome, so there is
+    // nothing to interpolate and merged faces stay uniform.
+    if (Source == TINT_CONSTANT) {
+        return Def->TintColor;
     }
 
     // The block's own cell, used as the fallback when a neighbouring chunk is
@@ -188,7 +194,7 @@ static Color8 GetFaceTint(const ChunkSnapshot *Snap, int Wx, int Wy,
     if (Def->Tint == TINT_GRASS && Face == FACE_BOTTOM) {
         return COLOR_WHITE;
     }
-    return ComputeBlockTint(Snap, Wx, Wy, Wz, Def->Tint);
+    return ComputeBlockTint(Snap, Wx, Wy, Wz, Def);
 }
 
 // ---------------------------------------------------------------------------
@@ -608,7 +614,7 @@ static void BuildTransparentFacePass(const ChunkSnapshot *Snap, MesherState *Sta
                 // face with no mask compatibility involved. Computed once per
                 // block: it does not vary by face for a foliage-tinted block.
                 uint16_t Tint565 = ColorToRgb565(
-                    ComputeBlockTint(Snap, Wx, Wy, Wz, Def->Tint));
+                    ComputeBlockTint(Snap, Wx, Wy, Wz, Def));
 
                 if (IsNeighbourTransparent(Snap, X, Y+1, Z, Id)) {
                     Flip = ComputeFaceAO(Snap, X, Y, Z, FACE_TOP, Ao);
@@ -695,7 +701,7 @@ static void BuildCrossPass(const ChunkSnapshot *Snap, MesherState *State) {
                 int Wy = (Snap->ChunkY * CHUNK_SIZE) + Y;
                 int Wz = (Snap->ChunkZ * CHUNK_SIZE) + Z;
                 uint16_t Tint565 = ColorToRgb565(
-                    ComputeBlockTint(Snap, Wx, Wy, Wz, Def->Tint));
+                    ComputeBlockTint(Snap, Wx, Wy, Wz, Def));
                 int Layer = Def->TexTop;
 
                 int X0 = X;

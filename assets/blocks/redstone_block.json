@@ -1,0 +1,10 @@
+{
+  "id": 222,
+  "name": "redstone_block",
+  "displayName": "Redstone Block",
+  "category": "building",
+  "texTop": "redstone_block",
+  "texBottom": "redstone_block",
+  "texSide": "redstone_block",
+  "isTransparent": false
+}

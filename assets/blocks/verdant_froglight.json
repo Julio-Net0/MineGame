@@ -1,0 +1,10 @@
+{
+  "id": 530,
+  "name": "verdant_froglight",
+  "displayName": "Verdant Froglight",
+  "category": "natural",
+  "texTop": "verdant_froglight_top",
+  "texBottom": "verdant_froglight_top",
+  "texSide": "verdant_froglight_side",
+  "isTransparent": false
+}

@@ -1,0 +1,10 @@
+{
+  "id": 459,
+  "name": "cyan_terracotta",
+  "displayName": "Cyan Terracotta",
+  "category": "colored",
+  "texTop": "cyan_terracotta",
+  "texBottom": "cyan_terracotta",
+  "texSide": "cyan_terracotta",
+  "isTransparent": false
+}

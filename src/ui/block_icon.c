@@ -59,7 +59,9 @@ void UiBlockIcon(UiContext *Ctx, int BlockId, float X, float Y, float Size) {
     return;
   }
   BlockType *Def = GetBlockDef(BlockId);
-  Color8 Tint = GetBiomeTint(BIOME_FALLBACK_ID, Def->Tint);
+  Color8 Tint = (Def->Tint == TINT_CONSTANT)
+                    ? Def->TintColor
+                    : GetBiomeTint(BIOME_FALLBACK_ID, Def->Tint);
 
   // Cross blocks (flora) have no cube geometry, so the isometric box icon is
   // wrong for them: draw their sprite as a flat, front-facing quad instead.

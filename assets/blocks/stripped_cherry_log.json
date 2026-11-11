@@ -1,0 +1,10 @@
+{
+  "id": 337,
+  "name": "stripped_cherry_log",
+  "displayName": "Stripped Cherry Log",
+  "category": "building",
+  "texTop": "stripped_cherry_log_top",
+  "texBottom": "stripped_cherry_log_top",
+  "texSide": "stripped_cherry_log",
+  "isTransparent": false
+}

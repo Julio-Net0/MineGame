@@ -1,0 +1,10 @@
+{
+  "id": 331,
+  "name": "mangrove_wood",
+  "displayName": "Mangrove Wood",
+  "category": "building",
+  "texTop": "mangrove_log",
+  "texBottom": "mangrove_log",
+  "texSide": "mangrove_log",
+  "isTransparent": false
+}

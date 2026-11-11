@@ -1,0 +1,11 @@
+{
+  "id": 645,
+  "name": "dead_brain_coral",
+  "displayName": "Dead Brain Coral",
+  "category": "natural",
+  "texTop": "dead_brain_coral",
+  "texBottom": "dead_brain_coral",
+  "texSide": "dead_brain_coral",
+  "isTransparent": true,
+  "render": "cross"
+}

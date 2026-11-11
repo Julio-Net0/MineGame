@@ -136,6 +136,10 @@ void RenderDrawWireBox(Vec3 Center, Vec3 Size, Color8 Color, bool XRay);
 // built the atlas.
 int RenderGetBlockIconGrid(void);
 
+// Registered block textures that resolved to the checkerboard fallback at
+// startup, so a test run can fail on a missing or misspelled texture.
+int RenderGetMissingBlockTextureCount(void);
+
 // UI layer. The GUI atlas is uploaded once at startup; each frame's UI reaches
 // the backend as one draw list, drawn after the 3D pass with alpha blending and
 // no depth test.

@@ -1,0 +1,10 @@
+{
+  "id": 317,
+  "name": "stripped_jungle_log",
+  "displayName": "Stripped Jungle Log",
+  "category": "building",
+  "texTop": "stripped_jungle_log_top",
+  "texBottom": "stripped_jungle_log_top",
+  "texSide": "stripped_jungle_log",
+  "isTransparent": false
+}

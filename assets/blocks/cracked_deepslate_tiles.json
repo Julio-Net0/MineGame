@@ -1,0 +1,10 @@
+{
+  "id": 119,
+  "name": "cracked_deepslate_tiles",
+  "displayName": "Cracked Deepslate Tiles",
+  "category": "building",
+  "texTop": "cracked_deepslate_tiles",
+  "texBottom": "cracked_deepslate_tiles",
+  "texSide": "cracked_deepslate_tiles",
+  "isTransparent": false
+}

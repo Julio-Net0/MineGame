@@ -1,0 +1,10 @@
+{
+  "id": 351,
+  "name": "stripped_bamboo_block",
+  "displayName": "Stripped Bamboo Block",
+  "category": "building",
+  "texTop": "stripped_bamboo_block_top",
+  "texBottom": "stripped_bamboo_block_top",
+  "texSide": "stripped_bamboo_block",
+  "isTransparent": false
+}

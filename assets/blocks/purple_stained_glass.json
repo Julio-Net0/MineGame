@@ -1,0 +1,10 @@
+{
+  "id": 478,
+  "name": "purple_stained_glass",
+  "displayName": "Purple Stained Glass",
+  "category": "colored",
+  "texTop": "purple_stained_glass",
+  "texBottom": "purple_stained_glass",
+  "texSide": "purple_stained_glass",
+  "isTransparent": true
+}

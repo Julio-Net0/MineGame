@@ -1,0 +1,10 @@
+{
+  "id": 554,
+  "name": "jukebox",
+  "displayName": "Jukebox",
+  "category": "building",
+  "texTop": "jukebox_top",
+  "texBottom": "jukebox_bottom",
+  "texSide": "jukebox_side",
+  "isTransparent": false
+}

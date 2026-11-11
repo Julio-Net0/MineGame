@@ -11,12 +11,14 @@
 // TINT_GRASS resolves to the biome's grass color and applies to the top face
 // and side overlay only, because the grass side base texture contains dirt.
 // TINT_FOLIAGE and TINT_WATER resolve to the biome's foliage and water colors
-// and apply to every face.
+// and apply to every face. TINT_CONSTANT ignores the biome and applies a colour
+// the block itself declares, also to every face.
 typedef enum {
   TINT_NONE = 0,
   TINT_GRASS,
   TINT_FOLIAGE,
-  TINT_WATER
+  TINT_WATER,
+  TINT_CONSTANT
 } TintSource;
 
 #endif

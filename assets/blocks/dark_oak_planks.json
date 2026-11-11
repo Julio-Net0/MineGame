@@ -1,0 +1,10 @@
+{
+  "id": 329,
+  "name": "dark_oak_planks",
+  "displayName": "Dark Oak Planks",
+  "category": "building",
+  "texTop": "dark_oak_planks",
+  "texBottom": "dark_oak_planks",
+  "texSide": "dark_oak_planks",
+  "isTransparent": false
+}

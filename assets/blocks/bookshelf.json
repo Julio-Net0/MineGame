@@ -1,0 +1,10 @@
+{
+  "id": 551,
+  "name": "bookshelf",
+  "displayName": "Bookshelf",
+  "category": "building",
+  "texTop": "oak_planks",
+  "texBottom": "oak_planks",
+  "texSide": "bookshelf",
+  "isTransparent": false
+}

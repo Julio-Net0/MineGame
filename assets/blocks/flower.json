@@ -1,6 +1,7 @@
 {
   "id": 9,
   "name": "Flower",
+  "displayName": "Dandelion",
   "category": "natural",
   "texTop": "dandelion",
   "texBottom": "dandelion",

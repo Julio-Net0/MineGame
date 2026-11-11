@@ -1,0 +1,10 @@
+{
+  "id": 220,
+  "name": "iron_block",
+  "displayName": "Iron Block",
+  "category": "building",
+  "texTop": "iron_block",
+  "texBottom": "iron_block",
+  "texSide": "iron_block",
+  "isTransparent": false
+}

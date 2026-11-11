@@ -1,0 +1,10 @@
+{
+  "id": 235,
+  "name": "copper_grate",
+  "displayName": "Copper Grate",
+  "category": "building",
+  "texTop": "copper_grate",
+  "texBottom": "copper_grate",
+  "texSide": "copper_grate",
+  "isTransparent": true
+}

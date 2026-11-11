@@ -1,0 +1,10 @@
+{
+  "id": 217,
+  "name": "nether_quartz_ore",
+  "displayName": "Nether Quartz Ore",
+  "category": "natural",
+  "texTop": "nether_quartz_ore",
+  "texBottom": "nether_quartz_ore",
+  "texSide": "nether_quartz_ore",
+  "isTransparent": false
+}

@@ -1,0 +1,10 @@
+{
+  "id": 306,
+  "name": "spruce_wood",
+  "displayName": "Spruce Wood",
+  "category": "building",
+  "texTop": "spruce_log",
+  "texBottom": "spruce_log",
+  "texSide": "spruce_log",
+  "isTransparent": false
+}

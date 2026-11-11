@@ -1,0 +1,10 @@
+{
+  "id": 355,
+  "name": "stripped_crimson_stem",
+  "displayName": "Stripped Crimson Stem",
+  "category": "building",
+  "texTop": "stripped_crimson_stem_top",
+  "texBottom": "stripped_crimson_stem_top",
+  "texSide": "stripped_crimson_stem",
+  "isTransparent": false
+}

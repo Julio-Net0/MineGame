@@ -1,0 +1,10 @@
+{
+  "id": 338,
+  "name": "stripped_cherry_wood",
+  "displayName": "Stripped Cherry Wood",
+  "category": "building",
+  "texTop": "stripped_cherry_log",
+  "texBottom": "stripped_cherry_log",
+  "texSide": "stripped_cherry_log",
+  "isTransparent": false
+}

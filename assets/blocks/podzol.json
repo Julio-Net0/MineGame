@@ -1,0 +1,10 @@
+{
+  "id": 502,
+  "name": "podzol",
+  "displayName": "Podzol",
+  "category": "natural",
+  "texTop": "podzol_top",
+  "texBottom": "dirt",
+  "texSide": "podzol_side",
+  "isTransparent": false
+}

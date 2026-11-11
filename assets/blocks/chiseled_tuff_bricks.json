@@ -1,0 +1,10 @@
+{
+  "id": 125,
+  "name": "chiseled_tuff_bricks",
+  "displayName": "Chiseled Tuff Bricks",
+  "category": "building",
+  "texTop": "chiseled_tuff_bricks_top",
+  "texBottom": "chiseled_tuff_bricks_top",
+  "texSide": "chiseled_tuff_bricks",
+  "isTransparent": false
+}

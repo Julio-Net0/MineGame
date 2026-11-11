@@ -1,0 +1,10 @@
+{
+  "id": 556,
+  "name": "redstone_lamp",
+  "displayName": "Redstone Lamp",
+  "category": "building",
+  "texTop": "redstone_lamp",
+  "texBottom": "redstone_lamp",
+  "texSide": "redstone_lamp",
+  "isTransparent": false
+}

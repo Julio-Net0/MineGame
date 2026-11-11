@@ -1,0 +1,10 @@
+{
+  "id": 467,
+  "name": "gray_stained_glass",
+  "displayName": "Gray Stained Glass",
+  "category": "colored",
+  "texTop": "gray_stained_glass",
+  "texBottom": "gray_stained_glass",
+  "texSide": "gray_stained_glass",
+  "isTransparent": true
+}

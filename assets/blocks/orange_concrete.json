@@ -1,0 +1,10 @@
+{
+  "id": 422,
+  "name": "orange_concrete",
+  "displayName": "Orange Concrete",
+  "category": "colored",
+  "texTop": "orange_concrete",
+  "texBottom": "orange_concrete",
+  "texSide": "orange_concrete",
+  "isTransparent": false
+}

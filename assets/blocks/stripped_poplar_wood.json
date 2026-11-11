@@ -1,0 +1,10 @@
+{
+  "id": 348,
+  "name": "stripped_poplar_wood",
+  "displayName": "Stripped Poplar Wood",
+  "category": "building",
+  "texTop": "stripped_poplar_log",
+  "texBottom": "stripped_poplar_log",
+  "texSide": "stripped_poplar_log",
+  "isTransparent": false
+}

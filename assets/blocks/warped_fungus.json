@@ -1,0 +1,11 @@
+{
+  "id": 628,
+  "name": "warped_fungus",
+  "displayName": "Warped Fungus",
+  "category": "natural",
+  "texTop": "warped_fungus",
+  "texBottom": "warped_fungus",
+  "texSide": "warped_fungus",
+  "isTransparent": true,
+  "render": "cross"
+}

@@ -1,0 +1,10 @@
+{
+  "id": 479,
+  "name": "magenta_stained_glass",
+  "displayName": "Magenta Stained Glass",
+  "category": "colored",
+  "texTop": "magenta_stained_glass",
+  "texBottom": "magenta_stained_glass",
+  "texSide": "magenta_stained_glass",
+  "isTransparent": true
+}

@@ -1,0 +1,10 @@
+{
+  "id": 211,
+  "name": "deepslate_emerald_ore",
+  "displayName": "Deepslate Emerald Ore",
+  "category": "natural",
+  "texTop": "deepslate_emerald_ore",
+  "texBottom": "deepslate_emerald_ore",
+  "texSide": "deepslate_emerald_ore",
+  "isTransparent": false
+}

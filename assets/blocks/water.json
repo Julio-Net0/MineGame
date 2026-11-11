@@ -1,6 +1,7 @@
 {
   "id": 5,
   "name": "Water",
+  "displayName": "Water",
   "category": "none",
   "texTop": "water_still",
   "texBottom": "water_still",

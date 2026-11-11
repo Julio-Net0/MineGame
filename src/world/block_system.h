@@ -1,11 +1,12 @@
 #ifndef BLOCK_SYSTEM_H
 #define BLOCK_SYSTEM_H
 
+#include "core/color.h"
 #include "core/tint.h"
 #include <stdbool.h>
 
 #define BLOCK_REGISTRY_SIZE 4096
-#define MAX_BLOCK_NAME_SIZE 32
+#define MAX_BLOCK_NAME_SIZE 48
 // Matches the 12-bit texture layer field of the packed chunk vertex.
 #define MAX_BLOCK_TEXTURES 4096
 #define MAX_TEXTURE_NAME_SIZE 64
@@ -55,11 +56,11 @@ typedef struct {
   // NO_OVERLAY_SLOT when TexSideOverlay is NO_TEXTURE_OVERLAY.
   int SideOverlaySlot;
 
-  char Name[MAX_BLOCK_NAME_SIZE];
-
   // Which biome palette this block's faces are multiplied by, from the optional
   // "tint" property. TINT_NONE leaves the block at its texture's own colors.
   TintSource Tint;
+  // The colour a TINT_CONSTANT block is multiplied by, from "#RRGGBB".
+  Color8 TintColor;
 
   // Geometry kind, from the optional "render" property. CROSS forces the block
   // non-solid and non-occluding so it never culls neighbors or casts AO.
@@ -69,6 +70,14 @@ typedef struct {
 
   bool IsTransparent;
   bool IsSolid;
+
+  // The names go last: the mesher reads every field above for each face, and
+  // keeping them ahead of the 96 name bytes keeps them in one cache line.
+  // Reference key used by biomes, prefabs and GetBlockIdByName.
+  char Name[MAX_BLOCK_NAME_SIZE];
+  // Label shown to the player, from the optional "displayName"; equals Name
+  // when the definition declares none.
+  char DisplayName[MAX_BLOCK_NAME_SIZE];
 } BlockType;
 
 BlockType *GetBlockRegistry(void);

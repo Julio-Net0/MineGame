@@ -1,0 +1,10 @@
+{
+  "id": 439,
+  "name": "yellow_concrete_powder",
+  "displayName": "Yellow Concrete Powder",
+  "category": "colored",
+  "texTop": "yellow_concrete_powder",
+  "texBottom": "yellow_concrete_powder",
+  "texSide": "yellow_concrete_powder",
+  "isTransparent": false
+}

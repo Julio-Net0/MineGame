@@ -1,0 +1,11 @@
+{
+  "id": 626,
+  "name": "red_mushroom",
+  "displayName": "Red Mushroom",
+  "category": "natural",
+  "texTop": "red_mushroom",
+  "texBottom": "red_mushroom",
+  "texSide": "red_mushroom",
+  "isTransparent": true,
+  "render": "cross"
+}

@@ -1,0 +1,11 @@
+{
+  "id": 614,
+  "name": "cactus_flower",
+  "displayName": "Cactus Flower",
+  "category": "natural",
+  "texTop": "cactus_flower",
+  "texBottom": "cactus_flower",
+  "texSide": "cactus_flower",
+  "isTransparent": true,
+  "render": "cross"
+}

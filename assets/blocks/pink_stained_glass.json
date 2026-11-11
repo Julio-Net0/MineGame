@@ -1,0 +1,10 @@
+{
+  "id": 480,
+  "name": "pink_stained_glass",
+  "displayName": "Pink Stained Glass",
+  "category": "colored",
+  "texTop": "pink_stained_glass",
+  "texBottom": "pink_stained_glass",
+  "texSide": "pink_stained_glass",
+  "isTransparent": true
+}

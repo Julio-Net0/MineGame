@@ -1,0 +1,10 @@
+{
+  "id": 539,
+  "name": "mangrove_roots",
+  "displayName": "Mangrove Roots",
+  "category": "natural",
+  "texTop": "mangrove_roots_top",
+  "texBottom": "mangrove_roots_top",
+  "texSide": "mangrove_roots_side",
+  "isTransparent": true
+}

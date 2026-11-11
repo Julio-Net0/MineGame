@@ -1,0 +1,10 @@
+{
+  "id": 214,
+  "name": "diamond_ore",
+  "displayName": "Diamond Ore",
+  "category": "natural",
+  "texTop": "diamond_ore",
+  "texBottom": "diamond_ore",
+  "texSide": "diamond_ore",
+  "isTransparent": false
+}

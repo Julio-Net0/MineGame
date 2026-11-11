@@ -1,0 +1,10 @@
+{
+  "id": 553,
+  "name": "note_block",
+  "displayName": "Note Block",
+  "category": "building",
+  "texTop": "note_block",
+  "texBottom": "note_block",
+  "texSide": "note_block",
+  "isTransparent": false
+}

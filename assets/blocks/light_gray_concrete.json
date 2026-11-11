@@ -1,0 +1,10 @@
+{
+  "id": 417,
+  "name": "light_gray_concrete",
+  "displayName": "Light Gray Concrete",
+  "category": "colored",
+  "texTop": "light_gray_concrete",
+  "texBottom": "light_gray_concrete",
+  "texSide": "light_gray_concrete",
+  "isTransparent": false
+}

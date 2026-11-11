@@ -1,0 +1,10 @@
+{
+  "id": 343,
+  "name": "stripped_pale_oak_wood",
+  "displayName": "Stripped Pale Oak Wood",
+  "category": "building",
+  "texTop": "stripped_pale_oak_log",
+  "texBottom": "stripped_pale_oak_log",
+  "texSide": "stripped_pale_oak_log",
+  "isTransparent": false
+}

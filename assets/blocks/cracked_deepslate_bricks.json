@@ -1,0 +1,10 @@
+{
+  "id": 117,
+  "name": "cracked_deepslate_bricks",
+  "displayName": "Cracked Deepslate Bricks",
+  "category": "building",
+  "texTop": "cracked_deepslate_bricks",
+  "texBottom": "cracked_deepslate_bricks",
+  "texSide": "cracked_deepslate_bricks",
+  "isTransparent": false
+}

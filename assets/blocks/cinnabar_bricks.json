@@ -1,0 +1,10 @@
+{
+  "id": 171,
+  "name": "cinnabar_bricks",
+  "displayName": "Cinnabar Bricks",
+  "category": "building",
+  "texTop": "cinnabar_bricks",
+  "texBottom": "cinnabar_bricks",
+  "texSide": "cinnabar_bricks",
+  "isTransparent": false
+}

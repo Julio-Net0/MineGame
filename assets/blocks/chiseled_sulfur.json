@@ -1,0 +1,10 @@
+{
+  "id": 176,
+  "name": "chiseled_sulfur",
+  "displayName": "Chiseled Sulfur",
+  "category": "building",
+  "texTop": "chiseled_sulfur",
+  "texBottom": "chiseled_sulfur",
+  "texSide": "chiseled_sulfur",
+  "isTransparent": false
+}

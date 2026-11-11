@@ -1,0 +1,10 @@
+{
+  "id": 519,
+  "name": "nether_wart_block",
+  "displayName": "Nether Wart Block",
+  "category": "natural",
+  "texTop": "nether_wart_block",
+  "texBottom": "nether_wart_block",
+  "texSide": "nether_wart_block",
+  "isTransparent": false
+}

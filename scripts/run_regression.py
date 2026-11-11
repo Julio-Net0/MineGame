@@ -294,13 +294,39 @@ GLASS_BLOCK_ID = 6
 WATER_BLOCK_ID = 5
 
 
+INVENTORY_TABS = ("building", "colored", "natural")
+INVENTORY_PAGES_CAPTURED = 4
+INVENTORY_ROWS_PER_PAGE = 5
+
+
+def verify_inventory_tab(out_dir: Path, tab: str) -> bytes:
+    state = load_json(out_dir / f"inv_{tab}.json")
+    inventory = state["inventory"]
+    require(inventory["tab"] == tab, f"inv_{tab}.json: expected tab {tab}, got {inventory['tab']}")
+    max_row = int(inventory["maxScrollRow"])
+    require(max_row > 0, f"inv_{tab}.json: expected the {tab} tab to scroll, maxScrollRow is {max_row}")
+    require(
+        state["render"]["missingBlockTextures"] == 0,
+        f"inv_{tab}.json: {state['render']['missingBlockTextures']} block textures fell back to the checkerboard",
+    )
+
+    pages = [assert_png(out_dir / f"{tab}_p{page}.png") for page in range(1, INVENTORY_PAGES_CAPTURED + 1)]
+    # Scrolling clamps at maxScrollRow, so only the first real pages must differ.
+    real_pages = min(INVENTORY_PAGES_CAPTURED, -(-max_row // INVENTORY_ROWS_PER_PAGE) + 1)
+    for page in range(1, real_pages):
+        require(
+            pages[page - 1] != pages[page],
+            f"inventory: {tab}_p{page}.png and {tab}_p{page + 1}.png render identically",
+        )
+    return pages[0]
+
+
 def verify_inventory(out_dir: Path, _run_log: str) -> None:
-    building_png = assert_png(out_dir / "inv_building.png")
-    colored_png = assert_png(out_dir / "inv_colored.png")
+    first_pages = [verify_inventory_tab(out_dir, tab) for tab in INVENTORY_TABS]
+    require(len(set(first_pages)) == len(first_pages), "inventory: two tabs render identically")
     tooltip_png = assert_png(out_dir / "inv_tooltip.png")
     assert_png(out_dir / "after_place.png")
-    require(building_png != colored_png, "inventory: building and colored tabs render identically")
-    require(colored_png != tooltip_png, "inventory: natural tab with tooltip renders like the colored tab")
+    require(tooltip_png != first_pages[2], "inventory: natural tab with tooltip renders like without it")
 
     inv_open = load_json(out_dir / "inv_open.json")
     after_put = load_json(out_dir / "after_put.json")
@@ -310,10 +336,6 @@ def verify_inventory(out_dir: Path, _run_log: str) -> None:
     inventory = inv_open["inventory"]
     require(inventory["open"] is True, "inv_open.json: expected inventory.open == true")
     require(inventory["tab"] == "building", f"inv_open.json: expected tab building, got {inventory['tab']}")
-    require(
-        inventory["maxScrollRow"] == 0,
-        f"inv_open.json: expected maxScrollRow 0 with the current blocks, got {inventory['maxScrollRow']}",
-    )
 
     # The pick/put edit reaches the player through the intent on the next tick.
     hotbar = after_put["player"]["hotbar"]

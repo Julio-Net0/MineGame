@@ -1,0 +1,11 @@
+{
+  "id": 619,
+  "name": "acacia_sapling",
+  "displayName": "Acacia Sapling",
+  "category": "natural",
+  "texTop": "acacia_sapling",
+  "texBottom": "acacia_sapling",
+  "texSide": "acacia_sapling",
+  "isTransparent": true,
+  "render": "cross"
+}

@@ -1,0 +1,10 @@
+{
+  "id": 101,
+  "name": "mossy_cobblestone",
+  "displayName": "Mossy Cobblestone",
+  "category": "building",
+  "texTop": "mossy_cobblestone",
+  "texBottom": "mossy_cobblestone",
+  "texSide": "mossy_cobblestone",
+  "isTransparent": false
+}

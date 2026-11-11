@@ -1,0 +1,10 @@
+{
+  "id": 403,
+  "name": "black_wool",
+  "displayName": "Black Wool",
+  "category": "colored",
+  "texTop": "black_wool",
+  "texBottom": "black_wool",
+  "texSide": "black_wool",
+  "isTransparent": false
+}

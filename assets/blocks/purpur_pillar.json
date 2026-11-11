@@ -1,0 +1,10 @@
+{
+  "id": 148,
+  "name": "purpur_pillar",
+  "displayName": "Purpur Pillar",
+  "category": "building",
+  "texTop": "purpur_pillar_top",
+  "texBottom": "purpur_pillar_top",
+  "texSide": "purpur_pillar_side",
+  "isTransparent": false
+}

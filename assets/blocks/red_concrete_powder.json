@@ -1,0 +1,10 @@
+{
+  "id": 437,
+  "name": "red_concrete_powder",
+  "displayName": "Red Concrete Powder",
+  "category": "colored",
+  "texTop": "red_concrete_powder",
+  "texBottom": "red_concrete_powder",
+  "texSide": "red_concrete_powder",
+  "isTransparent": false
+}

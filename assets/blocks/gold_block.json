@@ -1,0 +1,10 @@
+{
+  "id": 221,
+  "name": "gold_block",
+  "displayName": "Gold Block",
+  "category": "building",
+  "texTop": "gold_block",
+  "texBottom": "gold_block",
+  "texSide": "gold_block",
+  "isTransparent": false
+}

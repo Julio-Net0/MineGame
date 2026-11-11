@@ -1,0 +1,10 @@
+{
+  "id": 505,
+  "name": "red_sand",
+  "displayName": "Red Sand",
+  "category": "natural",
+  "texTop": "red_sand",
+  "texBottom": "red_sand",
+  "texSide": "red_sand",
+  "isTransparent": false
+}

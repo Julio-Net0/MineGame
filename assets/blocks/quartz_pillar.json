@@ -1,0 +1,10 @@
+{
+  "id": 151,
+  "name": "quartz_pillar",
+  "displayName": "Quartz Pillar",
+  "category": "building",
+  "texTop": "quartz_pillar_top",
+  "texBottom": "quartz_pillar_top",
+  "texSide": "quartz_pillar_side",
+  "isTransparent": false
+}

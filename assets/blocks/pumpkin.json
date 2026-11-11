@@ -1,0 +1,10 @@
+{
+  "id": 524,
+  "name": "pumpkin",
+  "displayName": "Pumpkin",
+  "category": "natural",
+  "texTop": "pumpkin_top",
+  "texBottom": "pumpkin_top",
+  "texSide": "pumpkin_side",
+  "isTransparent": false
+}

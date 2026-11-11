@@ -1,0 +1,12 @@
+{
+  "id": 630,
+  "name": "bush",
+  "displayName": "Bush",
+  "category": "natural",
+  "texTop": "bush",
+  "texBottom": "bush",
+  "texSide": "bush",
+  "tint": "grass",
+  "isTransparent": true,
+  "render": "cross"
+}

@@ -1,0 +1,10 @@
+{
+  "id": 453,
+  "name": "brown_terracotta",
+  "displayName": "Brown Terracotta",
+  "category": "colored",
+  "texTop": "brown_terracotta",
+  "texBottom": "brown_terracotta",
+  "texSide": "brown_terracotta",
+  "isTransparent": false
+}

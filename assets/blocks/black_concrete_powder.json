@@ -1,0 +1,10 @@
+{
+  "id": 435,
+  "name": "black_concrete_powder",
+  "displayName": "Black Concrete Powder",
+  "category": "colored",
+  "texTop": "black_concrete_powder",
+  "texBottom": "black_concrete_powder",
+  "texSide": "black_concrete_powder",
+  "isTransparent": false
+}

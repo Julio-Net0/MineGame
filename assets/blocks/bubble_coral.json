@@ -1,0 +1,11 @@
+{
+  "id": 641,
+  "name": "bubble_coral",
+  "displayName": "Bubble Coral",
+  "category": "natural",
+  "texTop": "bubble_coral",
+  "texBottom": "bubble_coral",
+  "texSide": "bubble_coral",
+  "isTransparent": true,
+  "render": "cross"
+}

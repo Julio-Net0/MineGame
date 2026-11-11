@@ -1,0 +1,10 @@
+{
+  "id": 132,
+  "name": "chiseled_polished_blackstone",
+  "displayName": "Chiseled Polished Blackstone",
+  "category": "building",
+  "texTop": "chiseled_polished_blackstone",
+  "texBottom": "chiseled_polished_blackstone",
+  "texSide": "chiseled_polished_blackstone",
+  "isTransparent": false
+}

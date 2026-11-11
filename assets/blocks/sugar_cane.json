@@ -1,0 +1,12 @@
+{
+  "id": 638,
+  "name": "sugar_cane",
+  "displayName": "Sugar Cane",
+  "category": "natural",
+  "texTop": "sugar_cane",
+  "texBottom": "sugar_cane",
+  "texSide": "sugar_cane",
+  "tint": "grass",
+  "isTransparent": true,
+  "render": "cross"
+}

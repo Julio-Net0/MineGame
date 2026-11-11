@@ -1,0 +1,10 @@
+{
+  "id": 177,
+  "name": "polished_sulfur",
+  "displayName": "Polished Sulfur",
+  "category": "building",
+  "texTop": "polished_sulfur",
+  "texBottom": "polished_sulfur",
+  "texSide": "polished_sulfur",
+  "isTransparent": false
+}

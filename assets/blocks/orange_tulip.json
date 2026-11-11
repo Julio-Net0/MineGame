@@ -1,0 +1,11 @@
+{
+  "id": 605,
+  "name": "orange_tulip",
+  "displayName": "Orange Tulip",
+  "category": "natural",
+  "texTop": "orange_tulip",
+  "texBottom": "orange_tulip",
+  "texSide": "orange_tulip",
+  "isTransparent": true,
+  "render": "cross"
+}

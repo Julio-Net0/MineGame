@@ -1,0 +1,10 @@
+{
+  "id": 225,
+  "name": "diamond_block",
+  "displayName": "Diamond Block",
+  "category": "building",
+  "texTop": "diamond_block",
+  "texBottom": "diamond_block",
+  "texSide": "diamond_block",
+  "isTransparent": false
+}

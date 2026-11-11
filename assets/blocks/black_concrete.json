@@ -1,0 +1,10 @@
+{
+  "id": 419,
+  "name": "black_concrete",
+  "displayName": "Black Concrete",
+  "category": "colored",
+  "texTop": "black_concrete",
+  "texBottom": "black_concrete",
+  "texSide": "black_concrete",
+  "isTransparent": false
+}

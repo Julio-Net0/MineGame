@@ -1,0 +1,11 @@
+{
+  "id": 646,
+  "name": "dead_bubble_coral",
+  "displayName": "Dead Bubble Coral",
+  "category": "natural",
+  "texTop": "dead_bubble_coral",
+  "texBottom": "dead_bubble_coral",
+  "texSide": "dead_bubble_coral",
+  "isTransparent": true,
+  "render": "cross"
+}

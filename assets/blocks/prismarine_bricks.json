@@ -1,0 +1,10 @@
+{
+  "id": 163,
+  "name": "prismarine_bricks",
+  "displayName": "Prismarine Bricks",
+  "category": "building",
+  "texTop": "prismarine_bricks",
+  "texBottom": "prismarine_bricks",
+  "texSide": "prismarine_bricks",
+  "isTransparent": false
+}

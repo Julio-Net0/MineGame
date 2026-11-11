@@ -1,0 +1,10 @@
+{
+  "id": 535,
+  "name": "dried_kelp_block",
+  "displayName": "Dried Kelp Block",
+  "category": "building",
+  "texTop": "dried_kelp_top",
+  "texBottom": "dried_kelp_bottom",
+  "texSide": "dried_kelp_side",
+  "isTransparent": false
+}

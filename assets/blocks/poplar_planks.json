@@ -1,0 +1,10 @@
+{
+  "id": 349,
+  "name": "poplar_planks",
+  "displayName": "Poplar Planks",
+  "category": "building",
+  "texTop": "poplar_planks",
+  "texBottom": "poplar_planks",
+  "texSide": "poplar_planks",
+  "isTransparent": false
+}

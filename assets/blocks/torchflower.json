@@ -1,0 +1,11 @@
+{
+  "id": 612,
+  "name": "torchflower",
+  "displayName": "Torchflower",
+  "category": "natural",
+  "texTop": "torchflower",
+  "texBottom": "torchflower",
+  "texSide": "torchflower",
+  "isTransparent": true,
+  "render": "cross"
+}

@@ -1,0 +1,10 @@
+{
+  "id": 413,
+  "name": "purple_wool",
+  "displayName": "Purple Wool",
+  "category": "colored",
+  "texTop": "purple_wool",
+  "texBottom": "purple_wool",
+  "texSide": "purple_wool",
+  "isTransparent": false
+}

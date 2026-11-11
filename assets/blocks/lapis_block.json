@@ -1,0 +1,10 @@
+{
+  "id": 224,
+  "name": "lapis_block",
+  "displayName": "Lapis Block",
+  "category": "building",
+  "texTop": "lapis_block",
+  "texBottom": "lapis_block",
+  "texSide": "lapis_block",
+  "isTransparent": false
+}

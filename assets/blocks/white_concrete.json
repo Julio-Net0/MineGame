@@ -1,0 +1,10 @@
+{
+  "id": 416,
+  "name": "white_concrete",
+  "displayName": "White Concrete",
+  "category": "colored",
+  "texTop": "white_concrete",
+  "texBottom": "white_concrete",
+  "texSide": "white_concrete",
+  "isTransparent": false
+}

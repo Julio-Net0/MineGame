@@ -1,0 +1,10 @@
+{
+  "id": 468,
+  "name": "black_stained_glass",
+  "displayName": "Black Stained Glass",
+  "category": "colored",
+  "texTop": "black_stained_glass",
+  "texBottom": "black_stained_glass",
+  "texSide": "black_stained_glass",
+  "isTransparent": true
+}

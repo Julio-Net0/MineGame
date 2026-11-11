@@ -1,0 +1,10 @@
+{
+  "id": 146,
+  "name": "end_stone_bricks",
+  "displayName": "End Stone Bricks",
+  "category": "building",
+  "texTop": "end_stone_bricks",
+  "texBottom": "end_stone_bricks",
+  "texSide": "end_stone_bricks",
+  "isTransparent": false
+}

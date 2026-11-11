@@ -1,0 +1,10 @@
+{
+  "id": 433,
+  "name": "light_gray_concrete_powder",
+  "displayName": "Light Gray Concrete Powder",
+  "category": "colored",
+  "texTop": "light_gray_concrete_powder",
+  "texBottom": "light_gray_concrete_powder",
+  "texSide": "light_gray_concrete_powder",
+  "isTransparent": false
+}

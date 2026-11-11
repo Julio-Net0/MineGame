@@ -1,0 +1,10 @@
+{
+  "id": 339,
+  "name": "cherry_planks",
+  "displayName": "Cherry Planks",
+  "category": "building",
+  "texTop": "cherry_planks",
+  "texBottom": "cherry_planks",
+  "texSide": "cherry_planks",
+  "isTransparent": false
+}

@@ -1,0 +1,10 @@
+{
+  "id": 445,
+  "name": "purple_concrete_powder",
+  "displayName": "Purple Concrete Powder",
+  "category": "colored",
+  "texTop": "purple_concrete_powder",
+  "texBottom": "purple_concrete_powder",
+  "texSide": "purple_concrete_powder",
+  "isTransparent": false
+}

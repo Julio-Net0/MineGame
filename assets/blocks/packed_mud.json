@@ -1,0 +1,10 @@
+{
+  "id": 162,
+  "name": "packed_mud",
+  "displayName": "Packed Mud",
+  "category": "building",
+  "texTop": "packed_mud",
+  "texBottom": "packed_mud",
+  "texSide": "packed_mud",
+  "isTransparent": false
+}

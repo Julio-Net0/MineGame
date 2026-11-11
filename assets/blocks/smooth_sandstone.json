@@ -1,0 +1,10 @@
+{
+  "id": 140,
+  "name": "smooth_sandstone",
+  "displayName": "Smooth Sandstone",
+  "category": "building",
+  "texTop": "sandstone_top",
+  "texBottom": "sandstone_top",
+  "texSide": "sandstone_top",
+  "isTransparent": false
+}

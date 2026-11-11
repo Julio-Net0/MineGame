@@ -1,0 +1,10 @@
+{
+  "id": 509,
+  "name": "ice",
+  "displayName": "Ice",
+  "category": "natural",
+  "texTop": "ice",
+  "texBottom": "ice",
+  "texSide": "ice",
+  "isTransparent": true
+}

@@ -1,0 +1,10 @@
+{
+  "id": 514,
+  "name": "soul_sand",
+  "displayName": "Soul Sand",
+  "category": "natural",
+  "texTop": "soul_sand",
+  "texBottom": "soul_sand",
+  "texSide": "soul_sand",
+  "isTransparent": false
+}

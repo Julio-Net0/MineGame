@@ -1,0 +1,10 @@
+{
+  "id": 330,
+  "name": "mangrove_log",
+  "displayName": "Mangrove Log",
+  "category": "building",
+  "texTop": "mangrove_log_top",
+  "texBottom": "mangrove_log_top",
+  "texSide": "mangrove_log",
+  "isTransparent": false
+}

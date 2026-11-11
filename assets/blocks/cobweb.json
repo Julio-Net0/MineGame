@@ -1,0 +1,11 @@
+{
+  "id": 637,
+  "name": "cobweb",
+  "displayName": "Cobweb",
+  "category": "natural",
+  "texTop": "cobweb",
+  "texBottom": "cobweb",
+  "texSide": "cobweb",
+  "isTransparent": true,
+  "render": "cross"
+}

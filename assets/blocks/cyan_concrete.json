@@ -1,0 +1,10 @@
+{
+  "id": 426,
+  "name": "cyan_concrete",
+  "displayName": "Cyan Concrete",
+  "category": "colored",
+  "texTop": "cyan_concrete",
+  "texBottom": "cyan_concrete",
+  "texSide": "cyan_concrete",
+  "isTransparent": false
+}

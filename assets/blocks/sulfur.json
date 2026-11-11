@@ -1,0 +1,10 @@
+{
+  "id": 174,
+  "name": "sulfur",
+  "displayName": "Sulfur",
+  "category": "building",
+  "texTop": "sulfur",
+  "texBottom": "sulfur",
+  "texSide": "sulfur",
+  "isTransparent": false
+}

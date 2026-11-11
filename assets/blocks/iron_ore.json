@@ -1,0 +1,10 @@
+{
+  "id": 202,
+  "name": "iron_ore",
+  "displayName": "Iron Ore",
+  "category": "natural",
+  "texTop": "iron_ore",
+  "texBottom": "iron_ore",
+  "texSide": "iron_ore",
+  "isTransparent": false
+}

@@ -1,0 +1,11 @@
+{
+  "id": 627,
+  "name": "crimson_fungus",
+  "displayName": "Crimson Fungus",
+  "category": "natural",
+  "texTop": "crimson_fungus",
+  "texBottom": "crimson_fungus",
+  "texSide": "crimson_fungus",
+  "isTransparent": true,
+  "render": "cross"
+}

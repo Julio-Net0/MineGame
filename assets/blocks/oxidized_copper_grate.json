@@ -1,0 +1,10 @@
+{
+  "id": 247,
+  "name": "oxidized_copper_grate",
+  "displayName": "Oxidized Copper Grate",
+  "category": "building",
+  "texTop": "oxidized_copper_grate",
+  "texBottom": "oxidized_copper_grate",
+  "texSide": "oxidized_copper_grate",
+  "isTransparent": true
+}

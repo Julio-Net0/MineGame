@@ -1,0 +1,11 @@
+{
+  "id": 642,
+  "name": "fire_coral",
+  "displayName": "Fire Coral",
+  "category": "natural",
+  "texTop": "fire_coral",
+  "texBottom": "fire_coral",
+  "texSide": "fire_coral",
+  "isTransparent": true,
+  "render": "cross"
+}

@@ -1,0 +1,10 @@
+{
+  "id": 332,
+  "name": "stripped_mangrove_log",
+  "displayName": "Stripped Mangrove Log",
+  "category": "building",
+  "texTop": "stripped_mangrove_log_top",
+  "texBottom": "stripped_mangrove_log_top",
+  "texSide": "stripped_mangrove_log",
+  "isTransparent": false
+}

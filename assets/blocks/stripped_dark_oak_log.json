@@ -1,0 +1,10 @@
+{
+  "id": 327,
+  "name": "stripped_dark_oak_log",
+  "displayName": "Stripped Dark Oak Log",
+  "category": "building",
+  "texTop": "stripped_dark_oak_log_top",
+  "texBottom": "stripped_dark_oak_log_top",
+  "texSide": "stripped_dark_oak_log",
+  "isTransparent": false
+}

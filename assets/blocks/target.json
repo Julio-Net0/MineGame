@@ -1,0 +1,10 @@
+{
+  "id": 555,
+  "name": "target",
+  "displayName": "Target",
+  "category": "building",
+  "texTop": "target_top",
+  "texBottom": "target_top",
+  "texSide": "target_side",
+  "isTransparent": false
+}

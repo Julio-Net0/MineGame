@@ -1,0 +1,10 @@
+{
+  "id": 207,
+  "name": "deepslate_gold_ore",
+  "displayName": "Deepslate Gold Ore",
+  "category": "natural",
+  "texTop": "deepslate_gold_ore",
+  "texBottom": "deepslate_gold_ore",
+  "texSide": "deepslate_gold_ore",
+  "isTransparent": false
+}

@@ -1,0 +1,10 @@
+{
+  "id": 400,
+  "name": "white_wool",
+  "displayName": "White Wool",
+  "category": "colored",
+  "texTop": "white_wool",
+  "texBottom": "white_wool",
+  "texSide": "white_wool",
+  "isTransparent": false
+}

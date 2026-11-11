@@ -1,0 +1,11 @@
+{
+  "id": 647,
+  "name": "dead_fire_coral",
+  "displayName": "Dead Fire Coral",
+  "category": "natural",
+  "texTop": "dead_fire_coral",
+  "texBottom": "dead_fire_coral",
+  "texSide": "dead_fire_coral",
+  "isTransparent": true,
+  "render": "cross"
+}

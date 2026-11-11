@@ -1,6 +1,7 @@
 {
   "id": 10,
   "name": "Flower2",
+  "displayName": "Poppy",
   "category": "natural",
   "texTop": "poppy",
   "texBottom": "poppy",

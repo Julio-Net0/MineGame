@@ -1,0 +1,11 @@
+{
+  "id": 631,
+  "name": "dead_bush",
+  "displayName": "Dead Bush",
+  "category": "natural",
+  "texTop": "dead_bush",
+  "texBottom": "dead_bush",
+  "texSide": "dead_bush",
+  "isTransparent": true,
+  "render": "cross"
+}

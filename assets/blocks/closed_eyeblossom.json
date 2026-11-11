@@ -1,0 +1,11 @@
+{
+  "id": 613,
+  "name": "closed_eyeblossom",
+  "displayName": "Closed Eyeblossom",
+  "category": "natural",
+  "texTop": "closed_eyeblossom",
+  "texBottom": "closed_eyeblossom",
+  "texSide": "closed_eyeblossom",
+  "isTransparent": true,
+  "render": "cross"
+}

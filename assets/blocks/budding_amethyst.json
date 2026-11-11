@@ -1,0 +1,10 @@
+{
+  "id": 231,
+  "name": "budding_amethyst",
+  "displayName": "Budding Amethyst",
+  "category": "natural",
+  "texTop": "budding_amethyst",
+  "texBottom": "budding_amethyst",
+  "texSide": "budding_amethyst",
+  "isTransparent": false
+}

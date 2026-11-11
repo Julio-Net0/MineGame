@@ -1,0 +1,10 @@
+{
+  "id": 172,
+  "name": "chiseled_cinnabar",
+  "displayName": "Chiseled Cinnabar",
+  "category": "building",
+  "texTop": "chiseled_cinnabar",
+  "texBottom": "chiseled_cinnabar",
+  "texSide": "chiseled_cinnabar",
+  "isTransparent": false
+}

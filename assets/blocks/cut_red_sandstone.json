@@ -1,0 +1,10 @@
+{
+  "id": 143,
+  "name": "cut_red_sandstone",
+  "displayName": "Cut Red Sandstone",
+  "category": "building",
+  "texTop": "red_sandstone_top",
+  "texBottom": "red_sandstone_top",
+  "texSide": "cut_red_sandstone",
+  "isTransparent": false
+}

@@ -1,0 +1,11 @@
+{
+  "id": 644,
+  "name": "dead_tube_coral",
+  "displayName": "Dead Tube Coral",
+  "category": "natural",
+  "texTop": "dead_tube_coral",
+  "texBottom": "dead_tube_coral",
+  "texSide": "dead_tube_coral",
+  "isTransparent": true,
+  "render": "cross"
+}

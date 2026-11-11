@@ -1,0 +1,11 @@
+{
+  "id": 640,
+  "name": "brain_coral",
+  "displayName": "Brain Coral",
+  "category": "natural",
+  "texTop": "brain_coral",
+  "texBottom": "brain_coral",
+  "texSide": "brain_coral",
+  "isTransparent": true,
+  "render": "cross"
+}

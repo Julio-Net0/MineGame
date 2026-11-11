@@ -1,0 +1,10 @@
+{
+  "id": 442,
+  "name": "cyan_concrete_powder",
+  "displayName": "Cyan Concrete Powder",
+  "category": "colored",
+  "texTop": "cyan_concrete_powder",
+  "texBottom": "cyan_concrete_powder",
+  "texSide": "cyan_concrete_powder",
+  "isTransparent": false
+}

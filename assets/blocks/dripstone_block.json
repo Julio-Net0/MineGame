@@ -1,0 +1,10 @@
+{
+  "id": 127,
+  "name": "dripstone_block",
+  "displayName": "Dripstone Block",
+  "category": "building",
+  "texTop": "dripstone_block",
+  "texBottom": "dripstone_block",
+  "texSide": "dripstone_block",
+  "isTransparent": false
+}

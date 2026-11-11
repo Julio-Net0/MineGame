@@ -1,0 +1,10 @@
+{
+  "id": 458,
+  "name": "green_terracotta",
+  "displayName": "Green Terracotta",
+  "category": "colored",
+  "texTop": "green_terracotta",
+  "texBottom": "green_terracotta",
+  "texSide": "green_terracotta",
+  "isTransparent": false
+}

@@ -1,0 +1,10 @@
+{
+  "id": 145,
+  "name": "end_stone",
+  "displayName": "End Stone",
+  "category": "building",
+  "texTop": "end_stone",
+  "texBottom": "end_stone",
+  "texSide": "end_stone",
+  "isTransparent": false
+}

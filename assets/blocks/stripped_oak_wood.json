@@ -1,0 +1,10 @@
+{
+  "id": 303,
+  "name": "stripped_oak_wood",
+  "displayName": "Stripped Oak Wood",
+  "category": "building",
+  "texTop": "stripped_oak_log",
+  "texBottom": "stripped_oak_log",
+  "texSide": "stripped_oak_log",
+  "isTransparent": false
+}

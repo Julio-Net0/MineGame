@@ -1,0 +1,10 @@
+{
+  "id": 316,
+  "name": "jungle_wood",
+  "displayName": "Jungle Wood",
+  "category": "building",
+  "texTop": "jungle_log",
+  "texBottom": "jungle_log",
+  "texSide": "jungle_log",
+  "isTransparent": false
+}

@@ -1,0 +1,11 @@
+{
+  "id": 604,
+  "name": "red_tulip",
+  "displayName": "Red Tulip",
+  "category": "natural",
+  "texTop": "red_tulip",
+  "texBottom": "red_tulip",
+  "texSide": "red_tulip",
+  "isTransparent": true,
+  "render": "cross"
+}

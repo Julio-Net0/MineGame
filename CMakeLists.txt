@@ -179,7 +179,10 @@ else()
   set(MINEGAME_COPY_DIR_CMD copy_directory)
 endif()
 
-add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+# A custom target with no outputs is always out of date, so it runs on every
+# build. A POST_BUILD step only ran when the executable relinked, which left an
+# asset-only change (new block JSON) out of the build tree.
+add_custom_target(minegame_sync_assets ALL
   COMMAND ${CMAKE_COMMAND} -E rm -rf
           ${CMAKE_CURRENT_BINARY_DIR}/assets/atlas
           ${CMAKE_CURRENT_BINARY_DIR}/assets/biomes
@@ -203,3 +206,4 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
           ${CMAKE_CURRENT_BINARY_DIR}/assets/textures/external
   COMMENT "Syncing assets and textures to build tree"
   VERBATIM)
+add_dependencies(${PROJECT_NAME} minegame_sync_assets)

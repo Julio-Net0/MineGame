@@ -1,0 +1,10 @@
+{
+  "id": 205,
+  "name": "deepslate_copper_ore",
+  "displayName": "Deepslate Copper Ore",
+  "category": "natural",
+  "texTop": "deepslate_copper_ore",
+  "texBottom": "deepslate_copper_ore",
+  "texSide": "deepslate_copper_ore",
+  "isTransparent": false
+}

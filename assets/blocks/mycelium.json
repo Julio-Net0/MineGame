@@ -1,0 +1,10 @@
+{
+  "id": 503,
+  "name": "mycelium",
+  "displayName": "Mycelium",
+  "category": "natural",
+  "texTop": "mycelium_top",
+  "texBottom": "dirt",
+  "texSide": "mycelium_side",
+  "isTransparent": false
+}

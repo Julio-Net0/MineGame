@@ -1,0 +1,10 @@
+{
+  "id": 356,
+  "name": "stripped_crimson_hyphae",
+  "displayName": "Stripped Crimson Hyphae",
+  "category": "building",
+  "texTop": "stripped_crimson_stem",
+  "texBottom": "stripped_crimson_stem",
+  "texSide": "stripped_crimson_stem",
+  "isTransparent": false
+}

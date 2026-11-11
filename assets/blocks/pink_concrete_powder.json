@@ -1,0 +1,10 @@
+{
+  "id": 447,
+  "name": "pink_concrete_powder",
+  "displayName": "Pink Concrete Powder",
+  "category": "colored",
+  "texTop": "pink_concrete_powder",
+  "texBottom": "pink_concrete_powder",
+  "texSide": "pink_concrete_powder",
+  "isTransparent": false
+}

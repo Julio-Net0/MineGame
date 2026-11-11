@@ -1,0 +1,10 @@
+{
+  "id": 159,
+  "name": "crying_obsidian",
+  "displayName": "Crying Obsidian",
+  "category": "building",
+  "texTop": "crying_obsidian",
+  "texBottom": "crying_obsidian",
+  "texSide": "crying_obsidian",
+  "isTransparent": false
+}

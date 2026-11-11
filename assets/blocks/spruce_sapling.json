@@ -1,0 +1,11 @@
+{
+  "id": 616,
+  "name": "spruce_sapling",
+  "displayName": "Spruce Sapling",
+  "category": "natural",
+  "texTop": "spruce_sapling",
+  "texBottom": "spruce_sapling",
+  "texSide": "spruce_sapling",
+  "isTransparent": true,
+  "render": "cross"
+}

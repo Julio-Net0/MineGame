@@ -1,0 +1,10 @@
+{
+  "id": 120,
+  "name": "chiseled_deepslate",
+  "displayName": "Chiseled Deepslate",
+  "category": "building",
+  "texTop": "chiseled_deepslate",
+  "texBottom": "chiseled_deepslate",
+  "texSide": "chiseled_deepslate",
+  "isTransparent": false
+}

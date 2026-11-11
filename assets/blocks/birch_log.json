@@ -1,0 +1,10 @@
+{
+  "id": 310,
+  "name": "birch_log",
+  "displayName": "Birch Log",
+  "category": "building",
+  "texTop": "birch_log_top",
+  "texBottom": "birch_log_top",
+  "texSide": "birch_log",
+  "isTransparent": false
+}

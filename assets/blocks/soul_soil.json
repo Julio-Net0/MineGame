@@ -1,0 +1,10 @@
+{
+  "id": 515,
+  "name": "soul_soil",
+  "displayName": "Soul Soil",
+  "category": "natural",
+  "texTop": "soul_soil",
+  "texBottom": "soul_soil",
+  "texSide": "soul_soil",
+  "isTransparent": false
+}

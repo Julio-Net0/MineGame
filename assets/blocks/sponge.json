@@ -1,0 +1,10 @@
+{
+  "id": 525,
+  "name": "sponge",
+  "displayName": "Sponge",
+  "category": "natural",
+  "texTop": "sponge",
+  "texBottom": "sponge",
+  "texSide": "sponge",
+  "isTransparent": false
+}

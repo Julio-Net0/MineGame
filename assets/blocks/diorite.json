@@ -1,0 +1,10 @@
+{
+  "id": 109,
+  "name": "diorite",
+  "displayName": "Diorite",
+  "category": "building",
+  "texTop": "diorite",
+  "texBottom": "diorite",
+  "texSide": "diorite",
+  "isTransparent": false
+}

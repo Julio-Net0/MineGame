@@ -1,0 +1,10 @@
+{
+  "id": 465,
+  "name": "white_stained_glass",
+  "displayName": "White Stained Glass",
+  "category": "colored",
+  "texTop": "white_stained_glass",
+  "texBottom": "white_stained_glass",
+  "texSide": "white_stained_glass",
+  "isTransparent": true
+}

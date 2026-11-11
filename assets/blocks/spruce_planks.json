@@ -1,0 +1,10 @@
+{
+  "id": 309,
+  "name": "spruce_planks",
+  "displayName": "Spruce Planks",
+  "category": "building",
+  "texTop": "spruce_planks",
+  "texBottom": "spruce_planks",
+  "texSide": "spruce_planks",
+  "isTransparent": false
+}

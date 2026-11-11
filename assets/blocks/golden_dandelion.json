@@ -1,0 +1,11 @@
+{
+  "id": 600,
+  "name": "golden_dandelion",
+  "displayName": "Golden Dandelion",
+  "category": "natural",
+  "texTop": "golden_dandelion",
+  "texBottom": "golden_dandelion",
+  "texSide": "golden_dandelion",
+  "isTransparent": true,
+  "render": "cross"
+}

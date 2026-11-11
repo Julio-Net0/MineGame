@@ -1,0 +1,10 @@
+{
+  "id": 481,
+  "name": "tinted_glass",
+  "displayName": "Tinted Glass",
+  "category": "colored",
+  "texTop": "tinted_glass",
+  "texBottom": "tinted_glass",
+  "texSide": "tinted_glass",
+  "isTransparent": true
+}

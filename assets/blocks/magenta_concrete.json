@@ -1,0 +1,10 @@
+{
+  "id": 430,
+  "name": "magenta_concrete",
+  "displayName": "Magenta Concrete",
+  "category": "colored",
+  "texTop": "magenta_concrete",
+  "texBottom": "magenta_concrete",
+  "texSide": "magenta_concrete",
+  "isTransparent": false
+}

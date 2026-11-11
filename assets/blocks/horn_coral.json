@@ -1,0 +1,11 @@
+{
+  "id": 643,
+  "name": "horn_coral",
+  "displayName": "Horn Coral",
+  "category": "natural",
+  "texTop": "horn_coral",
+  "texBottom": "horn_coral",
+  "texSide": "horn_coral",
+  "isTransparent": true,
+  "render": "cross"
+}

@@ -1,0 +1,11 @@
+{
+  "id": 610,
+  "name": "lily_of_the_valley",
+  "displayName": "Lily Of The Valley",
+  "category": "natural",
+  "texTop": "lily_of_the_valley",
+  "texBottom": "lily_of_the_valley",
+  "texSide": "lily_of_the_valley",
+  "isTransparent": true,
+  "render": "cross"
+}

@@ -1,0 +1,10 @@
+{
+  "id": 565,
+  "name": "azalea_leaves",
+  "displayName": "Azalea Leaves",
+  "category": "natural",
+  "texTop": "azalea_leaves",
+  "texBottom": "azalea_leaves",
+  "texSide": "azalea_leaves",
+  "isTransparent": true
+}

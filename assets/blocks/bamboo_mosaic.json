@@ -1,0 +1,10 @@
+{
+  "id": 353,
+  "name": "bamboo_mosaic",
+  "displayName": "Bamboo Mosaic",
+  "category": "building",
+  "texTop": "bamboo_mosaic",
+  "texBottom": "bamboo_mosaic",
+  "texSide": "bamboo_mosaic",
+  "isTransparent": false
+}

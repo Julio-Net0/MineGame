@@ -1,0 +1,10 @@
+{
+  "id": 245,
+  "name": "oxidized_cut_copper",
+  "displayName": "Oxidized Cut Copper",
+  "category": "building",
+  "texTop": "oxidized_cut_copper",
+  "texBottom": "oxidized_cut_copper",
+  "texSide": "oxidized_cut_copper",
+  "isTransparent": false
+}

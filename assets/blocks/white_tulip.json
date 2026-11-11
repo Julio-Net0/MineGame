@@ -1,0 +1,11 @@
+{
+  "id": 606,
+  "name": "white_tulip",
+  "displayName": "White Tulip",
+  "category": "natural",
+  "texTop": "white_tulip",
+  "texBottom": "white_tulip",
+  "texSide": "white_tulip",
+  "isTransparent": true,
+  "render": "cross"
+}

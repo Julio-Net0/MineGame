@@ -1,0 +1,10 @@
+{
+  "id": 346,
+  "name": "poplar_wood",
+  "displayName": "Poplar Wood",
+  "category": "building",
+  "texTop": "poplar_log",
+  "texBottom": "poplar_log",
+  "texSide": "poplar_log",
+  "isTransparent": false
+}

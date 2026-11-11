@@ -1,0 +1,11 @@
+{
+  "id": 624,
+  "name": "mangrove_propagule",
+  "displayName": "Mangrove Propagule",
+  "category": "natural",
+  "texTop": "mangrove_propagule",
+  "texBottom": "mangrove_propagule",
+  "texSide": "mangrove_propagule",
+  "isTransparent": true,
+  "render": "cross"
+}

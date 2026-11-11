@@ -1,0 +1,10 @@
+{
+  "id": 114,
+  "name": "cobbled_deepslate",
+  "displayName": "Cobbled Deepslate",
+  "category": "building",
+  "texTop": "cobbled_deepslate",
+  "texBottom": "cobbled_deepslate",
+  "texSide": "cobbled_deepslate",
+  "isTransparent": false
+}

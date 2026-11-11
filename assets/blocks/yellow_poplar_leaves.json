@@ -1,0 +1,10 @@
+{
+  "id": 569,
+  "name": "yellow_poplar_leaves",
+  "displayName": "Yellow Poplar Leaves",
+  "category": "natural",
+  "texTop": "yellow_poplar_leaves",
+  "texBottom": "yellow_poplar_leaves",
+  "texSide": "yellow_poplar_leaves",
+  "isTransparent": true
+}

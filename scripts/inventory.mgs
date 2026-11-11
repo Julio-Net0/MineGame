@@ -1,8 +1,12 @@
-# Creative inventory check: open the screen, look at each tab, hover an entry
-# for its tooltip, move a block into the hotbar through the player intent, and
-# place it in the world.
+# Creative inventory check: open the screen, capture every page of every tab,
+# hover an entry for its tooltip, move a block into the hotbar through the
+# player intent, and place it in the world.
 #
 #   build/MineGame.exe --script scripts/inventory.mgs --script-timeout 180
+#
+# Each tab is captured over four pages, scrolling five rows at a time. A tab
+# with fewer pages clamps at its last row, so the extra captures repeat it; the
+# verifier reads each tab's maxScrollRow to know how many pages are real.
 
 /tp 0 90 0
 wait loaded
@@ -12,20 +16,58 @@ wait loaded
 inventory open
 wait frames 2
 state inv_open
-screenshot inv_building
+
+inventory tab building
+wait frames 2
+state inv_building
+screenshot building_p1
+inventory scroll 5
+wait frames 2
+screenshot building_p2
+inventory scroll 5
+wait frames 2
+screenshot building_p3
+inventory scroll 5
+wait frames 2
+screenshot building_p4
 
 inventory tab colored
 wait frames 2
-screenshot inv_colored
+state inv_colored
+screenshot colored_p1
+inventory scroll 5
+wait frames 2
+screenshot colored_p2
+inventory scroll 5
+wait frames 2
+screenshot colored_p3
+inventory scroll 5
+wait frames 2
+screenshot colored_p4
 
+inventory tab natural
+wait frames 2
+state inv_natural
+screenshot natural_p1
+inventory scroll 5
+wait frames 2
+screenshot natural_p2
+inventory scroll 5
+wait frames 2
+screenshot natural_p3
+inventory scroll 5
+wait frames 2
+screenshot natural_p4
+
+# Tooltip over the first natural block (selecting a tab returns to its top).
 inventory tab natural
 inventory hover 1
 wait frames 2
 screenshot inv_tooltip
 inventory hover off
 
-# Glass is the only colored block: pick it and drop it into the last slot. The
-# edit reaches the player only after a tick consumes the request.
+# Glass keeps id 6, the lowest colored id, so it is the first colored entry.
+# The edit reaches the player only after a tick consumes the request.
 inventory tab colored
 inventory pick 1
 inventory put 9

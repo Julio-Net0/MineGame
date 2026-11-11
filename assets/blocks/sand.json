@@ -1,6 +1,7 @@
 {
   "id": 4,
   "name": "Sand",
+  "displayName": "Sand",
   "category": "natural",
   "texTop": "sand",
   "texBottom": "sand",

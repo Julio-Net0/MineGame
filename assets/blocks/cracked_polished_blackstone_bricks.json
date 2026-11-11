@@ -1,0 +1,10 @@
+{
+  "id": 131,
+  "name": "cracked_polished_blackstone_bricks",
+  "displayName": "Cracked Polished Blackstone Bricks",
+  "category": "building",
+  "texTop": "cracked_polished_blackstone_bricks",
+  "texBottom": "cracked_polished_blackstone_bricks",
+  "texSide": "cracked_polished_blackstone_bricks",
+  "isTransparent": false
+}

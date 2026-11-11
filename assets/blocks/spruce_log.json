@@ -1,0 +1,10 @@
+{
+  "id": 305,
+  "name": "spruce_log",
+  "displayName": "Spruce Log",
+  "category": "building",
+  "texTop": "spruce_log_top",
+  "texBottom": "spruce_log_top",
+  "texSide": "spruce_log",
+  "isTransparent": false
+}

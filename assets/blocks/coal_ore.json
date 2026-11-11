@@ -1,0 +1,10 @@
+{
+  "id": 200,
+  "name": "coal_ore",
+  "displayName": "Coal Ore",
+  "category": "natural",
+  "texTop": "coal_ore",
+  "texBottom": "coal_ore",
+  "texSide": "coal_ore",
+  "isTransparent": false
+}

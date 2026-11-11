@@ -1,0 +1,10 @@
+{
+  "id": 500,
+  "name": "coarse_dirt",
+  "displayName": "Coarse Dirt",
+  "category": "natural",
+  "texTop": "coarse_dirt",
+  "texBottom": "coarse_dirt",
+  "texSide": "coarse_dirt",
+  "isTransparent": false
+}

@@ -1,0 +1,10 @@
+{
+  "id": 415,
+  "name": "pink_wool",
+  "displayName": "Pink Wool",
+  "category": "colored",
+  "texTop": "pink_wool",
+  "texBottom": "pink_wool",
+  "texSide": "pink_wool",
+  "isTransparent": false
+}

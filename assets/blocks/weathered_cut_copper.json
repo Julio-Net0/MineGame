@@ -1,0 +1,10 @@
+{
+  "id": 241,
+  "name": "weathered_cut_copper",
+  "displayName": "Weathered Cut Copper",
+  "category": "building",
+  "texTop": "weathered_cut_copper",
+  "texBottom": "weathered_cut_copper",
+  "texSide": "weathered_cut_copper",
+  "isTransparent": false
+}

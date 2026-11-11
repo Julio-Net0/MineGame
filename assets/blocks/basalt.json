@@ -1,0 +1,10 @@
+{
+  "id": 134,
+  "name": "basalt",
+  "displayName": "Basalt",
+  "category": "building",
+  "texTop": "basalt_top",
+  "texBottom": "basalt_top",
+  "texSide": "basalt_side",
+  "isTransparent": false
+}

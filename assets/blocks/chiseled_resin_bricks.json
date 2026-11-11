@@ -1,0 +1,10 @@
+{
+  "id": 167,
+  "name": "chiseled_resin_bricks",
+  "displayName": "Chiseled Resin Bricks",
+  "category": "building",
+  "texTop": "chiseled_resin_bricks",
+  "texBottom": "chiseled_resin_bricks",
+  "texSide": "chiseled_resin_bricks",
+  "isTransparent": false
+}

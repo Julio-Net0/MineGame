@@ -1,0 +1,10 @@
+{
+  "id": 456,
+  "name": "yellow_terracotta",
+  "displayName": "Yellow Terracotta",
+  "category": "colored",
+  "texTop": "yellow_terracotta",
+  "texBottom": "yellow_terracotta",
+  "texSide": "yellow_terracotta",
+  "isTransparent": false
+}

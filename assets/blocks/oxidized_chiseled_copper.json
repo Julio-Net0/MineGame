@@ -1,0 +1,10 @@
+{
+  "id": 246,
+  "name": "oxidized_chiseled_copper",
+  "displayName": "Oxidized Chiseled Copper",
+  "category": "building",
+  "texTop": "oxidized_chiseled_copper",
+  "texBottom": "oxidized_chiseled_copper",
+  "texSide": "oxidized_chiseled_copper",
+  "isTransparent": false
+}

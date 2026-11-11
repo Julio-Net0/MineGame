@@ -1,6 +1,7 @@
 {
   "id": 1,
   "name": "Grass",
+  "displayName": "Grass Block",
   "category": "natural",
   "texTop": "grass_block_top",
   "texBottom": "dirt",

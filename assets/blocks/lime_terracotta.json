@@ -1,0 +1,10 @@
+{
+  "id": 457,
+  "name": "lime_terracotta",
+  "displayName": "Lime Terracotta",
+  "category": "colored",
+  "texTop": "lime_terracotta",
+  "texBottom": "lime_terracotta",
+  "texSide": "lime_terracotta",
+  "isTransparent": false
+}

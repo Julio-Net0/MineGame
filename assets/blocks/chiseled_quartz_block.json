@@ -1,0 +1,10 @@
+{
+  "id": 150,
+  "name": "chiseled_quartz_block",
+  "displayName": "Chiseled Quartz Block",
+  "category": "building",
+  "texTop": "chiseled_quartz_block_top",
+  "texBottom": "chiseled_quartz_block_top",
+  "texSide": "chiseled_quartz_block",
+  "isTransparent": false
+}

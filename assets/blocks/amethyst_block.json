@@ -1,0 +1,10 @@
+{
+  "id": 227,
+  "name": "amethyst_block",
+  "displayName": "Amethyst Block",
+  "category": "building",
+  "texTop": "amethyst_block",
+  "texBottom": "amethyst_block",
+  "texSide": "amethyst_block",
+  "isTransparent": false
+}

@@ -1,0 +1,10 @@
+{
+  "id": 138,
+  "name": "chiseled_sandstone",
+  "displayName": "Chiseled Sandstone",
+  "category": "building",
+  "texTop": "sandstone_top",
+  "texBottom": "sandstone_top",
+  "texSide": "chiseled_sandstone",
+  "isTransparent": false
+}

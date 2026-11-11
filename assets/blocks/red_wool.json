@@ -1,0 +1,10 @@
+{
+  "id": 405,
+  "name": "red_wool",
+  "displayName": "Red Wool",
+  "category": "colored",
+  "texTop": "red_wool",
+  "texBottom": "red_wool",
+  "texSide": "red_wool",
+  "isTransparent": false
+}

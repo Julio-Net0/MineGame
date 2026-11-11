@@ -1,0 +1,10 @@
+{
+  "id": 209,
+  "name": "deepslate_redstone_ore",
+  "displayName": "Deepslate Redstone Ore",
+  "category": "natural",
+  "texTop": "deepslate_redstone_ore",
+  "texBottom": "deepslate_redstone_ore",
+  "texSide": "deepslate_redstone_ore",
+  "isTransparent": false
+}

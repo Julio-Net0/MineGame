@@ -1,0 +1,10 @@
+{
+  "id": 160,
+  "name": "bricks",
+  "displayName": "Bricks",
+  "category": "building",
+  "texTop": "bricks",
+  "texBottom": "bricks",
+  "texSide": "bricks",
+  "isTransparent": false
+}

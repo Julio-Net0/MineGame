@@ -1,0 +1,10 @@
+{
+  "id": 528,
+  "name": "shroomlight",
+  "displayName": "Shroomlight",
+  "category": "natural",
+  "texTop": "shroomlight",
+  "texBottom": "shroomlight",
+  "texSide": "shroomlight",
+  "isTransparent": false
+}

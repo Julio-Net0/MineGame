@@ -1,0 +1,10 @@
+{
+  "id": 506,
+  "name": "clay",
+  "displayName": "Clay",
+  "category": "natural",
+  "texTop": "clay",
+  "texBottom": "clay",
+  "texSide": "clay",
+  "isTransparent": false
+}

@@ -1,0 +1,10 @@
+{
+  "id": 103,
+  "name": "stone_bricks",
+  "displayName": "Stone Bricks",
+  "category": "building",
+  "texTop": "stone_bricks",
+  "texBottom": "stone_bricks",
+  "texSide": "stone_bricks",
+  "isTransparent": false
+}

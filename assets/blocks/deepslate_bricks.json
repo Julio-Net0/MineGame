@@ -1,0 +1,10 @@
+{
+  "id": 116,
+  "name": "deepslate_bricks",
+  "displayName": "Deepslate Bricks",
+  "category": "building",
+  "texTop": "deepslate_bricks",
+  "texBottom": "deepslate_bricks",
+  "texSide": "deepslate_bricks",
+  "isTransparent": false
+}

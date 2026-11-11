@@ -1,0 +1,10 @@
+{
+  "id": 513,
+  "name": "pale_moss_block",
+  "displayName": "Pale Moss Block",
+  "category": "natural",
+  "texTop": "pale_moss_block",
+  "texBottom": "pale_moss_block",
+  "texSide": "pale_moss_block",
+  "isTransparent": false
+}

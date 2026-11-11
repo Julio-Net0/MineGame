@@ -1,0 +1,11 @@
+{
+  "id": 636,
+  "name": "nether_sprouts",
+  "displayName": "Nether Sprouts",
+  "category": "natural",
+  "texTop": "nether_sprouts",
+  "texBottom": "nether_sprouts",
+  "texSide": "nether_sprouts",
+  "isTransparent": true,
+  "render": "cross"
+}

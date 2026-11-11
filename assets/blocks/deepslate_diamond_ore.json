@@ -1,0 +1,10 @@
+{
+  "id": 215,
+  "name": "deepslate_diamond_ore",
+  "displayName": "Deepslate Diamond Ore",
+  "category": "natural",
+  "texTop": "deepslate_diamond_ore",
+  "texBottom": "deepslate_diamond_ore",
+  "texSide": "deepslate_diamond_ore",
+  "isTransparent": false
+}

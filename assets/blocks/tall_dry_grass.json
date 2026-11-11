@@ -1,0 +1,11 @@
+{
+  "id": 633,
+  "name": "tall_dry_grass",
+  "displayName": "Tall Dry Grass",
+  "category": "natural",
+  "texTop": "tall_dry_grass",
+  "texBottom": "tall_dry_grass",
+  "texSide": "tall_dry_grass",
+  "isTransparent": true,
+  "render": "cross"
+}

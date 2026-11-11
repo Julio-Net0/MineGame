@@ -1,0 +1,10 @@
+{
+  "id": 408,
+  "name": "lime_wool",
+  "displayName": "Lime Wool",
+  "category": "colored",
+  "texTop": "lime_wool",
+  "texBottom": "lime_wool",
+  "texSide": "lime_wool",
+  "isTransparent": false
+}

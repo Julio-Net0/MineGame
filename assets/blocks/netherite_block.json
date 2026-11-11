@@ -1,0 +1,10 @@
+{
+  "id": 226,
+  "name": "netherite_block",
+  "displayName": "Netherite Block",
+  "category": "building",
+  "texTop": "netherite_block",
+  "texBottom": "netherite_block",
+  "texSide": "netherite_block",
+  "isTransparent": false
+}

@@ -1,0 +1,10 @@
+{
+  "id": 429,
+  "name": "purple_concrete",
+  "displayName": "Purple Concrete",
+  "category": "colored",
+  "texTop": "purple_concrete",
+  "texBottom": "purple_concrete",
+  "texSide": "purple_concrete",
+  "isTransparent": false
+}

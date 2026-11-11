@@ -1,0 +1,10 @@
+{
+  "id": 153,
+  "name": "smooth_quartz",
+  "displayName": "Smooth Quartz Block",
+  "category": "building",
+  "texTop": "quartz_block_bottom",
+  "texBottom": "quartz_block_bottom",
+  "texSide": "quartz_block_bottom",
+  "isTransparent": false
+}

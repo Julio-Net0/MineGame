@@ -1,0 +1,10 @@
+{
+  "id": 406,
+  "name": "orange_wool",
+  "displayName": "Orange Wool",
+  "category": "colored",
+  "texTop": "orange_wool",
+  "texBottom": "orange_wool",
+  "texSide": "orange_wool",
+  "isTransparent": false
+}

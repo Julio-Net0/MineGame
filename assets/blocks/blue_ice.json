@@ -1,0 +1,10 @@
+{
+  "id": 511,
+  "name": "blue_ice",
+  "displayName": "Blue Ice",
+  "category": "natural",
+  "texTop": "blue_ice",
+  "texBottom": "blue_ice",
+  "texSide": "blue_ice",
+  "isTransparent": false
+}

@@ -1,0 +1,10 @@
+{
+  "id": 359,
+  "name": "stripped_warped_hyphae",
+  "displayName": "Stripped Warped Hyphae",
+  "category": "building",
+  "texTop": "stripped_warped_stem",
+  "texBottom": "stripped_warped_stem",
+  "texSide": "stripped_warped_stem",
+  "isTransparent": false
+}

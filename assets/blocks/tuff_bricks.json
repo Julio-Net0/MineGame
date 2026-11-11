@@ -1,0 +1,10 @@
+{
+  "id": 123,
+  "name": "tuff_bricks",
+  "displayName": "Tuff Bricks",
+  "category": "building",
+  "texTop": "tuff_bricks",
+  "texBottom": "tuff_bricks",
+  "texSide": "tuff_bricks",
+  "isTransparent": false
+}

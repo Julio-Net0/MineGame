@@ -1,0 +1,11 @@
+{
+  "id": 607,
+  "name": "pink_tulip",
+  "displayName": "Pink Tulip",
+  "category": "natural",
+  "texTop": "pink_tulip",
+  "texBottom": "pink_tulip",
+  "texSide": "pink_tulip",
+  "isTransparent": true,
+  "render": "cross"
+}

@@ -1,0 +1,10 @@
+{
+  "id": 156,
+  "name": "chiseled_nether_bricks",
+  "displayName": "Chiseled Nether Bricks",
+  "category": "building",
+  "texTop": "chiseled_nether_bricks",
+  "texBottom": "chiseled_nether_bricks",
+  "texSide": "chiseled_nether_bricks",
+  "isTransparent": false
+}

@@ -1,0 +1,10 @@
+{
+  "id": 229,
+  "name": "raw_copper_block",
+  "displayName": "Raw Copper Block",
+  "category": "building",
+  "texTop": "raw_copper_block",
+  "texBottom": "raw_copper_block",
+  "texSide": "raw_copper_block",
+  "isTransparent": false
+}

@@ -1,0 +1,10 @@
+{
+  "id": 210,
+  "name": "emerald_ore",
+  "displayName": "Emerald Ore",
+  "category": "natural",
+  "texTop": "emerald_ore",
+  "texBottom": "emerald_ore",
+  "texSide": "emerald_ore",
+  "isTransparent": false
+}

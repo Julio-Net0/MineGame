@@ -1,0 +1,10 @@
+{
+  "id": 326,
+  "name": "dark_oak_wood",
+  "displayName": "Dark Oak Wood",
+  "category": "building",
+  "texTop": "dark_oak_log",
+  "texBottom": "dark_oak_log",
+  "texSide": "dark_oak_log",
+  "isTransparent": false
+}

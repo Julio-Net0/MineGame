@@ -1,0 +1,10 @@
+{
+  "id": 534,
+  "name": "mushroom_stem",
+  "displayName": "Mushroom Stem",
+  "category": "natural",
+  "texTop": "mushroom_stem",
+  "texBottom": "mushroom_stem",
+  "texSide": "mushroom_stem",
+  "isTransparent": false
+}

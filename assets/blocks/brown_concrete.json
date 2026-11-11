@@ -1,0 +1,10 @@
+{
+  "id": 420,
+  "name": "brown_concrete",
+  "displayName": "Brown Concrete",
+  "category": "colored",
+  "texTop": "brown_concrete",
+  "texBottom": "brown_concrete",
+  "texSide": "brown_concrete",
+  "isTransparent": false
+}

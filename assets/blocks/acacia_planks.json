@@ -1,0 +1,10 @@
+{
+  "id": 324,
+  "name": "acacia_planks",
+  "displayName": "Acacia Planks",
+  "category": "building",
+  "texTop": "acacia_planks",
+  "texBottom": "acacia_planks",
+  "texSide": "acacia_planks",
+  "isTransparent": false
+}

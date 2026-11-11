@@ -1,0 +1,10 @@
+{
+  "id": 566,
+  "name": "flowering_azalea_leaves",
+  "displayName": "Flowering Azalea Leaves",
+  "category": "natural",
+  "texTop": "flowering_azalea_leaves",
+  "texBottom": "flowering_azalea_leaves",
+  "texSide": "flowering_azalea_leaves",
+  "isTransparent": true
+}

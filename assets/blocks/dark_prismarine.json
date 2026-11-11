@@ -1,0 +1,10 @@
+{
+  "id": 164,
+  "name": "dark_prismarine",
+  "displayName": "Dark Prismarine",
+  "category": "building",
+  "texTop": "dark_prismarine",
+  "texBottom": "dark_prismarine",
+  "texSide": "dark_prismarine",
+  "isTransparent": false
+}

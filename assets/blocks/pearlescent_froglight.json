@@ -1,0 +1,10 @@
+{
+  "id": 531,
+  "name": "pearlescent_froglight",
+  "displayName": "Pearlescent Froglight",
+  "category": "natural",
+  "texTop": "pearlescent_froglight_top",
+  "texBottom": "pearlescent_froglight_top",
+  "texSide": "pearlescent_froglight_side",
+  "isTransparent": false
+}

@@ -1,0 +1,10 @@
+{
+  "id": 234,
+  "name": "chiseled_copper",
+  "displayName": "Chiseled Copper",
+  "category": "building",
+  "texTop": "chiseled_copper",
+  "texBottom": "chiseled_copper",
+  "texSide": "chiseled_copper",
+  "isTransparent": false
+}

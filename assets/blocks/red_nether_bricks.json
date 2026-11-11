@@ -1,0 +1,10 @@
+{
+  "id": 157,
+  "name": "red_nether_bricks",
+  "displayName": "Red Nether Bricks",
+  "category": "building",
+  "texTop": "red_nether_bricks",
+  "texBottom": "red_nether_bricks",
+  "texSide": "red_nether_bricks",
+  "isTransparent": false
+}

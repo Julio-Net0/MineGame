@@ -1,6 +1,7 @@
 {
   "id": 8,
   "name": "Oak",
+  "displayName": "Oak Log",
   "category": "building",
   "texTop": "oak_log_top",
   "texBottom": "oak_log_top",

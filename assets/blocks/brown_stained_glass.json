@@ -1,0 +1,10 @@
+{
+  "id": 469,
+  "name": "brown_stained_glass",
+  "displayName": "Brown Stained Glass",
+  "category": "colored",
+  "texTop": "brown_stained_glass",
+  "texBottom": "brown_stained_glass",
+  "texSide": "brown_stained_glass",
+  "isTransparent": true
+}

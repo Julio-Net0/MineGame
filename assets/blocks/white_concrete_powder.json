@@ -1,0 +1,10 @@
+{
+  "id": 432,
+  "name": "white_concrete_powder",
+  "displayName": "White Concrete Powder",
+  "category": "colored",
+  "texTop": "white_concrete_powder",
+  "texBottom": "white_concrete_powder",
+  "texSide": "white_concrete_powder",
+  "isTransparent": false
+}

@@ -1,0 +1,10 @@
+{
+  "id": 564,
+  "name": "pale_oak_leaves",
+  "displayName": "Pale Oak Leaves",
+  "category": "natural",
+  "texTop": "pale_oak_leaves",
+  "texBottom": "pale_oak_leaves",
+  "texSide": "pale_oak_leaves",
+  "isTransparent": true
+}

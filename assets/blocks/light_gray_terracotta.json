@@ -1,0 +1,10 @@
+{
+  "id": 450,
+  "name": "light_gray_terracotta",
+  "displayName": "Light Gray Terracotta",
+  "category": "colored",
+  "texTop": "light_gray_terracotta",
+  "texBottom": "light_gray_terracotta",
+  "texSide": "light_gray_terracotta",
+  "isTransparent": false
+}

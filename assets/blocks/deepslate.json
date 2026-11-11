@@ -1,0 +1,10 @@
+{
+  "id": 113,
+  "name": "deepslate",
+  "displayName": "Deepslate",
+  "category": "building",
+  "texTop": "deepslate_top",
+  "texBottom": "deepslate_top",
+  "texSide": "deepslate",
+  "isTransparent": false
+}

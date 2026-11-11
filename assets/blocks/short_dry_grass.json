@@ -1,0 +1,11 @@
+{
+  "id": 632,
+  "name": "short_dry_grass",
+  "displayName": "Short Dry Grass",
+  "category": "natural",
+  "texTop": "short_dry_grass",
+  "texBottom": "short_dry_grass",
+  "texSide": "short_dry_grass",
+  "isTransparent": true,
+  "render": "cross"
+}

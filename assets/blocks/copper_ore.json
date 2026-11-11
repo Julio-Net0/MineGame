@@ -1,0 +1,10 @@
+{
+  "id": 204,
+  "name": "copper_ore",
+  "displayName": "Copper Ore",
+  "category": "natural",
+  "texTop": "copper_ore",
+  "texBottom": "copper_ore",
+  "texSide": "copper_ore",
+  "isTransparent": false
+}

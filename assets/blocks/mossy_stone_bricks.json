@@ -1,0 +1,10 @@
+{
+  "id": 104,
+  "name": "mossy_stone_bricks",
+  "displayName": "Mossy Stone Bricks",
+  "category": "building",
+  "texTop": "mossy_stone_bricks",
+  "texBottom": "mossy_stone_bricks",
+  "texSide": "mossy_stone_bricks",
+  "isTransparent": false
+}

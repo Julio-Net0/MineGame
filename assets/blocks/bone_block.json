@@ -1,0 +1,10 @@
+{
+  "id": 521,
+  "name": "bone_block",
+  "displayName": "Bone Block",
+  "category": "natural",
+  "texTop": "bone_block_top",
+  "texBottom": "bone_block_top",
+  "texSide": "bone_block_side",
+  "isTransparent": false
+}

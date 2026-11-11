@@ -1,0 +1,10 @@
+{
+  "id": 147,
+  "name": "purpur_block",
+  "displayName": "Purpur Block",
+  "category": "building",
+  "texTop": "purpur_block",
+  "texBottom": "purpur_block",
+  "texSide": "purpur_block",
+  "isTransparent": false
+}

@@ -1,0 +1,10 @@
+{
+  "id": 529,
+  "name": "ochre_froglight",
+  "displayName": "Ochre Froglight",
+  "category": "natural",
+  "texTop": "ochre_froglight_top",
+  "texBottom": "ochre_froglight_top",
+  "texSide": "ochre_froglight_side",
+  "isTransparent": false
+}

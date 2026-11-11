@@ -1,0 +1,10 @@
+{
+  "id": 175,
+  "name": "sulfur_bricks",
+  "displayName": "Sulfur Bricks",
+  "category": "building",
+  "texTop": "sulfur_bricks",
+  "texBottom": "sulfur_bricks",
+  "texSide": "sulfur_bricks",
+  "isTransparent": false
+}

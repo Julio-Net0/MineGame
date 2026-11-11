@@ -1,0 +1,10 @@
+{
+  "id": 228,
+  "name": "raw_iron_block",
+  "displayName": "Raw Iron Block",
+  "category": "building",
+  "texTop": "raw_iron_block",
+  "texBottom": "raw_iron_block",
+  "texSide": "raw_iron_block",
+  "isTransparent": false
+}

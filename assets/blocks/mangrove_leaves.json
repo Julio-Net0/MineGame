@@ -1,0 +1,11 @@
+{
+  "id": 562,
+  "name": "mangrove_leaves",
+  "displayName": "Mangrove Leaves",
+  "category": "natural",
+  "texTop": "mangrove_leaves",
+  "texBottom": "mangrove_leaves",
+  "texSide": "mangrove_leaves",
+  "tint": "foliage",
+  "isTransparent": true
+}

@@ -1,0 +1,10 @@
+{
+  "id": 518,
+  "name": "warped_nylium",
+  "displayName": "Warped Nylium",
+  "category": "natural",
+  "texTop": "warped_nylium",
+  "texBottom": "netherrack",
+  "texSide": "warped_nylium_side",
+  "isTransparent": false
+}

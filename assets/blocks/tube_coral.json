@@ -1,0 +1,11 @@
+{
+  "id": 639,
+  "name": "tube_coral",
+  "displayName": "Tube Coral",
+  "category": "natural",
+  "texTop": "tube_coral",
+  "texBottom": "tube_coral",
+  "texSide": "tube_coral",
+  "isTransparent": true,
+  "render": "cross"
+}

@@ -1,0 +1,10 @@
+{
+  "id": 357,
+  "name": "warped_planks",
+  "displayName": "Warped Planks",
+  "category": "building",
+  "texTop": "warped_planks",
+  "texBottom": "warped_planks",
+  "texSide": "warped_planks",
+  "isTransparent": false
+}

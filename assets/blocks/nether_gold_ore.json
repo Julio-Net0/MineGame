@@ -1,0 +1,10 @@
+{
+  "id": 216,
+  "name": "nether_gold_ore",
+  "displayName": "Nether Gold Ore",
+  "category": "natural",
+  "texTop": "nether_gold_ore",
+  "texBottom": "nether_gold_ore",
+  "texSide": "nether_gold_ore",
+  "isTransparent": false
+}

@@ -1,0 +1,11 @@
+{
+  "id": 561,
+  "name": "dark_oak_leaves",
+  "displayName": "Dark Oak Leaves",
+  "category": "natural",
+  "texTop": "dark_oak_leaves",
+  "texBottom": "dark_oak_leaves",
+  "texSide": "dark_oak_leaves",
+  "tint": "foliage",
+  "isTransparent": true
+}

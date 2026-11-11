@@ -1,0 +1,10 @@
+{
+  "id": 314,
+  "name": "birch_planks",
+  "displayName": "Birch Planks",
+  "category": "building",
+  "texTop": "birch_planks",
+  "texBottom": "birch_planks",
+  "texSide": "birch_planks",
+  "isTransparent": false
+}

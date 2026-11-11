@@ -1,0 +1,10 @@
+{
+  "id": 105,
+  "name": "cracked_stone_bricks",
+  "displayName": "Cracked Stone Bricks",
+  "category": "building",
+  "texTop": "cracked_stone_bricks",
+  "texBottom": "cracked_stone_bricks",
+  "texSide": "cracked_stone_bricks",
+  "isTransparent": false
+}

@@ -1,0 +1,10 @@
+{
+  "id": 471,
+  "name": "orange_stained_glass",
+  "displayName": "Orange Stained Glass",
+  "category": "colored",
+  "texTop": "orange_stained_glass",
+  "texBottom": "orange_stained_glass",
+  "texSide": "orange_stained_glass",
+  "isTransparent": true
+}

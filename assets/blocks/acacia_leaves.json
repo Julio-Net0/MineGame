@@ -1,0 +1,11 @@
+{
+  "id": 560,
+  "name": "acacia_leaves",
+  "displayName": "Acacia Leaves",
+  "category": "natural",
+  "texTop": "acacia_leaves",
+  "texBottom": "acacia_leaves",
+  "texSide": "acacia_leaves",
+  "tint": "foliage",
+  "isTransparent": true
+}

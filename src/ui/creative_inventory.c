@@ -567,6 +567,6 @@ void DrawCreativeInventory(UiContext *Ctx, const InventoryInput *Input) {
     Hovered = State->DesiredHotbar[HoveredSlot];
   }
   if (Hovered != BLOCK_ID_AIR) {
-    DrawTooltip(Ctx, State, GetBlockDef(Hovered)->Name);
+    DrawTooltip(Ctx, State, GetBlockDef(Hovered)->DisplayName);
   }
 }

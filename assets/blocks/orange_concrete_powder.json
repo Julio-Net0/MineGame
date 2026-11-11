@@ -1,0 +1,10 @@
+{
+  "id": 438,
+  "name": "orange_concrete_powder",
+  "displayName": "Orange Concrete Powder",
+  "category": "colored",
+  "texTop": "orange_concrete_powder",
+  "texBottom": "orange_concrete_powder",
+  "texSide": "orange_concrete_powder",
+  "isTransparent": false
+}

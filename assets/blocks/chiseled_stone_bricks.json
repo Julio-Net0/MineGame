@@ -1,0 +1,10 @@
+{
+  "id": 106,
+  "name": "chiseled_stone_bricks",
+  "displayName": "Chiseled Stone Bricks",
+  "category": "building",
+  "texTop": "chiseled_stone_bricks",
+  "texBottom": "chiseled_stone_bricks",
+  "texSide": "chiseled_stone_bricks",
+  "isTransparent": false
+}

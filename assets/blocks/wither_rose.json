@@ -1,0 +1,11 @@
+{
+  "id": 611,
+  "name": "wither_rose",
+  "displayName": "Wither Rose",
+  "category": "natural",
+  "texTop": "wither_rose",
+  "texBottom": "wither_rose",
+  "texSide": "wither_rose",
+  "isTransparent": true,
+  "render": "cross"
+}

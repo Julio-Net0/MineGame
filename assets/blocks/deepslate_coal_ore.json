@@ -1,0 +1,10 @@
+{
+  "id": 201,
+  "name": "deepslate_coal_ore",
+  "displayName": "Deepslate Coal Ore",
+  "category": "natural",
+  "texTop": "deepslate_coal_ore",
+  "texBottom": "deepslate_coal_ore",
+  "texSide": "deepslate_coal_ore",
+  "isTransparent": false
+}

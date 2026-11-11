@@ -1,0 +1,10 @@
+{
+  "id": 236,
+  "name": "exposed_copper",
+  "displayName": "Exposed Copper",
+  "category": "building",
+  "texTop": "exposed_copper",
+  "texBottom": "exposed_copper",
+  "texSide": "exposed_copper",
+  "isTransparent": false
+}

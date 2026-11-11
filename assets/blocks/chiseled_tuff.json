@@ -1,0 +1,10 @@
+{
+  "id": 124,
+  "name": "chiseled_tuff",
+  "displayName": "Chiseled Tuff",
+  "category": "building",
+  "texTop": "chiseled_tuff_top",
+  "texBottom": "chiseled_tuff_top",
+  "texSide": "chiseled_tuff",
+  "isTransparent": false
+}

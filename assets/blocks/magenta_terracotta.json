@@ -1,0 +1,10 @@
+{
+  "id": 463,
+  "name": "magenta_terracotta",
+  "displayName": "Magenta Terracotta",
+  "category": "colored",
+  "texTop": "magenta_terracotta",
+  "texBottom": "magenta_terracotta",
+  "texSide": "magenta_terracotta",
+  "isTransparent": false
+}

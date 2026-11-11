@@ -1,0 +1,10 @@
+{
+  "id": 536,
+  "name": "honeycomb_block",
+  "displayName": "Honeycomb Block",
+  "category": "building",
+  "texTop": "honeycomb_block",
+  "texBottom": "honeycomb_block",
+  "texSide": "honeycomb_block",
+  "isTransparent": false
+}

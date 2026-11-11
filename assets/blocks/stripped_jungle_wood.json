@@ -1,0 +1,10 @@
+{
+  "id": 318,
+  "name": "stripped_jungle_wood",
+  "displayName": "Stripped Jungle Wood",
+  "category": "building",
+  "texTop": "stripped_jungle_log",
+  "texBottom": "stripped_jungle_log",
+  "texSide": "stripped_jungle_log",
+  "isTransparent": false
+}

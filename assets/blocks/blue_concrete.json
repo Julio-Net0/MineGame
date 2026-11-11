@@ -1,0 +1,10 @@
+{
+  "id": 428,
+  "name": "blue_concrete",
+  "displayName": "Blue Concrete",
+  "category": "colored",
+  "texTop": "blue_concrete",
+  "texBottom": "blue_concrete",
+  "texSide": "blue_concrete",
+  "isTransparent": false
+}

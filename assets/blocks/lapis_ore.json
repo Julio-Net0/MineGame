@@ -1,0 +1,10 @@
+{
+  "id": 212,
+  "name": "lapis_ore",
+  "displayName": "Lapis Ore",
+  "category": "natural",
+  "texTop": "lapis_ore",
+  "texBottom": "lapis_ore",
+  "texSide": "lapis_ore",
+  "isTransparent": false
+}

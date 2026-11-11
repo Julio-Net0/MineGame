@@ -1,0 +1,10 @@
+{
+  "id": 533,
+  "name": "red_mushroom_block",
+  "displayName": "Red Mushroom Block",
+  "category": "natural",
+  "texTop": "red_mushroom_block",
+  "texBottom": "red_mushroom_block",
+  "texSide": "red_mushroom_block",
+  "isTransparent": false
+}

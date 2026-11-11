@@ -68,6 +68,8 @@ typedef struct {
   Shader ChunkShaderCutout;
   // Atlas grid dimension chosen when the block icon atlas was built.
   int BlockIconGrid;
+  // Registered block textures that fell back to the checkerboard.
+  int MissingBlockTextures;
 
   int ChunkOriginLocOpaque;
   int ChunkOriginLocCutout;
@@ -167,6 +169,11 @@ static Image ResolveBlockTextureImage(const char *Name) {
   TraceLog(LOG_WARNING,
            "RENDER: Texture '%s' not found, using checkerboard fallback",
            (Name != NULL) ? Name : "<none>");
+  // Only a registered name counts: the single placeholder layer an empty
+  // registry gets is expected, not missing.
+  if (Name != NULL) {
+    GetBackendState()->MissingBlockTextures++;
+  }
   return GenImageChecked(MIN_TILE_SIZE, MIN_TILE_SIZE, CHECKER_HALF_SIZE,
                          CHECKER_HALF_SIZE, MAGENTA, BLACK);
 }
@@ -819,6 +826,10 @@ void RenderDrawDebugCube(Vec3 Pos, float Size, bool Wire, bool Solid) {
 // ---------------------------------------------------------------------------
 // UI layer
 // ---------------------------------------------------------------------------
+
+int RenderGetMissingBlockTextureCount(void) {
+  return GetBackendState()->MissingBlockTextures;
+}
 
 int RenderGetBlockIconGrid(void) {
   int Grid = GetBackendState()->BlockIconGrid;

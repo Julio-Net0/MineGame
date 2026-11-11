@@ -1,0 +1,11 @@
+{
+  "id": 601,
+  "name": "blue_orchid",
+  "displayName": "Blue Orchid",
+  "category": "natural",
+  "texTop": "blue_orchid",
+  "texBottom": "blue_orchid",
+  "texSide": "blue_orchid",
+  "isTransparent": true,
+  "render": "cross"
+}

@@ -1,0 +1,10 @@
+{
+  "id": 219,
+  "name": "coal_block",
+  "displayName": "Coal Block",
+  "category": "building",
+  "texTop": "coal_block",
+  "texBottom": "coal_block",
+  "texSide": "coal_block",
+  "isTransparent": false
+}

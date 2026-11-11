@@ -1,0 +1,10 @@
+{
+  "id": 350,
+  "name": "bamboo_block",
+  "displayName": "Bamboo Block",
+  "category": "building",
+  "texTop": "bamboo_block_top",
+  "texBottom": "bamboo_block_top",
+  "texSide": "bamboo_block",
+  "isTransparent": false
+}

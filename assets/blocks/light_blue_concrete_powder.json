@@ -1,0 +1,10 @@
+{
+  "id": 443,
+  "name": "light_blue_concrete_powder",
+  "displayName": "Light Blue Concrete Powder",
+  "category": "colored",
+  "texTop": "light_blue_concrete_powder",
+  "texBottom": "light_blue_concrete_powder",
+  "texSide": "light_blue_concrete_powder",
+  "isTransparent": false
+}

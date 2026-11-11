@@ -1,0 +1,11 @@
+{
+  "id": 559,
+  "name": "jungle_leaves",
+  "displayName": "Jungle Leaves",
+  "category": "natural",
+  "texTop": "jungle_leaves",
+  "texBottom": "jungle_leaves",
+  "texSide": "jungle_leaves",
+  "tint": "foliage",
+  "isTransparent": true
+}
