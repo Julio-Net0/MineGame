@@ -1,0 +1,14 @@
+{
+  "layers": [
+    { "block": "Stone" },
+    { "block": "deepslate", "below": -64, "band": 8 }
+  ],
+  "pocketCell": 32,
+  "pockets": [
+    { "block": "tuff", "minY": -511, "maxY": -69, "chance": 0.35, "radius": [5, 10] },
+    { "block": "granite", "minY": -59, "maxY": 640, "chance": 0.3, "radius": [4, 9] },
+    { "block": "diorite", "minY": -59, "maxY": 640, "chance": 0.3, "radius": [4, 9] },
+    { "block": "andesite", "minY": -59, "maxY": 640, "chance": 0.3, "radius": [4, 9] },
+    { "block": "calcite", "minY": -59, "maxY": 640, "chance": 0.08, "radius": [3, 6] }
+  ]
+}

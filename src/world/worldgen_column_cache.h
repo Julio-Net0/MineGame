@@ -8,7 +8,8 @@
 #include <stdint.h>
 
 // Per-thread cache of the 2D data a chunk column needs: the preliminary surface
-// of every block column and the climate of every biome cell column. Every cube
+// of every block column, and the climate and surface biome of every biome cell
+// column. Every cube
 // of a column shares it, so a column stacked dozens of cubes high samples its
 // 2D noise once instead of once per cube.
 //
@@ -42,8 +43,13 @@ typedef struct ColumnEntry {
   float BoundHigh;
   float BoundLow;
   int16_t Surface[CHUNK_SIZE][CHUNK_SIZE];
-  float Temperature[BIOME_CELLS_PER_CHUNK][BIOME_CELLS_PER_CHUNK];
-  float Humidity[BIOME_CELLS_PER_CHUNK][BIOME_CELLS_PER_CHUNK];
+  // Climate of each biome cell column (Depth 0), and the biome it resolves to
+  // anywhere in the surface depth band.
+  BiomeClimate Climate[BIOME_CELLS_PER_CHUNK][BIOME_CELLS_PER_CHUNK];
+  uint8_t SurfaceBiome[BIOME_CELLS_PER_CHUNK][BIOME_CELLS_PER_CHUNK];
+  // Preliminary floor at each biome cell's centre column: biome depth is
+  // measured from it.
+  int16_t CellFloor[BIOME_CELLS_PER_CHUNK][BIOME_CELLS_PER_CHUNK];
   int16_t MinSurface;
   int16_t MaxSurface;
 } ColumnEntry;

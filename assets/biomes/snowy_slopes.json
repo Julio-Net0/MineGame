@@ -1,0 +1,18 @@
+{
+  "id": 20,
+  "name": "Snowy Slopes",
+  "family": "highland",
+  "depth": [-1000.0, 11.0],
+  "temperature": [0.0, 0.15],
+  "continentalness": [0.05, 1.0],
+  "peaksValleys": [0.2, 0.7],
+  "surfaceBlock": "snow_block",
+  "subsurfaceBlock": "packed_ice",
+  "underwaterBlock": "gravel",
+  "subsurfaceDepth": 3,
+  "steepBlock": "Stone",
+  "frozenWater": true,
+  "grassTint": [128, 180, 151],
+  "foliageTint": [96, 161, 123],
+  "previewColor": [215, 230, 245]
+}

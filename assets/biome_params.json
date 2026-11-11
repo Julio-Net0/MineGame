@@ -1,6 +1,29 @@
 {
-  "scale": 0.008,
-  "octaves": 3,
-  "lacunarity": 2.0,
-  "gain": 0.5
+  "temperatureNoise": {
+    "kind": "opensimplex2",
+    "fractal": "fbm",
+    "octaves": 2,
+    "frequency": 0.0005,
+    "lacunarity": 2.0,
+    "gain": 0.5
+  },
+  "humidityNoise": {
+    "kind": "opensimplex2",
+    "fractal": "fbm",
+    "octaves": 2,
+    "frequency": 0.0006,
+    "lacunarity": 2.0,
+    "gain": 0.5
+  },
+  "axisWeights": {
+    "temperature": 1.0,
+    "humidity": 1.0,
+    "continentalness": 2.0,
+    "erosion": 1.0,
+    "weirdness": 1.0,
+    "peaksValleys": 1.0
+  },
+  "lapse": 0.0015,
+  "lapseStart": 80,
+  "steepSlope": 1.4
 }

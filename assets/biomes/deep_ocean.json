@@ -1,0 +1,15 @@
+{
+  "id": 4,
+  "name": "Deep Ocean",
+  "family": "ocean",
+  "depth": [-1000.0, 11.0],
+  "continentalness": [-1.0, -0.4],
+  "temperature": [0.2, 0.7],
+  "surfaceBlock": "gravel",
+  "subsurfaceBlock": "gravel",
+  "underwaterBlock": "gravel",
+  "subsurfaceDepth": 3,
+  "grassTint": [141, 179, 96],
+  "foliageTint": [119, 171, 47],
+  "previewColor": [10, 30, 110]
+}

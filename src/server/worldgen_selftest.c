@@ -4,6 +4,8 @@
 #include "persistence/world_save.h"
 #include "world/chunk.h"
 #include "world/feature.h"
+#include "world/block_system.h"
+#include "world/stone_filler.h"
 #include "world/surface.h"
 #include "world/terrain_density.h"
 #include "world/terrain_shape.h"
@@ -44,6 +46,7 @@ typedef struct {
   float MaxNoise;
   int FluidProbes;
   int FloodedWater;
+  int BiomeCells;
 } SelfTestScratch;
 
 enum {
@@ -68,11 +71,16 @@ static void GetTestColumn(int Index, int *ColumnX, int *ColumnZ) {
 static bool ClimateEqual(const ColumnEntry *Left, const ColumnEntry *Right) {
   for (int CellX = 0; CellX < BIOME_CELLS_PER_CHUNK; CellX++) {
     for (int CellZ = 0; CellZ < BIOME_CELLS_PER_CHUNK; CellZ++) {
-      bool SameTemperature = Left->Temperature[CellX][CellZ] ==
-                             Right->Temperature[CellX][CellZ];
-      bool SameHumidity =
-          Left->Humidity[CellX][CellZ] == Right->Humidity[CellX][CellZ];
-      if (!SameTemperature || !SameHumidity) {
+      const BiomeClimate *A = &Left->Climate[CellX][CellZ];
+      const BiomeClimate *B = &Right->Climate[CellX][CellZ];
+      for (int Axis = 0; Axis < CLIMATE_AXIS_COUNT; Axis++) {
+        if (A->Axes[Axis] != B->Axes[Axis]) {
+          return false;
+        }
+      }
+      if (A->Depth != B->Depth ||
+          Left->SurfaceBiome[CellX][CellZ] != Right->SurfaceBiome[CellX][CellZ] ||
+          Left->CellFloor[CellX][CellZ] != Right->CellFloor[CellX][CellZ]) {
         return false;
       }
     }
@@ -107,6 +115,18 @@ static bool SurfacesMatchPure(const ColumnEntry *Entry, uint64_t Seed) {
                                        (Entry->ColumnZ * CHUNK_SIZE) + LocalZ,
                                        Seed);
       if (Entry->Surface[LocalX][LocalZ] != Pure) {
+        return false;
+      }
+    }
+  }
+  for (int CellX = 0; CellX < BIOME_CELLS_PER_CHUNK; CellX++) {
+    for (int CellZ = 0; CellZ < BIOME_CELLS_PER_CHUNK; CellZ++) {
+      int Center = BIOME_CELL_SIZE / 2;
+      int Floor = GetPreliminaryFloor(
+          (Entry->ColumnX * CHUNK_SIZE) + (CellX * BIOME_CELL_SIZE) + Center,
+          (Entry->ColumnZ * CHUNK_SIZE) + (CellZ * BIOME_CELL_SIZE) + Center,
+          Seed);
+      if (Entry->CellFloor[CellX][CellZ] != Floor) {
         return false;
       }
     }
@@ -237,6 +257,33 @@ static bool CheckFluids(SelfTestScratch *Scratch, int ChunkX, int ChunkY,
   return true;
 }
 
+// Every biome map cell must be what the pure sampler gives anywhere in that
+// cell, whether the generator copied the column's cached surface biome or
+// resolved the cell itself.
+static bool CheckBiomeMap(SelfTestScratch *Scratch, int ChunkX, int ChunkY,
+                          int ChunkZ, uint64_t Seed) {
+  for (int CellX = 0; CellX < BIOME_CELLS_PER_CHUNK; CellX++) {
+    for (int CellY = 0; CellY < BIOME_CELLS_PER_CHUNK; CellY++) {
+      for (int CellZ = 0; CellZ < BIOME_CELLS_PER_CHUNK; CellZ++) {
+        int X = (ChunkX * CHUNK_SIZE) + (CellX * BIOME_CELL_SIZE);
+        int Y = (ChunkY * CHUNK_SIZE) + (CellY * BIOME_CELL_SIZE) +
+                (BIOME_CELL_SIZE - 1);
+        int Z = (ChunkZ * CHUNK_SIZE) + (CellZ * BIOME_CELL_SIZE) + 1;
+        int Pure = SampleBiomeAt(X, Y, Z, Seed, NULL);
+        int Stored = Scratch->Reference->BiomeMap[CellX][CellY][CellZ];
+        if (Pure != Stored) {
+          LogError("WORLDGEN_TEST: FAIL biome cell at (%d, %d, %d) holds %d, "
+                   "the pure sampler gives %d",
+                   X, Y, Z, Stored, Pure);
+          return false;
+        }
+        Scratch->BiomeCells++;
+      }
+    }
+  }
+  return true;
+}
+
 // The bound tier of classification assumes |n3| <= TERRAIN_NOISE_BOUND; sample
 // the 3D field at every grid corner of the cube to back that up.
 static bool CheckNoiseBound(SelfTestScratch *Scratch, int ChunkX, int ChunkY,
@@ -273,6 +320,9 @@ static bool CheckCube(SelfTestScratch *Scratch, int ChunkX, int ChunkY,
   CubeClass Class = GenerateCube(Scratch->Reference, ChunkX, ChunkY, ChunkZ,
                                  Cached, true, NULL);
   Scratch->ClassCounts[Class]++;
+  if (!CheckBiomeMap(Scratch, ChunkX, ChunkY, ChunkZ, Cached->Seed)) {
+    return false;
+  }
 
   (void)GenerateCube(Scratch->PerBlock, ChunkX, ChunkY, ChunkZ, Cached, false,
                      Scratch->Density);
@@ -453,6 +503,75 @@ static bool CheckFloodRegion(SelfTestScratch *Scratch, uint64_t Seed) {
   return false;
 }
 
+// The fast SOLID fill must match the per-block filler where a pocket reaches
+// the cube, and a cube crossing the stone-deepslate band must hold both. The
+// fixed test cubes need not hit either case, so both are searched for.
+static bool CheckFillerRegion(SelfTestScratch *Scratch, uint64_t Seed) {
+  enum { SEARCH_RADIUS = 4, SHALLOWEST = -6, DEEPEST = -30, BAND_CHUNK_Y = -5 };
+  bool FoundPocketSolid = false;
+  for (int ChunkY = SHALLOWEST; ChunkY >= DEEPEST && !FoundPocketSolid; ChunkY--) {
+    for (int ChunkX = -SEARCH_RADIUS; ChunkX <= SEARCH_RADIUS && !FoundPocketSolid;
+         ChunkX++) {
+      for (int ChunkZ = -SEARCH_RADIUS;
+           ChunkZ <= SEARCH_RADIUS && !FoundPocketSolid; ChunkZ++) {
+        FillerCube Filler;
+        FillerCubeInit(&Filler, ChunkX, ChunkY, ChunkZ, Seed);
+        if (Filler.PocketCount == 0) {
+          continue;
+        }
+        const ColumnEntry *Entry = ColumnCacheLookup(
+            GetColumnCache(COLUMN_CACHE_MAIN_SLOT), ChunkX, ChunkZ, Seed);
+        static ColumnEntry SEntry;
+        SEntry = *Entry;
+        if (GenerateCube(Scratch->Reference, ChunkX, ChunkY, ChunkZ, &SEntry,
+                         true, NULL) != CUBE_CLASS_SOLID) {
+          continue;
+        }
+        ColumnEntryFill(Scratch->Fresh, ChunkX, ChunkZ, Seed);
+        if (!CheckCube(Scratch, ChunkX, ChunkY, ChunkZ, &SEntry)) {
+          return false;
+        }
+        LogInfo("WORLDGEN_TEST: ok SOLID cube (%d, %d, %d) with %d pocket(s) "
+                "matches the per-block filler",
+                ChunkX, ChunkY, ChunkZ, Filler.PocketCount);
+        FoundPocketSolid = true;
+      }
+    }
+  }
+  if (!FoundPocketSolid) {
+    LogError("WORLDGEN_TEST: FAIL no SOLID cube reached by a pocket, so the "
+             "fast filler fill went unchecked");
+    return false;
+  }
+
+  BlockID Stone = (BlockID)GetBlockIdByName("Stone");
+  BlockID Deep = (BlockID)GetBlockIdByName("deepslate");
+  for (int ChunkX = -SEARCH_RADIUS; ChunkX <= SEARCH_RADIUS; ChunkX++) {
+    const ColumnEntry *Entry = ColumnCacheLookup(
+        GetColumnCache(COLUMN_CACHE_MAIN_SLOT), ChunkX, 0, Seed);
+    static ColumnEntry SEntry;
+    SEntry = *Entry;
+    (void)GenerateCube(Scratch->Reference, ChunkX, BAND_CHUNK_Y, 0, &SEntry,
+                       true, NULL);
+    int StoneCount = 0;
+    int DeepCount = 0;
+    for (size_t Idx = 0; Idx < CHUNK_VOLUME; Idx++) {
+      BlockID Block = (&Scratch->Reference->Data[0][0][0])[Idx];
+      StoneCount += (Block == Stone) ? 1 : 0;
+      DeepCount += (Block == Deep) ? 1 : 0;
+    }
+    if (StoneCount > 0 && DeepCount > 0) {
+      LogInfo("WORLDGEN_TEST: ok band cube (%d, %d, 0) holds %d stone and %d "
+              "deepslate blocks",
+              ChunkX, BAND_CHUNK_Y, StoneCount, DeepCount);
+      return true;
+    }
+  }
+  LogError("WORLDGEN_TEST: FAIL no cube in the stone-deepslate band holds "
+           "both blocks");
+  return false;
+}
+
 static bool RunChecks(SelfTestScratch *Scratch) {
   enum { PREPARED_SAMPLES = 512 };
   if (!CheckSplines()) {
@@ -478,7 +597,7 @@ static bool RunChecks(SelfTestScratch *Scratch) {
   }
 
   if (!CheckStructureRegion(Scratch, Seed) ||
-      !CheckFloodRegion(Scratch, Seed)) {
+      !CheckFloodRegion(Scratch, Seed) || !CheckFillerRegion(Scratch, Seed)) {
     return false;
   }
 
@@ -502,6 +621,8 @@ static bool RunChecks(SelfTestScratch *Scratch) {
   }
   LogInfo("WORLDGEN_TEST: ok density probe equals the generator at %d blocks",
           Scratch->ProbedBlocks);
+  LogInfo("WORLDGEN_TEST: ok %d biome map cells equal the pure sampler",
+          Scratch->BiomeCells);
   LogInfo("WORLDGEN_TEST: ok fluids match the probe at %d blocks; %d flooded "
           "water blocks, none beside dry air",
           Scratch->FluidProbes, Scratch->FloodedWater);
@@ -524,7 +645,8 @@ bool RunWorldgenSelfTest(void) {
       .NoiseSamples = 0,
       .MaxNoise = 0.0F,
       .FluidProbes = 0,
-      .FloodedWater = 0};
+      .FloodedWater = 0,
+      .BiomeCells = 0};
 
   bool Passed = false;
   if (Scratch.Reference == NULL || Scratch.PerBlock == NULL ||

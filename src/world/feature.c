@@ -141,6 +141,26 @@ static int CachedSurface(ColumnCache *Cache, int WorldX, int WorldZ,
                        [WorldZ - (ColumnZ * CHUNK_SIZE)];
 }
 
+// The biome SampleBiomeAt gives at (WorldX, Y, WorldZ), read from the column's
+// cache entry: the cell column's cached surface biome when the cell lies in the
+// surface depth band, otherwise a resolution of its cached climate. Either way
+// the same id as the pure sampler, without re-evaluating the terrain shape.
+static int CachedBiome(ColumnCache *Cache, int WorldX, int Y, int WorldZ,
+                       uint64_t Seed) {
+  int ColumnX = FloorDiv(WorldX, CHUNK_SIZE);
+  int ColumnZ = FloorDiv(WorldZ, CHUNK_SIZE);
+  const ColumnEntry *Entry = ColumnCacheLookup(Cache, ColumnX, ColumnZ, Seed);
+  int CellX = (WorldX - (ColumnX * CHUNK_SIZE)) / BIOME_CELL_SIZE;
+  int CellZ = (WorldZ - (ColumnZ * CHUNK_SIZE)) / BIOME_CELL_SIZE;
+  int Depth = Entry->CellFloor[CellX][CellZ] - BiomeCellCenter(Y);
+  if (BiomeInSurfaceBand(Depth)) {
+    return Entry->SurfaceBiome[CellX][CellZ];
+  }
+  BiomeClimate Climate = Entry->Climate[CellX][CellZ];
+  Climate.Depth = (float)Depth;
+  return ResolveBiome(&Climate);
+}
+
 // True when no structure anchored anywhere in the scanned column range can
 // reach this cube vertically.
 static bool CubeOutOfReach(const Chunk *ChunkVal, ColumnCache *Cache,
@@ -209,11 +229,12 @@ static bool ResolveCandidate(int CellX, int CellZ, uint64_t Seed,
     return false;
   }
 
-  // Resolve the biome at this column's surface (Depth ~= 0) through the pure
-  // sampler, so every chunk re-deriving this overhanging structure agrees on its
-  // prefab regardless of load order.
-  int BiomeId =
-      SampleBiomeAt(WorldX, Out->Surface, WorldZ, Out->Surface, Seed);
+  // Resolve the biome at this column's surface (Depth ~= 0) exactly as the pure
+  // sampler does, so every chunk re-deriving this overhanging structure agrees
+  // on its prefab regardless of load order.
+  int BiomeId = (Cache != NULL)
+                    ? CachedBiome(Cache, WorldX, Out->Surface, WorldZ, Seed)
+                    : SampleBiomeAt(WorldX, Out->Surface, WorldZ, Seed, NULL);
   const BiomeType *Biome = GetBiomeDef(BiomeId);
   if (Biome->StructureCount == 0 || Biome->StructureTotalWeight <= 0) {
     return false;

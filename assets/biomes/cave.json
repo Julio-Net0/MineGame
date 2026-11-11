@@ -1,14 +1,15 @@
 {
   "id": 3,
   "name": "Cave",
-  "temperature": [0.0, 1.0],
-  "humidity": [0.0, 1.0],
-  "depth": [8.0, 1000000.0],
-  "priority": 10,
+  "family": "underground",
+  "depth": [12.0, 1000000.0],
+  "humidity": [0.0, 0.7],
+  "continentalness": [-1.0, 0.6],
   "surfaceBlock": "Stone",
   "subsurfaceBlock": "Stone",
   "underwaterBlock": "Stone",
   "subsurfaceDepth": 1,
   "grassTint": [110, 120, 110],
-  "foliageTint": [90, 110, 90]
+  "foliageTint": [90, 110, 90],
+  "previewColor": [90, 90, 90]
 }

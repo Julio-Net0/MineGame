@@ -1,0 +1,32 @@
+{
+  "id": 16,
+  "name": "Savanna",
+  "family": "lowland",
+  "depth": [-1000.0, 11.0],
+  "temperature": [0.6, 0.7],
+  "humidity": [0.0, 0.6],
+  "continentalness": [-0.06, 1.0],
+  "peaksValleys": [-1.0, 0.2],
+  "surfaceBlock": "Grass",
+  "subsurfaceBlock": "coarse_dirt",
+  "underwaterBlock": "Sand",
+  "subsurfaceDepth": 3,
+  "grassTint": [191, 183, 85],
+  "foliageTint": [174, 164, 42],
+  "previewColor": [190, 180, 90],
+  "floraDensity": 0.3,
+  "flora": [
+    {
+      "block": "tall_dry_grass",
+      "weight": 4
+    },
+    {
+      "block": "short_dry_grass",
+      "weight": 4
+    },
+    {
+      "block": "TallGrass",
+      "weight": 3
+    }
+  ]
+}

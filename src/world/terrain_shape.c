@@ -575,3 +575,45 @@ bool TerrainShapeSelfCheck(char *Failure, int FailureSize, int *OutChecked) {
   *OutChecked = Checked;
   return true;
 }
+
+static int FloorToLattice(int Value) {
+  int Quotient = Value / SHAPE_LATTICE_STEP;
+  if ((Value % SHAPE_LATTICE_STEP != 0) && (Value < 0)) {
+    Quotient--;
+  }
+  return Quotient * SHAPE_LATTICE_STEP;
+}
+
+int GetPreliminarySurface(int GlobalX, int GlobalZ, uint64_t Seed) {
+  int X0 = FloorToLattice(GlobalX);
+  int Z0 = FloorToLattice(GlobalZ);
+  float Fx = (float)(GlobalX - X0) / (float)SHAPE_LATTICE_STEP;
+  float Fz = (float)(GlobalZ - Z0) / (float)SHAPE_LATTICE_STEP;
+
+  float B00 = EvaluateColumnShape(X0, Z0, Seed).Base;
+  float B10 = EvaluateColumnShape(X0 + SHAPE_LATTICE_STEP, Z0, Seed).Base;
+  float B01 = EvaluateColumnShape(X0, Z0 + SHAPE_LATTICE_STEP, Seed).Base;
+  float B11 = EvaluateColumnShape(X0 + SHAPE_LATTICE_STEP,
+                                  Z0 + SHAPE_LATTICE_STEP, Seed)
+                  .Base;
+  return (int)floorf(ShapeBilinear(B00, B10, B01, B11, Fx, Fz));
+}
+
+int GetPreliminaryFloor(int GlobalX, int GlobalZ, uint64_t Seed) {
+  int X0 = FloorToLattice(GlobalX);
+  int Z0 = FloorToLattice(GlobalZ);
+  float Fx = (float)(GlobalX - X0) / (float)SHAPE_LATTICE_STEP;
+  float Fz = (float)(GlobalZ - Z0) / (float)SHAPE_LATTICE_STEP;
+
+  float Levels[2][2];
+  for (int Ix = 0; Ix < 2; Ix++) {
+    for (int Iz = 0; Iz < 2; Iz++) {
+      ColumnShape Shape =
+          EvaluateColumnShape(X0 + (Ix * SHAPE_LATTICE_STEP),
+                              Z0 + (Iz * SHAPE_LATTICE_STEP), Seed);
+      Levels[Ix][Iz] = ShapeFloorLevel(Shape.Base, Shape.Variation);
+    }
+  }
+  return (int)floorf(ShapeBilinear(Levels[0][0], Levels[1][0], Levels[0][1],
+                                   Levels[1][1], Fx, Fz));
+}

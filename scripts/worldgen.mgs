@@ -8,8 +8,11 @@
 # the generation ceiling, produced by the real generator into scratch chunks.
 # spawn_worldgen.json: surface range, cube classes, timing, and the bedrock-floor
 # and ceiling checks the regression runner asserts.
+# world_biomes.png / world_biomes.json: 8192 x 8192 blocks of surface biomes at
+# one sample per 16 blocks, with the coverage the runner asserts.
 
 wait loaded
 worldgen_preview spawn spawn spawn 256
+worldgen_biome_map world spawn spawn 8192 16
 state worldgen
 quit

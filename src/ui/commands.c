@@ -393,30 +393,22 @@ static void CommandBiome(const char *Args, CommandContext *Ctx) {
   int PosZ = (int)__builtin_floorf(Ctx->Player->Position.z);
 
   uint64_t SeedVal = GetWorldSeed();
-  // The Depth axis is measured against the terrain surface, so the height must
-  // come from the same field generation used, not from the player's own Y.
-  int TerrainHeight = GetPreliminarySurface(PosX, PosZ, SeedVal);
-
-  BiomeClimate Climate =
-      SampleBiomeClimate(PosX, PosY, PosZ, TerrainHeight, SeedVal);
-  int BiomeId = ResolveBiome(Climate);
+  BiomeClimate Climate;
+  int BiomeId = SampleBiomeAt(PosX, PosY, PosZ, SeedVal, &Climate);
   const BiomeType *Biome = GetBiomeDef(BiomeId);
+  const float *Axes = Climate.Axes;
 
   char Msg[MSG_BUFFER_SIZE];
-  if (Biome->Id < 0) {
-    snprintf(Msg, sizeof(Msg),
-             "No biomes loaded | T:%.3f H:%.3f D:%.0f (surface Y:%d)",
-             (double)Climate.Temperature, (double)Climate.Humidity,
-             (double)Climate.Depth, TerrainHeight);
-    ReturnCommand(Ctx->Chat, LOG_LEVEL_WARN, Msg);
-    return;
-  }
-
   snprintf(Msg, sizeof(Msg),
-           "Biome: %s [%d] | T:%.3f H:%.3f D:%.0f (surface Y:%d)", Biome->Name,
-           BiomeId, (double)Climate.Temperature, (double)Climate.Humidity,
-           (double)Climate.Depth, TerrainHeight);
-  ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
+           "Biome: %s [%d] | T:%.3f H:%.3f C:%.3f E:%.3f W:%.3f PV:%.3f "
+           "D:%.0f",
+           (Biome->Id < 0) ? "(none loaded)" : Biome->Name, BiomeId,
+           (double)Axes[CLIMATE_TEMPERATURE], (double)Axes[CLIMATE_HUMIDITY],
+           (double)Axes[CLIMATE_CONTINENTALNESS], (double)Axes[CLIMATE_EROSION],
+           (double)Axes[CLIMATE_WEIRDNESS], (double)Axes[CLIMATE_PEAKS_VALLEYS],
+           (double)Climate.Depth);
+  ReturnCommand(Ctx->Chat, (Biome->Id < 0) ? LOG_LEVEL_WARN : LOG_LEVEL_INFO,
+                Msg);
 }
 
 static void CommandGuiScale(const char *Args, CommandContext *Ctx) {

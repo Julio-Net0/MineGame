@@ -45,9 +45,11 @@ enum {
   SCRIPT_MAX_STEPS = 512,
   SCRIPT_MAX_TEXT = CHAT_MAX_INPUT_CHARS,
   SCRIPT_MAX_NAME = 64,
-  // worldgen_preview <name> <centerX> <centerZ> <size> is the longest form.
   WORLDGEN_PREVIEW_TOKENS = 5,
-  SCRIPT_MAX_TOKENS = WORLDGEN_PREVIEW_TOKENS,
+  // worldgen_biome_map <name> <centerX> <centerZ> <size> <step> is the
+  // longest form.
+  WORLDGEN_BIOME_MAP_TOKENS = 6,
+  SCRIPT_MAX_TOKENS = WORLDGEN_BIOME_MAP_TOKENS,
   SCRIPT_LOG_LINE_CHARS = 512,
   SCRIPT_DECIMAL_BASE = 10,
 
@@ -83,6 +85,7 @@ typedef enum {
   SCRIPT_OP_STATE,
   SCRIPT_OP_INVENTORY,
   SCRIPT_OP_WORLDGEN_PREVIEW,
+  SCRIPT_OP_WORLDGEN_BIOME_MAP,
   SCRIPT_OP_QUIT
 } ScriptOpKind;
 
@@ -127,8 +130,9 @@ typedef struct {
   int Index;
   float Yaw;
   float Pitch;
-  // worldgen_preview center column, or the generator-derived spawn column when
-  // PreviewAtSpawn is set; its size travels in Count.
+  // worldgen_preview / worldgen_biome_map center column, or the
+  // generator-derived spawn column when PreviewAtSpawn is set; the size travels
+  // in Count and the biome map's step in Index.
   int PreviewX;
   int PreviewZ;
   bool PreviewAtSpawn;
@@ -413,6 +417,52 @@ static bool IsSafeOutputName(const char *Name) {
   return true;
 }
 
+// "worldgen_biome_map <name> <centerX|spawn> <centerZ|spawn> <size> <step>".
+static bool ParseWorldgenBiomeMap(char **Tokens, int TokenCount, int LineNumber,
+                                  const char *LineText) {
+  if (TokenCount != WORLDGEN_BIOME_MAP_TOKENS) {
+    ParseError(LineNumber, "expected \"worldgen_biome_map <name> <centerX> "
+                           "<centerZ> <size> <step>\" (center may be \"spawn "
+                           "spawn\")");
+    return false;
+  }
+  if (!IsSafeOutputName(Tokens[1])) {
+    ParseError(LineNumber, "worldgen_biome_map name must be 1-63 characters "
+                           "of [A-Za-z0-9_-]");
+    return false;
+  }
+
+  int CenterX = 0;
+  int CenterZ = 0;
+  int Size = 0;
+  int Step = 0;
+  bool AtSpawn = CompareString(Tokens[2], "spawn") == 0 &&
+                 CompareString(Tokens[3], "spawn") == 0;
+  if ((!AtSpawn && (!ParseSignedInt(Tokens[2], &CenterX) ||
+                    !ParseSignedInt(Tokens[3], &CenterZ))) ||
+      !ParseSignedInt(Tokens[4], &Size) ||
+      !ParseSignedInt(Tokens[WORLDGEN_BIOME_MAP_TOKENS - 1], &Step)) {
+    ParseError(LineNumber, "worldgen_biome_map center must be two integers or "
+                           "\"spawn spawn\", and size and step integers");
+    return false;
+  }
+  if (Size <= 0 || Step <= 0 || Size % Step != 0 ||
+      Size / Step > WORLDGEN_PREVIEW_MAX_SIZE) {
+    ParseError(LineNumber, "worldgen_biome_map size must be a positive "
+                           "multiple of step with size / step <= 1024");
+    return false;
+  }
+
+  return AppendStatement((ScriptStatement){.Kind = SCRIPT_OP_WORLDGEN_BIOME_MAP,
+                                           .Line = LineNumber,
+                                           .Count = Size,
+                                           .Index = Step,
+                                           .PreviewX = CenterX,
+                                           .PreviewZ = CenterZ,
+                                           .PreviewAtSpawn = AtSpawn},
+                         Tokens[1], LineText);
+}
+
 // "inventory <action> [argument]". Arguments are validated here; whether the
 // action can apply (the screen open, the entry present) is only known when the
 // statement runs.
@@ -632,6 +682,10 @@ static bool ParseStatement(char *Statement, int LineNumber) {
 
   if (CompareString(Tokens[0], "worldgen_preview") == 0) {
     return ParseWorldgenPreview(Tokens, TokenCount, LineNumber, LineText);
+  }
+
+  if (CompareString(Tokens[0], "worldgen_biome_map") == 0) {
+    return ParseWorldgenBiomeMap(Tokens, TokenCount, LineNumber, LineText);
   }
 
   bool IsScreenshot = CompareString(Tokens[0], "screenshot") == 0;
@@ -1324,6 +1378,25 @@ void ScriptStep(ChatState *Chat, GameCamera *Camera, Player *PlayerVal,
       ScriptLog("      | wrote %s_height.png, %s_biome.png, %s_slice.png and "
                 "%s_worldgen.json",
                 Step->Name, Step->Name, Step->Name, Step->Name);
+      break;
+    }
+    case SCRIPT_OP_WORLDGEN_BIOME_MAP: {
+      char Reason[WORLDGEN_PREVIEW_ERROR_CHARS];
+      int CenterX = Step->PreviewX;
+      int CenterZ = Step->PreviewZ;
+      if (Step->PreviewAtSpawn) {
+        SpawnPoint Spawn = FindSpawnColumn(GetWorldSeed());
+        CenterX = Spawn.X;
+        CenterZ = Spawn.Z;
+      }
+      if (!WorldgenBiomeMapWrite(State->OutDir, Step->Name, CenterX, CenterZ,
+                                 Step->Count, Step->Index, Reason,
+                                 (int)sizeof(Reason))) {
+        ScriptFail(Step->Line, Reason);
+        return;
+      }
+      ScriptLog("      | wrote %s_biomes.png and %s_biomes.json", Step->Name,
+                Step->Name);
       break;
     }
     case SCRIPT_OP_SCREENSHOT:

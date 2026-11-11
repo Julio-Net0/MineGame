@@ -1,0 +1,16 @@
+{
+  "id": 9,
+  "name": "Snowy Beach",
+  "family": "coast",
+  "depth": [-1000.0, 11.0],
+  "continentalness": [-0.11, -0.06],
+  "temperature": [0.0, 0.2],
+  "surfaceBlock": "snow_block",
+  "subsurfaceBlock": "Sand",
+  "underwaterBlock": "Sand",
+  "subsurfaceDepth": 4,
+  "frozenWater": true,
+  "grassTint": [128, 180, 151],
+  "foliageTint": [96, 161, 123],
+  "previewColor": [225, 225, 210]
+}

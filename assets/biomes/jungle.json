@@ -1,0 +1,39 @@
+{
+  "id": 18,
+  "name": "Jungle",
+  "family": "lowland",
+  "depth": [-1000.0, 11.0],
+  "temperature": [0.62, 1.0],
+  "humidity": [0.6, 1.0],
+  "continentalness": [-0.06, 1.0],
+  "peaksValleys": [-1.0, 0.2],
+  "surfaceBlock": "Grass",
+  "subsurfaceBlock": "Dirt",
+  "underwaterBlock": "Sand",
+  "subsurfaceDepth": 3,
+  "grassTint": [89, 201, 60],
+  "foliageTint": [48, 187, 11],
+  "previewColor": [30, 150, 20],
+  "floraDensity": 0.5,
+  "flora": [
+    {
+      "block": "TallGrass",
+      "weight": 8
+    },
+    {
+      "block": "fern",
+      "weight": 6
+    },
+    {
+      "block": "bush",
+      "weight": 3
+    }
+  ],
+  "structureDensity": 0.5,
+  "structures": [
+    {
+      "prefab": "oak_small",
+      "weight": 1
+    }
+  ]
+}

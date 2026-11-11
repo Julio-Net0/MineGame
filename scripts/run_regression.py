@@ -96,7 +96,7 @@ def assert_png(path: Path, width: int = EXPECTED_WIDTH, height: int = EXPECTED_H
 EXPECTED_RENDERED: dict[int, dict[str, int]] = {
     # Only the current generator's counts are kept: every terrain change
     # replaces them, and an older version's numbers could only mislead.
-    3: {
+    4: {
         "spawn": 357,
         "far": 33,
         "after_ticks": 33,
@@ -403,6 +403,11 @@ WORLDGEN_PREVIEW_SIZE = 256
 # One pixel per Y from the bedrock floor (-516) to the generation ceiling (640).
 WORLDGEN_SLICE_HEIGHT = 1157
 OVERWORLD_MIN_Y = -511
+# worldgen_biome_map world spawn spawn 8192 16: 512 samples per side.
+BIOME_MAP_SIDE = 512
+BIOME_MIN_DISTINCT = 14
+BIOME_MAX_LAND_SHARE = 0.35
+BIOME_MIN_FAMILY_MATCH = 0.9
 
 
 def verify_worldgen(out_dir: Path, _run_log: str) -> None:
@@ -430,6 +435,27 @@ def verify_worldgen(out_dir: Path, _run_log: str) -> None:
     )
     require(stats["lavaBlocks"] > 0, "worldgen: the slice holds no lava")
     require(stats["caveWaterBlocks"] > 0, "worldgen: the slice holds no flooded cave water")
+    require(stats["deepslateBlocks"] > 0, "worldgen: the slice holds no deepslate")
+
+    assert_png(out_dir / "world_biomes.png", BIOME_MAP_SIDE, BIOME_MAP_SIDE)
+    coverage = load_json(out_dir / "world_biomes.json")
+    require(
+        coverage["distinctBiomes"] >= BIOME_MIN_DISTINCT,
+        f"worldgen: biome map shows {coverage['distinctBiomes']} biomes, expected at least {BIOME_MIN_DISTINCT}",
+    )
+    largest = max(coverage["biomes"], key=lambda biome: biome["landFraction"])
+    require(
+        largest["landFraction"] <= BIOME_MAX_LAND_SHARE,
+        f"worldgen: {largest['name']} covers {largest['landFraction']:.3f} of the land, above {BIOME_MAX_LAND_SHARE}",
+    )
+    require(
+        coverage["oceanWetFraction"] >= BIOME_MIN_FAMILY_MATCH,
+        f"worldgen: only {coverage['oceanWetFraction']:.3f} of ocean-biome cells lie below sea level",
+    )
+    require(
+        coverage["peakHighFraction"] >= BIOME_MIN_FAMILY_MATCH,
+        f"worldgen: only {coverage['peakHighFraction']:.3f} of peak-biome cells lie above sea level + 64",
+    )
 
     state = load_json(out_dir / "worldgen.json")
     classes = state["worldgen"]["cubeClasses"]

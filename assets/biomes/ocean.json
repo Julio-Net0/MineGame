@@ -1,0 +1,15 @@
+{
+  "id": 5,
+  "name": "Ocean",
+  "family": "ocean",
+  "depth": [-1000.0, 11.0],
+  "continentalness": [-0.4, -0.11],
+  "temperature": [0.2, 0.7],
+  "surfaceBlock": "Sand",
+  "subsurfaceBlock": "Sand",
+  "underwaterBlock": "gravel",
+  "subsurfaceDepth": 3,
+  "grassTint": [141, 179, 96],
+  "foliageTint": [119, 171, 47],
+  "previewColor": [30, 60, 170]
+}

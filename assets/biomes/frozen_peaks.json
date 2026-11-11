@@ -1,0 +1,20 @@
+{
+  "id": 22,
+  "name": "Frozen Peaks",
+  "family": "peak",
+  "depth": [-1000.0, 11.0],
+  "temperature": [0.0, 0.35],
+  "erosion": [-1.0, -0.3],
+  "weirdness": [-1.0, 0.0],
+  "continentalness": [0.12, 1.0],
+  "peaksValleys": [0.7, 1.0],
+  "surfaceBlock": "packed_ice",
+  "subsurfaceBlock": "snow_block",
+  "underwaterBlock": "gravel",
+  "subsurfaceDepth": 3,
+  "steepBlock": "packed_ice",
+  "frozenWater": true,
+  "grassTint": [128, 180, 151],
+  "foliageTint": [96, 161, 123],
+  "previewColor": [170, 200, 240]
+}

@@ -1,24 +1,43 @@
 {
   "id": 0,
   "name": "Plains",
-  "temperature": [0.0, 1.0],
-  "humidity": [0.0, 0.52],
-  "depth": [-1000.0, 1000000.0],
-  "priority": 0,
+  "family": "lowland",
+  "depth": [-1000.0, 11.0],
+  "temperature": [0.2, 0.6],
+  "humidity": [0.0, 0.4],
+  "continentalness": [-0.06, 1.0],
+  "peaksValleys": [-1.0, 0.2],
   "surfaceBlock": "Grass",
   "subsurfaceBlock": "Dirt",
   "underwaterBlock": "Sand",
   "subsurfaceDepth": 3,
   "grassTint": [141, 179, 96],
   "foliageTint": [119, 171, 47],
+  "previewColor": [141, 190, 90],
   "floraDensity": 0.28,
   "flora": [
-    { "block": "TallGrass", "weight": 10 },
-    { "block": "Flower", "weight": 2 },
-    { "block": "Flower2", "weight": 2 }
+    {
+      "block": "TallGrass",
+      "weight": 10
+    },
+    {
+      "block": "Flower",
+      "weight": 2
+    },
+    {
+      "block": "Flower2",
+      "weight": 2
+    },
+    {
+      "block": "oxeye_daisy",
+      "weight": 1
+    }
   ],
   "structureDensity": 0.35,
   "structures": [
-    { "prefab": "oak_small", "weight": 1 }
+    {
+      "prefab": "oak_small",
+      "weight": 1
+    }
   ]
 }

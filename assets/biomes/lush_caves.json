@@ -1,0 +1,15 @@
+{
+  "id": 25,
+  "name": "Lush Caves",
+  "family": "underground",
+  "depth": [12.0, 1000000.0],
+  "humidity": [0.7, 1.0],
+  "continentalness": [-1.0, 0.6],
+  "surfaceBlock": "moss_block",
+  "subsurfaceBlock": "clay",
+  "underwaterBlock": "clay",
+  "subsurfaceDepth": 2,
+  "grassTint": [90, 170, 60],
+  "foliageTint": [70, 160, 40],
+  "previewColor": [80, 160, 80]
+}

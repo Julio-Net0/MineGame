@@ -10,29 +10,6 @@ enum {
   SPAWN_DROP_HEIGHT = 3
 };
 
-static int FloorToLattice(int Value) {
-  int Quotient = Value / SHAPE_LATTICE_STEP;
-  if ((Value % SHAPE_LATTICE_STEP != 0) && (Value < 0)) {
-    Quotient--;
-  }
-  return Quotient * SHAPE_LATTICE_STEP;
-}
-
-int GetPreliminarySurface(int GlobalX, int GlobalZ, uint64_t Seed) {
-  int X0 = FloorToLattice(GlobalX);
-  int Z0 = FloorToLattice(GlobalZ);
-  float Fx = (float)(GlobalX - X0) / (float)SHAPE_LATTICE_STEP;
-  float Fz = (float)(GlobalZ - Z0) / (float)SHAPE_LATTICE_STEP;
-
-  float B00 = EvaluateColumnShape(X0, Z0, Seed).Base;
-  float B10 = EvaluateColumnShape(X0 + SHAPE_LATTICE_STEP, Z0, Seed).Base;
-  float B01 = EvaluateColumnShape(X0, Z0 + SHAPE_LATTICE_STEP, Seed).Base;
-  float B11 = EvaluateColumnShape(X0 + SHAPE_LATTICE_STEP,
-                                  Z0 + SHAPE_LATTICE_STEP, Seed)
-                  .Base;
-  return (int)floorf(ShapeBilinear(B00, B10, B01, B11, Fx, Fz));
-}
-
 // A column qualifies when its terrain top is above sea level. The preliminary
 // surface is checked first: it is far cheaper, and a column whose 2D estimate
 // lies under the sea is skipped without probing the 3D field.

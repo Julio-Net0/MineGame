@@ -1,0 +1,17 @@
+{
+  "id": 7,
+  "name": "Frozen Ocean",
+  "family": "ocean",
+  "depth": [-1000.0, 11.0],
+  "continentalness": [-1.0, -0.11],
+  "temperature": [0.0, 0.2],
+  "surfaceBlock": "gravel",
+  "subsurfaceBlock": "gravel",
+  "underwaterBlock": "gravel",
+  "subsurfaceDepth": 3,
+  "frozenWater": true,
+  "grassTint": [128, 180, 151],
+  "foliageTint": [96, 161, 123],
+  "waterTint": [57, 56, 201],
+  "previewColor": [120, 150, 200]
+}

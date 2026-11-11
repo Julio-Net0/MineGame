@@ -1,0 +1,40 @@
+{
+  "id": 12,
+  "name": "Birch Forest",
+  "family": "lowland",
+  "depth": [-1000.0, 11.0],
+  "temperature": [0.4, 0.62],
+  "humidity": [0.4, 0.75],
+  "weirdness": [0.25, 1.0],
+  "continentalness": [-0.06, 1.0],
+  "peaksValleys": [-1.0, 0.2],
+  "surfaceBlock": "Grass",
+  "subsurfaceBlock": "Dirt",
+  "underwaterBlock": "Sand",
+  "subsurfaceDepth": 3,
+  "grassTint": [120, 175, 80],
+  "foliageTint": [128, 167, 85],
+  "previewColor": [120, 170, 100],
+  "floraDensity": 0.22,
+  "flora": [
+    {
+      "block": "TallGrass",
+      "weight": 10
+    },
+    {
+      "block": "lily_of_the_valley",
+      "weight": 1
+    },
+    {
+      "block": "Flower",
+      "weight": 1
+    }
+  ],
+  "structureDensity": 0.4,
+  "structures": [
+    {
+      "prefab": "oak_small",
+      "weight": 1
+    }
+  ]
+}

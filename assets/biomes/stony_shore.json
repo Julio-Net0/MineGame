@@ -1,0 +1,17 @@
+{
+  "id": 10,
+  "name": "Stony Shore",
+  "family": "coast",
+  "depth": [-1000.0, 11.0],
+  "continentalness": [-0.11, -0.06],
+  "temperature": [0.2, 1.0],
+  "erosion": [-1.0, -0.3],
+  "surfaceBlock": "gravel",
+  "subsurfaceBlock": "Stone",
+  "underwaterBlock": "gravel",
+  "subsurfaceDepth": 3,
+  "steepBlock": "Stone",
+  "grassTint": [141, 179, 96],
+  "foliageTint": [119, 171, 47],
+  "previewColor": [110, 110, 110]
+}

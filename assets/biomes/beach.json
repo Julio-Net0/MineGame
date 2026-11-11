@@ -1,0 +1,16 @@
+{
+  "id": 8,
+  "name": "Beach",
+  "family": "coast",
+  "depth": [-1000.0, 11.0],
+  "continentalness": [-0.11, -0.06],
+  "temperature": [0.2, 1.0],
+  "erosion": [-0.3, 1.0],
+  "surfaceBlock": "Sand",
+  "subsurfaceBlock": "Sand",
+  "underwaterBlock": "Sand",
+  "subsurfaceDepth": 4,
+  "grassTint": [141, 179, 96],
+  "foliageTint": [119, 171, 47],
+  "previewColor": [250, 240, 180]
+}

@@ -1,0 +1,33 @@
+{
+  "id": 13,
+  "name": "Taiga",
+  "family": "lowland",
+  "depth": [-1000.0, 11.0],
+  "temperature": [0.2, 0.4],
+  "humidity": [0.4, 1.0],
+  "continentalness": [-0.06, 1.0],
+  "peaksValleys": [-1.0, 0.2],
+  "surfaceBlock": "podzol",
+  "subsurfaceBlock": "Dirt",
+  "underwaterBlock": "gravel",
+  "subsurfaceDepth": 3,
+  "steepBlock": "Stone",
+  "grassTint": [104, 156, 98],
+  "foliageTint": [80, 128, 88],
+  "previewColor": [50, 100, 80],
+  "floraDensity": 0.25,
+  "flora": [
+    {
+      "block": "fern",
+      "weight": 6
+    },
+    {
+      "block": "TallGrass",
+      "weight": 3
+    },
+    {
+      "block": "brown_mushroom",
+      "weight": 1
+    }
+  ]
+}

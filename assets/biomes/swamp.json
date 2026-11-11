@@ -1,0 +1,45 @@
+{
+  "id": 15,
+  "name": "Swamp",
+  "family": "lowland",
+  "depth": [-1000.0, 11.0],
+  "temperature": [0.4, 0.62],
+  "humidity": [0.75, 1.0],
+  "erosion": [0.0, 1.0],
+  "continentalness": [-0.06, 1.0],
+  "peaksValleys": [-1.0, 0.2],
+  "surfaceBlock": "Grass",
+  "subsurfaceBlock": "Dirt",
+  "underwaterBlock": "mud",
+  "subsurfaceDepth": 3,
+  "grassTint": [106, 112, 57],
+  "foliageTint": [106, 112, 57],
+  "waterTint": [97, 123, 100],
+  "previewColor": [70, 90, 50],
+  "floraDensity": 0.3,
+  "flora": [
+    {
+      "block": "TallGrass",
+      "weight": 6
+    },
+    {
+      "block": "blue_orchid",
+      "weight": 2
+    },
+    {
+      "block": "brown_mushroom",
+      "weight": 1
+    },
+    {
+      "block": "red_mushroom",
+      "weight": 1
+    }
+  ],
+  "structureDensity": 0.2,
+  "structures": [
+    {
+      "prefab": "oak_small",
+      "weight": 1
+    }
+  ]
+}

@@ -10,6 +10,7 @@
 #include "world/block_system.h"
 #include "world/chunk.h"
 #include "world/feature.h"
+#include "world/stone_filler.h"
 #include "world/surface.h"
 #include "world/terrain_shape.h"
 #include "world/worldgen_column_cache.h"
@@ -18,6 +19,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 enum {
   RGB_CHANNELS = 3,
@@ -45,6 +47,7 @@ typedef struct {
   int DirtId;
   int SandId;
   int LavaId;
+  int DeepslateId;
 } PreviewPalette;
 
 enum {
@@ -76,6 +79,8 @@ typedef struct {
   // Water below the ocean band: flooded caves.
   int CaveWaterBlocks;
   int LavaBlocks;
+  int DeepslateBlocks;
+  int PocketBlocks;
 } SliceStats;
 
 static int FloorDiv(int Numerator, int Denominator) {
@@ -111,6 +116,7 @@ static PreviewColor BlockColor(const PreviewPalette *Palette, int BlockId) {
   const PreviewColor DIRT = {130, 90, 50};
   const PreviewColor SAND = {220, 210, 150};
   const PreviewColor LAVA = {230, 90, 20};
+  const PreviewColor DEEPSLATE = {70, 70, 82};
 
   if (BlockId == 0) {
     return SKY;
@@ -132,6 +138,9 @@ static PreviewColor BlockColor(const PreviewPalette *Palette, int BlockId) {
   }
   if (BlockId == Palette->LavaId) {
     return LAVA;
+  }
+  if (BlockId == Palette->DeepslateId) {
+    return DEEPSLATE;
   }
   if (BlockId == Palette->SandId) {
     return SAND;
@@ -157,6 +166,15 @@ static bool WritePng(const char *OutDir, const char *Name, const char *Suffix,
   }
   return StbWritePng(Path, Width, Height, RGB_CHANNELS, Pixels,
                      Width * RGB_CHANNELS);
+}
+
+// The biome's declared preview color, or a stable hash color when it has none.
+static PreviewColor BiomePreviewColor(int BiomeId) {
+  Color8 Declared = GetBiomeDef(BiomeId)->PreviewColor;
+  if (Declared.A == 0) {
+    return HashColor((uint64_t)BiomeId);
+  }
+  return (PreviewColor){Declared.R, Declared.G, Declared.B};
 }
 
 // Height and biome maps come from the pure samplers: they are 2D by definition
@@ -210,8 +228,8 @@ static bool WriteSurfaceMaps(const char *OutDir, const char *Name, int OriginX,
         PutPixel(Height, Size, Px, Pz, Shade);
 
         int BiomeId =
-            SampleBiomeAt(OriginX + Px, Surface, OriginZ + Pz, Surface, Seed);
-        PutPixel(Biomes, Size, Px, Pz, HashColor((uint64_t)BiomeId));
+            SampleBiomeAt(OriginX + Px, Surface, OriginZ + Pz, Seed, NULL);
+        PutPixel(Biomes, Size, Px, Pz, BiomePreviewColor(BiomeId));
       }
     }
 
@@ -279,6 +297,7 @@ static void ResolvePalette(PreviewPalette *Palette) {
   Palette->DirtId = GetBlockIdByName("Dirt");
   Palette->SandId = GetBlockIdByName("Sand");
   Palette->LavaId = GetBlockIdByName("Lava");
+  Palette->DeepslateId = GetBlockIdByName("deepslate");
 }
 
 static bool WriteSlice(const char *OutDir, const char *Name, int OriginX,
@@ -337,6 +356,9 @@ static bool WriteSlice(const char *OutDir, const char *Name, int OriginX,
           }
           Stats->WaterBlocks += (BlockId == Palette.WaterId) ? 1 : 0;
           Stats->LavaBlocks += (BlockId == Palette.LavaId) ? 1 : 0;
+          Stats->DeepslateBlocks += (BlockId == Palette.DeepslateId) ? 1 : 0;
+          Stats->PocketBlocks +=
+              (BlockId != 0 && FillerIsPocketBlock((BlockID)BlockId)) ? 1 : 0;
           Stats->CaveWaterBlocks +=
               (BlockId == Palette.WaterId && GlobalY < CaveTop) ? 1 : 0;
           int Band = (GlobalY - OverworldFloor) / CAVE_BAND_HEIGHT;
@@ -381,6 +403,8 @@ static void AddCaveSummary(cJSON *Root, const SliceStats *Stats) {
   cJSON_AddNumberToObject(Root, "waterBlocks", Stats->WaterBlocks);
   cJSON_AddNumberToObject(Root, "caveWaterBlocks", Stats->CaveWaterBlocks);
   cJSON_AddNumberToObject(Root, "lavaBlocks", Stats->LavaBlocks);
+  cJSON_AddNumberToObject(Root, "deepslateBlocks", Stats->DeepslateBlocks);
+  cJSON_AddNumberToObject(Root, "pocketBlocks", Stats->PocketBlocks);
 }
 
 static double MeanMicros(double Seconds, int Count) {
@@ -591,4 +615,142 @@ bool WorldgenPreviewWrite(const char *OutDir, const char *Name, int CenterX,
     return false;
   }
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Large biome map
+// ---------------------------------------------------------------------------
+
+typedef struct {
+  int Cells[BIOME_REGISTRY_SIZE];
+  int LandCells[BIOME_REGISTRY_SIZE];
+  int TotalCells;
+  int TotalLand;
+  int OceanCells;
+  int OceanWet;
+  int PeakCells;
+  int PeakHigh;
+} BiomeCoverage;
+
+static bool FamilyIs(const BiomeType *Biome, const char *Family) {
+  return strcmp(Biome->Family, Family) == 0;
+}
+
+static void CountCoverage(BiomeCoverage *Coverage, int BiomeId, int Surface) {
+  const int PEAK_HEIGHT = 64;
+  const BiomeType *Biome = GetBiomeDef(BiomeId);
+  bool Land = Surface > SEA_LEVEL;
+  Coverage->Cells[BiomeId]++;
+  Coverage->LandCells[BiomeId] += Land ? 1 : 0;
+  Coverage->TotalCells++;
+  Coverage->TotalLand += Land ? 1 : 0;
+  if (FamilyIs(Biome, "ocean")) {
+    Coverage->OceanCells++;
+    Coverage->OceanWet += (Surface <= SEA_LEVEL) ? 1 : 0;
+  }
+  if (FamilyIs(Biome, "peak")) {
+    Coverage->PeakCells++;
+    Coverage->PeakHigh += (Surface > SEA_LEVEL + PEAK_HEIGHT) ? 1 : 0;
+  }
+}
+
+static double Fraction(int Part, int Whole) {
+  return (Whole > 0) ? (double)Part / (double)Whole : 0.0;
+}
+
+static bool WriteCoverage(const char *OutDir, const char *Name,
+                          const BiomeCoverage *Coverage) {
+  cJSON *Root = cJSON_CreateObject();
+  cJSON *Biomes = cJSON_CreateArray();
+  if (Root == NULL || Biomes == NULL) {
+    cJSON_Delete(Root);
+    cJSON_Delete(Biomes);
+    return false;
+  }
+  int Distinct = 0;
+  for (int Id = 0; Id < BIOME_REGISTRY_SIZE; Id++) {
+    if (Coverage->Cells[Id] == 0) {
+      continue;
+    }
+    Distinct++;
+    const BiomeType *Biome = GetBiomeDef(Id);
+    cJSON *Entry = cJSON_CreateObject();
+    if (Entry == NULL) {
+      continue;
+    }
+    cJSON_AddNumberToObject(Entry, "id", Id);
+    cJSON_AddStringToObject(Entry, "name", Biome->Name);
+    cJSON_AddStringToObject(Entry, "family", Biome->Family);
+    cJSON_AddNumberToObject(Entry, "fraction",
+                            Fraction(Coverage->Cells[Id], Coverage->TotalCells));
+    cJSON_AddNumberToObject(
+        Entry, "landFraction",
+        Fraction(Coverage->LandCells[Id], Coverage->TotalLand));
+    cJSON_AddItemToArray(Biomes, Entry);
+  }
+  cJSON_AddItemToObject(Root, "biomes", Biomes);
+  cJSON_AddNumberToObject(Root, "distinctBiomes", Distinct);
+  cJSON_AddNumberToObject(Root, "landFraction",
+                          Fraction(Coverage->TotalLand, Coverage->TotalCells));
+  cJSON_AddNumberToObject(Root, "oceanWetFraction",
+                          Fraction(Coverage->OceanWet, Coverage->OceanCells));
+  cJSON_AddNumberToObject(Root, "peakHighFraction",
+                          Fraction(Coverage->PeakHigh, Coverage->PeakCells));
+
+  char *Text = cJSON_Print(Root);
+  cJSON_Delete(Root);
+  if (Text == NULL) {
+    return false;
+  }
+  char Path[FILEIO_MAX_PATH];
+  int Written = snprintf(Path, sizeof(Path), "%s/%s_biomes.json", OutDir, Name);
+  bool Ok = false;
+  if (Written >= 0 && (size_t)Written < sizeof(Path)) {
+    FILE *File = fopen(Path, "wb");
+    if (File != NULL) {
+      Ok = fputs(Text, File) >= 0;
+      Ok = (fclose(File) == 0) && Ok;
+    }
+  }
+  cJSON_free(Text);
+  return Ok;
+}
+
+bool WorldgenBiomeMapWrite(const char *OutDir, const char *Name, int CenterX,
+                           int CenterZ, int Size, int Step, char *Error,
+                           int ErrorSize) {
+  if (Size <= 0 || Step <= 0 || Size % Step != 0 ||
+      Size / Step > WORLDGEN_PREVIEW_MAX_SIZE) {
+    SetError(Error, ErrorSize, "size must be a positive multiple of step with "
+                               "at most 1024 samples per side", "");
+    return false;
+  }
+  int Side = Size / Step;
+  int OriginX = CenterX - (Size / 2);
+  int OriginZ = CenterZ - (Size / 2);
+  uint64_t Seed = GetWorldSeed();
+
+  unsigned char *Pixels =
+      (unsigned char *)malloc((size_t)Side * (size_t)Side * RGB_CHANNELS);
+  BiomeCoverage *Coverage = (BiomeCoverage *)calloc(1, sizeof(BiomeCoverage));
+  bool Ok = (Pixels != NULL) && (Coverage != NULL);
+  for (int Pz = 0; Ok && Pz < Side; Pz++) {
+    for (int Px = 0; Px < Side; Px++) {
+      int X = OriginX + (Px * Step) + (Step / 2);
+      int Z = OriginZ + (Pz * Step) + (Step / 2);
+      int Surface =
+          GetPreliminarySurface(BiomeCellCenter(X), BiomeCellCenter(Z), Seed);
+      int BiomeId = SampleBiomeAt(X, Surface, Z, Seed, NULL);
+      PutPixel(Pixels, Side, Px, Pz, BiomePreviewColor(BiomeId));
+      CountCoverage(Coverage, BiomeId, Surface);
+    }
+  }
+  Ok = Ok && WritePng(OutDir, Name, "biomes", Side, Side, Pixels) &&
+       WriteCoverage(OutDir, Name, Coverage);
+  free(Pixels);
+  free(Coverage);
+  if (!Ok) {
+    SetError(Error, ErrorSize, "could not write the biome map for ", Name);
+  }
+  return Ok;
 }

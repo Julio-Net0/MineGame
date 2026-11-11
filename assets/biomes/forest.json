@@ -1,23 +1,40 @@
 {
   "id": 1,
   "name": "Forest",
-  "temperature": [0.0, 1.0],
-  "humidity": [0.52, 1.0],
-  "depth": [-1000.0, 1000000.0],
-  "priority": 1,
+  "family": "lowland",
+  "depth": [-1000.0, 11.0],
+  "temperature": [0.4, 0.62],
+  "humidity": [0.4, 0.75],
+  "weirdness": [-1.0, 0.25],
+  "continentalness": [-0.06, 1.0],
+  "peaksValleys": [-1.0, 0.2],
   "surfaceBlock": "Grass",
   "subsurfaceBlock": "Dirt",
   "underwaterBlock": "Sand",
   "subsurfaceDepth": 3,
-  "grassTint": [59, 129, 39],
-  "foliageTint": [42, 110, 28],
-  "floraDensity": 0.16,
+  "grassTint": [89, 160, 60],
+  "foliageTint": [70, 140, 40],
+  "previewColor": [40, 110, 40],
+  "floraDensity": 0.2,
   "flora": [
-    { "block": "TallGrass", "weight": 12 },
-    { "block": "Flower", "weight": 1 }
+    {
+      "block": "TallGrass",
+      "weight": 12
+    },
+    {
+      "block": "Flower",
+      "weight": 1
+    },
+    {
+      "block": "fern",
+      "weight": 2
+    }
   ],
   "structureDensity": 0.5,
   "structures": [
-    { "prefab": "oak_small", "weight": 1 }
+    {
+      "prefab": "oak_small",
+      "weight": 1
+    }
   ]
 }

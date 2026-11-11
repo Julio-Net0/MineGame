@@ -1,14 +1,30 @@
 {
   "id": 2,
   "name": "Desert",
-  "temperature": [0.56, 1.0],
-  "humidity": [0.0, 0.44],
-  "depth": [-1000.0, 1000000.0],
-  "priority": 2,
+  "family": "lowland",
+  "depth": [-1000.0, 11.0],
+  "temperature": [0.7, 1.0],
+  "humidity": [0.0, 0.4],
+  "erosion": [-0.2, 1.0],
+  "continentalness": [-0.06, 1.0],
+  "peaksValleys": [-1.0, 0.2],
   "surfaceBlock": "Sand",
-  "subsurfaceBlock": "Sand",
+  "subsurfaceBlock": "sandstone",
   "underwaterBlock": "Sand",
   "subsurfaceDepth": 4,
+  "steepBlock": "sandstone",
   "grassTint": [191, 183, 85],
-  "foliageTint": [174, 164, 42]
+  "foliageTint": [174, 164, 42],
+  "previewColor": [230, 215, 150],
+  "floraDensity": 0.03,
+  "flora": [
+    {
+      "block": "dead_bush",
+      "weight": 3
+    },
+    {
+      "block": "short_dry_grass",
+      "weight": 1
+    }
+  ]
 }

@@ -66,6 +66,22 @@ ColumnShape EvaluateColumnShape(int LatticeX, int LatticeZ, uint64_t Seed);
 
 float GetCeilingTaper(void);
 
+// The preliminary surface: the bilinear blend of Base between the four lattice
+// columns around a block column, floored. A pure 2D estimate of the surface
+// that biome depth, structure checks, spawn search, and /biome all read.
+int GetPreliminarySurface(int GlobalX, int GlobalZ, uint64_t Seed);
+
+// The preliminary floor: the same blend of Base - TERRAIN_NOISE_BOUND *
+// Variation, floored. No terrain air (as opposed to cave air) can lie below it,
+// so biome depth is measured from here.
+int GetPreliminaryFloor(int GlobalX, int GlobalZ, uint64_t Seed);
+
+// Lowest level 3D noise may open at a lattice column; one expression shared by
+// the pure floor and the column cache so both give the same float.
+static inline float ShapeFloorLevel(float Base, float Variation) {
+  return Base - (TERRAIN_NOISE_BOUND * Variation);
+}
+
 // The 3D terrain field n3, with its vertical scale applied to Y.
 float SampleTerrainNoise3D(int X, int Y, int Z, uint64_t Seed);
 

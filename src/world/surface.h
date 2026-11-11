@@ -2,11 +2,13 @@
 #define WORLD_SURFACE_H
 
 #include "core/vecmath.h"
+#include "world/terrain_shape.h"
 #include <stdint.h>
 
-// The preliminary surface: a pure 2D estimate of where a column's terrain
-// surface lies. Biome Depth, structure and flora checks, spawn placement and the
-// /biome command all read it, so none of them can drift from one another.
+// GetPreliminarySurface (declared in world/terrain_shape.h, re-exported here)
+// is a pure 2D estimate of where a column's terrain surface lies. Biome Depth,
+// structure and flora checks, spawn placement and the /biome command all read
+// it, so none of them can drift from one another.
 //
 // It is the bilinear blend of the terrain shape's Base between the four
 // surrounding lattice columns: pure, cheap, and cached. Where the 3D terrain
@@ -22,8 +24,6 @@ typedef struct {
   int Surface;
   Vec3 FeetPosition;
 } SpawnPoint;
-
-int GetPreliminarySurface(int GlobalX, int GlobalZ, uint64_t Seed);
 
 // First column whose terrain top is above sea level, in a fixed square spiral
 // from (0, 0) searched up to SPAWN_SEARCH_RADIUS; (0, 0) if none qualifies.

@@ -1,0 +1,48 @@
+{
+  "id": 11,
+  "name": "Meadow",
+  "family": "highland",
+  "depth": [-1000.0, 11.0],
+  "temperature": [0.35, 1.0],
+  "continentalness": [0.05, 1.0],
+  "peaksValleys": [0.2, 0.7],
+  "surfaceBlock": "Grass",
+  "subsurfaceBlock": "Dirt",
+  "underwaterBlock": "Sand",
+  "subsurfaceDepth": 3,
+  "steepBlock": "Stone",
+  "grassTint": [131, 196, 92],
+  "foliageTint": [104, 180, 64],
+  "previewColor": [150, 220, 120],
+  "floraDensity": 0.45,
+  "flora": [
+    {
+      "block": "TallGrass",
+      "weight": 6
+    },
+    {
+      "block": "azure_bluet",
+      "weight": 2
+    },
+    {
+      "block": "cornflower",
+      "weight": 2
+    },
+    {
+      "block": "oxeye_daisy",
+      "weight": 2
+    },
+    {
+      "block": "allium",
+      "weight": 1
+    },
+    {
+      "block": "Flower",
+      "weight": 1
+    },
+    {
+      "block": "Flower2",
+      "weight": 1
+    }
+  ]
+}

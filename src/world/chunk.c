@@ -9,6 +9,7 @@
 #include "world/terrain_density.h"
 #include "world/terrain_shape.h"
 #include "world/worldgen_column_cache.h"
+#include "world/stone_filler.h"
 #include "world/worldgen_strata.h"
 #include <math.h>
 #include <stdatomic.h>
@@ -32,12 +33,13 @@ typedef struct {
   BlockID WaterId;
   BlockID BedrockId;
   BlockID LavaId;
+  BlockID IceId;
 } TerrainBaseBlocks;
 
 #define BEDROCK_HASH_SALT 0xBEDB0C4000000001ULL
 
 static TerrainBaseBlocks *GetTerrainBaseBlocks(void) {
-  static TerrainBaseBlocks SBase = {0, 0, 0, 0};
+  static TerrainBaseBlocks SBase = {0, 0, 0, 0, 0};
   return &SBase;
 }
 
@@ -56,6 +58,7 @@ void InitTerrainGeneration(void) {
   Base->WaterId = ResolveBaseBlock("Water");
   Base->BedrockId = ResolveBaseBlock("bedrock");
   Base->LavaId = ResolveBaseBlock("Lava");
+  Base->IceId = ResolveBaseBlock("ice");
 }
 
 static int ClampCell(int Cell) {
@@ -80,27 +83,35 @@ BlockID TerrainFluidBlock(int Fluid) {
   }
 }
 
-// Palette by solid depth: Depth is the number of contiguous solid blocks
-// directly above (-1 for a non-solid position). Non-solid positions take their
+// Palette by solid depth for the fluid and palette layers: Depth is the number
+// of contiguous solid blocks directly above (-1 for a non-solid position), and
+// deeper blocks (Depth >= SubsurfaceDepth) come from the stone filler instead. Non-solid positions take their
 // fluid; the biome supplies the surface block (depth 0) and the subsurface
 // layer under it; everything deeper is stone. For a heightmap column this is
 // exactly the old height-based rule, and it also gives overhang tops, cliff
 // faces, and cave floors their palette layers.
 static BlockID DeterminePaletteBlock(const BiomeType *Biome, int Depth,
-                                     int GlobalY, int Surface, bool Flooded) {
+                                     int GlobalY, int Surface, bool Flooded,
+                                     bool Steep) {
   const TerrainBaseBlocks *Base = GetTerrainBaseBlocks();
 
   if (Depth < 0) {
-    return TerrainFluidBlock((int)CaveFluidAt(GlobalY, Surface, Flooded));
+    CaveFluid Fluid = CaveFluidAt(GlobalY, Surface, Flooded);
+    // Flooded cave water never freezes; only the sea surface does.
+    if (Fluid == CAVE_FLUID_WATER && !Flooded && GlobalY == SEA_LEVEL &&
+        Biome->FrozenWater) {
+      return Base->IceId;
+    }
+    return TerrainFluidBlock((int)Fluid);
+  }
+  if (Steep && Depth < Biome->SubsurfaceDepth) {
+    return (BlockID)Biome->SteepBlockId;
   }
   if (Depth == 0) {
     return (GlobalY <= SEA_LEVEL + 1) ? (BlockID)Biome->UnderwaterBlockId
                                       : (BlockID)Biome->SurfaceBlockId;
   }
-  if (Depth < Biome->SubsurfaceDepth) {
-    return (BlockID)Biome->SubsurfaceBlockId;
-  }
-  return Base->StoneId;
+  return (BlockID)Biome->SubsurfaceBlockId;
 }
 
 unsigned char GetChunkBiomeAtLocal(const Chunk *ChunkVal, int LocalX, int LocalY,
@@ -121,21 +132,22 @@ void FillChunkBiomeMap(Chunk *ChunkVal, const ColumnEntry *Column) {
 
   for (int CellX = 0; CellX < BIOME_CELLS_PER_CHUNK; CellX++) {
     for (int CellZ = 0; CellZ < BIOME_CELLS_PER_CHUNK; CellZ++) {
-      int Surface = Column->Surface[(CellX * BIOME_CELL_SIZE) + CELL_CENTER]
-                                   [(CellZ * BIOME_CELL_SIZE) + CELL_CENTER];
+      int Floor = Column->CellFloor[CellX][CellZ];
 
-      // Temperature and humidity depend only on (X, Z) and come from the column
-      // entry; only the derived Depth varies down the column.
-      BiomeClimate Climate = {.Temperature = Column->Temperature[CellX][CellZ],
-                              .Humidity = Column->Humidity[CellX][CellZ],
-                              .Depth = 0.0F};
-
+      // The climate depends only on (X, Z) and comes from the column entry, as
+      // does the biome for every depth in the surface band; only cells outside
+      // the band are resolved here.
+      BiomeClimate Climate = Column->Climate[CellX][CellZ];
       for (int CellY = 0; CellY < BIOME_CELLS_PER_CHUNK; CellY++) {
         int GlobalY = (ChunkVal->ChunkY * CHUNK_SIZE) +
                       (CellY * BIOME_CELL_SIZE) + CELL_CENTER;
-        Climate.Depth = (float)(Surface - GlobalY);
-        ChunkVal->BiomeMap[CellX][CellY][CellZ] =
-            (unsigned char)ResolveBiome(Climate);
+        int Depth = Floor - GlobalY;
+        int BiomeId = Column->SurfaceBiome[CellX][CellZ];
+        if (!BiomeInSurfaceBand(Depth)) {
+          Climate.Depth = (float)Depth;
+          BiomeId = ResolveBiome(&Climate);
+        }
+        ChunkVal->BiomeMap[CellX][CellY][CellZ] = (unsigned char)BiomeId;
       }
     }
   }
@@ -291,6 +303,42 @@ static CubeClass ClassifyByCorners(int BaseY, const CubeCorners *Corners,
   return CUBE_CLASS_MIXED;
 }
 
+// Whether the terrain at a block is steeper than the biome steep threshold:
+// the analytic gradient of its cell's trilinear blend, horizontal over
+// vertical. Reads only the cube's shared corners, so the decision is the same
+// on both sides of a cube boundary.
+static bool IsSteepAt(const CubeCorners *Corners, int LocalX, int LocalY,
+                      int LocalZ) {
+  int Cx = LocalX / DENSITY_CELL_XZ;
+  int Cy = LocalY / DENSITY_CELL_Y;
+  int Cz = LocalZ / DENSITY_CELL_XZ;
+  float Fx = (float)(LocalX % DENSITY_CELL_XZ) / (float)DENSITY_CELL_XZ;
+  float Fy = (float)(LocalY % DENSITY_CELL_Y) / (float)DENSITY_CELL_Y;
+  float Fz = (float)(LocalZ % DENSITY_CELL_XZ) / (float)DENSITY_CELL_XZ;
+  const float (*V)[DENSITY_CORNERS_Y][DENSITY_CORNERS_XZ] = Corners->Values;
+  float C0 = V[Cx][Cy][Cz];
+  float C1 = V[Cx + 1][Cy][Cz];
+  float C2 = V[Cx][Cy + 1][Cz];
+  float C3 = V[Cx + 1][Cy + 1][Cz];
+  float C4 = V[Cx][Cy][Cz + 1];
+  float C5 = V[Cx + 1][Cy][Cz + 1];
+  float C6 = V[Cx][Cy + 1][Cz + 1];
+  float C7 = V[Cx + 1][Cy + 1][Cz + 1];
+  float Gx = (((1.0F - Fy) * (1.0F - Fz) * (C1 - C0)) +
+              (Fy * (1.0F - Fz) * (C3 - C2)) + ((1.0F - Fy) * Fz * (C5 - C4)) +
+              (Fy * Fz * (C7 - C6))) /
+             (float)DENSITY_CELL_XZ;
+  float Gy = (((1.0F - Fx) * (1.0F - Fz) * (C2 - C0)) +
+              (Fx * (1.0F - Fz) * (C3 - C1)) + ((1.0F - Fx) * Fz * (C6 - C4)) +
+              (Fx * Fz * (C7 - C5))) /
+             (float)DENSITY_CELL_Y;
+  float Gz = (((1.0F - Fx) * (1.0F - Fy) * (C4 - C0)) +
+              (Fx * (1.0F - Fy) * (C5 - C1)) + ((1.0F - Fx) * Fy * (C6 - C2)) +
+              (Fx * Fy * (C7 - C3))) /
+             (float)DENSITY_CELL_XZ;
+  return hypotf(Gx, Gz) > GetBiomeParams()->SteepSlope * fabsf(Gy);
+}
+
 // Flood field at the 2 x 3 x 2 lattice points around a cube (its bottom, top,
 // and the top of the padding rows), loaded on first use: most cubes never need
 // it.
@@ -316,6 +364,33 @@ static void LoadCubeFlood(const Chunk *ChunkVal, uint64_t SeedVal,
   Flood->Loaded = true;
 }
 
+
+static int FillCubeSolid(Chunk *ChunkVal, BlockID BlockId);
+
+// A SOLID cube is filler throughout: every block has at least 8 solid blocks
+// above it, deeper than any palette layer. One fill when the filler is uniform
+// over the cube, otherwise the same per-block decision the per-block path makes.
+static int FillCubeFiller(Chunk *ChunkVal, uint64_t SeedVal) {
+  FillerCube Filler;
+  FillerCubeInit(&Filler, ChunkVal->ChunkX, ChunkVal->ChunkY, ChunkVal->ChunkZ,
+                 SeedVal);
+  BlockID Uniform = 0;
+  if (FillerCubeUniform(&Filler, &Uniform)) {
+    return FillCubeSolid(ChunkVal, Uniform);
+  }
+  int OriginX = ChunkVal->ChunkX * CHUNK_SIZE;
+  int OriginY = ChunkVal->ChunkY * CHUNK_SIZE;
+  int OriginZ = ChunkVal->ChunkZ * CHUNK_SIZE;
+  for (int IdxX = 0; IdxX < CHUNK_SIZE; IdxX++) {
+    for (int IdxY = 0; IdxY < CHUNK_SIZE; IdxY++) {
+      for (int IdxZ = 0; IdxZ < CHUNK_SIZE; IdxZ++) {
+        ChunkVal->Data[IdxX][IdxY][IdxZ] = FillerBlockAt(
+            &Filler, OriginX + IdxX, OriginY + IdxY, OriginZ + IdxZ);
+      }
+    }
+  }
+  return (int)CHUNK_VOLUME;
+}
 
 static int FillCubeSolid(Chunk *ChunkVal, BlockID BlockId) {
   for (int IdxX = 0; IdxX < CHUNK_SIZE; IdxX++) {
@@ -434,6 +509,9 @@ static int FillCubePerBlock(Chunk *ChunkVal, const ColumnEntry *Column,
   int BaseY = ChunkVal->ChunkY * CHUNK_SIZE;
   int Ceiling = GetGenerationCeiling();
   CubeFlood Flood = {.Loaded = false};
+  // Built on the first block deeper than the palette layers.
+  FillerCube Filler;
+  bool HaveFiller = false;
 
   for (int IdxX = 0; IdxX < CHUNK_SIZE; IdxX++) {
     for (int IdxZ = 0; IdxZ < CHUNK_SIZE; IdxZ++) {
@@ -467,9 +545,22 @@ static int FillCubePerBlock(Chunk *ChunkVal, const ColumnEntry *Column,
         case STRATUM_GEN_OVERWORLD: {
           const BiomeType *Biome =
               GetBiomeDef(GetChunkBiomeAtLocal(ChunkVal, IdxX, IdxY, IdxZ));
-          BlockId = DeterminePaletteBlock(Biome, Depths[IdxY], GlobalY,
+          int Depth = Depths[IdxY];
+          if (Depth >= Biome->SubsurfaceDepth) {
+            if (!HaveFiller) {
+              FillerCubeInit(&Filler, ChunkVal->ChunkX, ChunkVal->ChunkY,
+                             ChunkVal->ChunkZ, SeedVal);
+              HaveFiller = true;
+            }
+            BlockId = FillerBlockAt(&Filler, GlobalX, GlobalY, GlobalZ);
+            break;
+          }
+          bool Steep = Corners != NULL && Biome->SteepBlockId >= 0 &&
+                       Depth >= 0 && Depth < Biome->SubsurfaceDepth &&
+                       IsSteepAt(Corners, IdxX, IdxY, IdxZ);
+          BlockId = DeterminePaletteBlock(Biome, Depth, GlobalY,
                                           Column->Surface[IdxX][IdxZ],
-                                          Flooded[IdxY]);
+                                          Flooded[IdxY], Steep);
           break;
         }
         case STRATUM_GEN_BEDROCK_BAND:
@@ -563,7 +654,7 @@ CubeClass GenerateChunkTerrainEx(Chunk *ChunkVal, const ColumnEntry *Column,
   } else if (Class == CUBE_CLASS_AIR) {
     SolidCount = FillCubeSolid(ChunkVal, BLOCK_AIR);
   } else {
-    SolidCount = FillCubeSolid(ChunkVal, GetTerrainBaseBlocks()->StoneId);
+    SolidCount = FillCubeFiller(ChunkVal, SeedVal);
   }
 
   if (Options->CountClasses) {

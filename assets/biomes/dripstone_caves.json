@@ -1,0 +1,14 @@
+{
+  "id": 24,
+  "name": "Dripstone Caves",
+  "family": "underground",
+  "depth": [12.0, 1000000.0],
+  "continentalness": [0.6, 1.0],
+  "surfaceBlock": "dripstone_block",
+  "subsurfaceBlock": "tuff",
+  "underwaterBlock": "dripstone_block",
+  "subsurfaceDepth": 2,
+  "grassTint": [110, 120, 110],
+  "foliageTint": [90, 110, 90],
+  "previewColor": [160, 120, 90]
+}

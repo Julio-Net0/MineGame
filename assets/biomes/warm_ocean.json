@@ -1,0 +1,16 @@
+{
+  "id": 6,
+  "name": "Warm Ocean",
+  "family": "ocean",
+  "depth": [-1000.0, 11.0],
+  "continentalness": [-1.0, -0.11],
+  "temperature": [0.7, 1.0],
+  "surfaceBlock": "Sand",
+  "subsurfaceBlock": "Sand",
+  "underwaterBlock": "Sand",
+  "subsurfaceDepth": 3,
+  "grassTint": [141, 179, 96],
+  "foliageTint": [119, 171, 47],
+  "waterTint": [67, 213, 238],
+  "previewColor": [40, 140, 190]
+}

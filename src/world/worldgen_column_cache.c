@@ -84,10 +84,28 @@ void ColumnEntryFill(ColumnEntry *Entry, int ColumnX, int ColumnZ,
       int LocalX = (CellX * BIOME_CELL_SIZE) + CELL_CENTER;
       int LocalZ = (CellZ * BIOME_CELL_SIZE) + CELL_CENTER;
       int Surface = Entry->Surface[LocalX][LocalZ];
-      BiomeClimate Climate = SampleBiomeClimate(
-          OriginX + LocalX, Surface, OriginZ + LocalZ, Surface, Seed);
-      Entry->Temperature[CellX][CellZ] = Climate.Temperature;
-      Entry->Humidity[CellX][CellZ] = Climate.Humidity;
+      Entry->Climate[CellX][CellZ] = SampleColumnClimate(
+          OriginX + LocalX, OriginZ + LocalZ, Surface, Seed);
+      Entry->SurfaceBiome[CellX][CellZ] =
+          (uint8_t)ResolveBiome(&Entry->Climate[CellX][CellZ]);
+
+      // The same bilinear blend GetPreliminaryFloor computes, from the same
+      // corner levels. A cell centre sits halfway between two lattice columns.
+      int CornerX = LocalX / SHAPE_LATTICE_STEP;
+      int CornerZ = LocalZ / SHAPE_LATTICE_STEP;
+      float Fx = (float)(LocalX % SHAPE_LATTICE_STEP) / (float)SHAPE_LATTICE_STEP;
+      float Fz = (float)(LocalZ % SHAPE_LATTICE_STEP) / (float)SHAPE_LATTICE_STEP;
+      float Levels[2][2];
+      for (int Ix = 0; Ix < 2; Ix++) {
+        for (int Iz = 0; Iz < 2; Iz++) {
+          Levels[Ix][Iz] =
+              ShapeFloorLevel(Entry->CornerBase[CornerX + Ix][CornerZ + Iz],
+                              Entry->CornerVariation[CornerX + Ix][CornerZ + Iz]);
+        }
+      }
+      Entry->CellFloor[CellX][CellZ] = (int16_t)floorf(
+          ShapeBilinear(Levels[0][0], Levels[1][0], Levels[0][1], Levels[1][1],
+                        Fx, Fz));
     }
   }
 

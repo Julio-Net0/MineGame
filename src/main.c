@@ -4,6 +4,7 @@
 #include "world/prefab.h"
 #include "world/surface.h"
 #include "world/cave_fields.h"
+#include "world/stone_filler.h"
 #include "world/terrain_shape.h"
 #include "world/worldgen_strata.h"
 #include "render/camera.h"
@@ -143,6 +144,8 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
   InitCaveFields();
   LoadCaveNoise("assets/worldgen/noise.json");
   LoadCaveParams("assets/worldgen/caves.json");
+  InitStoneFiller();
+  LoadStoneFiller("assets/worldgen/filler.json");
 
   InitTerrainGeneration();
 

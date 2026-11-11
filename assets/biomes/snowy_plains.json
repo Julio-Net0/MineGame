@@ -1,0 +1,17 @@
+{
+  "id": 14,
+  "name": "Snowy Plains",
+  "family": "lowland",
+  "depth": [-1000.0, 11.0],
+  "temperature": [0.0, 0.2],
+  "continentalness": [-0.06, 1.0],
+  "peaksValleys": [-1.0, 0.2],
+  "surfaceBlock": "snow_block",
+  "subsurfaceBlock": "Dirt",
+  "underwaterBlock": "gravel",
+  "subsurfaceDepth": 3,
+  "frozenWater": true,
+  "grassTint": [128, 180, 151],
+  "foliageTint": [96, 161, 123],
+  "previewColor": [235, 240, 245]
+}
