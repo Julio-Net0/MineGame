@@ -5,8 +5,11 @@
 #include "persistence/world_save.h"
 #include "core/hash.h"
 #include "world/surface.h"
+#include "world/terrain_density.h"
+#include "world/terrain_shape.h"
 #include "world/worldgen_column_cache.h"
 #include "world/worldgen_strata.h"
+#include <math.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -62,21 +65,24 @@ static int ClampCell(int Cell) {
   return Cell;
 }
 
-// Air above the terrain, water up to sea level, and stone below the subsurface
-// layer are the biome-independent base. Everything between — the surface block
-// and the subsurface layer under it — comes from the biome's palette.
-static BlockID DetermineBlockId(const BiomeType *Biome, int GlobalY,
-                                int TerrainHeight) {
+// Palette by solid depth: Depth is the number of contiguous solid blocks
+// directly above (-1 for a non-solid position). Air or water fills non-solid
+// positions; the biome supplies the surface block (depth 0) and the subsurface
+// layer under it; everything deeper is stone. For a heightmap column this is
+// exactly the old height-based rule, and it also gives overhang tops and cliff
+// faces their palette layers.
+static BlockID DeterminePaletteBlock(const BiomeType *Biome, int Depth,
+                                     int GlobalY) {
   const TerrainBaseBlocks *Base = GetTerrainBaseBlocks();
 
-  if (GlobalY > TerrainHeight) {
+  if (Depth < 0) {
     return (GlobalY <= SEA_LEVEL) ? Base->WaterId : BLOCK_AIR;
   }
-  if (GlobalY == TerrainHeight) {
+  if (Depth == 0) {
     return (GlobalY <= SEA_LEVEL + 1) ? (BlockID)Biome->UnderwaterBlockId
                                       : (BlockID)Biome->SurfaceBlockId;
   }
-  if (GlobalY > TerrainHeight - Biome->SubsurfaceDepth) {
+  if (Depth < Biome->SubsurfaceDepth) {
     return (BlockID)Biome->SubsurfaceBlockId;
   }
   return Base->StoneId;
@@ -158,33 +164,109 @@ void GetCubeClassCounts(uint64_t Counts[CUBE_CLASS_COUNT]) {
   }
 }
 
-// Decides from the strata and the column's surface bounds alone whether a cube
-// is entirely air, entirely stone, or needs the per-block path. Every bound is
-// conservative: a cube is AIR or SOLID only when the per-block path could not
-// produce anything else, which the worldgen self-test checks byte for byte.
-static CubeClass ClassifyCube(int BaseY, const StratumGenerator *Layers,
-                              const ColumnEntry *Column) {
-  int TopY = BaseY + CHUNK_SIZE - 1;
-  bool AllVoid = true;
-  bool AllOverworld = true;
-  for (int IdxY = 0; IdxY < CHUNK_SIZE; IdxY++) {
-    AllVoid &= (Layers[IdxY] == STRATUM_GEN_VOID);
-    AllOverworld &= (Layers[IdxY] == STRATUM_GEN_OVERWORLD);
+// Density at every grid corner a cube needs: its own 5 x 3 x 5 corners plus the
+// row 8 blocks above its top.
+typedef struct {
+  float Values[DENSITY_CORNERS_XZ][DENSITY_CORNERS_Y][DENSITY_CORNERS_XZ];
+} CubeCorners;
+
+static void EvaluateCubeCorners(const Chunk *ChunkVal,
+                                const ColumnEntry *Column, uint64_t SeedVal,
+                                CubeCorners *Out) {
+  int OriginX = ChunkVal->ChunkX * CHUNK_SIZE;
+  int OriginY = ChunkVal->ChunkY * CHUNK_SIZE;
+  int OriginZ = ChunkVal->ChunkZ * CHUNK_SIZE;
+  for (int CornerX = 0; CornerX < DENSITY_CORNERS_XZ; CornerX++) {
+    for (int CornerZ = 0; CornerZ < DENSITY_CORNERS_XZ; CornerZ++) {
+      float Base = Column->CornerBase[CornerX][CornerZ];
+      float Variation = Column->CornerVariation[CornerX][CornerZ];
+      for (int CornerY = 0; CornerY < DENSITY_CORNERS_Y; CornerY++) {
+        Out->Values[CornerX][CornerY][CornerZ] = TerrainCornerDensity(
+            Base, Variation, OriginX + (CornerX * DENSITY_CELL_XZ),
+            OriginY + (CornerY * DENSITY_CELL_Y),
+            OriginZ + (CornerZ * DENSITY_CELL_XZ), SeedVal);
+      }
+    }
+  }
+}
+
+// Interpolated density down one block column, padding rows included.
+//
+// TrilinearDensity blends along X first, then Y, then Z. Within a block column
+// X and Z are fixed, so the X blends of every corner row are computed once here
+// and each block only performs the Y and Z steps. The operations, operands, and
+// their order are exactly TrilinearDensity's, so the result is bit-identical to
+// SampleTerrainDensity (the worldgen self-test checks it).
+static void InterpolateColumnDensity(const CubeCorners *Corners, int LocalX,
+                                     int LocalZ, float Out[]) {
+  int CellX = LocalX / DENSITY_CELL_XZ;
+  int CellZ = LocalZ / DENSITY_CELL_XZ;
+  float Fx = (float)(LocalX % DENSITY_CELL_XZ) / (float)DENSITY_CELL_XZ;
+  float Fz = (float)(LocalZ % DENSITY_CELL_XZ) / (float)DENSITY_CELL_XZ;
+
+  float NearZ[DENSITY_CORNERS_Y];
+  float FarZ[DENSITY_CORNERS_Y];
+  for (int Row = 0; Row < DENSITY_CORNERS_Y; Row++) {
+    float C0 = Corners->Values[CellX][Row][CellZ];
+    float C1 = Corners->Values[CellX + 1][Row][CellZ];
+    float C4 = Corners->Values[CellX][Row][CellZ + 1];
+    float C5 = Corners->Values[CellX + 1][Row][CellZ + 1];
+    NearZ[Row] = C0 + ((C1 - C0) * Fx);
+    FarZ[Row] = C4 + ((C5 - C4) * Fx);
   }
 
-  if (AllVoid) {
+  for (int LocalY = 0; LocalY < CHUNK_SIZE + DENSITY_TOP_PADDING; LocalY++) {
+    int CellY = LocalY / DENSITY_CELL_Y;
+    float Fy = (float)(LocalY % DENSITY_CELL_Y) / (float)DENSITY_CELL_Y;
+    float Y0 = NearZ[CellY] + ((NearZ[CellY + 1] - NearZ[CellY]) * Fy);
+    float Y1 = FarZ[CellY] + ((FarZ[CellY + 1] - FarZ[CellY]) * Fy);
+    Out[LocalY] = Y0 + ((Y1 - Y0) * Fz);
+  }
+}
+
+// Tier 2: the column's density bounds alone, no 3D noise. Returns MIXED when
+// they cannot decide.
+static CubeClass ClassifyByBounds(int BaseY, const ColumnEntry *Column,
+                                  int Ceiling) {
+  int PaddedTop = BaseY + CHUNK_SIZE - 1 + DENSITY_TOP_PADDING;
+  float HighestSolid = (Column->BoundHigh > (float)SEA_LEVEL)
+                           ? Column->BoundHigh
+                           : (float)SEA_LEVEL;
+  if ((float)BaseY > HighestSolid) {
     return CUBE_CLASS_AIR;
   }
-  if (!AllOverworld) {
-    return CUBE_CLASS_MIXED;
+  if ((float)PaddedTop < Column->BoundLow &&
+      (float)PaddedTop < (float)Ceiling - GetCeilingTaper()) {
+    return CUBE_CLASS_SOLID;
+  }
+  return CUBE_CLASS_MIXED;
+}
+
+// Tier 3: trilinear blending never leaves the range of a cell's corners, so the
+// corner signs decide exactly. AIR needs every corner of the cube's own rows
+// non-positive and no water; SOLID needs every corner, padding row included,
+// positive, which gives every block at least 8 solid blocks above it, deeper
+// than any biome's palette layers.
+static CubeClass ClassifyByCorners(int BaseY, const CubeCorners *Corners,
+                                   int Ceiling) {
+  bool AllNonSolid = true;
+  bool AllSolid = true;
+  for (int CornerX = 0; CornerX < DENSITY_CORNERS_XZ; CornerX++) {
+    for (int CornerY = 0; CornerY < DENSITY_CORNERS_Y; CornerY++) {
+      for (int CornerZ = 0; CornerZ < DENSITY_CORNERS_XZ; CornerZ++) {
+        float Density = Corners->Values[CornerX][CornerY][CornerZ];
+        AllSolid &= (Density > 0.0F);
+        if (CornerY < DENSITY_CORNERS_Y - 1) {
+          AllNonSolid &= (Density <= 0.0F);
+        }
+      }
+    }
   }
 
-  int HighestFilled =
-      (Column->MaxSurface > SEA_LEVEL) ? Column->MaxSurface : SEA_LEVEL;
-  if (BaseY > HighestFilled) {
+  if (AllNonSolid && BaseY > SEA_LEVEL) {
     return CUBE_CLASS_AIR;
   }
-  if (TopY < Column->MinSurface - GetMaxBiomeSubsurfaceDepth()) {
+  if (AllSolid && BaseY + CHUNK_SIZE - 1 + DENSITY_TOP_PADDING < Ceiling) {
     return CUBE_CLASS_SOLID;
   }
   return CUBE_CLASS_MIXED;
@@ -201,16 +283,59 @@ static int FillCubeSolid(Chunk *ChunkVal, BlockID BlockId) {
   return (BlockId != BLOCK_AIR) ? (int)CHUNK_VOLUME : 0;
 }
 
-static int FillCubePerBlock(Chunk *ChunkVal, const ColumnEntry *Column,
-                            const StratumGenerator *Layers, uint64_t SeedVal) {
+enum {
+  PADDED_ROWS = CHUNK_SIZE + DENSITY_TOP_PADDING
+};
+
+// Solid depth of every row of one block column, padding included. The row above
+// the last padding row is unknown and treated as non-solid; that can only
+// shorten a depth to 8 or more, which every biome already renders as stone.
+static void ComputeColumnDepths(const CubeCorners *Corners, int LocalX,
+                                int LocalZ, int BaseY, int Ceiling,
+                                float *DebugColumn, int Depths[PADDED_ROWS]) {
+  bool Solid[PADDED_ROWS];
+  float Density[PADDED_ROWS];
+  InterpolateColumnDensity(Corners, LocalX, LocalZ, Density);
+  for (int Row = 0; Row < PADDED_ROWS; Row++) {
+    Solid[Row] = (Density[Row] > 0.0F) && (BaseY + Row < Ceiling);
+    if (DebugColumn != NULL && Row < CHUNK_SIZE) {
+      DebugColumn[(size_t)Row * CHUNK_SIZE] = Density[Row];
+    }
+  }
+
+  Depths[PADDED_ROWS - 1] = Solid[PADDED_ROWS - 1] ? 0 : -1;
+  for (int Row = PADDED_ROWS - 2; Row >= 0; Row--) {
+    if (!Solid[Row]) {
+      Depths[Row] = -1;
+    } else {
+      Depths[Row] = Solid[Row + 1] ? Depths[Row + 1] + 1 : 0;
+    }
+  }
+}
+
+// Corners is NULL when the cube has no overworld layer.
+static int FillCubePerBlock(Chunk *ChunkVal, const CubeCorners *Corners,
+                            const StratumGenerator *Layers, uint64_t SeedVal,
+                            float *DebugDensity) {
   int SolidCount = 0;
   int BaseY = ChunkVal->ChunkY * CHUNK_SIZE;
+  int Ceiling = GetGenerationCeiling();
 
   for (int IdxX = 0; IdxX < CHUNK_SIZE; IdxX++) {
     for (int IdxZ = 0; IdxZ < CHUNK_SIZE; IdxZ++) {
       int GlobalX = (ChunkVal->ChunkX * CHUNK_SIZE) + IdxX;
       int GlobalZ = (ChunkVal->ChunkZ * CHUNK_SIZE) + IdxZ;
-      int TerrainHeight = Column->Surface[IdxX][IdxZ];
+
+      int Depths[PADDED_ROWS] = {0};
+      if (Corners != NULL) {
+        float *DebugColumn =
+            (DebugDensity != NULL)
+                ? &DebugDensity[((size_t)IdxX * CHUNK_SIZE * CHUNK_SIZE) +
+                                (size_t)IdxZ]
+                : NULL;
+        ComputeColumnDepths(Corners, IdxX, IdxZ, BaseY, Ceiling, DebugColumn,
+                            Depths);
+      }
 
       for (int IdxY = 0; IdxY < CHUNK_SIZE; IdxY++) {
         int GlobalY = BaseY + IdxY;
@@ -220,7 +345,7 @@ static int FillCubePerBlock(Chunk *ChunkVal, const ColumnEntry *Column,
         case STRATUM_GEN_OVERWORLD: {
           const BiomeType *Biome =
               GetBiomeDef(GetChunkBiomeAtLocal(ChunkVal, IdxX, IdxY, IdxZ));
-          BlockId = DetermineBlockId(Biome, GlobalY, TerrainHeight);
+          BlockId = DeterminePaletteBlock(Biome, Depths[IdxY], GlobalY);
           break;
         }
         case STRATUM_GEN_BEDROCK_BAND:
@@ -243,9 +368,19 @@ static int FillCubePerBlock(Chunk *ChunkVal, const ColumnEntry *Column,
   return SolidCount;
 }
 
+static void ClearDebugDensity(float *DebugDensity) {
+  if (DebugDensity == NULL) {
+    return;
+  }
+  for (size_t Idx = 0; Idx < CHUNK_VOLUME; Idx++) {
+    DebugDensity[Idx] = NAN;
+  }
+}
+
 void GenerateChunkTerrain(Chunk *ChunkVal, const ColumnEntry *Column) {
   const TerrainGenOptions DEFAULT_OPTIONS = {.AllowClassification = true,
-                                             .CountClasses = false};
+                                             .CountClasses = false,
+                                             .DebugDensity = NULL};
   (void)GenerateChunkTerrainEx(ChunkVal, Column, &DEFAULT_OPTIONS);
 }
 
@@ -254,6 +389,8 @@ void GenerateChunkTerrain(Chunk *ChunkVal, const ColumnEntry *Column) {
 //
 // Each Y layer is generated by the stratum it belongs to. A cube can straddle a
 // stratum boundary, so the generator is resolved once per layer, never per block.
+// Classification runs in tiers (strata, then column bounds, then corner signs);
+// every short-circuit gives exactly what the per-block path would.
 CubeClass GenerateChunkTerrainEx(Chunk *ChunkVal, const ColumnEntry *Column,
                                  const TerrainGenOptions *Options) {
   ChunkVal->IsModified = false;
@@ -263,16 +400,41 @@ CubeClass GenerateChunkTerrainEx(Chunk *ChunkVal, const ColumnEntry *Column,
   int Ceiling = GetGenerationCeiling();
 
   StratumGenerator Layers[CHUNK_SIZE];
+  bool AllVoid = true;
+  bool AllOverworld = true;
+  bool AnyOverworld = false;
   for (int IdxY = 0; IdxY < CHUNK_SIZE; IdxY++) {
     int GlobalY = BaseY + IdxY;
     Layers[IdxY] =
         (GlobalY >= Ceiling) ? STRATUM_GEN_VOID : ResolveStratum(GlobalY);
+    AllVoid &= (Layers[IdxY] == STRATUM_GEN_VOID);
+    AllOverworld &= (Layers[IdxY] == STRATUM_GEN_OVERWORLD);
+    AnyOverworld |= (Layers[IdxY] == STRATUM_GEN_OVERWORLD);
   }
 
-  CubeClass Class = ClassifyCube(BaseY, Layers, Column);
+  CubeCorners Corners;
+  bool HaveCorners = false;
+  CubeClass Class = CUBE_CLASS_MIXED;
+  if (AllVoid) {
+    Class = CUBE_CLASS_AIR;
+  } else if (AllOverworld) {
+    Class = ClassifyByBounds(BaseY, Column, Ceiling);
+    if (Class == CUBE_CLASS_MIXED) {
+      EvaluateCubeCorners(ChunkVal, Column, SeedVal, &Corners);
+      HaveCorners = true;
+      Class = ClassifyByCorners(BaseY, &Corners, Ceiling);
+    }
+  }
+
+  ClearDebugDensity(Options->DebugDensity);
   int SolidCount = 0;
   if (!Options->AllowClassification || Class == CUBE_CLASS_MIXED) {
-    SolidCount = FillCubePerBlock(ChunkVal, Column, Layers, SeedVal);
+    if (AnyOverworld && !HaveCorners) {
+      EvaluateCubeCorners(ChunkVal, Column, SeedVal, &Corners);
+      HaveCorners = true;
+    }
+    SolidCount = FillCubePerBlock(ChunkVal, HaveCorners ? &Corners : NULL,
+                                  Layers, SeedVal, Options->DebugDensity);
   } else if (Class == CUBE_CLASS_AIR) {
     SolidCount = FillCubeSolid(ChunkVal, BLOCK_AIR);
   } else {

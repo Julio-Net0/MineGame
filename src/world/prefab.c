@@ -282,6 +282,15 @@ bool RegisterPrefabFile(const char *FilePath) {
     free(FileContent);
     return false;
   }
+  // The structure pass reads candidate surfaces from the column cache entries of
+  // a cube's column and its eight neighbours, which covers a reach of 16 blocks.
+  if (SizeX > MAX_PREFAB_FOOTPRINT || SizeZ > MAX_PREFAB_FOOTPRINT) {
+    LogError("PREFAB: %s footprint %dx%d exceeds the %d-block limit", FilePath,
+             SizeX, SizeZ, MAX_PREFAB_FOOTPRINT);
+    cJSON_Delete(Json);
+    free(FileContent);
+    return false;
+  }
   int PaletteSize = ResolvePalette(PaletteItem, PaletteIds, FilePath);
   if (PaletteSize < 0) {
     LogError("PREFAB: %s has an invalid 'palette'", FilePath);

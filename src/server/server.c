@@ -9,6 +9,7 @@
 #include "platform/os_time.h"
 #include "world/biome.h"
 #include "world/surface.h"
+#include "world/terrain_shape.h"
 #include "world/worldgen_strata.h"
 #include "world/block_system.h"
 #include "world/chunk.h"
@@ -257,8 +258,9 @@ bool ServerInit(ServerState *Server, const ServerConfig *Config) {
   LoadBiomeParams("assets/biome_params.json");
   LoadAllBiomeDefinitions("assets/biomes");
 
-  InitSurfaceParams();
-  LoadSurfaceParams("assets/worldgen/noise.json");
+  InitTerrainShape();
+  LoadTerrainNoise("assets/worldgen/noise.json");
+  LoadTerrainShape("assets/worldgen/terrain_shape.json");
   InitStrata();
   LoadStrata("assets/worldgen/strata.json");
 

@@ -42,7 +42,7 @@ static void CommandProfile(const char *Args, CommandContext *Ctx);
 static const CommandInfo AVAILABLECOMMANDS[] = {
     {"/help", "Use: /help",
      "List all the commands available and how to use them", CommandHelp},
-    {"/tp", "Use: /tp <x> <Y> <z>", "Teleports to coordinates x y z",
+    {"/tp", "Use: /tp <x> <y> <z> (~ = relative)", "Teleports to coordinates x y z",
      CommandTP},
     {"/pos", "Use: /pos", "Returns your current position", CommandPos},
     {"/list", "Use: /list", "Returns all loaded block assets", CommandList},
@@ -169,6 +169,26 @@ static void ReturnCommand(ChatState *Chat, int LogLevel, const char *Message) {
   }
 }
 
+// A coordinate is absolute ("12.5") or, with a leading '~', relative to the
+// player's current value ("~", "~40", "~-3"). Returns false on anything else.
+static bool ParseTeleportCoordinate(const char *Str, float Current,
+                                    float *Out) {
+  bool Relative = (Str[0] == '~');
+  const char *Number = Relative ? Str + 1 : Str;
+  if (Relative && *Number == '\0') {
+    *Out = Current;
+    return true;
+  }
+
+  char *End = (void *)0;
+  float Value = ParseFloat(Number, &End);
+  if (End == Number || *End != '\0') {
+    return false;
+  }
+  *Out = Relative ? Current + Value : Value;
+  return true;
+}
+
 static void CommandTP(const char *Args, CommandContext *Ctx) {
   if (Args == (void*)0) {
     ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR,
@@ -185,16 +205,14 @@ static void CommandTP(const char *Args, CommandContext *Ctx) {
   char *ZStr = TokenizeSpace(&SavePtr);
 
   if (XStr && YStr && ZStr) {
-    char *EndX = (void*)0;
-    char *EndY = (void*)0;
-    char *EndZ = (void*)0;
+    Vec3 Current = Ctx->Player->Position;
+    float ValX = 0.0F;
+    float ValY = 0.0F;
+    float ValZ = 0.0F;
 
-    float ValX = ParseFloat(XStr, &EndX);
-    float ValY = ParseFloat(YStr, &EndY);
-    float ValZ = ParseFloat(ZStr, &EndZ);
-
-    if (EndX == XStr || *EndX != '\0' || EndY == YStr || *EndY != '\0' ||
-        EndZ == ZStr || *EndZ != '\0') {
+    if (!ParseTeleportCoordinate(XStr, Current.x, &ValX) ||
+        !ParseTeleportCoordinate(YStr, Current.y, &ValY) ||
+        !ParseTeleportCoordinate(ZStr, Current.z, &ValZ)) {
       ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR,
                     "Invalid coordinates. Must be numeric values.");
       return;

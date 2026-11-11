@@ -82,6 +82,8 @@ set(MINEGAME_SIM_SOURCES
   src/world/prefab_capture.c
   src/world/feature.c
   src/world/surface.c
+  src/world/terrain_shape.c
+  src/world/terrain_density.c
   src/world/worldgen_strata.c
   src/world/worldgen_column_cache.c
   src/persistence/world_save.c
@@ -154,6 +156,15 @@ endif()
 
 target_include_directories(${PROJECT_NAME} PUBLIC src ${raylib_SOURCE_DIR}/src)
 target_include_directories(MineGameServer PUBLIC src)
+
+# Terrain generation and its pure density probe must compute bit-identical
+# floats in different translation units, and client and server must agree on
+# generated terrain. Fusing a*b+c into one FMA is allowed by default in GNU C and
+# would round differently depending on where the compiler chose to fuse, so it
+# is disabled. The x86-64 baseline has no FMA either way; this keeps other
+# targets honest.
+target_compile_options(${PROJECT_NAME} PRIVATE -ffp-contract=off)
+target_compile_options(MineGameServer PRIVATE -ffp-contract=off)
 
 if(MINEGAME_PROFILE)
   target_compile_definitions(${PROJECT_NAME} PRIVATE MINEGAME_PROFILE)

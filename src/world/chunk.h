@@ -29,7 +29,7 @@ enum {
   // Incremented by every change that alters generated terrain. Saved in
   // level.bin so a world from another generator is moved aside instead of
   // regenerating seams next to its saved chunks.
-  WORLDGEN_VERSION = 1
+  WORLDGEN_VERSION = 2
 };
 
 typedef struct Chunk {
@@ -99,6 +99,9 @@ typedef struct {
   // On for the chunk workers only, so the reported class counts describe the
   // world rather than previews and tests.
   bool CountClasses;
+  // Self-test only: when non-NULL, receives the interpolated density of every
+  // block (index x*256 + y*16 + z), NAN where none was evaluated.
+  float *DebugDensity;
 } TerrainGenOptions;
 
 // Column is the cache entry for this chunk's (ChunkX, ChunkZ) and world seed.

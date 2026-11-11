@@ -40,6 +40,8 @@ enum {
 #define RANGE_UNBOUNDED_MAX (1.0e9F)
 
 #define DEFAULT_SUBSURFACE_DEPTH 3
+#define MIN_SUBSURFACE_DEPTH 1
+#define MAX_SUBSURFACE_DEPTH 8
 
 static void DefineClimateFields(void);
 
@@ -505,6 +507,18 @@ static void ParseBiomeFile(const char *FilePath) {
       cJSON_GetObjectItemCaseSensitive(Json, "subsurfaceDepth");
   if (cJSON_IsNumber(SubsurfaceDepthItem) != 0) {
     Biome->SubsurfaceDepth = SubsurfaceDepthItem->valueint;
+  }
+  // Terrain generation sees at most 8 blocks above a cube to decide palette
+  // layers, so a deeper layer could not be rendered consistently.
+  if (Biome->SubsurfaceDepth < MIN_SUBSURFACE_DEPTH ||
+      Biome->SubsurfaceDepth > MAX_SUBSURFACE_DEPTH) {
+    int Clamped = (Biome->SubsurfaceDepth < MIN_SUBSURFACE_DEPTH)
+                      ? MIN_SUBSURFACE_DEPTH
+                      : MAX_SUBSURFACE_DEPTH;
+    LogWarn("BIOME: %s subsurfaceDepth %d is outside %d..%d, using %d",
+            FilePath, Biome->SubsurfaceDepth, MIN_SUBSURFACE_DEPTH,
+            MAX_SUBSURFACE_DEPTH, Clamped);
+    Biome->SubsurfaceDepth = Clamped;
   }
 
   cJSON *PriorityItem = cJSON_GetObjectItemCaseSensitive(Json, "priority");

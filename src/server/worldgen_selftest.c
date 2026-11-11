@@ -3,7 +3,11 @@
 #include "persistence/world_save.h"
 #include "world/chunk.h"
 #include "world/feature.h"
+#include "world/surface.h"
+#include "world/terrain_density.h"
+#include "world/terrain_shape.h"
 #include "world/worldgen_column_cache.h"
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -30,8 +34,19 @@ typedef struct {
   Chunk *PerBlock;
   Chunk *Uncached;
   ColumnEntry *Fresh;
+  // Interpolated density of the per-block run, compared against the probe.
+  float *Density;
   int ClassCounts[CUBE_CLASS_COUNT];
+  int ProbedBlocks;
+  int NoiseSamples;
+  float MaxNoise;
 } SelfTestScratch;
+
+enum {
+  // Every Nth block of a MIXED cube is probed: a fixed, spread-out subset that
+  // keeps the check fast while touching every cell of the cube.
+  PROBE_STRIDE = 7
+};
 
 static void GetTestColumn(int Index, int *ColumnX, int *ColumnZ) {
   const int SIDE = TEST_COLUMN_MAX - TEST_COLUMN_MIN + 1;
@@ -61,8 +76,41 @@ static bool ClimateEqual(const ColumnEntry *Left, const ColumnEntry *Right) {
   return true;
 }
 
+static bool ShapeCornersEqual(const ColumnEntry *Left,
+                              const ColumnEntry *Right) {
+  for (int CornerX = 0; CornerX < COLUMN_SHAPE_CORNERS; CornerX++) {
+    for (int CornerZ = 0; CornerZ < COLUMN_SHAPE_CORNERS; CornerZ++) {
+      if (Left->CornerBase[CornerX][CornerZ] !=
+              Right->CornerBase[CornerX][CornerZ] ||
+          Left->CornerVariation[CornerX][CornerZ] !=
+              Right->CornerVariation[CornerX][CornerZ]) {
+        return false;
+      }
+    }
+  }
+  return Left->BoundHigh == Right->BoundHigh &&
+         Left->BoundLow == Right->BoundLow;
+}
+
+// Every cached block-column surface must equal the pure function, which blends
+// the same corners through its own lookups.
+static bool SurfacesMatchPure(const ColumnEntry *Entry, uint64_t Seed) {
+  for (int LocalX = 0; LocalX < CHUNK_SIZE; LocalX++) {
+    for (int LocalZ = 0; LocalZ < CHUNK_SIZE; LocalZ++) {
+      int Pure = GetPreliminarySurface((Entry->ColumnX * CHUNK_SIZE) + LocalX,
+                                       (Entry->ColumnZ * CHUNK_SIZE) + LocalZ,
+                                       Seed);
+      if (Entry->Surface[LocalX][LocalZ] != Pure) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 static bool EntriesEqual(const ColumnEntry *Left, const ColumnEntry *Right) {
-  return Left->ColumnX == Right->ColumnX && Left->ColumnZ == Right->ColumnZ &&
+  return ShapeCornersEqual(Left, Right) && Left->ColumnX == Right->ColumnX &&
+         Left->ColumnZ == Right->ColumnZ &&
          Left->Seed == Right->Seed && Left->MinSurface == Right->MinSurface &&
          Left->MaxSurface == Right->MaxSurface &&
          memcmp(Left->Surface, Right->Surface, sizeof(Left->Surface)) == 0 &&
@@ -76,28 +124,95 @@ static bool ChunksMatch(const Chunk *Left, const Chunk *Right) {
 }
 
 // The same steps a chunk worker runs on a freshly generated (not loaded) cube.
+// Accelerated runs (Classify) also let the structure pass skip unreachable
+// cubes; the per-block run disables both, so comparing them covers the skip.
 static CubeClass GenerateCube(Chunk *Out, int ChunkX, int ChunkY, int ChunkZ,
-                              const ColumnEntry *Column, bool Classify) {
+                              const ColumnEntry *Column, bool Classify,
+                              float *Density) {
   Out->ChunkX = ChunkX;
   Out->ChunkY = ChunkY;
   Out->ChunkZ = ChunkZ;
 
+  // A private copy: the structure pass looks up neighbouring columns in the
+  // main-thread cache, which may reuse the slot Column points into.
+  static ColumnEntry SLocal;
+  SLocal = *Column;
+
   const TerrainGenOptions OPTIONS = {.AllowClassification = Classify,
-                                     .CountClasses = false};
-  FillChunkBiomeMap(Out, Column);
-  CubeClass Class = GenerateChunkTerrainEx(Out, Column, &OPTIONS);
-  PlaceChunkFeatures(Out);
-  PlaceChunkFlora(Out, Column);
+                                     .CountClasses = false,
+                                     .DebugDensity = Density};
+  FillChunkBiomeMap(Out, &SLocal);
+  CubeClass Class = GenerateChunkTerrainEx(Out, &SLocal, &OPTIONS);
+  PlaceChunkFeatures(Out, GetColumnCache(COLUMN_CACHE_MAIN_SLOT), Classify);
+  PlaceChunkFlora(Out, &SLocal);
   return Class;
 }
 
+// The pure probe must return exactly the float the generator interpolated.
+static bool CheckProbe(SelfTestScratch *Scratch, int ChunkX, int ChunkY,
+                       int ChunkZ, uint64_t Seed) {
+  for (int Index = 0; Index < (int)CHUNK_VOLUME; Index += PROBE_STRIDE) {
+    float Generated = Scratch->Density[Index];
+    if (isnan(Generated)) {
+      continue;
+    }
+    int LocalX = Index / (CHUNK_SIZE * CHUNK_SIZE);
+    int LocalY = (Index / CHUNK_SIZE) % CHUNK_SIZE;
+    int LocalZ = Index % CHUNK_SIZE;
+    int X = (ChunkX * CHUNK_SIZE) + LocalX;
+    int Y = (ChunkY * CHUNK_SIZE) + LocalY;
+    int Z = (ChunkZ * CHUNK_SIZE) + LocalZ;
+    float Probed = SampleTerrainDensity(X, Y, Z, Seed);
+    if (Probed != Generated) {
+      LogError("WORLDGEN_TEST: FAIL probe at (%d, %d, %d) gives %.9g, the "
+               "generator interpolated %.9g",
+               X, Y, Z, (double)Probed, (double)Generated);
+      return false;
+    }
+    Scratch->ProbedBlocks++;
+  }
+  return true;
+}
+
+// The bound tier of classification assumes |n3| <= TERRAIN_NOISE_BOUND; sample
+// the 3D field at every grid corner of the cube to back that up.
+static bool CheckNoiseBound(SelfTestScratch *Scratch, int ChunkX, int ChunkY,
+                            int ChunkZ, uint64_t Seed) {
+  for (int CornerX = 0; CornerX < DENSITY_CORNERS_XZ; CornerX++) {
+    for (int CornerY = 0; CornerY < DENSITY_CORNERS_Y; CornerY++) {
+      for (int CornerZ = 0; CornerZ < DENSITY_CORNERS_XZ; CornerZ++) {
+        int X = (ChunkX * CHUNK_SIZE) + (CornerX * DENSITY_CELL_XZ);
+        int Y = (ChunkY * CHUNK_SIZE) + (CornerY * DENSITY_CELL_Y);
+        int Z = (ChunkZ * CHUNK_SIZE) + (CornerZ * DENSITY_CELL_XZ);
+        float Noise = fabsf(SampleTerrainNoise3D(X, Y, Z, Seed));
+        Scratch->NoiseSamples++;
+        Scratch->MaxNoise = fmaxf(Scratch->MaxNoise, Noise);
+        if (Noise > TERRAIN_NOISE_BOUND) {
+          LogError("WORLDGEN_TEST: FAIL 3D terrain noise %.4f at (%d, %d, %d) "
+                   "exceeds the classification bound %.2f",
+                   (double)Noise, X, Y, Z, (double)TERRAIN_NOISE_BOUND);
+          return false;
+        }
+      }
+    }
+  }
+  return true;
+}
+
 static bool CheckCube(SelfTestScratch *Scratch, int ChunkX, int ChunkY,
-                      int ChunkZ, const ColumnEntry *Cached) {
-  CubeClass Class =
-      GenerateCube(Scratch->Reference, ChunkX, ChunkY, ChunkZ, Cached, true);
+                      int ChunkZ, const ColumnEntry *CachedEntry) {
+  // Copied before the first run: its structure pass looks up neighbouring
+  // columns, which may reuse the cache slot CachedEntry points into.
+  static ColumnEntry SCached;
+  SCached = *CachedEntry;
+  const ColumnEntry *Cached = &SCached;
+
+  CubeClass Class = GenerateCube(Scratch->Reference, ChunkX, ChunkY, ChunkZ,
+                                 Cached, true, NULL);
   Scratch->ClassCounts[Class]++;
 
-  (void)GenerateCube(Scratch->PerBlock, ChunkX, ChunkY, ChunkZ, Cached, false);
+  (void)GenerateCube(Scratch->PerBlock, ChunkX, ChunkY, ChunkZ, Cached, false,
+                     Scratch->Density);
   if (!ChunksMatch(Scratch->Reference, Scratch->PerBlock)) {
     LogError("WORLDGEN_TEST: FAIL cube (%d, %d, %d) classified %s differs from "
              "the per-block path",
@@ -105,8 +220,14 @@ static bool CheckCube(SelfTestScratch *Scratch, int ChunkX, int ChunkY,
     return false;
   }
 
+  if (Class == CUBE_CLASS_MIXED &&
+      (!CheckProbe(Scratch, ChunkX, ChunkY, ChunkZ, Cached->Seed) ||
+       !CheckNoiseBound(Scratch, ChunkX, ChunkY, ChunkZ, Cached->Seed))) {
+    return false;
+  }
+
   (void)GenerateCube(Scratch->Uncached, ChunkX, ChunkY, ChunkZ, Scratch->Fresh,
-                     true);
+                     true, NULL);
   if (!ChunksMatch(Scratch->Reference, Scratch->Uncached)) {
     LogError("WORLDGEN_TEST: FAIL cube (%d, %d, %d) differs when its column "
              "entry is not cached",
@@ -121,7 +242,8 @@ static bool CheckColumn(SelfTestScratch *Scratch, int ColumnX, int ColumnZ,
   const ColumnEntry *Cached = ColumnCacheLookup(
       GetColumnCache(COLUMN_CACHE_MAIN_SLOT), ColumnX, ColumnZ, Seed);
   ColumnEntryFill(Scratch->Fresh, ColumnX, ColumnZ, Seed);
-  if (!EntriesEqual(Cached, Scratch->Fresh)) {
+  if (!EntriesEqual(Cached, Scratch->Fresh) ||
+      !SurfacesMatchPure(Cached, Seed)) {
     LogError("WORLDGEN_TEST: FAIL column (%d, %d) cache entry differs from the "
              "pure samplers",
              ColumnX, ColumnZ);
@@ -145,7 +267,92 @@ static bool CheckColumn(SelfTestScratch *Scratch, int ColumnX, int ColumnZ,
   return true;
 }
 
+static bool CheckSplines(void) {
+  enum { FAILURE_CHARS = 160 };
+  char Failure[FAILURE_CHARS] = {0};
+  int Checked = 0;
+  if (!TerrainShapeSelfCheck(Failure, (int)sizeof(Failure), &Checked)) {
+    LogError("WORLDGEN_TEST: FAIL terrain shape %s", Failure);
+    return false;
+  }
+  LogInfo("WORLDGEN_TEST: ok terrain shape splines reproduce %d control points "
+          "and are continuous at each",
+          Checked);
+  return true;
+}
+
+static int FloorDivChunk(int Value) {
+  int Quotient = Value / CHUNK_SIZE;
+  if ((Value % CHUNK_SIZE != 0) && (Value < 0)) {
+    Quotient--;
+  }
+  return Quotient;
+}
+
+// The fixed test columns need not contain a structure, which would leave the
+// structure pass's skip and ground probe unexercised. This aims at the first
+// structure the pass really places: the cubes around its anchor go through the
+// same three-way comparison, and the anchor cube must hold the structure's base.
+static bool CheckStructureRegion(SelfTestScratch *Scratch, uint64_t Seed) {
+  enum { SEARCH_CELLS = 64 };
+  int X = 0;
+  int Y = 0;
+  int Z = 0;
+  if (!FindStructureAnchor(SEARCH_CELLS, Seed, &X, &Y, &Z)) {
+    LogError("WORLDGEN_TEST: FAIL no structure within %d grid cells of the "
+             "origin, so the structure pass went unchecked",
+             SEARCH_CELLS);
+    return false;
+  }
+
+  int AnchorChunkX = FloorDivChunk(X);
+  int AnchorChunkY = FloorDivChunk(Y);
+  int AnchorChunkZ = FloorDivChunk(Z);
+  for (int Dx = -1; Dx <= 1; Dx++) {
+    for (int Dz = -1; Dz <= 1; Dz++) {
+      for (int Dy = 0; Dy <= 1; Dy++) {
+        // The uncached run reads Fresh, so it must describe this column.
+        ColumnEntryFill(Scratch->Fresh, AnchorChunkX + Dx, AnchorChunkZ + Dz,
+                        Seed);
+        const ColumnEntry *Entry = ColumnCacheLookup(
+            GetColumnCache(COLUMN_CACHE_MAIN_SLOT), AnchorChunkX + Dx,
+            AnchorChunkZ + Dz, Seed);
+        if (!CheckCube(Scratch, AnchorChunkX + Dx, AnchorChunkY + Dy,
+                       AnchorChunkZ + Dz, Entry)) {
+          return false;
+        }
+      }
+    }
+  }
+
+  const ColumnEntry *Anchor =
+      ColumnCacheLookup(GetColumnCache(COLUMN_CACHE_MAIN_SLOT), AnchorChunkX,
+                        AnchorChunkZ, Seed);
+  static ColumnEntry SAnchor;
+  SAnchor = *Anchor;
+  (void)GenerateCube(Scratch->Reference, AnchorChunkX, AnchorChunkY,
+                     AnchorChunkZ, &SAnchor, true, NULL);
+  BlockID Base = Scratch->Reference->Data[X - (AnchorChunkX * CHUNK_SIZE)]
+                                         [Y - (AnchorChunkY * CHUNK_SIZE)]
+                                         [Z - (AnchorChunkZ * CHUNK_SIZE)];
+  if (Base == 0) {
+    LogError("WORLDGEN_TEST: FAIL the structure anchored at (%d, %d, %d) left "
+             "its base cell empty",
+             X, Y, Z);
+    return false;
+  }
+
+  LogInfo("WORLDGEN_TEST: ok structure at (%d, %d, %d): the 18 cubes around it "
+          "are identical with the structure skip on and off",
+          X, Y, Z);
+  return true;
+}
+
 static bool RunChecks(SelfTestScratch *Scratch) {
+  if (!CheckSplines()) {
+    return false;
+  }
+
   uint64_t Seed = GetWorldSeed();
   for (int Index = 0; Index < TEST_COLUMN_COUNT; Index++) {
     int ColumnX = 0;
@@ -154,6 +361,10 @@ static bool RunChecks(SelfTestScratch *Scratch) {
     if (!CheckColumn(Scratch, ColumnX, ColumnZ, Seed)) {
       return false;
     }
+  }
+
+  if (!CheckStructureRegion(Scratch, Seed)) {
+    return false;
   }
 
   for (int Class = 0; Class < CUBE_CLASS_COUNT; Class++) {
@@ -168,6 +379,18 @@ static bool RunChecks(SelfTestScratch *Scratch) {
           Scratch->ClassCounts[CUBE_CLASS_AIR],
           Scratch->ClassCounts[CUBE_CLASS_SOLID],
           Scratch->ClassCounts[CUBE_CLASS_MIXED]);
+
+  if (Scratch->ProbedBlocks == 0) {
+    LogError("WORLDGEN_TEST: FAIL no block was probed, so probe equality went "
+             "unchecked");
+    return false;
+  }
+  LogInfo("WORLDGEN_TEST: ok density probe equals the generator at %d blocks",
+          Scratch->ProbedBlocks);
+  LogInfo("WORLDGEN_TEST: ok 3D terrain noise within bound at %d corners (max "
+          "|n3| = %.4f, bound %.2f)",
+          Scratch->NoiseSamples, (double)Scratch->MaxNoise,
+          (double)TERRAIN_NOISE_BOUND);
   return true;
 }
 
@@ -177,11 +400,16 @@ bool RunWorldgenSelfTest(void) {
       .PerBlock = (Chunk *)calloc(1, sizeof(Chunk)),
       .Uncached = (Chunk *)calloc(1, sizeof(Chunk)),
       .Fresh = (ColumnEntry *)calloc(1, sizeof(ColumnEntry)),
-      .ClassCounts = {0}};
+      .Density = (float *)calloc(CHUNK_VOLUME, sizeof(float)),
+      .ClassCounts = {0},
+      .ProbedBlocks = 0,
+      .NoiseSamples = 0,
+      .MaxNoise = 0.0F};
 
   bool Passed = false;
   if (Scratch.Reference == NULL || Scratch.PerBlock == NULL ||
-      Scratch.Uncached == NULL || Scratch.Fresh == NULL) {
+      Scratch.Uncached == NULL || Scratch.Fresh == NULL ||
+      Scratch.Density == NULL) {
     LogError("WORLDGEN_TEST: FAIL out of memory allocating scratch chunks");
   } else {
     Passed = RunChecks(&Scratch);
@@ -191,5 +419,6 @@ bool RunWorldgenSelfTest(void) {
   free(Scratch.PerBlock);
   free(Scratch.Uncached);
   free(Scratch.Fresh);
+  free(Scratch.Density);
   return Passed;
 }

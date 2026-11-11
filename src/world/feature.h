@@ -2,6 +2,7 @@
 #define FEATURE_H
 
 #include "world/chunk.h"
+#include <stdbool.h>
 
 // Deterministic, renderer-free pass that stamps prefab structures into a freshly
 // generated chunk. The prefab for each candidate column is drawn from the
@@ -16,7 +17,18 @@
 // stamp to its own bounds, so adjacent chunks produce complementary fragments
 // with no seam and no dependence on load order. See design.md for the full
 // contract.
-void PlaceChunkFeatures(Chunk *ChunkVal);
+// Candidate surfaces come from Cache (the generating thread's column cache).
+// AllowSkip lets the pass return early for a cube no candidate can reach; only
+// the self-test turns it off, to prove skipping changes nothing.
+struct ColumnCache;
+void PlaceChunkFeatures(Chunk *ChunkVal, struct ColumnCache *Cache,
+                        bool AllowSkip);
+
+// First structure the pass would place, scanning grid cells within CellRadius
+// of the origin in a fixed order; its stamp origin (the cell above the anchor
+// surface) is returned. Lets tests aim at a cube that really holds a structure.
+bool FindStructureAnchor(int CellRadius, uint64_t Seed, int *OutX, int *OutY,
+                         int *OutZ);
 
 // Scatter single-block, biome-driven flora across this chunk's surface. Like
 // PlaceChunkFeatures it is deterministic in (worldX, worldZ, seed), writes only

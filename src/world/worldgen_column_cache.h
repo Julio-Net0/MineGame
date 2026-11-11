@@ -17,11 +17,13 @@
 // samplers return; the cache only avoids recomputing them.
 
 enum {
-  COLUMN_CACHE_ENTRIES = 64,
+  COLUMN_CACHE_ENTRIES = 256,
+  COLUMN_CACHE_WAYS = 4,
   // Slots 0..CHUNK_WORKER_MAX_THREADS-1 belong to the workers; the last one to
   // the main thread (preview statement, self-tests).
   COLUMN_CACHE_MAIN_SLOT = CHUNK_WORKER_MAX_THREADS,
-  COLUMN_CACHE_SLOTS = CHUNK_WORKER_MAX_THREADS + 1
+  COLUMN_CACHE_SLOTS = CHUNK_WORKER_MAX_THREADS + 1,
+  COLUMN_SHAPE_CORNERS = (CHUNK_SIZE / 4) + 1
 };
 
 typedef struct ColumnEntry {
@@ -29,6 +31,15 @@ typedef struct ColumnEntry {
   int ColumnZ;
   uint64_t Seed;
   bool Valid;
+  // Terrain shape at the 5x5 lattice columns covering this column; the last row
+  // and column belong to the neighbouring column too, so values are shared.
+  float CornerBase[COLUMN_SHAPE_CORNERS][COLUMN_SHAPE_CORNERS];
+  float CornerVariation[COLUMN_SHAPE_CORNERS][COLUMN_SHAPE_CORNERS];
+  // Bounds of Base +- TERRAIN_NOISE_BOUND * Variation over those corners: no
+  // overworld block of the column can be solid above BoundHigh or non-solid
+  // below BoundLow.
+  float BoundHigh;
+  float BoundLow;
   int16_t Surface[CHUNK_SIZE][CHUNK_SIZE];
   float Temperature[BIOME_CELLS_PER_CHUNK][BIOME_CELLS_PER_CHUNK];
   float Humidity[BIOME_CELLS_PER_CHUNK][BIOME_CELLS_PER_CHUNK];
@@ -36,8 +47,11 @@ typedef struct ColumnEntry {
   int16_t MaxSurface;
 } ColumnEntry;
 
-typedef struct {
+typedef struct ColumnCache {
   ColumnEntry Entries[COLUMN_CACHE_ENTRIES];
+  // Owner-thread only: recency per entry for replacement within a set.
+  uint32_t LastUse[COLUMN_CACHE_ENTRIES];
+  uint32_t Clock;
   // Written by the owning thread, read by the main thread for reporting.
   atomic_uint_fast64_t Hits;
   atomic_uint_fast64_t Misses;

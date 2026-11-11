@@ -18,6 +18,7 @@
 #include "world/block_system.h"
 #include "world/chunk.h"
 #include "world/surface.h"
+#include "world/terrain_density.h"
 #include "world/worldgen_column_cache.h"
 
 #include <errno.h>
@@ -939,7 +940,10 @@ static void ScriptAddWorldgenJson(cJSON *Root, const ScriptContext *Ctx) {
 
   int ColumnX = (int)floorf(Ctx->PlayerVal->Position.x + BLOCK_HALF_SIZE);
   int ColumnZ = (int)floorf(Ctx->PlayerVal->Position.z + BLOCK_HALF_SIZE);
-  int SurfaceY = GetPreliminarySurface(ColumnX, ColumnZ, Seed);
+  // The real top of the generated terrain, which the player stands on; the 2D
+  // preliminary surface is reported beside it.
+  int SurfaceY = GetTerrainTop(ColumnX, ColumnZ, Seed);
+  int PreliminaryY = GetPreliminarySurface(ColumnX, ColumnZ, Seed);
   int SurfaceBlock = GetBlockIDFromWorld(
       Ctx->WorldVal, (Vec3){(float)ColumnX, (float)SurfaceY, (float)ColumnZ});
   const BlockType *SurfaceDef = GetBlockDef(SurfaceBlock);
@@ -968,6 +972,7 @@ static void ScriptAddWorldgenJson(cJSON *Root, const ScriptContext *Ctx) {
 
   cJSON_AddNumberToObject(Node, "generatorVersion", WORLDGEN_VERSION);
   cJSON_AddNumberToObject(Node, "surfaceY", SurfaceY);
+  cJSON_AddNumberToObject(Node, "preliminarySurfaceY", PreliminaryY);
   cJSON_AddStringToObject(Node, "surfaceBlock",
                           (SurfaceDef != (BlockType *)0) ? SurfaceDef->Name
                                                          : "unknown");

@@ -10,8 +10,10 @@
 #include "world/chunk.h"
 #include "world/feature.h"
 #include "world/surface.h"
+#include "world/terrain_shape.h"
 #include "world/worldgen_column_cache.h"
 #include "world/worldgen_strata.h"
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,6 +54,9 @@ typedef struct {
   double AirSeconds;
   double SolidSeconds;
   double MixedSeconds;
+  // Biome map plus terrain, without the structure and flora passes.
+  double TerrainSeconds;
+  double MixedTerrainSeconds;
   bool BedrockFloorComplete;
   int SolidAboveCeiling;
 } SliceStats;
@@ -228,9 +233,18 @@ static void GenerateScratch(Chunk *Scratch, int ChunkX, int ChunkY, int ChunkZ,
       GetColumnCache(COLUMN_CACHE_MAIN_SLOT), ChunkX, ChunkZ, GetWorldSeed());
   FillChunkBiomeMap(Scratch, Column);
   GenerateChunkTerrain(Scratch, Column);
-  PlaceChunkFeatures(Scratch);
+  double TerrainEnd = PlatformGetTime();
+  ColumnCache *Cache = GetColumnCache(COLUMN_CACHE_MAIN_SLOT);
+  PlaceChunkFeatures(Scratch, Cache, true);
+  // The structure pass may have reused this column's cache slot.
+  Column = ColumnCacheLookup(Cache, ChunkX, ChunkZ, GetWorldSeed());
   PlaceChunkFlora(Scratch, Column);
   double Seconds = PlatformGetTime() - Start;
+  Stats->TerrainSeconds += TerrainEnd - Start;
+  if (Scratch->SolidBlockCount != 0 &&
+      Scratch->SolidBlockCount != (int)CHUNK_VOLUME) {
+    Stats->MixedTerrainSeconds += TerrainEnd - Start;
+  }
   Stats->GenerationSeconds += Seconds;
   Stats->GeneratedCubes++;
   CountCubeClass(Scratch, Seconds, Stats);
@@ -308,8 +322,114 @@ static double MeanMicros(double Seconds, int Count) {
   return (Count > 0) ? (Seconds * MICROS_PER_SECOND) / (double)Count : 0.0;
 }
 
+enum {
+  SHAPE_QUANTILE_COUNT = 5
+};
+
+static const float SHAPE_QUANTILES[SHAPE_QUANTILE_COUNT] = {0.05F, 0.25F, 0.5F,
+                                                            0.75F, 0.95F};
+static const char *const SHAPE_COORD_KEYS[SHAPE_COORD_COUNT] = {
+    "continentalness", "erosion", "weirdness", "peaksValleys"};
+
+typedef struct {
+  float Quantiles[SHAPE_COORD_COUNT][SHAPE_QUANTILE_COUNT];
+  float BaseQuantiles[SHAPE_QUANTILE_COUNT];
+} ShapeSummary;
+
+static int CompareFloats(const void *Left, const void *Right) {
+  float A = *(const float *)Left;
+  float B = *(const float *)Right;
+  return (A > B) - (A < B);
+}
+
+static void FillQuantiles(float *Values, int Count, float *Out) {
+  qsort(Values, (size_t)Count, sizeof(float), CompareFloats);
+  for (int Idx = 0; Idx < SHAPE_QUANTILE_COUNT; Idx++) {
+    int Rank = (int)(SHAPE_QUANTILES[Idx] * (float)(Count - 1));
+    Out[Idx] = Values[Rank];
+  }
+}
+
+// Maps [-1, 1] to [0, 255], clamping outliers.
+static unsigned char UnitToByte(float Value) {
+  const float BYTE_MAX_F = 255.0F;
+  const float HALF = 0.5F;
+  float Unit = fminf(fmaxf((Value + 1.0F) * HALF, 0.0F), 1.0F);
+  return (unsigned char)(Unit * BYTE_MAX_F);
+}
+
+// Shape fields at lattice resolution: red continentalness, green erosion, blue
+// peaks-and-valleys, each mapped from [-1, 1]. Their quantiles go into the
+// statistics, which is what spline locations are tuned against.
+static bool WriteShapeMap(const char *OutDir, const char *Name, int OriginX,
+                          int OriginZ, int Size, ShapeSummary *Summary) {
+  uint64_t Seed = GetWorldSeed();
+  int Side = (Size + SHAPE_LATTICE_STEP - 1) / SHAPE_LATTICE_STEP;
+  size_t Count = (size_t)Side * (size_t)Side;
+  unsigned char *Pixels = (unsigned char *)malloc(Count * RGB_CHANNELS);
+  float *Samples = (float *)malloc(Count * sizeof(float) * (SHAPE_COORD_COUNT + 1));
+  if (Pixels == NULL || Samples == NULL) {
+    free(Pixels);
+    free(Samples);
+    return false;
+  }
+
+  for (int Pz = 0; Pz < Side; Pz++) {
+    for (int Px = 0; Px < Side; Px++) {
+      int X = OriginX + (Px * SHAPE_LATTICE_STEP);
+      int Z = OriginZ + (Pz * SHAPE_LATTICE_STEP);
+      ShapeCoords Coords = SampleShapeCoords(X, Z, Seed);
+      size_t Cell = ((size_t)Pz * (size_t)Side) + (size_t)Px;
+      for (int Coord = 0; Coord < SHAPE_COORD_COUNT; Coord++) {
+        Samples[((size_t)Coord * Count) + Cell] = Coords.Values[Coord];
+      }
+      Samples[((size_t)SHAPE_COORD_COUNT * Count) + Cell] =
+          EvaluateColumnShape(X, Z, Seed).Base;
+      PreviewColor Color = {UnitToByte(Coords.Values[SHAPE_COORD_CONTINENTALNESS]),
+                            UnitToByte(Coords.Values[SHAPE_COORD_EROSION]),
+                            UnitToByte(Coords.Values[SHAPE_COORD_PEAKS_VALLEYS])};
+      PutPixel(Pixels, Side, Px, Pz, Color);
+    }
+  }
+
+  for (int Coord = 0; Coord < SHAPE_COORD_COUNT; Coord++) {
+    FillQuantiles(&Samples[(size_t)Coord * Count], (int)Count,
+                  Summary->Quantiles[Coord]);
+  }
+  FillQuantiles(&Samples[(size_t)SHAPE_COORD_COUNT * Count], (int)Count,
+                Summary->BaseQuantiles);
+
+  bool Ok = WritePng(OutDir, Name, "shape", Side, Side, Pixels);
+  free(Pixels);
+  free(Samples);
+  return Ok;
+}
+
+static cJSON *QuantileArray(const float *Values) {
+  cJSON *Array = cJSON_CreateArray();
+  for (int Idx = 0; Array != NULL && Idx < SHAPE_QUANTILE_COUNT; Idx++) {
+    cJSON_AddItemToArray(Array, cJSON_CreateNumber((double)Values[Idx]));
+  }
+  return Array;
+}
+
+static void AddShapeSummary(cJSON *Root, const ShapeSummary *Summary) {
+  cJSON *Node = cJSON_CreateObject();
+  if (Node == NULL) {
+    return;
+  }
+  cJSON_AddItemToObject(Node, "quantiles", QuantileArray(SHAPE_QUANTILES));
+  for (int Coord = 0; Coord < SHAPE_COORD_COUNT; Coord++) {
+    cJSON_AddItemToObject(Node, SHAPE_COORD_KEYS[Coord],
+                          QuantileArray(Summary->Quantiles[Coord]));
+  }
+  cJSON_AddItemToObject(Node, "base", QuantileArray(Summary->BaseQuantiles));
+  cJSON_AddItemToObject(Root, "shape", Node);
+}
+
 static bool WriteStats(const char *OutDir, const char *Name, int SurfaceMin,
-                       int SurfaceMax, const SliceStats *Stats) {
+                       int SurfaceMax, const SliceStats *Stats,
+                       const ShapeSummary *Summary) {
   cJSON *Root = cJSON_CreateObject();
   if (Root == NULL) {
     return false;
@@ -330,11 +450,17 @@ static bool WriteStats(const char *OutDir, const char *Name, int SurfaceMin,
                           MeanMicros(Stats->AirSeconds, Stats->AirCubes));
   cJSON_AddNumberToObject(Root, "meanSolidUs",
                           MeanMicros(Stats->SolidSeconds, Stats->SolidCubes));
+  cJSON_AddNumberToObject(Root, "meanTerrainUs",
+                          MeanMicros(Stats->TerrainSeconds, Stats->GeneratedCubes));
+  cJSON_AddNumberToObject(
+      Root, "meanMixedTerrainUs",
+      MeanMicros(Stats->MixedTerrainSeconds, Stats->MixedCubes));
   cJSON_AddNumberToObject(Root, "meanMixedUs",
                           MeanMicros(Stats->MixedSeconds, Stats->MixedCubes));
   cJSON_AddBoolToObject(Root, "bedrockFloorComplete",
                         Stats->BedrockFloorComplete);
   cJSON_AddNumberToObject(Root, "solidAboveCeiling", Stats->SolidAboveCeiling);
+  AddShapeSummary(Root, Summary);
 
   char *Text = cJSON_Print(Root);
   cJSON_Delete(Root);
@@ -387,7 +513,13 @@ bool WorldgenPreviewWrite(const char *OutDir, const char *Name, int CenterX,
     return false;
   }
 
-  if (!WriteStats(OutDir, Name, SurfaceMin, SurfaceMax, &Stats)) {
+  ShapeSummary Summary = {0};
+  if (!WriteShapeMap(OutDir, Name, OriginX, OriginZ, Size, &Summary)) {
+    SetError(Error, ErrorSize, "could not write the shape map for ", Name);
+    return false;
+  }
+
+  if (!WriteStats(OutDir, Name, SurfaceMin, SurfaceMax, &Stats, &Summary)) {
     SetError(Error, ErrorSize, "could not write the statistics for ", Name);
     return false;
   }

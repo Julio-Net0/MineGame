@@ -94,15 +94,17 @@ def assert_png(path: Path, width: int = EXPECTED_WIDTH, height: int = EXPECTED_H
 # in the dumps); a version with no entry fails instead of comparing against
 # another generator's numbers.
 EXPECTED_RENDERED: dict[int, dict[str, int]] = {
-    1: {
-        "spawn": 76,
-        "far": 129,
-        "after_ticks": 129,
-        "landed": 219,
-        "after_walk": 204,
-        "after_break": 255,
-        "after_place": 255,
-        "after_jump": 255,
+    # Version 1 (heightmap) was dropped with it: spawn_overview.mgs moved to a
+    # spawn-relative pose at the same time, so its counts no longer apply.
+    2: {
+        "spawn": 337,
+        "far": 33,
+        "after_ticks": 33,
+        "landed": 209,
+        "after_walk": 298,
+        "after_break": 236,
+        "after_place": 236,
+        "after_jump": 238,
     },
 }
 
@@ -186,9 +188,17 @@ def verify_spawn_overview(out_dir: Path, _run_log: str) -> None:
     assert_settled_chunks(spawn, "spawn.json", expected_rendered=expected_rendered(spawn, "spawn"))
     assert_idle_profiler(spawn, "spawn.json")
 
+    # The script teleports 40 blocks above the spawn feet position.
     player = spawn["player"]
+    origin = spawn["worldgen"]["spawn"]
     require(player["noclip"] is True, "spawn.json: expected player.noclip == true")
-    assert_vec3(player["position"], 0.0, 90.0, 0.0, "spawn.json player.position")
+    assert_vec3(
+        player["position"],
+        float(origin["x"]),
+        float(origin["feetY"]) + 40.0,
+        float(origin["z"]),
+        "spawn.json player.position",
+    )
 
 
 def verify_loaded(out_dir: Path, _run_log: str) -> None:

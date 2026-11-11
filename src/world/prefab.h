@@ -10,7 +10,9 @@ struct Chunk;
 
 enum {
   MAX_PREFAB_NAME_SIZE = 32,
-  MAX_PREFABS = 256
+  MAX_PREFABS = 256,
+  // Largest X or Z size a prefab may have; see the structure pass in feature.c.
+  MAX_PREFAB_FOOTPRINT = 16
 };
 
 // One occupied block of a prefab. Positions are local to the prefab origin and

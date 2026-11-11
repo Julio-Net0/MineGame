@@ -2,26 +2,38 @@
 #include "world/worldgen_column_cache.h"
 #include "world/feature.h"
 #include "persistence/world_save.h"
+#include "core/hash.h"
 #include "core/profiler.h"
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 
 #define QUEUE_SIZE 2048
 
-// Meshing and generation share one pool rather than getting one each. The queue,
-// condition variable and shutdown path already do what mesh work needs, and a
-// second pool would contend for the same cores while doubling the shutdown
-// surface.
+// Meshing and generation share one pool rather than getting one each. The queue
+// lock, condition variable and shutdown path already do what mesh work needs,
+// and a second pool would contend for the same cores while doubling the
+// shutdown surface.
 //
-// They are separate queues within that pool, because generation takes priority:
-// a chunk cannot be meshed until its neighbours are generated, so a pool
-// saturated with mesh work would stall the generation that unblocks it.
+// Generation takes priority over meshing: a chunk cannot be meshed until its
+// neighbours are generated, so a pool saturated with mesh work would stall the
+// generation that unblocks it.
+//
+// Generation is queued per worker, by column: every cube of a column goes to
+// the same worker, so the column's 2D data is computed once, in that worker's
+// column cache, instead of once per worker. A worker whose own queue is empty
+// takes the oldest job of another queue rather than sitting idle; that only
+// happens when the load is already draining, so affinity holds for the bulk.
+typedef struct {
+  Chunk *Jobs[QUEUE_SIZE];
+  int Head;
+  int Tail;
+} GenerationQueue;
+
 typedef struct ChunkWorkerState {
-  Chunk *GenerationQueue[QUEUE_SIZE];
-  int GenerationHead;
-  int GenerationTail;
+  GenerationQueue GenerationQueues[CHUNK_WORKER_MAX_THREADS];
 
   int MeshQueue[QUEUE_SIZE];
   int MeshHead;
@@ -38,8 +50,6 @@ typedef struct ChunkWorkerState {
 
 static ChunkWorkerState *GetWorkerState(void) {
   static ChunkWorkerState State = {
-    .GenerationHead = 0,
-    .GenerationTail = 0,
     .MeshHead = 0,
     .MeshTail = 0,
     .ThreadCount = 0,
@@ -49,10 +59,51 @@ static ChunkWorkerState *GetWorkerState(void) {
   return &State;
 }
 
+static bool QueueIsEmpty(const GenerationQueue *Queue) {
+  return Queue->Head == Queue->Tail;
+}
+
 // Caller holds QueueMutex.
 static bool HasWork(const ChunkWorkerState *State) {
-  return (State->GenerationHead != State->GenerationTail) ||
-         (State->MeshHead != State->MeshTail);
+  for (int Idx = 0; Idx < CHUNK_WORKER_MAX_THREADS; Idx++) {
+    if (!QueueIsEmpty(&State->GenerationQueues[Idx])) {
+      return true;
+    }
+  }
+  return State->MeshHead != State->MeshTail;
+}
+
+// The worker that owns a column. Columns are grouped into OWNER_BLOCK x
+// OWNER_BLOCK blocks with one owner each: the structure pass reads the 3x3
+// columns around a cube, and with per-column owners those neighbours would
+// mostly belong to other workers, each recomputing them in its own cache.
+// Blocks are hashed rather than striped so the load spreads over all workers.
+static int ColumnOwner(const ChunkWorkerState *State, int ChunkX, int ChunkZ) {
+  const int OWNER_BLOCK = 4;
+  const unsigned int HALF_BITS = 32U;
+  int Count = (State->ThreadCount > 0) ? State->ThreadCount : 1;
+  int BlockX = (ChunkX >= 0) ? ChunkX / OWNER_BLOCK
+                             : ((ChunkX + 1) / OWNER_BLOCK) - 1;
+  int BlockZ = (ChunkZ >= 0) ? ChunkZ / OWNER_BLOCK
+                             : ((ChunkZ + 1) / OWNER_BLOCK) - 1;
+  uint64_t Packed = ((uint64_t)(uint32_t)BlockX << HALF_BITS) |
+                    (uint64_t)(uint32_t)BlockZ;
+  return (int)(SplitMix64(Packed) % (uint64_t)Count);
+}
+
+// Caller holds QueueMutex. Own queue first; otherwise the oldest job of the
+// next non-empty queue.
+static Chunk *TakeGenerationJob(ChunkWorkerState *State, int WorkerIndex) {
+  for (int Offset = 0; Offset < CHUNK_WORKER_MAX_THREADS; Offset++) {
+    GenerationQueue *Queue =
+        &State->GenerationQueues[(WorkerIndex + Offset) % CHUNK_WORKER_MAX_THREADS];
+    if (!QueueIsEmpty(Queue)) {
+      Chunk *Job = Queue->Jobs[Queue->Head];
+      Queue->Head = (Queue->Head + 1) % QUEUE_SIZE;
+      return Job;
+    }
+  }
+  return (Chunk *)0;
 }
 
 static void RunGeneration(Chunk *Target, int WorkerIndex) {
@@ -80,7 +131,12 @@ static void RunGeneration(Chunk *Target, int WorkerIndex) {
     PROFILE_END(TerrainStart, PROFILE_GEN_TERRAIN);
 
     PROFILE_BEGIN(FeaturesStart);
-    PlaceChunkFeatures(Target);
+    ColumnCache *Cache = GetColumnCache(WorkerIndex);
+    PlaceChunkFeatures(Target, Cache, true);
+    // The structure pass looks up neighbouring columns, which may have reused
+    // this column's slot, so the entry is looked up again for flora.
+    Column = ColumnCacheLookup(Cache, Target->ChunkX, Target->ChunkZ,
+                               GetWorldSeed());
     PlaceChunkFlora(Target, Column);
     PROFILE_END(FeaturesStart, PROFILE_GEN_FEATURES);
   }
@@ -115,10 +171,8 @@ static void *WorkerLoop(void *Arg) {
 
     // Generation first, always: meshing depends on it, so draining mesh work
     // ahead of it would stall the pipeline that feeds the mesh queue.
-    if (State->GenerationHead != State->GenerationTail) {
-      GenerationTarget = State->GenerationQueue[State->GenerationHead];
-      State->GenerationHead = (State->GenerationHead + 1) % QUEUE_SIZE;
-    } else {
+    GenerationTarget = TakeGenerationJob(State, WorkerIndex);
+    if (GenerationTarget == (Chunk *)0) {
       MeshJobId = State->MeshQueue[State->MeshHead];
       State->MeshHead = (State->MeshHead + 1) % QUEUE_SIZE;
     }
@@ -177,14 +231,16 @@ void EnqueueChunkGeneration(Chunk *ChunkVal) {
   ChunkWorkerState *State = GetWorkerState();
   pthread_mutex_lock(&State->QueueMutex);
 
-  int NextTail = (State->GenerationTail + 1) % QUEUE_SIZE;
+  GenerationQueue *Queue = &State->GenerationQueues[ColumnOwner(
+      State, ChunkVal->ChunkX, ChunkVal->ChunkZ)];
+  int NextTail = (Queue->Tail + 1) % QUEUE_SIZE;
 
-  if (NextTail != State->GenerationHead) {
+  if (NextTail != Queue->Head) {
     ChunkVal->IsGenerating = true;
     ChunkVal->IsGenerated = false;
 
-    State->GenerationQueue[State->GenerationTail] = ChunkVal;
-    State->GenerationTail = NextTail;
+    Queue->Jobs[Queue->Tail] = ChunkVal;
+    Queue->Tail = NextTail;
     pthread_cond_signal(&State->WorkAvail);
   } else {
     (void)fprintf(stderr, "Chunk generation queue full! Chunk rejected at: %d, %d, %d\n", ChunkVal->ChunkX, ChunkVal->ChunkY, ChunkVal->ChunkZ);

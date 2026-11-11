@@ -2,6 +2,7 @@
 #include "core/hash.h"
 #include "world/chunk.h"
 #include "world/surface.h"
+#include "world/terrain_density.h"
 #include "world/worldgen_column_cache.h"
 #include "world/biome.h"
 #include "world/prefab.h"
@@ -98,80 +99,181 @@ static int PickOrientation(const Prefab *PrefabVal, uint64_t Hash) {
   return Code;
 }
 
-// Widest horizontal reach across every loaded prefab. A candidate's prefab is
-// unknown until its biome resolves and different biomes place different sizes,
-// so the overlap scan uses a single upper bound over all prefabs — only ever
-// wider than needed, and the stamp's clip test drops the surplus.
-static int MaxPrefabFootprint(void) {
-  int Max = 0;
+// Reach of every loaded prefab around its anchor column: horizontally the widest
+// footprint, vertically how far it extends below and above the cell it is
+// stamped at. A candidate's prefab is unknown until its biome resolves, so these
+// are upper bounds over all prefabs.
+typedef struct {
+  int Footprint;
+  int Below;
+  int Above;
+} PrefabReach;
+
+static PrefabReach MaxPrefabReach(void) {
+  PrefabReach Reach = {0, 0, 0};
   int Count = GetLoadedPrefabsCount();
   for (int Idx = 0; Idx < Count; Idx++) {
     const Prefab *PrefabVal = GetPrefabByIndex(Idx);
     if (PrefabVal == NULL) {
       continue;
     }
-    int Reach = PrefabVal->SizeX > PrefabVal->SizeZ ? PrefabVal->SizeX
-                                                    : PrefabVal->SizeZ;
-    if (Reach > Max) {
-      Max = Reach;
-    }
+    int Footprint = PrefabVal->SizeX > PrefabVal->SizeZ ? PrefabVal->SizeX
+                                                        : PrefabVal->SizeZ;
+    int AnchorY = PrefabVal->HasOrigin ? PrefabVal->OriginY : 0;
+    int Above = PrefabVal->SizeY - 1 - AnchorY;
+    Reach.Footprint = (Footprint > Reach.Footprint) ? Footprint : Reach.Footprint;
+    Reach.Below = (AnchorY > Reach.Below) ? AnchorY : Reach.Below;
+    Reach.Above = (Above > Reach.Above) ? Above : Reach.Above;
   }
-  return Max;
+  return Reach;
 }
 
-void PlaceChunkFeatures(Chunk *ChunkVal) {
-  uint64_t Seed = GetWorldSeed();
+// Preliminary surface of any column, read from its cache entry. The entry holds
+// exactly what GetPreliminarySurface returns, so this is the same value without
+// re-evaluating the terrain shape. The entry pointer is used immediately: the
+// next lookup may reuse its slot.
+static int CachedSurface(ColumnCache *Cache, int WorldX, int WorldZ,
+                         uint64_t Seed) {
+  int ColumnX = FloorDiv(WorldX, CHUNK_SIZE);
+  int ColumnZ = FloorDiv(WorldZ, CHUNK_SIZE);
+  const ColumnEntry *Entry = ColumnCacheLookup(Cache, ColumnX, ColumnZ, Seed);
+  return Entry->Surface[WorldX - (ColumnX * CHUNK_SIZE)]
+                       [WorldZ - (ColumnZ * CHUNK_SIZE)];
+}
+
+// True when no structure anchored anywhere in the scanned column range can
+// reach this cube vertically.
+static bool CubeOutOfReach(const Chunk *ChunkVal, ColumnCache *Cache,
+                           int MinX, int MaxX, int MinZ, int MaxZ,
+                           const PrefabReach *Reach, uint64_t Seed) {
+  int LowestSurface = 0;
+  int HighestSurface = 0;
+  bool First = true;
+  for (int ColumnX = FloorDiv(MinX, CHUNK_SIZE);
+       ColumnX <= FloorDiv(MaxX, CHUNK_SIZE); ColumnX++) {
+    for (int ColumnZ = FloorDiv(MinZ, CHUNK_SIZE);
+         ColumnZ <= FloorDiv(MaxZ, CHUNK_SIZE); ColumnZ++) {
+      const ColumnEntry *Entry =
+          ColumnCacheLookup(Cache, ColumnX, ColumnZ, Seed);
+      LowestSurface = (First || Entry->MinSurface < LowestSurface)
+                          ? Entry->MinSurface
+                          : LowestSurface;
+      HighestSurface = (First || Entry->MaxSurface > HighestSurface)
+                           ? Entry->MaxSurface
+                           : HighestSurface;
+      First = false;
+    }
+  }
+
+  // A structure is stamped from S + 1 - Below to S + 1 + Above.
+  int BaseY = ChunkVal->ChunkY * CHUNK_SIZE;
+  int TopY = BaseY + CHUNK_SIZE - 1;
+  int ReachLow = LowestSurface + 1 - Reach->Below;
+  int ReachHigh = HighestSurface + 1 + Reach->Above;
+  return TopY < ReachLow || BaseY > ReachHigh;
+}
+
+// The preliminary surface is a 2D estimate: on rugged terrain it can sit in air
+// or inside an overhang. A structure is placed only where the density field
+// agrees that the anchor block is ground with open space above it.
+static bool HasGroundUnderAir(int WorldX, int Surface, int WorldZ,
+                              uint64_t Seed) {
+  return SampleTerrainDensity(WorldX, Surface, WorldZ, Seed) > 0.0F &&
+         SampleTerrainDensity(WorldX, Surface + 1, WorldZ, Seed) <= 0.0F;
+}
+
+typedef struct {
+  int WorldX;
+  int WorldZ;
+  int Surface;
+  const Prefab *Structure;
+} StructureCandidate;
+
+// Everything that decides a grid cell's structure except whether it reaches a
+// given cube and whether the ground probe confirms it. The surface comes from
+// Cache when given, otherwise from the pure sampler; both return the same value.
+static bool ResolveCandidate(int CellX, int CellZ, uint64_t Seed,
+                            ColumnCache *Cache, StructureCandidate *Out) {
   const uint64_t MASK16 = 0xFFFFULL;
   const float DENSITY_SCALE = 65536.0F;
+
+  CellCandidate(CellX, CellZ, Seed, &Out->WorldX, &Out->WorldZ);
+  int WorldX = Out->WorldX;
+  int WorldZ = Out->WorldZ;
+
+  // Skip submerged columns using the same threshold generation floods with;
+  // the clip test in the stamp then drops any cell outside this chunk.
+  Out->Surface = (Cache != NULL) ? CachedSurface(Cache, WorldX, WorldZ, Seed)
+                                 : GetPreliminarySurface(WorldX, WorldZ, Seed);
+  if (Out->Surface <= SEA_LEVEL) {
+    return false;
+  }
+
+  // Resolve the biome at this column's surface (Depth ~= 0) through the pure
+  // sampler, so every chunk re-deriving this overhanging structure agrees on its
+  // prefab regardless of load order.
+  int BiomeId =
+      SampleBiomeAt(WorldX, Out->Surface, WorldZ, Out->Surface, Seed);
+  const BiomeType *Biome = GetBiomeDef(BiomeId);
+  if (Biome->StructureCount == 0 || Biome->StructureTotalWeight <= 0) {
+    return false;
+  }
+
+  uint64_t ExistHash = HashCell(WorldX, WorldZ, Seed ^ STRUCTURE_EXIST_SALT);
+  float Roll = (float)(ExistHash & MASK16) / DENSITY_SCALE;
+  if (Roll >= Biome->StructureDensity) {
+    return false;
+  }
+
+  uint64_t KindHash = HashCell(WorldX, WorldZ, Seed ^ STRUCTURE_KIND_SALT);
+  Out->Structure = GetPrefabByIndex(PickStructurePrefab(Biome, KindHash));
+  return Out->Structure != NULL;
+}
+
+void PlaceChunkFeatures(Chunk *ChunkVal, ColumnCache *Cache, bool AllowSkip) {
+  uint64_t Seed = GetWorldSeed();
 
   // A structure rooted up to the largest prefab's footprint outside the chunk
   // can still stamp cells into it, so the scan widens the chunk's column range
   // by that reach on every side before mapping to grid cells.
-  int Margin = MaxPrefabFootprint();
+  PrefabReach Reach = MaxPrefabReach();
+  int Margin = Reach.Footprint;
 
   int MinX = (ChunkVal->ChunkX * CHUNK_SIZE) - Margin;
   int MaxX = (ChunkVal->ChunkX * CHUNK_SIZE) + CHUNK_SIZE - 1 + Margin;
   int MinZ = (ChunkVal->ChunkZ * CHUNK_SIZE) - Margin;
   int MaxZ = (ChunkVal->ChunkZ * CHUNK_SIZE) + CHUNK_SIZE - 1 + Margin;
 
+  if (AllowSkip && CubeOutOfReach(ChunkVal, Cache, MinX, MaxX, MinZ, MaxZ,
+                                  &Reach, Seed)) {
+    return;
+  }
+
   int CellMinX = FloorDiv(MinX, GRID_CELL_SIZE);
   int CellMaxX = FloorDiv(MaxX, GRID_CELL_SIZE);
   int CellMinZ = FloorDiv(MinZ, GRID_CELL_SIZE);
   int CellMaxZ = FloorDiv(MaxZ, GRID_CELL_SIZE);
+  int BaseY = ChunkVal->ChunkY * CHUNK_SIZE;
+  int TopY = BaseY + CHUNK_SIZE - 1;
 
   for (int CellX = CellMinX; CellX <= CellMaxX; CellX++) {
     for (int CellZ = CellMinZ; CellZ <= CellMaxZ; CellZ++) {
-      int WorldX = 0;
-      int WorldZ = 0;
-      CellCandidate(CellX, CellZ, Seed, &WorldX, &WorldZ);
-
-      // Skip submerged columns using the same threshold generation floods with;
-      // the clip test in the stamp then drops any cell outside this chunk.
-      int Surface = GetPreliminarySurface(WorldX, WorldZ, Seed);
-      if (Surface <= SEA_LEVEL) {
+      StructureCandidate Candidate;
+      if (!ResolveCandidate(CellX, CellZ, Seed, Cache, &Candidate)) {
         continue;
       }
 
-      // Resolve the biome at this column's surface (Depth ~= 0) through the pure
-      // sampler, so every chunk re-deriving this overhanging structure agrees on
-      // its prefab regardless of load order.
-      int BiomeId = SampleBiomeAt(WorldX, Surface, WorldZ, Surface, Seed);
-      const BiomeType *Biome = GetBiomeDef(BiomeId);
-      if (Biome->StructureCount == 0 || Biome->StructureTotalWeight <= 0) {
+      // Nothing to stamp here when the structure's vertical extent misses this
+      // cube; checked before the density probe, which is the costly part.
+      const Prefab *Structure = Candidate.Structure;
+      int AnchorY = Structure->HasOrigin ? Structure->OriginY : 0;
+      int StampLow = Candidate.Surface + 1 - AnchorY;
+      int StampHigh = StampLow + Structure->SizeY - 1;
+      if (StampHigh < BaseY || StampLow > TopY) {
         continue;
       }
-
-      uint64_t ExistHash =
-          HashCell(WorldX, WorldZ, Seed ^ STRUCTURE_EXIST_SALT);
-      float Roll = (float)(ExistHash & MASK16) / DENSITY_SCALE;
-      if (Roll >= Biome->StructureDensity) {
-        continue;
-      }
-
-      uint64_t KindHash = HashCell(WorldX, WorldZ, Seed ^ STRUCTURE_KIND_SALT);
-      int PrefabIndex = PickStructurePrefab(Biome, KindHash);
-      const Prefab *Structure = GetPrefabByIndex(PrefabIndex);
-      if (Structure == NULL) {
+      if (!HasGroundUnderAir(Candidate.WorldX, Candidate.Surface,
+                             Candidate.WorldZ, Seed)) {
         continue;
       }
 
@@ -179,14 +281,34 @@ void PlaceChunkFeatures(Chunk *ChunkVal) {
       // existence and kind draws, then is masked by the prefab's flags. Keyed on
       // the anchor column, every chunk re-deriving an overhanging structure
       // agrees on its orientation.
-      uint64_t OrientHash =
-          HashCell(WorldX, WorldZ, Seed ^ STRUCTURE_ORIENT_SALT);
+      uint64_t OrientHash = HashCell(Candidate.WorldX, Candidate.WorldZ,
+                                     Seed ^ STRUCTURE_ORIENT_SALT);
       int Orientation = PickOrientation(Structure, OrientHash);
 
-      StampPrefabIntoChunk(ChunkVal, Structure, WorldX, Surface + 1, WorldZ,
+      StampPrefabIntoChunk(ChunkVal, Structure, Candidate.WorldX,
+                           Candidate.Surface + 1, Candidate.WorldZ,
                            Orientation);
     }
   }
+}
+
+bool FindStructureAnchor(int CellRadius, uint64_t Seed, int *OutX, int *OutY,
+                         int *OutZ) {
+  for (int CellX = -CellRadius; CellX <= CellRadius; CellX++) {
+    for (int CellZ = -CellRadius; CellZ <= CellRadius; CellZ++) {
+      StructureCandidate Candidate;
+      if (!ResolveCandidate(CellX, CellZ, Seed, NULL, &Candidate) ||
+          !HasGroundUnderAir(Candidate.WorldX, Candidate.Surface,
+                             Candidate.WorldZ, Seed)) {
+        continue;
+      }
+      *OutX = Candidate.WorldX;
+      *OutY = Candidate.Surface + 1;
+      *OutZ = Candidate.WorldZ;
+      return true;
+    }
+  }
+  return false;
 }
 
 // Salts keep the flora draws independent of the tree grid and of each other, so

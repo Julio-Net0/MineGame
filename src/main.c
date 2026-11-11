@@ -3,6 +3,7 @@
 #include "world/biome.h"
 #include "world/prefab.h"
 #include "world/surface.h"
+#include "world/terrain_shape.h"
 #include "world/worldgen_strata.h"
 #include "render/camera.h"
 #include "ui/chat.h"
@@ -132,8 +133,9 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
   LoadBiomeParams("assets/biome_params.json");
   LoadAllBiomeDefinitions("assets/biomes");
 
-  InitSurfaceParams();
-  LoadSurfaceParams("assets/worldgen/noise.json");
+  InitTerrainShape();
+  LoadTerrainNoise("assets/worldgen/noise.json");
+  LoadTerrainShape("assets/worldgen/terrain_shape.json");
   InitStrata();
   LoadStrata("assets/worldgen/strata.json");
 

@@ -814,17 +814,20 @@ static bool TestServerLanding(ServerState *Server, NetLoopback *Channel,
                 "server_state_every_tick_until_landing");
 }
 
-static bool TestServerWalk(ServerState *Server, NetLoopback *Channel,
-                           ClientInbox *Inbox, uint64_t *NextTick) {
+// One walk attempt facing Facing. Collision is real, so a slope or a tree at the
+// spawn can stop the player; the caller tries other headings before failing.
+static bool TryServerWalk(ServerState *Server, NetLoopback *Channel,
+                          ClientInbox *Inbox, uint64_t *NextTick,
+                          Vec3 Facing) {
   Vec3 Start = Server->PlayerVal.Position;
   PlayerInput Walk = IdleInput();
   Walk.MoveForward = 1.0F;
   bool Sent = true;
   for (int Idx = 0; Idx < WALK_TICKS; Idx++) {
-    Sent = Sent && SendInput(Channel, (*NextTick)++, Walk, LOOK_EAST);
+    Sent = Sent && SendInput(Channel, (*NextTick)++, Walk, Facing);
     ServerStepTick(Server);
   }
-  Sent = Sent && SendInput(Channel, *NextTick, IdleInput(), LOOK_EAST);
+  Sent = Sent && SendInput(Channel, *NextTick, IdleInput(), Facing);
   ServerStepTick(Server);
   ResetInbox(Inbox);
   DrainServerPackets(Channel, Inbox);
@@ -836,6 +839,23 @@ static bool TestServerWalk(ServerState *Server, NetLoopback *Channel,
             Inbox->LastState.LastProcessedClientTick == *NextTick &&
             StateMatchesServer(Inbox, Server);
   (*NextTick)++;
+  return Ok;
+}
+
+// What is under test is that walk input reaches the simulation and the tick it
+// acknowledges, not the terrain around the spawn: the first heading that moves
+// the player passes.
+static bool TestServerWalk(ServerState *Server, NetLoopback *Channel,
+                           ClientInbox *Inbox, uint64_t *NextTick) {
+  const Vec3 HEADINGS[] = {{1.0F, 0.0F, 0.0F},
+                           {0.0F, 0.0F, 1.0F},
+                           {-1.0F, 0.0F, 0.0F},
+                           {0.0F, 0.0F, -1.0F}};
+  bool Ok = false;
+  for (size_t Idx = 0; !Ok && Idx < sizeof(HEADINGS) / sizeof(HEADINGS[0]);
+       Idx++) {
+    Ok = TryServerWalk(Server, Channel, Inbox, NextTick, HEADINGS[Idx]);
+  }
   return Expect(Ok, "server_walk_input_and_last_processed_tick");
 }
 

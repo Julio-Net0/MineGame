@@ -1,12 +1,44 @@
 {
-  "surface": {
+  "continentalness": {
+    "kind": "opensimplex2",
+    "fractal": "fbm",
+    "octaves": 5,
+    "frequency": 0.0008,
+    "lacunarity": 2.0,
+    "gain": 0.5
+  },
+  "erosion": {
     "kind": "opensimplex2",
     "fractal": "fbm",
     "octaves": 4,
-    "frequency": 0.01,
+    "frequency": 0.0015,
+    "lacunarity": 2.0,
+    "gain": 0.5
+  },
+  "weirdness": {
+    "kind": "opensimplex2",
+    "fractal": "fbm",
+    "octaves": 4,
+    "frequency": 0.002,
+    "lacunarity": 2.0,
+    "gain": 0.5
+  },
+  "jagged": {
+    "kind": "opensimplex2",
+    "fractal": "fbm",
+    "octaves": 2,
+    "frequency": 0.035,
+    "lacunarity": 2.0,
+    "gain": 0.5
+  },
+  "terrain": {
+    "kind": "opensimplex2",
+    "fractal": "fbm",
+    "octaves": 4,
+    "frequency": 0.02,
     "lacunarity": 2.0,
     "gain": 0.5,
-    "baseHeight": 6,
-    "amplitude": 20
+    "improveXZ": true,
+    "verticalScale": 2.0
   }
 }

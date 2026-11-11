@@ -6,8 +6,10 @@
 # Writes automation_out/spawn.png, automation_out/spawn_wireframe.png,
 # automation_out/spawn.json, and automation_out/run.log without modifying world/.
 
+# The view is taken 40 blocks above the generator-derived spawn, so it frames
+# the spawn area whatever height the terrain there has.
 /noclip 1
-/tp 0 90 0
+/tp ~ ~40 ~
 look 0 -20
 
 wait loaded
