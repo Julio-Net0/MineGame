@@ -29,5 +29,20 @@
       "block": "brown_mushroom",
       "weight": 1
     }
+  ],
+  "structureDensity": 0.55,
+  "structures": [
+    {
+      "prefab": "spruce_small",
+      "weight": 4
+    },
+    {
+      "prefab": "spruce_tall",
+      "weight": 3
+    },
+    {
+      "prefab": "boulder_mossy",
+      "weight": 1
+    }
   ]
 }

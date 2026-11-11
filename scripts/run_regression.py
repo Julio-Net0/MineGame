@@ -96,7 +96,7 @@ def assert_png(path: Path, width: int = EXPECTED_WIDTH, height: int = EXPECTED_H
 EXPECTED_RENDERED: dict[int, dict[str, int]] = {
     # Only the current generator's counts are kept: every terrain change
     # replaces them, and an older version's numbers could only mislead.
-    5: {
+    6: {
         "spawn": 367,
         "far": 33,
         "after_ticks": 33,
@@ -411,6 +411,9 @@ BIOME_MIN_FAMILY_MATCH = 0.9
 # Landform modifiers shipped in assets/worldgen/shape_modifiers.json.
 EXPECTED_MODIFIER_BIOMES = ("Badlands", "Stony Peaks", "Shattered Hills", "Desert")
 MODIFIER_MIN_AGREEMENT = 0.95
+# Ore veins shipped in assets/worldgen/filler.json; the spawn slice must show at
+# least this many kinds.
+ORE_MIN_KINDS = 4
 
 
 def verify_worldgen(out_dir: Path, _run_log: str) -> None:
@@ -439,6 +442,13 @@ def verify_worldgen(out_dir: Path, _run_log: str) -> None:
     require(stats["lavaBlocks"] > 0, "worldgen: the slice holds no lava")
     require(stats["caveWaterBlocks"] > 0, "worldgen: the slice holds no flooded cave water")
     require(stats["deepslateBlocks"] > 0, "worldgen: the slice holds no deepslate")
+    ore_kinds = [name for name, count in stats["oreBlocks"].items() if count > 0]
+    require(
+        len(ore_kinds) >= ORE_MIN_KINDS,
+        f"worldgen: the slice holds {len(ore_kinds)} ore kinds ({', '.join(ore_kinds)}), expected at least {ORE_MIN_KINDS}",
+    )
+    require(stats["structureBlocks"] > 0, "worldgen: no structure block was placed in the slice cubes")
+    require(stats["floraBlocks"] > 0, "worldgen: no flora block was placed in the slice cubes")
 
     assert_png(out_dir / "world_biomes.png", BIOME_MAP_SIDE, BIOME_MAP_SIDE)
     coverage = load_json(out_dir / "world_biomes.json")

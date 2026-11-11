@@ -30,10 +30,10 @@
       "weight": 1
     }
   ],
-  "structureDensity": 0.4,
+  "structureDensity": 0.55,
   "structures": [
     {
-      "prefab": "oak_small",
+      "prefab": "birch",
       "weight": 1
     }
   ]

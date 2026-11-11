@@ -48,6 +48,7 @@ typedef struct {
   int FluidProbes;
   int FloodedWater;
   int BiomeCells;
+  int OreBlocks;
 } SelfTestScratch;
 
 // Largest weight change allowed between neighbouring lattice columns, measured
@@ -289,6 +290,42 @@ static bool CheckBiomeMap(SelfTestScratch *Scratch, int ChunkX, int ChunkY,
   return true;
 }
 
+// Ore veins replace only deep filler: every ore block of the classified run is
+// solid in the density field and has at least its biome's palette depth of
+// solid density above it inside the cube (or a solid run reaching the cube top,
+// which this cube cannot see past).
+static bool CheckOrePlacement(SelfTestScratch *Scratch, int ChunkX, int ChunkY,
+                              int ChunkZ) {
+  const Chunk *Cube = Scratch->Reference;
+  for (int Index = 0; Index < (int)CHUNK_VOLUME; Index++) {
+    int LocalX = Index / (CHUNK_SIZE * CHUNK_SIZE);
+    int LocalY = (Index / CHUNK_SIZE) % CHUNK_SIZE;
+    int LocalZ = Index % CHUNK_SIZE;
+    if (FillerOreKindOf(Cube->Data[LocalX][LocalY][LocalZ]) < 0) {
+      continue;
+    }
+    int Palette =
+        GetBiomeDef(GetChunkBiomeAtLocal(Cube, LocalX, LocalY, LocalZ))
+            ->SubsurfaceDepth;
+    bool Solid = Scratch->Density[Index] > 0.0F;
+    int Above = 0;
+    while (LocalY + Above + 1 < CHUNK_SIZE &&
+           Scratch->Density[Index + ((Above + 1) * CHUNK_SIZE)] > 0.0F) {
+      Above++;
+    }
+    bool ReachesTop = LocalY + Above + 1 == CHUNK_SIZE;
+    if (!Solid || (Above < Palette && !ReachesTop)) {
+      LogError("WORLDGEN_TEST: FAIL ore block at (%d, %d, %d) is not deep "
+               "filler (solid %d, %d solid blocks above)",
+               (ChunkX * CHUNK_SIZE) + LocalX, (ChunkY * CHUNK_SIZE) + LocalY,
+               (ChunkZ * CHUNK_SIZE) + LocalZ, Solid ? 1 : 0, Above);
+      return false;
+    }
+    Scratch->OreBlocks++;
+  }
+  return true;
+}
+
 // The bound tier of classification assumes |n3| <= TERRAIN_NOISE_BOUND; sample
 // the 3D field at every grid corner of the cube to back that up.
 static bool CheckNoiseBound(SelfTestScratch *Scratch, int ChunkX, int ChunkY,
@@ -341,7 +378,8 @@ static bool CheckCube(SelfTestScratch *Scratch, int ChunkX, int ChunkY,
   if (Class == CUBE_CLASS_MIXED &&
       (!CheckProbe(Scratch, ChunkX, ChunkY, ChunkZ, Cached->Seed) ||
        !CheckNoiseBound(Scratch, ChunkX, ChunkY, ChunkZ, Cached->Seed) ||
-       !CheckFluids(Scratch, ChunkX, ChunkY, ChunkZ, Cached))) {
+       !CheckFluids(Scratch, ChunkX, ChunkY, ChunkZ, Cached) ||
+       !CheckOrePlacement(Scratch, ChunkX, ChunkY, ChunkZ))) {
     return false;
   }
 
@@ -412,8 +450,14 @@ static int FloorDivChunk(int Value) {
 // structure pass's skip and ground probe unexercised. This aims at the first
 // structure the pass really places: the cubes around its anchor go through the
 // same three-way comparison, and the anchor cube must hold the structure's base.
+static bool CheckStructureAt(SelfTestScratch *Scratch, int X, int Y, int Z,
+                             uint64_t Seed);
+
+// The structure pass anchors at memoized terrain tops: a structure whose top
+// the 3D terrain moved away from its preliminary surface must still match on
+// every path, and the memo must agree with a fresh probe.
 static bool CheckStructureRegion(SelfTestScratch *Scratch, uint64_t Seed) {
-  enum { SEARCH_CELLS = 64 };
+  enum { SEARCH_CELLS = 64, DISPLACED_CELLS = 256, MIN_GAP = 4 };
   int X = 0;
   int Y = 0;
   int Z = 0;
@@ -423,6 +467,32 @@ static bool CheckStructureRegion(SelfTestScratch *Scratch, uint64_t Seed) {
              SEARCH_CELLS);
     return false;
   }
+  if (!CheckStructureAt(Scratch, X, Y, Z, Seed)) {
+    return false;
+  }
+  if (!FindDisplacedStructureAnchor(DISPLACED_CELLS, MIN_GAP, Seed, &X, &Y,
+                                    &Z)) {
+    LogError("WORLDGEN_TEST: FAIL no structure anchored %d or more blocks from "
+             "its preliminary surface within %d grid cells",
+             MIN_GAP, DISPLACED_CELLS);
+    return false;
+  }
+  int Memo = FeatureTerrainTop(X, Z, Seed);
+  int Fresh = GetTerrainTop(X, Z, Seed);
+  if (Memo != Fresh || Memo + 1 != Y) {
+    LogError("WORLDGEN_TEST: FAIL terrain-top memo gives %d, a fresh probe %d, "
+             "the anchor stamps at %d",
+             Memo, Fresh, Y);
+    return false;
+  }
+  LogInfo("WORLDGEN_TEST: ok displaced structure: terrain top %d is %d blocks "
+          "from the preliminary surface",
+          Memo, Memo - GetPreliminarySurface(X, Z, Seed));
+  return CheckStructureAt(Scratch, X, Y, Z, Seed);
+}
+
+static bool CheckStructureAt(SelfTestScratch *Scratch, int X, int Y, int Z,
+                             uint64_t Seed) {
 
   int AnchorChunkX = FloorDivChunk(X);
   int AnchorChunkY = FloorDivChunk(Y);
@@ -514,14 +584,18 @@ static bool CheckFloodRegion(SelfTestScratch *Scratch, uint64_t Seed) {
 static bool CheckFillerRegion(SelfTestScratch *Scratch, uint64_t Seed) {
   enum { SEARCH_RADIUS = 4, SHALLOWEST = -6, DEEPEST = -30, BAND_CHUNK_Y = -5 };
   bool FoundPocketSolid = false;
-  for (int ChunkY = SHALLOWEST; ChunkY >= DEEPEST && !FoundPocketSolid; ChunkY--) {
-    for (int ChunkX = -SEARCH_RADIUS; ChunkX <= SEARCH_RADIUS && !FoundPocketSolid;
+  bool FoundVeinSolid = false;
+  bool Done = false;
+  for (int ChunkY = SHALLOWEST; ChunkY >= DEEPEST && !Done; ChunkY--) {
+    for (int ChunkX = -SEARCH_RADIUS; ChunkX <= SEARCH_RADIUS && !Done;
          ChunkX++) {
-      for (int ChunkZ = -SEARCH_RADIUS;
-           ChunkZ <= SEARCH_RADIUS && !FoundPocketSolid; ChunkZ++) {
+      for (int ChunkZ = -SEARCH_RADIUS; ChunkZ <= SEARCH_RADIUS && !Done;
+           ChunkZ++) {
         FillerCube Filler;
         FillerCubeInit(&Filler, ChunkX, ChunkY, ChunkZ, Seed);
-        if (Filler.PocketCount == 0) {
+        bool WantsPocket = !FoundPocketSolid && Filler.PocketCount > 0;
+        bool WantsVein = !FoundVeinSolid && Filler.VeinCount > 0;
+        if (!WantsPocket && !WantsVein) {
           continue;
         }
         const ColumnEntry *Entry = ColumnCacheLookup(
@@ -537,15 +611,18 @@ static bool CheckFillerRegion(SelfTestScratch *Scratch, uint64_t Seed) {
           return false;
         }
         LogInfo("WORLDGEN_TEST: ok SOLID cube (%d, %d, %d) with %d pocket(s) "
-                "matches the per-block filler",
-                ChunkX, ChunkY, ChunkZ, Filler.PocketCount);
-        FoundPocketSolid = true;
+                "and %d ore vein(s) matches the per-block filler",
+                ChunkX, ChunkY, ChunkZ, Filler.PocketCount, Filler.VeinCount);
+        FoundPocketSolid |= Filler.PocketCount > 0;
+        FoundVeinSolid |= Filler.VeinCount > 0;
+        Done = FoundPocketSolid && FoundVeinSolid;
       }
     }
   }
-  if (!FoundPocketSolid) {
-    LogError("WORLDGEN_TEST: FAIL no SOLID cube reached by a pocket, so the "
-             "fast filler fill went unchecked");
+  if (!FoundPocketSolid || !FoundVeinSolid) {
+    LogError("WORLDGEN_TEST: FAIL no SOLID cube reached by a %s, so the fast "
+             "filler fill went unchecked",
+             FoundPocketSolid ? "vein" : "pocket");
     return false;
   }
 
@@ -769,6 +846,8 @@ static bool RunChecks(SelfTestScratch *Scratch) {
           Scratch->ProbedBlocks);
   LogInfo("WORLDGEN_TEST: ok %d biome map cells equal the pure sampler",
           Scratch->BiomeCells);
+  LogInfo("WORLDGEN_TEST: ok %d ore blocks, all in deep filler",
+          Scratch->OreBlocks);
   LogInfo("WORLDGEN_TEST: ok fluids match the probe at %d blocks; %d flooded "
           "water blocks, none beside dry air",
           Scratch->FluidProbes, Scratch->FloodedWater);
@@ -792,7 +871,8 @@ bool RunWorldgenSelfTest(void) {
       .MaxNoise = 0.0F,
       .FluidProbes = 0,
       .FloodedWater = 0,
-      .BiomeCells = 0};
+      .BiomeCells = 0,
+      .OreBlocks = 0};
 
   bool Passed = false;
   if (Scratch.Reference == NULL || Scratch.PerBlock == NULL ||

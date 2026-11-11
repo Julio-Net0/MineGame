@@ -2,6 +2,7 @@
 #include "core/fileio.h"
 #include "core/hash.h"
 #include "core/log.h"
+#include "core/utils.h"
 #include "third_party/cJSON.h"
 #include "world/block_system.h"
 #include <stdlib.h>
@@ -16,23 +17,33 @@ typedef struct {
 
 typedef struct {
   BlockID Block;
+  BlockID DeepBlock;
   int MinY;
   int MaxY;
   float Chance;
   int RadiusMin;
   int RadiusMax;
+  char Name[FILLER_MAX_ORE_NAME];
 } PocketKind;
+
+// One hashed-ellipsoid grid: the pocket grid or the ore-vein grid.
+typedef struct {
+  PocketKind Kinds[FILLER_MAX_ORE_KINDS];
+  int KindCount;
+  int Cell;
+  uint64_t Salt;
+} BlobGrid;
 
 typedef struct {
   FillerLayer Layers[FILLER_MAX_LAYERS];
   int LayerCount;
-  PocketKind Kinds[FILLER_MAX_POCKET_KINDS];
-  int KindCount;
-  int PocketCell;
+  BlobGrid Pockets;
+  BlobGrid Ores;
 } FillerState;
 
 #define FILLER_BAND_SALT 0xF111E40000000001ULL
 #define FILLER_POCKET_SALT 0xF111E40000000002ULL
+#define FILLER_ORE_SALT 0xF111E40000000003ULL
 
 static FillerState *GetFillerState(void) {
   static FillerState SState;
@@ -41,19 +52,24 @@ static FillerState *GetFillerState(void) {
 
 static void InstallStoneOnly(FillerState *State) {
   const int DEFAULT_POCKET_CELL = 32;
+  const int DEFAULT_ORE_CELL = 16;
   int Stone = GetBlockIdByName("Stone");
   State->Layers[0] = (FillerLayer){
       .Block = (BlockID)((Stone > 0) ? Stone : 0), .Boundary = 0, .Band = 0};
   State->LayerCount = 1;
-  State->KindCount = 0;
-  State->PocketCell = DEFAULT_POCKET_CELL;
+  State->Pockets.KindCount = 0;
+  State->Pockets.Cell = DEFAULT_POCKET_CELL;
+  State->Pockets.Salt = FILLER_POCKET_SALT;
+  State->Ores.KindCount = 0;
+  State->Ores.Cell = DEFAULT_ORE_CELL;
+  State->Ores.Salt = FILLER_ORE_SALT;
 }
 
 void InitStoneFiller(void) { InstallStoneOnly(GetFillerState()); }
 
-static bool ResolveBlock(const cJSON *Item, const char *FilePath,
-                         BlockID *Out) {
-  const cJSON *Name = cJSON_GetObjectItemCaseSensitive(Item, "block");
+static bool ResolveNamedBlock(const cJSON *Item, const char *Key,
+                              const char *FilePath, BlockID *Out) {
+  const cJSON *Name = cJSON_GetObjectItemCaseSensitive(Item, Key);
   int Id = cJSON_IsString(Name) ? GetBlockIdByName(Name->valuestring) : -1;
   if (Id <= 0) {
     LogError("FILLER: %s names a block that is not loaded", FilePath);
@@ -61,6 +77,11 @@ static bool ResolveBlock(const cJSON *Item, const char *FilePath,
   }
   *Out = (BlockID)Id;
   return true;
+}
+
+static bool ResolveBlock(const cJSON *Item, const char *FilePath,
+                         BlockID *Out) {
+  return ResolveNamedBlock(Item, "block", FilePath, Out);
 }
 
 static int ReadIntOr(const cJSON *Item, const char *Key, int Fallback) {
@@ -97,23 +118,32 @@ static bool ParseLayers(const cJSON *Json, const char *FilePath,
   return true;
 }
 
-static bool ParsePockets(const cJSON *Json, const char *FilePath,
-                         FillerState *Out) {
-  Out->PocketCell = ReadIntOr(Json, "pocketCell", Out->PocketCell);
-  const cJSON *Pockets = cJSON_GetObjectItemCaseSensitive(Json, "pockets");
-  int Count = cJSON_IsArray(Pockets) ? cJSON_GetArraySize(Pockets) : 0;
-  if (Count > FILLER_MAX_POCKET_KINDS || Out->PocketCell < 2) {
-    LogError("FILLER: %s needs at most %d pocket kinds and a pocketCell of 2 "
-             "or more",
-             FilePath, FILLER_MAX_POCKET_KINDS);
+// A pocket or ore list: ListKey entries in a grid of CellKey-sized cells.
+static bool ParseBlobGrid(const cJSON *Json, const char *ListKey,
+                          const char *CellKey, int MaxKinds,
+                          const char *FilePath, BlobGrid *Out) {
+  Out->Cell = ReadIntOr(Json, CellKey, Out->Cell);
+  const cJSON *List = cJSON_GetObjectItemCaseSensitive(Json, ListKey);
+  int Count = cJSON_IsArray(List) ? cJSON_GetArraySize(List) : 0;
+  if (Count > MaxKinds || Out->Cell < 2) {
+    LogError("FILLER: %s needs at most %d %s kinds and a %s of 2 or more",
+             FilePath, MaxKinds, ListKey, CellKey);
     return false;
   }
   for (int Idx = 0; Idx < Count; Idx++) {
-    const cJSON *Item = cJSON_GetArrayItem(Pockets, Idx);
+    const cJSON *Item = cJSON_GetArrayItem(List, Idx);
     PocketKind *Kind = &Out->Kinds[Idx];
     if (!ResolveBlock(Item, FilePath, &Kind->Block)) {
       return false;
     }
+    Kind->DeepBlock = 0;
+    if (cJSON_GetObjectItemCaseSensitive(Item, "deepslateBlock") != NULL &&
+        !ResolveNamedBlock(Item, "deepslateBlock", FilePath,
+                           &Kind->DeepBlock)) {
+      return false;
+    }
+    const cJSON *Name = cJSON_GetObjectItemCaseSensitive(Item, "block");
+    SafeStrncpy(Kind->Name, Name->valuestring, FILLER_MAX_ORE_NAME);
     Kind->MinY = ReadIntOr(Item, "minY", 0);
     Kind->MaxY = ReadIntOr(Item, "maxY", 0);
     const cJSON *Chance = cJSON_GetObjectItemCaseSensitive(Item, "chance");
@@ -128,10 +158,10 @@ static bool ParsePockets(const cJSON *Json, const char *FilePath,
     // A pocket may reach only its own cell's neighbours, which is what lets a
     // cube look at the 3 x 3 x 3 cells around it and nothing more.
     if (Kind->RadiusMin < 1 || Kind->RadiusMax < Kind->RadiusMin ||
-        Kind->RadiusMax * 2 > Out->PocketCell || Kind->MaxY < Kind->MinY) {
-      LogError("FILLER: %s pocket %d needs 1 <= radius min <= max <= "
-               "pocketCell / 2 and minY <= maxY",
-               FilePath, Idx);
+        Kind->RadiusMax * 2 > Out->Cell || Kind->MaxY < Kind->MinY) {
+      LogError("FILLER: %s %s entry %d needs 1 <= radius min <= max <= "
+               "%s / 2 and minY <= maxY",
+               FilePath, ListKey, Idx, CellKey);
       return false;
     }
   }
@@ -152,10 +182,15 @@ void LoadStoneFiller(const char *FilePath) {
 
   FillerState Parsed = *State;
   if (ParseLayers(Json, FilePath, &Parsed) &&
-      ParsePockets(Json, FilePath, &Parsed)) {
+      ParseBlobGrid(Json, "pockets", "pocketCell", FILLER_MAX_POCKET_KINDS,
+                    FilePath, &Parsed.Pockets) &&
+      ParseBlobGrid(Json, "ores", "oreCell", FILLER_MAX_ORE_KINDS, FilePath,
+                    &Parsed.Ores)) {
     *State = Parsed;
-    LogInfo("FILLER: %d layers, %d pocket kinds, pocket cell %d",
-            State->LayerCount, State->KindCount, State->PocketCell);
+    LogInfo("FILLER: %d layers, %d pocket kinds (cell %d), %d ore kinds "
+            "(cell %d)",
+            State->LayerCount, State->Pockets.KindCount, State->Pockets.Cell,
+            State->Ores.KindCount, State->Ores.Cell);
   } else {
     LogError("FILLER: %s rejected, using stone only", FilePath);
   }
@@ -210,15 +245,15 @@ static int ClassifyRow(const FillerState *State, int Y) {
   return Layer;
 }
 
-// The pocket of one cell, if the cell has one.
-static bool CellPocket(const FillerState *State, int CellX, int CellY, int CellZ,
+// The blob of one cell of Grid, if the cell has one.
+static bool CellPocket(const BlobGrid *Grid, int CellX, int CellY, int CellZ,
                        uint64_t Seed, FillerPocket *Out) {
-  int Size = State->PocketCell;
+  int Size = Grid->Cell;
   int CenterY = (CellY * Size) + (Size / 2);
-  int Eligible[FILLER_MAX_POCKET_KINDS];
+  int Eligible[FILLER_MAX_ORE_KINDS];
   int EligibleCount = 0;
-  for (int Idx = 0; Idx < State->KindCount; Idx++) {
-    if (CenterY >= State->Kinds[Idx].MinY && CenterY <= State->Kinds[Idx].MaxY) {
+  for (int Idx = 0; Idx < Grid->KindCount; Idx++) {
+    if (CenterY >= Grid->Kinds[Idx].MinY && CenterY <= Grid->Kinds[Idx].MaxY) {
       Eligible[EligibleCount++] = Idx;
     }
   }
@@ -226,9 +261,9 @@ static bool CellPocket(const FillerState *State, int CellX, int CellY, int CellZ
     return false;
   }
 
-  uint64_t Hash = HashPosition(CellX, CellY, CellZ, Seed ^ FILLER_POCKET_SALT);
+  uint64_t Hash = HashPosition(CellX, CellY, CellZ, Seed ^ Grid->Salt);
   const PocketKind *Kind =
-      &State->Kinds[Eligible[SplitMix64(Hash) % (uint64_t)EligibleCount]];
+      &Grid->Kinds[Eligible[SplitMix64(Hash) % (uint64_t)EligibleCount]];
   if (HashUnit(SplitMix64(Hash + 1U)) >= Kind->Chance) {
     return false;
   }
@@ -248,6 +283,7 @@ static bool CellPocket(const FillerState *State, int CellX, int CellY, int CellZ
   Out->MinY = Kind->MinY;
   Out->MaxY = Kind->MaxY;
   Out->Block = Kind->Block;
+  Out->DeepBlock = Kind->DeepBlock;
   return true;
 }
 
@@ -261,6 +297,33 @@ static bool PocketReachesCube(const FillerPocket *Pocket, int MinX, int MinY,
          Pocket->CenterZ + Pocket->RadiusZ >= MinZ &&
          Pocket->CenterZ - Pocket->RadiusZ <= MinZ + LAST &&
          Pocket->MaxY >= MinY && Pocket->MinY <= MinY + LAST;
+}
+
+// The blobs of Grid's 3 x 3 x 3 cells around the cube that reach it. A blob's
+// radius is at most half its cell, so no farther cell can reach.
+static int CollectBlobs(const BlobGrid *Grid, int MinX, int MinY, int MinZ,
+                        uint64_t Seed,
+                        FillerPocket Out[FILLER_MAX_CUBE_POCKETS]) {
+  if (Grid->KindCount == 0) {
+    return 0;
+  }
+  int Count = 0;
+  int Size = Grid->Cell;
+  int Center[3] = {FloorDiv(MinX, Size), FloorDiv(MinY, Size),
+                   FloorDiv(MinZ, Size)};
+  for (int Dx = -1; Dx <= 1; Dx++) {
+    for (int Dy = -1; Dy <= 1; Dy++) {
+      for (int Dz = -1; Dz <= 1; Dz++) {
+        FillerPocket Blob;
+        if (CellPocket(Grid, Center[0] + Dx, Center[1] + Dy, Center[2] + Dz,
+                       Seed, &Blob) &&
+            PocketReachesCube(&Blob, MinX, MinY, MinZ)) {
+          Out[Count++] = Blob;
+        }
+      }
+    }
+  }
+  return Count;
 }
 
 void FillerCubeInit(FillerCube *Cube, int ChunkX, int ChunkY, int ChunkZ,
@@ -277,29 +340,14 @@ void FillerCubeInit(FillerCube *Cube, int ChunkX, int ChunkY, int ChunkZ,
     Cube->RowBlock[Row] = (Class < 0) ? 0 : State->Layers[Class].Block;
   }
 
-  Cube->PocketCount = 0;
-  if (State->KindCount == 0) {
-    return;
-  }
-  int Size = State->PocketCell;
-  int Center[3] = {FloorDiv(MinX, Size), FloorDiv(MinY, Size),
-                   FloorDiv(MinZ, Size)};
-  for (int Dx = -1; Dx <= 1; Dx++) {
-    for (int Dy = -1; Dy <= 1; Dy++) {
-      for (int Dz = -1; Dz <= 1; Dz++) {
-        FillerPocket Pocket;
-        if (CellPocket(State, Center[0] + Dx, Center[1] + Dy, Center[2] + Dz,
-                       Seed, &Pocket) &&
-            PocketReachesCube(&Pocket, MinX, MinY, MinZ)) {
-          Cube->Pockets[Cube->PocketCount++] = Pocket;
-        }
-      }
-    }
-  }
+  Cube->PocketCount =
+      CollectBlobs(&State->Pockets, MinX, MinY, MinZ, Seed, Cube->Pockets);
+  Cube->VeinCount =
+      CollectBlobs(&State->Ores, MinX, MinY, MinZ, Seed, Cube->Veins);
 }
 
 bool FillerCubeUniform(const FillerCube *Cube, BlockID *OutBlock) {
-  if (Cube->PocketCount > 0) {
+  if (Cube->PocketCount > 0 || Cube->VeinCount > 0) {
     return false;
   }
   for (int Row = 0; Row < FILLER_ROWS; Row++) {
@@ -312,7 +360,11 @@ bool FillerCubeUniform(const FillerCube *Cube, BlockID *OutBlock) {
 }
 
 static bool InsidePocket(const FillerPocket *Pocket, int X, int Y, int Z) {
-  if (Y < Pocket->MinY || Y > Pocket->MaxY) {
+  // Integer box first: most tests miss a blob entirely.
+  if (Y < Pocket->MinY || Y > Pocket->MaxY ||
+      abs(X - Pocket->CenterX) > Pocket->RadiusX ||
+      abs(Y - Pocket->CenterY) > Pocket->RadiusY ||
+      abs(Z - Pocket->CenterZ) > Pocket->RadiusZ) {
     return false;
   }
   float Dx = (float)(X - Pocket->CenterX) / (float)Pocket->RadiusX;
@@ -321,12 +373,8 @@ static bool InsidePocket(const FillerPocket *Pocket, int X, int Y, int Z) {
   return (Dx * Dx) + (Dy * Dy) + (Dz * Dz) <= 1.0F;
 }
 
-BlockID FillerBlockAt(const FillerCube *Cube, int X, int Y, int Z) {
-  for (int Idx = 0; Idx < Cube->PocketCount; Idx++) {
-    if (InsidePocket(&Cube->Pockets[Idx], X, Y, Z)) {
-      return Cube->Pockets[Idx].Block;
-    }
-  }
+// Layer filler at a position: the row's block, or the band's hashed choice.
+static BlockID LayerBlockAt(const FillerCube *Cube, int X, int Y, int Z) {
   int Row = Y - Cube->BaseY;
   if (Cube->RowBlock[Row] != 0) {
     return Cube->RowBlock[Row];
@@ -342,12 +390,122 @@ BlockID FillerBlockAt(const FillerCube *Cube, int X, int Y, int Z) {
                          : State->Layers[Cube->RowBand[Row] - 1].Block;
 }
 
-bool FillerIsPocketBlock(BlockID BlockId) {
+BlockID FillerBlockAt(const FillerCube *Cube, int X, int Y, int Z) {
+  for (int Idx = 0; Idx < Cube->PocketCount; Idx++) {
+    if (InsidePocket(&Cube->Pockets[Idx], X, Y, Z)) {
+      return Cube->Pockets[Idx].Block;
+    }
+  }
+  BlockID Layer = LayerBlockAt(Cube, X, Y, Z);
+  for (int Idx = 0; Idx < Cube->VeinCount; Idx++) {
+    const FillerPocket *Vein = &Cube->Veins[Idx];
+    if (InsidePocket(Vein, X, Y, Z)) {
+      const FillerState *State = GetFillerState();
+      BlockID Deepest = State->Layers[State->LayerCount - 1].Block;
+      bool Deep = State->LayerCount > 1 && Layer == Deepest;
+      return (Deep && Vein->DeepBlock != 0) ? Vein->DeepBlock : Vein->Block;
+    }
+  }
+  return Layer;
+}
+
+// Writes Blob's cells over Layer into a uniform cube, never over a cell that
+// already differs from Layer (an earlier pocket or vein, which wins as it does
+// in FillerBlockAt).
+static void OverlayBlob(const FillerPocket *Blob, BlockID Block, BlockID Layer,
+                        int OriginX, int OriginY, int OriginZ,
+                        BlockID Data[FILLER_ROWS][FILLER_ROWS][FILLER_ROWS]) {
+  int Lo[3] = {Blob->CenterX - Blob->RadiusX - OriginX,
+               Blob->CenterY - Blob->RadiusY - OriginY,
+               Blob->CenterZ - Blob->RadiusZ - OriginZ};
+  int Hi[3] = {Blob->CenterX + Blob->RadiusX - OriginX,
+               Blob->CenterY + Blob->RadiusY - OriginY,
+               Blob->CenterZ + Blob->RadiusZ - OriginZ};
+  for (int Axis = 0; Axis < 3; Axis++) {
+    Lo[Axis] = (Lo[Axis] < 0) ? 0 : Lo[Axis];
+    Hi[Axis] = (Hi[Axis] > FILLER_ROWS - 1) ? FILLER_ROWS - 1 : Hi[Axis];
+  }
+  for (int Lx = Lo[0]; Lx <= Hi[0]; Lx++) {
+    for (int Ly = Lo[1]; Ly <= Hi[1]; Ly++) {
+      for (int Lz = Lo[2]; Lz <= Hi[2]; Lz++) {
+        if (Data[Lx][Ly][Lz] == Layer &&
+            InsidePocket(Blob, OriginX + Lx, OriginY + Ly, OriginZ + Lz)) {
+          Data[Lx][Ly][Lz] = Block;
+        }
+      }
+    }
+  }
+}
+
+void FillerFillCube(const FillerCube *Cube, int OriginX, int OriginZ,
+                    BlockID Data[FILLER_ROWS][FILLER_ROWS][FILLER_ROWS]) {
+  bool Uniform = true;
+  for (int Row = 0; Row < FILLER_ROWS; Row++) {
+    Uniform &= Cube->RowBlock[Row] != 0 &&
+               Cube->RowBlock[Row] == Cube->RowBlock[0];
+  }
+  int OriginY = Cube->BaseY;
+  if (!Uniform) {
+    for (int Lx = 0; Lx < FILLER_ROWS; Lx++) {
+      for (int Ly = 0; Ly < FILLER_ROWS; Ly++) {
+        for (int Lz = 0; Lz < FILLER_ROWS; Lz++) {
+          Data[Lx][Ly][Lz] =
+              FillerBlockAt(Cube, OriginX + Lx, OriginY + Ly, OriginZ + Lz);
+        }
+      }
+    }
+    return;
+  }
+
+  // One layer block throughout: fill it, then draw only the blob cells.
+  // Pockets go first and veins after, never over a pocket, exactly the
+  // priority FillerBlockAt applies block by block.
+  BlockID Layer = Cube->RowBlock[0];
+  for (int Lx = 0; Lx < FILLER_ROWS; Lx++) {
+    for (int Ly = 0; Ly < FILLER_ROWS; Ly++) {
+      for (int Lz = 0; Lz < FILLER_ROWS; Lz++) {
+        Data[Lx][Ly][Lz] = Layer;
+      }
+    }
+  }
+  for (int Idx = 0; Idx < Cube->PocketCount; Idx++) {
+    OverlayBlob(&Cube->Pockets[Idx], Cube->Pockets[Idx].Block, Layer, OriginX,
+                OriginY, OriginZ, Data);
+  }
   const FillerState *State = GetFillerState();
-  for (int Idx = 0; Idx < State->KindCount; Idx++) {
-    if (State->Kinds[Idx].Block == BlockId) {
+  bool Deep = State->LayerCount > 1 &&
+              Layer == State->Layers[State->LayerCount - 1].Block;
+  for (int Idx = 0; Idx < Cube->VeinCount; Idx++) {
+    const FillerPocket *Vein = &Cube->Veins[Idx];
+    BlockID Ore = (Deep && Vein->DeepBlock != 0) ? Vein->DeepBlock : Vein->Block;
+    OverlayBlob(Vein, Ore, Layer, OriginX, OriginY, OriginZ, Data);
+  }
+}
+
+bool FillerIsPocketBlock(BlockID BlockId) {
+  const BlobGrid *Grid = &GetFillerState()->Pockets;
+  for (int Idx = 0; Idx < Grid->KindCount; Idx++) {
+    if (Grid->Kinds[Idx].Block == BlockId) {
       return true;
     }
   }
   return false;
+}
+
+int FillerOreKindCount(void) { return GetFillerState()->Ores.KindCount; }
+
+const char *FillerOreKindName(int Kind) {
+  const BlobGrid *Grid = &GetFillerState()->Ores;
+  return (Kind >= 0 && Kind < Grid->KindCount) ? Grid->Kinds[Kind].Name : "";
+}
+
+int FillerOreKindOf(BlockID BlockId) {
+  const BlobGrid *Grid = &GetFillerState()->Ores;
+  for (int Idx = 0; Idx < Grid->KindCount; Idx++) {
+    if (BlockId != 0 && (Grid->Kinds[Idx].Block == BlockId ||
+                         Grid->Kinds[Idx].DeepBlock == BlockId)) {
+      return Idx;
+    }
+  }
+  return -1;
 }

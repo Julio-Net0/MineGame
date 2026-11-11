@@ -30,6 +30,21 @@ void PlaceChunkFeatures(Chunk *ChunkVal, struct ColumnCache *Cache,
 bool FindStructureAnchor(int CellRadius, uint64_t Seed, int *OutX, int *OutY,
                          int *OutZ);
 
+// Like FindStructureAnchor, but only accepts a structure whose terrain-top
+// anchor lies at least MinGap blocks from its column's preliminary surface, so
+// tests can aim at one the 3D terrain displaced.
+bool FindDisplacedStructureAnchor(int CellRadius, int MinGap, uint64_t Seed,
+                                  int *OutX, int *OutY, int *OutZ);
+
+// The structure the pass would place for the grid cell containing column
+// (WorldX, WorldZ), from the pure path: false when the cell places nothing.
+// For tools that tally vegetation by biome without generating chunks.
+bool ResolveStructureAt(int WorldX, int WorldZ, uint64_t Seed, int *OutBiomeId,
+                        const char **OutPrefabName);
+
+// The terrain top the structure pass anchors at, through its per-thread memo.
+int FeatureTerrainTop(int WorldX, int WorldZ, uint64_t Seed);
+
 // Scatter single-block, biome-driven flora across this chunk's surface. Like
 // PlaceChunkFeatures it is deterministic in (worldX, worldZ, seed), writes only
 // this chunk's block data over air, and must run on the generate-only path. A

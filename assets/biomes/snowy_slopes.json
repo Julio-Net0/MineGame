@@ -14,5 +14,12 @@
   "frozenWater": true,
   "grassTint": [128, 180, 151],
   "foliageTint": [96, 161, 123],
-  "previewColor": [215, 230, 245]
+  "previewColor": [215, 230, 245],
+  "structureDensity": 0.15,
+  "structures": [
+    {
+      "prefab": "spruce_small",
+      "weight": 1
+    }
+  ]
 }

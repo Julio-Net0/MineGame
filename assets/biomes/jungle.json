@@ -29,11 +29,19 @@
       "weight": 3
     }
   ],
-  "structureDensity": 0.5,
+  "structureDensity": 0.6,
   "structures": [
+    {
+      "prefab": "jungle_big",
+      "weight": 3
+    },
     {
       "prefab": "oak_small",
       "weight": 1
+    },
+    {
+      "prefab": "jungle_bush",
+      "weight": 4
     }
   ]
 }

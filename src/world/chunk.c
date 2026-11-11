@@ -378,17 +378,8 @@ static int FillCubeFiller(Chunk *ChunkVal, uint64_t SeedVal) {
   if (FillerCubeUniform(&Filler, &Uniform)) {
     return FillCubeSolid(ChunkVal, Uniform);
   }
-  int OriginX = ChunkVal->ChunkX * CHUNK_SIZE;
-  int OriginY = ChunkVal->ChunkY * CHUNK_SIZE;
-  int OriginZ = ChunkVal->ChunkZ * CHUNK_SIZE;
-  for (int IdxX = 0; IdxX < CHUNK_SIZE; IdxX++) {
-    for (int IdxY = 0; IdxY < CHUNK_SIZE; IdxY++) {
-      for (int IdxZ = 0; IdxZ < CHUNK_SIZE; IdxZ++) {
-        ChunkVal->Data[IdxX][IdxY][IdxZ] = FillerBlockAt(
-            &Filler, OriginX + IdxX, OriginY + IdxY, OriginZ + IdxZ);
-      }
-    }
-  }
+  FillerFillCube(&Filler, ChunkVal->ChunkX * CHUNK_SIZE,
+                 ChunkVal->ChunkZ * CHUNK_SIZE, ChunkVal->Data);
   return (int)CHUNK_VOLUME;
 }
 

@@ -72,4 +72,9 @@ CaveFluid SampleTerrainFluid(int X, int Y, int Z, uint64_t Seed);
 // structures and flora; one below the overworld floor if the column has none.
 int GetTerrainTop(int X, int Z, uint64_t Seed);
 
+// GetTerrainTop, also counting how many blocks directly below the top are solid
+// too, up to MaxBelow, in the same downward scan.
+int GetTerrainTopWithDepth(int X, int Z, uint64_t Seed, int MaxBelow,
+                           int *OutSolidBelow);
+
 #endif

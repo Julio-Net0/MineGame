@@ -10,6 +10,7 @@
 #include "world/block_system.h"
 #include "world/chunk.h"
 #include "world/feature.h"
+#include "world/prefab.h"
 #include "world/shape_modifiers.h"
 #include "world/stone_filler.h"
 #include "world/surface.h"
@@ -82,6 +83,10 @@ typedef struct {
   int LavaBlocks;
   int DeepslateBlocks;
   int PocketBlocks;
+  // Blocks the structure and flora passes changed in the slice cubes.
+  int StructureBlocks;
+  int FloraBlocks;
+  int OreBlocks[FILLER_MAX_ORE_KINDS];
 } SliceStats;
 
 static int FloorDiv(int Numerator, int Denominator) {
@@ -260,6 +265,16 @@ static void CountCubeClass(const Chunk *Scratch, double Seconds,
   }
 }
 
+static int CountChanged(const Chunk *Before, const Chunk *After) {
+  int Changed = 0;
+  const BlockID *Old = &Before->Data[0][0][0];
+  const BlockID *New = &After->Data[0][0][0];
+  for (size_t Idx = 0; Idx < CHUNK_VOLUME; Idx++) {
+    Changed += (Old[Idx] != New[Idx]) ? 1 : 0;
+  }
+  return Changed;
+}
+
 // Generates one scratch cube exactly as a chunk worker would on a fresh
 // (not disk-loaded) chunk, and times it.
 static void GenerateScratch(Chunk *Scratch, int ChunkX, int ChunkY, int ChunkZ,
@@ -274,12 +289,23 @@ static void GenerateScratch(Chunk *Scratch, int ChunkX, int ChunkY, int ChunkZ,
   FillChunkBiomeMap(Scratch, Column);
   GenerateChunkTerrain(Scratch, Column);
   double TerrainEnd = PlatformGetTime();
+  // Snapshots between passes are taken outside the timed spans.
+  static Chunk SBefore;
+  SBefore = *Scratch;
+  double FeatureStart = PlatformGetTime();
   ColumnCache *Cache = GetColumnCache(COLUMN_CACHE_MAIN_SLOT);
   PlaceChunkFeatures(Scratch, Cache, true);
+  double FeatureEnd = PlatformGetTime();
+  Stats->StructureBlocks += CountChanged(&SBefore, Scratch);
+  SBefore = *Scratch;
+  double FloraStart = PlatformGetTime();
   // The structure pass may have reused this column's cache slot.
   Column = ColumnCacheLookup(Cache, ChunkX, ChunkZ, GetWorldSeed());
   PlaceChunkFlora(Scratch, Column);
-  double Seconds = PlatformGetTime() - Start;
+  double FloraEnd = PlatformGetTime();
+  Stats->FloraBlocks += CountChanged(&SBefore, Scratch);
+  double Seconds = (TerrainEnd - Start) + (FeatureEnd - FeatureStart) +
+                   (FloraEnd - FloraStart);
   Stats->TerrainSeconds += TerrainEnd - Start;
   if (Scratch->SolidBlockCount != 0 &&
       Scratch->SolidBlockCount != (int)CHUNK_VOLUME) {
@@ -360,6 +386,10 @@ static bool WriteSlice(const char *OutDir, const char *Name, int OriginX,
           Stats->DeepslateBlocks += (BlockId == Palette.DeepslateId) ? 1 : 0;
           Stats->PocketBlocks +=
               (BlockId != 0 && FillerIsPocketBlock((BlockID)BlockId)) ? 1 : 0;
+          int OreKind = FillerOreKindOf((BlockID)BlockId);
+          if (OreKind >= 0) {
+            Stats->OreBlocks[OreKind]++;
+          }
           Stats->CaveWaterBlocks +=
               (BlockId == Palette.WaterId && GlobalY < CaveTop) ? 1 : 0;
           int Band = (GlobalY - OverworldFloor) / CAVE_BAND_HEIGHT;
@@ -406,6 +436,14 @@ static void AddCaveSummary(cJSON *Root, const SliceStats *Stats) {
   cJSON_AddNumberToObject(Root, "lavaBlocks", Stats->LavaBlocks);
   cJSON_AddNumberToObject(Root, "deepslateBlocks", Stats->DeepslateBlocks);
   cJSON_AddNumberToObject(Root, "pocketBlocks", Stats->PocketBlocks);
+  cJSON *Ores = cJSON_CreateObject();
+  for (int Kind = 0; Ores != NULL && Kind < FillerOreKindCount(); Kind++) {
+    cJSON_AddNumberToObject(Ores, FillerOreKindName(Kind),
+                            Stats->OreBlocks[Kind]);
+  }
+  cJSON_AddItemToObject(Root, "oreBlocks", Ores);
+  cJSON_AddNumberToObject(Root, "structureBlocks", Stats->StructureBlocks);
+  cJSON_AddNumberToObject(Root, "floraBlocks", Stats->FloraBlocks);
 }
 
 static double MeanMicros(double Seconds, int Count) {
@@ -622,6 +660,10 @@ bool WorldgenPreviewWrite(const char *OutDir, const char *Name, int CenterX,
 // Large biome map
 // ---------------------------------------------------------------------------
 
+enum {
+  TREE_TALLY_PREFABS = 32
+};
+
 typedef struct {
   int Cells[BIOME_REGISTRY_SIZE];
   int LandCells[BIOME_REGISTRY_SIZE];
@@ -633,6 +675,9 @@ typedef struct {
   int PeakHigh;
   // Per landform modifier: samples with positive and with full weight, and
   // full-weight samples whose biome is the modifier's own.
+  // Structures the pass would place at the sampled grid cells, per biome and
+  // prefab index.
+  int Trees[BIOME_REGISTRY_SIZE][TREE_TALLY_PREFABS];
   int ModifierPositive[SHAPE_MODIFIER_MAX];
   int ModifierFull[SHAPE_MODIFIER_MAX];
   int ModifierAgree[SHAPE_MODIFIER_MAX];
@@ -680,6 +725,41 @@ static void CountCoverage(BiomeCoverage *Coverage, int BiomeId, int Surface) {
     Coverage->PeakCells++;
     Coverage->PeakHigh += (Surface > SEA_LEVEL + PEAK_HEIGHT) ? 1 : 0;
   }
+}
+
+static void CountTree(BiomeCoverage *Coverage, int X, int Z, uint64_t Seed) {
+  int TreeBiome = 0;
+  const char *PrefabName = NULL;
+  if (!ResolveStructureAt(X, Z, Seed, &TreeBiome, &PrefabName)) {
+    return;
+  }
+  int PrefabIdx = GetPrefabIndexByName(PrefabName);
+  if (PrefabIdx >= 0 && PrefabIdx < TREE_TALLY_PREFABS && TreeBiome >= 0 &&
+      TreeBiome < BIOME_REGISTRY_SIZE) {
+    Coverage->Trees[TreeBiome][PrefabIdx]++;
+  }
+}
+
+static void AddTreeTally(cJSON *Root, const BiomeCoverage *Coverage) {
+  cJSON *Trees = cJSON_CreateArray();
+  for (int Biome = 0; Trees != NULL && Biome < BIOME_REGISTRY_SIZE; Biome++) {
+    for (int PrefabIdx = 0; PrefabIdx < TREE_TALLY_PREFABS; PrefabIdx++) {
+      int Count = Coverage->Trees[Biome][PrefabIdx];
+      const Prefab *Shape = GetPrefabByIndex(PrefabIdx);
+      if (Count == 0 || Shape == NULL) {
+        continue;
+      }
+      cJSON *Entry = cJSON_CreateObject();
+      if (Entry == NULL) {
+        continue;
+      }
+      cJSON_AddStringToObject(Entry, "biome", GetBiomeDef(Biome)->Name);
+      cJSON_AddStringToObject(Entry, "prefab", Shape->Name);
+      cJSON_AddNumberToObject(Entry, "count", Count);
+      cJSON_AddItemToArray(Trees, Entry);
+    }
+  }
+  cJSON_AddItemToObject(Root, "trees", Trees);
 }
 
 static double Fraction(int Part, int Whole) {
@@ -745,6 +825,7 @@ static bool WriteCoverage(const char *OutDir, const char *Name,
     cJSON_AddItemToArray(Modifiers, Entry);
   }
   cJSON_AddItemToObject(Root, "modifiers", Modifiers);
+  AddTreeTally(Root, Coverage);
 
   char *Text = cJSON_Print(Root);
   cJSON_Delete(Root);
@@ -793,6 +874,7 @@ bool WorldgenBiomeMapWrite(const char *OutDir, const char *Name, int CenterX,
       PutPixel(Pixels, Side, Px, Pz, BiomePreviewColor(BiomeId));
       CountCoverage(Coverage, BiomeId, Surface);
       CountModifiers(Coverage, X, Z, BiomeId, Seed);
+      CountTree(Coverage, X, Z, Seed);
     }
   }
   Ok = Ok && WritePng(OutDir, Name, "biomes", Side, Side, Pixels) &&

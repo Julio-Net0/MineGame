@@ -29,7 +29,7 @@ enum {
   // Incremented by every change that alters generated terrain. Saved in
   // level.bin so a world from another generator is moved aside instead of
   // regenerating seams next to its saved chunks.
-  WORLDGEN_VERSION = 5
+  WORLDGEN_VERSION = 6
 };
 
 typedef struct Chunk {

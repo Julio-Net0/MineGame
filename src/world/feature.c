@@ -7,9 +7,12 @@
 #include "world/biome.h"
 #include "world/prefab.h"
 #include "persistence/world_save.h"
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <stdlib.h>
+#include <string.h>
 
 enum {
   // World space is tiled into GRID_CELL_SIZE^2 columns; each cell yields at most
@@ -162,12 +165,13 @@ static int CachedBiome(ColumnCache *Cache, int WorldX, int Y, int WorldZ,
 }
 
 // True when no structure anchored anywhere in the scanned column range can
-// reach this cube vertically.
+// reach this cube: every anchor is a terrain top, and no solid block (so no
+// top) lies above a column's upper density bound. Below the surface there is no
+// cheap bound on a top, so only cubes above every candidate are skipped.
 static bool CubeOutOfReach(const Chunk *ChunkVal, ColumnCache *Cache,
                            int MinX, int MaxX, int MinZ, int MaxZ,
                            const PrefabReach *Reach, uint64_t Seed) {
-  int LowestSurface = 0;
-  int HighestSurface = 0;
+  float HighestBound = 0.0F;
   bool First = true;
   for (int ColumnX = FloorDiv(MinX, CHUNK_SIZE);
        ColumnX <= FloorDiv(MaxX, CHUNK_SIZE); ColumnX++) {
@@ -175,45 +179,84 @@ static bool CubeOutOfReach(const Chunk *ChunkVal, ColumnCache *Cache,
          ColumnZ <= FloorDiv(MaxZ, CHUNK_SIZE); ColumnZ++) {
       const ColumnEntry *Entry =
           ColumnCacheLookup(Cache, ColumnX, ColumnZ, Seed);
-      LowestSurface = (First || Entry->MinSurface < LowestSurface)
-                          ? Entry->MinSurface
-                          : LowestSurface;
-      HighestSurface = (First || Entry->MaxSurface > HighestSurface)
-                           ? Entry->MaxSurface
-                           : HighestSurface;
+      HighestBound = (First || Entry->BoundHigh > HighestBound)
+                         ? Entry->BoundHigh
+                         : HighestBound;
       First = false;
     }
   }
 
-  // A structure is stamped from S + 1 - Below to S + 1 + Above.
+  // A structure is stamped from T + 1 - Below to T + 1 + Above.
   int BaseY = ChunkVal->ChunkY * CHUNK_SIZE;
-  int TopY = BaseY + CHUNK_SIZE - 1;
-  int ReachLow = LowestSurface + 1 - Reach->Below;
-  int ReachHigh = HighestSurface + 1 + Reach->Above;
-  return TopY < ReachLow || BaseY > ReachHigh;
+  int ReachHigh = (int)floorf(HighestBound) + 1 + Reach->Above;
+  return BaseY > ReachHigh;
 }
 
-// The preliminary surface is a 2D estimate: on rugged terrain it can sit in air
-// or inside an overhang. A structure is placed only where the density field
-// agrees that the anchor block is ground with open space above it.
-static bool HasGroundUnderAir(int WorldX, int Surface, int WorldZ,
-                              uint64_t Seed) {
-  return SampleTerrainDensity(WorldX, Surface, WorldZ, Seed) > 0.0F &&
-         SampleTerrainDensity(WorldX, Surface + 1, WorldZ, Seed) <= 0.0F;
+// Terrain tops of recent candidate columns, per thread. GetTerrainTop is pure,
+// so a hit is exactly a fresh probe; a worker generating a column's vertical
+// stack, and its neighbours, keeps meeting the same candidates.
+enum {
+  TOP_MEMO_SLOTS = 2048
+};
+
+typedef struct {
+  int X;
+  int Z;
+  uint64_t Seed;
+  bool Valid;
+  int Top;
+  int SolidBelow;
+} TopMemoEntry;
+
+// Shattered terrain leaves thin floating fragments; a structure needs ground
+// at least GROUND_THICKNESS blocks deep under its anchor.
+enum {
+  GROUND_THICKNESS = 3
+};
+
+static int CachedTerrainTop(int WorldX, int WorldZ, uint64_t Seed,
+                            int *OutSolidBelow) {
+  static _Thread_local TopMemoEntry SMemo[TOP_MEMO_SLOTS];
+  const unsigned int HALF_BITS = 32U;
+  uint64_t Key = ((uint64_t)(uint32_t)WorldX << HALF_BITS) |
+                 (uint64_t)(uint32_t)WorldZ;
+  TopMemoEntry *Entry =
+      &SMemo[SplitMix64(Key ^ Seed) % (uint64_t)TOP_MEMO_SLOTS];
+  if (Entry->Valid && Entry->X == WorldX && Entry->Z == WorldZ &&
+      Entry->Seed == Seed) {
+    if (OutSolidBelow != NULL) {
+      *OutSolidBelow = Entry->SolidBelow;
+    }
+    return Entry->Top;
+  }
+  int SolidBelow = 0;
+  int Top = GetTerrainTopWithDepth(WorldX, WorldZ, Seed, GROUND_THICKNESS - 1,
+                                   &SolidBelow);
+  *Entry = (TopMemoEntry){.X = WorldX,
+                          .Z = WorldZ,
+                          .Seed = Seed,
+                          .Valid = true,
+                          .Top = Top,
+                          .SolidBelow = SolidBelow};
+  if (OutSolidBelow != NULL) {
+    *OutSolidBelow = SolidBelow;
+  }
+  return Top;
 }
 
 typedef struct {
   int WorldX;
   int WorldZ;
   int Surface;
+  int BiomeId;
   const Prefab *Structure;
 } StructureCandidate;
 
 // Everything that decides a grid cell's structure except whether it reaches a
-// given cube and whether the ground probe confirms it. The surface comes from
-// Cache when given, otherwise from the pure sampler; both return the same value.
-static bool ResolveCandidate(int CellX, int CellZ, uint64_t Seed,
-                            ColumnCache *Cache, StructureCandidate *Out) {
+// given cube. Cache, when given, only avoids recomputation: the pure path gives
+// the same candidate.
+static bool ResolveCandidateFresh(int CellX, int CellZ, uint64_t Seed,
+                                 ColumnCache *Cache, StructureCandidate *Out) {
   const uint64_t MASK16 = 0xFFFFULL;
   const float DENSITY_SCALE = 65536.0F;
 
@@ -221,21 +264,18 @@ static bool ResolveCandidate(int CellX, int CellZ, uint64_t Seed,
   int WorldX = Out->WorldX;
   int WorldZ = Out->WorldZ;
 
-  // Skip submerged columns using the same threshold generation floods with;
-  // the clip test in the stamp then drops any cell outside this chunk.
-  Out->Surface = (Cache != NULL) ? CachedSurface(Cache, WorldX, WorldZ, Seed)
-                                 : GetPreliminarySurface(WorldX, WorldZ, Seed);
-  if (Out->Surface <= SEA_LEVEL) {
-    return false;
-  }
-
-  // Resolve the biome at this column's surface (Depth ~= 0) exactly as the pure
-  // sampler does, so every chunk re-deriving this overhanging structure agrees
-  // on its prefab regardless of load order.
+  // The column's surface biome (the biome at its preliminary surface) decides
+  // the prefab, resolved exactly as the pure sampler does, so every chunk
+  // re-deriving an overhanging structure agrees on it. The existence roll
+  // comes before the terrain-top probe, which only surviving candidates pay.
+  int Preliminary = (Cache != NULL)
+                        ? CachedSurface(Cache, WorldX, WorldZ, Seed)
+                        : GetPreliminarySurface(WorldX, WorldZ, Seed);
   int BiomeId = (Cache != NULL)
-                    ? CachedBiome(Cache, WorldX, Out->Surface, WorldZ, Seed)
-                    : SampleBiomeAt(WorldX, Out->Surface, WorldZ, Seed, NULL);
+                    ? CachedBiome(Cache, WorldX, Preliminary, WorldZ, Seed)
+                    : SampleBiomeAt(WorldX, Preliminary, WorldZ, Seed, NULL);
   const BiomeType *Biome = GetBiomeDef(BiomeId);
+  Out->BiomeId = BiomeId;
   if (Biome->StructureCount == 0 || Biome->StructureTotalWeight <= 0) {
     return false;
   }
@@ -246,10 +286,21 @@ static bool ResolveCandidate(int CellX, int CellZ, uint64_t Seed,
     return false;
   }
 
+  // The anchor is the real terrain top: solid by definition with open space
+  // above it, wherever the 3D field put the ground.
+  int SolidBelow = 0;
+  Out->Surface = CachedTerrainTop(WorldX, WorldZ, Seed, &SolidBelow);
+  if (Out->Surface <= SEA_LEVEL || SolidBelow < GROUND_THICKNESS - 1) {
+    return false;
+  }
+
   uint64_t KindHash = HashCell(WorldX, WorldZ, Seed ^ STRUCTURE_KIND_SALT);
   Out->Structure = GetPrefabByIndex(PickStructurePrefab(Biome, KindHash));
   return Out->Structure != NULL;
 }
+
+static bool ResolveCandidate(int CellX, int CellZ, uint64_t Seed,
+                             ColumnCache *Cache, StructureCandidate *Out);
 
 void PlaceChunkFeatures(Chunk *ChunkVal, ColumnCache *Cache, bool AllowSkip) {
   uint64_t Seed = GetWorldSeed();
@@ -285,16 +336,12 @@ void PlaceChunkFeatures(Chunk *ChunkVal, ColumnCache *Cache, bool AllowSkip) {
       }
 
       // Nothing to stamp here when the structure's vertical extent misses this
-      // cube; checked before the density probe, which is the costly part.
+      // cube.
       const Prefab *Structure = Candidate.Structure;
       int AnchorY = Structure->HasOrigin ? Structure->OriginY : 0;
       int StampLow = Candidate.Surface + 1 - AnchorY;
       int StampHigh = StampLow + Structure->SizeY - 1;
       if (StampHigh < BaseY || StampLow > TopY) {
-        continue;
-      }
-      if (!HasGroundUnderAir(Candidate.WorldX, Candidate.Surface,
-                             Candidate.WorldZ, Seed)) {
         continue;
       }
 
@@ -313,14 +360,89 @@ void PlaceChunkFeatures(Chunk *ChunkVal, ColumnCache *Cache, bool AllowSkip) {
   }
 }
 
+// Whole-candidate memo, per thread: a cube re-derives every grid cell its
+// footprint margin reaches, and the cubes of a column stack and its neighbours
+// meet the same cells over and over. The resolution is pure (Cache only avoids
+// recomputation), so a hit returns exactly what a fresh resolution would.
+enum {
+  CANDIDATE_MEMO_SLOTS = 4096
+};
+
+typedef struct {
+  int CellX;
+  int CellZ;
+  uint64_t Seed;
+  bool Valid;
+  bool Placed;
+  StructureCandidate Candidate;
+} CandidateMemoEntry;
+
+static bool ResolveCandidate(int CellX, int CellZ, uint64_t Seed,
+                             ColumnCache *Cache, StructureCandidate *Out) {
+  static _Thread_local CandidateMemoEntry SMemo[CANDIDATE_MEMO_SLOTS];
+  const unsigned int HALF_BITS = 32U;
+  uint64_t Key = ((uint64_t)(uint32_t)CellX << HALF_BITS) |
+                 (uint64_t)(uint32_t)CellZ;
+  CandidateMemoEntry *Entry =
+      &SMemo[SplitMix64(Key ^ Seed) % (uint64_t)CANDIDATE_MEMO_SLOTS];
+  if (!Entry->Valid || Entry->CellX != CellX || Entry->CellZ != CellZ ||
+      Entry->Seed != Seed) {
+    Entry->Placed =
+        ResolveCandidateFresh(CellX, CellZ, Seed, Cache, &Entry->Candidate);
+    Entry->CellX = CellX;
+    Entry->CellZ = CellZ;
+    Entry->Seed = Seed;
+    Entry->Valid = true;
+  }
+  *Out = Entry->Candidate;
+  return Entry->Placed;
+}
+
+bool ResolveStructureAt(int WorldX, int WorldZ, uint64_t Seed, int *OutBiomeId,
+                        const char **OutPrefabName) {
+  StructureCandidate Candidate;
+  if (!ResolveCandidate(FloorDiv(WorldX, GRID_CELL_SIZE),
+                        FloorDiv(WorldZ, GRID_CELL_SIZE), Seed, NULL,
+                        &Candidate)) {
+    return false;
+  }
+  *OutBiomeId = Candidate.BiomeId;
+  *OutPrefabName = Candidate.Structure->Name;
+  return true;
+}
+
+int FeatureTerrainTop(int WorldX, int WorldZ, uint64_t Seed) {
+  return CachedTerrainTop(WorldX, WorldZ, Seed, NULL);
+}
+
+bool FindDisplacedStructureAnchor(int CellRadius, int MinGap, uint64_t Seed,
+                                  int *OutX, int *OutY, int *OutZ) {
+  for (int CellX = -CellRadius; CellX <= CellRadius; CellX++) {
+    for (int CellZ = -CellRadius; CellZ <= CellRadius; CellZ++) {
+      StructureCandidate Candidate;
+      if (!ResolveCandidate(CellX, CellZ, Seed, NULL, &Candidate)) {
+        continue;
+      }
+      int Preliminary =
+          GetPreliminarySurface(Candidate.WorldX, Candidate.WorldZ, Seed);
+      if (abs(Candidate.Surface - Preliminary) < MinGap) {
+        continue;
+      }
+      *OutX = Candidate.WorldX;
+      *OutY = Candidate.Surface + 1;
+      *OutZ = Candidate.WorldZ;
+      return true;
+    }
+  }
+  return false;
+}
+
 bool FindStructureAnchor(int CellRadius, uint64_t Seed, int *OutX, int *OutY,
                          int *OutZ) {
   for (int CellX = -CellRadius; CellX <= CellRadius; CellX++) {
     for (int CellZ = -CellRadius; CellZ <= CellRadius; CellZ++) {
       StructureCandidate Candidate;
-      if (!ResolveCandidate(CellX, CellZ, Seed, NULL, &Candidate) ||
-          !HasGroundUnderAir(Candidate.WorldX, Candidate.Surface,
-                             Candidate.WorldZ, Seed)) {
+      if (!ResolveCandidate(CellX, CellZ, Seed, NULL, &Candidate)) {
         continue;
       }
       *OutX = Candidate.WorldX;
@@ -355,65 +477,54 @@ static int PickFloraBlock(const BiomeType *Biome, uint64_t Hash) {
 }
 
 void PlaceChunkFlora(Chunk *ChunkVal, const ColumnEntry *Column) {
+  (void)Column;
   uint64_t Seed = GetWorldSeed();
   const uint64_t MASK16 = 0xFFFFULL;
   const float DENSITY_SCALE = 65536.0F;
 
-  // A surface block and the flora voxel above it must both lie in this cube, so
-  // a cube the column's surface range cannot reach has nothing to place.
+  // An all-air or all-solid cube holds no surface with air above it, and a
+  // cube wholly at or below sea level grows nothing.
   int BaseY = ChunkVal->ChunkY * CHUNK_SIZE;
-  if (Column->MaxSurface < BaseY || Column->MinSurface > BaseY + CHUNK_SIZE - 2) {
+  if (ChunkVal->SolidBlockCount == 0 ||
+      ChunkVal->SolidBlockCount == (int)CHUNK_VOLUME ||
+      BaseY + CHUNK_SIZE - 1 <= SEA_LEVEL) {
     return;
   }
 
   for (int Lx = 0; Lx < CHUNK_SIZE; Lx++) {
     for (int Lz = 0; Lz < CHUNK_SIZE; Lz++) {
-      int WorldX = (ChunkVal->ChunkX * CHUNK_SIZE) + Lx;
-      int WorldZ = (ChunkVal->ChunkZ * CHUNK_SIZE) + Lz;
-
-      int Surface = Column->Surface[Lx][Lz];
-      if (Surface <= SEA_LEVEL) {
-        continue;
+      // The highest block of the biome's surface block with air above it, both
+      // inside this cube; the flora voxel above the top row would belong to
+      // the cube above, which this pass cannot write.
+      for (int Ly = CHUNK_SIZE - 2; Ly >= 0; Ly--) {
+        if (BaseY + Ly <= SEA_LEVEL) {
+          break;
+        }
+        BlockID Ground = ChunkVal->Data[Lx][Ly][Lz];
+        if (Ground == 0 || ChunkVal->Data[Lx][Ly + 1][Lz] != 0) {
+          continue;
+        }
+        const BiomeType *Biome =
+            GetBiomeDef(GetChunkBiomeAtLocal(ChunkVal, Lx, Ly, Lz));
+        if (Ground != (BlockID)Biome->SurfaceBlockId ||
+            strcmp(Biome->Family, "underground") == 0) {
+          continue;
+        }
+        if (Biome->FloraCount > 0 && Biome->FloraTotalWeight > 0) {
+          int WorldX = (ChunkVal->ChunkX * CHUNK_SIZE) + Lx;
+          int WorldZ = (ChunkVal->ChunkZ * CHUNK_SIZE) + Lz;
+          uint64_t ExistHash = HashCell(WorldX, WorldZ, Seed ^ FLORA_EXIST_SALT);
+          float Roll = (float)(ExistHash & MASK16) / DENSITY_SCALE;
+          if (Roll < Biome->FloraDensity) {
+            uint64_t KindHash =
+                HashCell(WorldX, WorldZ, Seed ^ FLORA_KIND_SALT);
+            ChunkVal->Data[Lx][Ly + 1][Lz] =
+                (BlockID)PickFloraBlock(Biome, KindHash);
+            ChunkVal->SolidBlockCount++;
+          }
+        }
+        break;
       }
-
-      // Both the surface block and the flora voxel above it must live in this
-      // chunk: the pass writes only this chunk's data and reads the surface
-      // block to check biome support. A column whose surface sits at the very
-      // top of the chunk is left to no one, which is a negligible border gap.
-      int SurfaceLocalY = Surface - (ChunkVal->ChunkY * CHUNK_SIZE);
-      int FloraLocalY = SurfaceLocalY + 1;
-      if (SurfaceLocalY < 0 || FloraLocalY >= CHUNK_SIZE) {
-        continue;
-      }
-
-      unsigned char BiomeId =
-          GetChunkBiomeAtLocal(ChunkVal, Lx, SurfaceLocalY, Lz);
-      const BiomeType *Biome = GetBiomeDef(BiomeId);
-      if (Biome->FloraCount == 0 || Biome->FloraTotalWeight <= 0) {
-        continue;
-      }
-
-      // Flora grows only on the biome's own surface block (grass), never on
-      // exposed stone, sand margins, or an already-occupied voxel.
-      if (ChunkVal->Data[Lx][SurfaceLocalY][Lz] !=
-          (BlockID)Biome->SurfaceBlockId) {
-        continue;
-      }
-      if (ChunkVal->Data[Lx][FloraLocalY][Lz] != 0) {
-        continue;
-      }
-
-      uint64_t ExistHash = HashCell(WorldX, WorldZ, Seed ^ FLORA_EXIST_SALT);
-      float Roll = (float)(ExistHash & MASK16) / DENSITY_SCALE;
-      if (Roll >= Biome->FloraDensity) {
-        continue;
-      }
-
-      uint64_t KindHash = HashCell(WorldX, WorldZ, Seed ^ FLORA_KIND_SALT);
-      int BlockId = PickFloraBlock(Biome, KindHash);
-
-      ChunkVal->Data[Lx][FloraLocalY][Lz] = (BlockID)BlockId;
-      ChunkVal->SolidBlockCount++;
     }
   }
 }

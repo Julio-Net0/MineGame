@@ -128,6 +128,21 @@ static float ApplyProbeBarrier(float Density, int X, int Y, int Z, int *Surface,
   return (Barrier > 0.0F) ? Barrier : Density;
 }
 
+// One horizontal row of a cell's corners at height Y, indexed Ix + 2 * Iz:
+// the same TerrainCornerDensity calls ProbeCellCorners makes for that row.
+static void ProbeCornerRow(const ProbeColumn *Column, int Y, uint64_t Seed,
+                           float Row[4]) {
+  for (int Iz = 0; Iz < 2; Iz++) {
+    for (int Ix = 0; Ix < 2; Ix++) {
+      const ColumnShape *Shape = &Column->Shapes[Ix][Iz];
+      Row[Ix + (2 * Iz)] = TerrainCornerDensity(
+          Shape->Base, Shape->Variation, Shape->ShellDepth,
+          Column->X0 + (Ix * DENSITY_CELL_XZ), Y,
+          Column->Z0 + (Iz * DENSITY_CELL_XZ), Seed);
+    }
+  }
+}
+
 float SampleTerrainDensity(int X, int Y, int Z, uint64_t Seed) {
   ProbeColumn Column;
   LoadProbeColumn(X, Z, Seed, &Column);
@@ -156,6 +171,14 @@ CaveFluid SampleTerrainFluid(int X, int Y, int Z, uint64_t Seed) {
 }
 
 int GetTerrainTop(int X, int Z, uint64_t Seed) {
+  int Unused = 0;
+  return GetTerrainTopWithDepth(X, Z, Seed, 0, &Unused);
+}
+
+int GetTerrainTopWithDepth(int X, int Z, uint64_t Seed, int MaxBelow,
+                           int *OutSolidBelow) {
+  *OutSolidBelow = 0;
+  int Top = INT_MIN;
   int Floor = INT_MIN;
   int Unused = 0;
   if (!GetStratumRange(STRATUM_GEN_OVERWORLD, &Floor, &Unused)) {
@@ -183,21 +206,48 @@ int GetTerrainTop(int X, int Z, uint64_t Seed) {
   float Fz = (float)(Z - Column.Z0) / (float)DENSITY_CELL_XZ;
   int Surface = INT_MIN;
   FloodProbeCell Cell = {.Valid = false};
+  // Walking down, each cell's top corner row is the previous cell's bottom
+  // row, so only one new row is evaluated per cell.
+  float Upper[4];
+  float Lower[4];
   int Y = Start;
+  ProbeCornerRow(&Column, FloorToMultiple(Y, DENSITY_CELL_Y) + DENSITY_CELL_Y,
+                 Seed, Upper);
   while (Y >= Floor) {
     int Y0 = FloorToMultiple(Y, DENSITY_CELL_Y);
+    ProbeCornerRow(&Column, Y0, Seed, Lower);
     float Corners[DENSITY_CELL_CORNERS];
-    ProbeCellCorners(&Column, Y0, Seed, Corners);
+    for (int Iz = 0; Iz < 2; Iz++) {
+      for (int Ix = 0; Ix < 2; Ix++) {
+        Corners[Ix + (4 * Iz)] = Lower[Ix + (2 * Iz)];
+        Corners[Ix + 2 + (4 * Iz)] = Upper[Ix + (2 * Iz)];
+      }
+    }
     int Stop = (Y0 > Floor) ? Y0 : Floor;
     for (int Block = Y; Block >= Stop; Block--) {
       float Fy = (float)(Block - Y0) / (float)DENSITY_CELL_Y;
       float Density = ApplyProbeBarrier(TrilinearDensity(Corners, Fx, Fy, Fz),
                                         X, Block, Z, &Surface, &Cell, Seed);
-      if (Density > 0.0F) {
-        return Block;
+      if (Top == INT_MIN) {
+        if (Density > 0.0F) {
+          Top = Block;
+          if (MaxBelow == 0) {
+            return Top;
+          }
+        }
+      } else if (Density > 0.0F && *OutSolidBelow < MaxBelow) {
+        (*OutSolidBelow)++;
+        if (*OutSolidBelow == MaxBelow) {
+          return Top;
+        }
+      } else {
+        return Top;
       }
+    }
+    for (int Idx = 0; Idx < 4; Idx++) {
+      Upper[Idx] = Lower[Idx];
     }
     Y = Y0 - 1;
   }
-  return Floor - 1;
+  return (Top != INT_MIN) ? Top : Floor - 1;
 }

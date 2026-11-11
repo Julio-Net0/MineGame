@@ -35,10 +35,10 @@
       "weight": 1
     }
   ],
-  "structureDensity": 0.2,
+  "structureDensity": 0.25,
   "structures": [
     {
-      "prefab": "oak_small",
+      "prefab": "swamp_oak",
       "weight": 1
     }
   ]

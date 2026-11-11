@@ -28,5 +28,12 @@
       "block": "TallGrass",
       "weight": 3
     }
+  ],
+  "structureDensity": 0.12,
+  "structures": [
+    {
+      "prefab": "acacia",
+      "weight": 1
+    }
   ]
 }

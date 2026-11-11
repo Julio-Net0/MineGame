@@ -45,5 +45,12 @@
       "block": "Flower2",
       "weight": 1
     }
+  ],
+  "structureDensity": 0.03,
+  "structures": [
+    {
+      "prefab": "boulder_stone",
+      "weight": 1
+    }
   ]
 }
