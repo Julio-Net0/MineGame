@@ -4,7 +4,7 @@
   "displayName": "Jukebox",
   "category": "building",
   "texTop": "jukebox_top",
-  "texBottom": "jukebox_bottom",
+  "texBottom": "jukebox_side",
   "texSide": "jukebox_side",
   "isTransparent": false
 }
