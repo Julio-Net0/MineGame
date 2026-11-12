@@ -1,0 +1,29 @@
+# Vertical load window check underground.
+#
+#   build/MineGame.exe --script scripts/deep.mgs --script-timeout 600
+#
+# Descends the spawn column in noclip and dumps state at three depths. The
+# loadWindow block of each dump (lo, hi, layers) is the active chunk-layer range
+# around the player; chunks.active and the profiler show what that window costs.
+# Writes automation_out/deep_60.png, deep_120.png, deep_500.png and .json dumps.
+
+/noclip 1
+
+/tp 0 -60 0
+look 0 -60
+wait loaded
+screenshot deep_60
+state deep_60
+
+/tp 0 -120 0
+wait loaded
+screenshot deep_120
+state deep_120
+
+# Just above the bedrock band (cave floor is Y -508).
+/tp 0 -500 0
+wait loaded
+screenshot deep_500
+state deep_500
+
+quit

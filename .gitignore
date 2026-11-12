@@ -22,6 +22,7 @@ MineGame.exe
 *.log
 
 automation_out/
+automation_baseline/
 
 node_modules/
 package-lock.json

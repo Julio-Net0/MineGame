@@ -5,6 +5,7 @@
 #include "player/player.h"
 #include "world/world.h"
 #include "render/backend.h"
+#include <stdint.h>
 
 typedef enum {
   FACE_TOP,
@@ -66,6 +67,16 @@ typedef struct {
 } RenderCullStats;
 
 void GetLastCullStats(RenderCullStats *Out);
+
+// Vertices currently uploaded for chunk meshes, per mesh target. Machine
+// independent, unlike timings, so scripts compare geometry changes with it.
+typedef struct {
+  int64_t Opaque;
+  int64_t Cutout;
+  int64_t Translucent;
+} MeshVertexTotals;
+
+void RendererGetMeshVertexTotals(MeshVertexTotals *Out);
 
 #ifdef MINEGAME_PROFILE
 // Recounts the loaded chunks owning a mesh and checks that each is in the

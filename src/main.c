@@ -185,6 +185,7 @@ static void CleanupGame(World *WorldVal) {
   CloseChunkWorker();
 #ifdef MINEGAME_PROFILE
   (void)RendererCheckRenderableSet(WorldVal);
+  (void)WorldCheckLoadVolumes(WorldVal);
 #endif
 
   // Sweep and save all modified chunks

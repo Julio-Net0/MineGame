@@ -497,173 +497,127 @@ static bool MasksCompatible(const FaceMaskData *A, const FaceMaskData *B) {
     return true;
 }
 
-static void BuildGreedyFacePass(const ChunkSnapshot *Snap, const FaceDir *Fd, MesherState *State) {
-    for (int Slice = 0; Slice < CHUNK_SIZE; Slice++) {
-        FaceMaskData Mask[CHUNK_SIZE][CHUNK_SIZE];
+// One mask per slice holds the faces of both cube targets. Opaque and
+// translucent blocks never share a block id, and merging requires equal ids, so
+// a rectangle never mixes the two; its target follows from its block id at emit
+// time. Returns how many faces the slice holds.
+static int BuildSliceMask(const ChunkSnapshot *Snap, const FaceDir *Fd,
+                          int Slice, FaceMaskData Mask[CHUNK_SIZE][CHUNK_SIZE]) {
+    int FaceCount = 0;
+    for (int U = 0; U < CHUNK_SIZE; U++) {
+        for (int V = 0; V < CHUNK_SIZE; V++) {
+            Mask[U][V].BlockId = 0;
+            Mask[U][V].Used = false;
 
-        // Build mask for this slice
-        for (int U = 0; U < CHUNK_SIZE; U++) {
-            for (int V = 0; V < CHUNK_SIZE; V++) {
-                Mask[U][V].BlockId = 0;
-                Mask[U][V].Used = false;
+            int Lpos[3];
+            Lpos[Fd->NormalAxis] = Slice;
+            Lpos[Fd->UAxis] = U;
+            Lpos[Fd->VAxis] = V;
+            int Lx = Lpos[0];
+            int Ly = Lpos[1];
+            int Lz = Lpos[2];
 
-                int Lpos[3];
-                Lpos[Fd->NormalAxis] = Slice;
-                Lpos[Fd->UAxis] = U;
-                Lpos[Fd->VAxis] = V;
-                int Lx = Lpos[0];
-                int Ly = Lpos[1];
-                int Lz = Lpos[2];
+            BlockID Id = SnapshotBlockAt(Snap, Lx, Ly, Lz);
+            if (Id == 0) { continue; }
 
-                BlockID Id = SnapshotBlockAt(Snap, Lx, Ly, Lz);
-                if (Id == 0) { continue; }
+            BlockType *Def = GetBlockDef(Id);
+            bool Translucent = Def->IsTransparent;
+            // Cross blocks are billboards, not cubes: the cross pass emits them.
+            if (Translucent && Def->RenderType == BLOCK_RENDER_CROSS) { continue; }
 
-                BlockType *Def = GetBlockDef(Id);
-                if (Def->IsTransparent) { continue; }
+            int Nlpos[3] = { Lpos[0], Lpos[1], Lpos[2] };
+            Nlpos[Fd->NormalAxis] += Fd->NormalDir;
+            if (!IsNeighbourTransparent(Snap,
+                                        Nlpos[0], Nlpos[1], Nlpos[2], Id)) { continue; }
 
-                int Nlpos[3] = { Lpos[0], Lpos[1], Lpos[2] };
-                Nlpos[Fd->NormalAxis] += Fd->NormalDir;
-                if (!IsNeighbourTransparent(Snap,
-                                            Nlpos[0], Nlpos[1], Nlpos[2], Id)) { continue; }
+            FaceMaskData *Cell = &Mask[U][V];
+            Cell->BlockId  = Id;
+            Cell->TexIndex = (uint16_t)GetFaceTex(Def, Fd->Face);
+            Cell->FlipQuad = ComputeFaceAO(Snap, Lx, Ly, Lz, Fd->Face, Cell->Ao);
 
-                Mask[U][V].BlockId   = Id;
-                Mask[U][V].TexIndex  = (uint16_t)GetFaceTex(Def, Fd->Face);
-                Mask[U][V].FlipQuad  = ComputeFaceAO(Snap, Lx, Ly, Lz,
-                                                     Fd->Face, Mask[U][V].Ao);
-                Mask[U][V].Tint565 = ColorToRgb565(GetFaceTint(
-                    Snap, (Snap->ChunkX * CHUNK_SIZE) + Lx,
-                    (Snap->ChunkY * CHUNK_SIZE) + Ly,
-                    (Snap->ChunkZ * CHUNK_SIZE) + Lz, Def, Fd->Face));
-            }
+            int Wx = (Snap->ChunkX * CHUNK_SIZE) + Lx;
+            int Wy = (Snap->ChunkY * CHUNK_SIZE) + Ly;
+            int Wz = (Snap->ChunkZ * CHUNK_SIZE) + Lz;
+            // Each target keeps the tint its faces had before translucent
+            // merging existed: the translucent faces never took the grass
+            // bottom-face exception GetFaceTint applies.
+            Color8 Tint = Translucent
+                              ? ComputeBlockTint(Snap, Wx, Wy, Wz, Def)
+                              : GetFaceTint(Snap, Wx, Wy, Wz, Def, Fd->Face);
+            Cell->Tint565 = ColorToRgb565(Tint);
+            FaceCount++;
         }
+    }
+    return FaceCount;
+}
 
-        for (int U0 = 0; U0 < CHUNK_SIZE; U0++) {
-            for (int V0 = 0; V0 < CHUNK_SIZE; V0++) {
-                FaceMaskData *Origin = &Mask[U0][V0];
-                if (Origin->BlockId == 0 || Origin->Used) { continue; }
+static void ScanGreedyMask(FaceMaskData Mask[CHUNK_SIZE][CHUNK_SIZE],
+                           const FaceDir *Fd, int Slice, MesherState *State) {
+    for (int U0 = 0; U0 < CHUNK_SIZE; U0++) {
+        for (int V0 = 0; V0 < CHUNK_SIZE; V0++) {
+            FaceMaskData *Origin = &Mask[U0][V0];
+            if (Origin->BlockId == 0 || Origin->Used) { continue; }
 
-                // Expand width (u direction)
-                int W = 1;
-                while (U0 + W < CHUNK_SIZE &&
-                       MasksCompatible(Origin, &Mask[U0 + W][V0])) {
-                    W++;
-                }
+            // Expand width (u direction)
+            int W = 1;
+            while (U0 + W < CHUNK_SIZE &&
+                   MasksCompatible(Origin, &Mask[U0 + W][V0])) {
+                W++;
+            }
 
-                // Expand height (v direction)
-                int H = 1;
-                bool CanExpand = true;
-                while (V0 + H < CHUNK_SIZE && CanExpand) {
-                    for (int Ku = 0; Ku < W; Ku++) {
-                        if (!MasksCompatible(Origin, &Mask[U0 + Ku][V0 + H])) {
-                            CanExpand = false;
-                            break;
-                        }
-                    }
-                    if (CanExpand) {
-                        H++;
-                    }
-                }
-
-                // Chunk-local position of the first block in the merged region
-                int FirstLpos[3];
-                FirstLpos[Fd->NormalAxis] = Slice;
-                FirstLpos[Fd->UAxis] = U0;
-                FirstLpos[Fd->VAxis] = V0;
-
-                // Every face in a merged rectangle shares a block id and a face
-                // direction, so its overlay slot is the same throughout and
-                // needs no place in the mask.
-                int OverlaySlot =
-                    GetFaceOverlay(GetBlockDef(Origin->BlockId), Fd->Face);
-
-                AddGreedyFaceToMeshBuilder(State, MESH_TARGET_OPAQUE, Fd->Face,
-                                           FirstLpos[0], FirstLpos[1],
-                                           FirstLpos[2], W, H,
-                                           Origin->TexIndex, OverlaySlot,
-                                           Origin->Ao, Origin->Tint565,
-                                           Origin->FlipQuad);
-
-                // Mark used
+            // Expand height (v direction)
+            int H = 1;
+            bool CanExpand = true;
+            while (V0 + H < CHUNK_SIZE && CanExpand) {
                 for (int Ku = 0; Ku < W; Ku++) {
-                    for (int Kv = 0; Kv < H; Kv++) {
-                        Mask[U0 + Ku][V0 + Kv].Used = true;
+                    if (!MasksCompatible(Origin, &Mask[U0 + Ku][V0 + H])) {
+                        CanExpand = false;
+                        break;
                     }
+                }
+                if (CanExpand) {
+                    H++;
+                }
+            }
+
+            // Chunk-local position of the first block in the merged region
+            int FirstLpos[3];
+            FirstLpos[Fd->NormalAxis] = Slice;
+            FirstLpos[Fd->UAxis] = U0;
+            FirstLpos[Fd->VAxis] = V0;
+
+            // Every face in a merged rectangle shares a block id and a face
+            // direction, so its overlay slot and target are the same
+            // throughout and need no place in the mask.
+            const BlockType *Def = GetBlockDef(Origin->BlockId);
+            MeshTarget Target = Def->IsTransparent ? MESH_TARGET_TRANSLUCENT
+                                                   : MESH_TARGET_OPAQUE;
+
+            AddGreedyFaceToMeshBuilder(State, Target, Fd->Face,
+                                       FirstLpos[0], FirstLpos[1],
+                                       FirstLpos[2], W, H,
+                                       Origin->TexIndex,
+                                       GetFaceOverlay(Def, Fd->Face),
+                                       Origin->Ao, Origin->Tint565,
+                                       Origin->FlipQuad);
+
+            for (int Ku = 0; Ku < W; Ku++) {
+                for (int Kv = 0; Kv < H; Kv++) {
+                    Mask[U0 + Ku][V0 + Kv].Used = true;
                 }
             }
         }
     }
 }
 
-// Per-face pass for transparent blocks (no greedy merging)
-static void BuildTransparentFacePass(const ChunkSnapshot *Snap, MesherState *State) {
-    for (int X = 0; X < CHUNK_SIZE; X++) {
-        for (int Y = 0; Y < CHUNK_SIZE; Y++) {
-            for (int Z = 0; Z < CHUNK_SIZE; Z++) {
-                BlockID Id = SnapshotBlockAt(Snap, X, Y, Z);
-                if (Id == 0) { continue; }
-
-                BlockType *Def = GetBlockDef(Id);
-                if (!Def->IsTransparent) { continue; }
-                // Cross blocks are billboards, not cubes: the dedicated cross
-                // pass emits their geometry, so skip them here.
-                if (Def->RenderType == BLOCK_RENDER_CROSS) { continue; }
-
-                int Ao[4];
-                bool Flip;
-
-                int Wx = (Snap->ChunkX * CHUNK_SIZE) + X;
-                int Wy = (Snap->ChunkY * CHUNK_SIZE) + Y;
-                int Wz = (Snap->ChunkZ * CHUNK_SIZE) + Z;
-
-                // This pass merges nothing, so tint applies straight to each
-                // face with no mask compatibility involved. Computed once per
-                // block: it does not vary by face for a foliage-tinted block.
-                uint16_t Tint565 = ColorToRgb565(
-                    ComputeBlockTint(Snap, Wx, Wy, Wz, Def));
-
-                if (IsNeighbourTransparent(Snap, X, Y+1, Z, Id)) {
-                    Flip = ComputeFaceAO(Snap, X, Y, Z, FACE_TOP, Ao);
-                    AddGreedyFaceToMeshBuilder(State, MESH_TARGET_TRANSLUCENT, FACE_TOP,
-                                               X, Y, Z, 1, 1, Def->TexTop,
-                                               GetFaceOverlay(Def, FACE_TOP),
-                                               Ao, Tint565, Flip);
-                }
-                if (IsNeighbourTransparent(Snap, X, Y-1, Z, Id)) {
-                    Flip = ComputeFaceAO(Snap, X, Y, Z, FACE_BOTTOM, Ao);
-                    AddGreedyFaceToMeshBuilder(State, MESH_TARGET_TRANSLUCENT, FACE_BOTTOM,
-                                               X, Y, Z, 1, 1, Def->TexBottom,
-                                               GetFaceOverlay(Def, FACE_BOTTOM),
-                                               Ao, Tint565, Flip);
-                }
-                if (IsNeighbourTransparent(Snap, X+1, Y, Z, Id)) {
-                    Flip = ComputeFaceAO(Snap, X, Y, Z, FACE_RIGHT, Ao);
-                    AddGreedyFaceToMeshBuilder(State, MESH_TARGET_TRANSLUCENT, FACE_RIGHT,
-                                               X, Y, Z, 1, 1, Def->TexSide,
-                                               GetFaceOverlay(Def, FACE_RIGHT),
-                                               Ao, Tint565, Flip);
-                }
-                if (IsNeighbourTransparent(Snap, X-1, Y, Z, Id)) {
-                    Flip = ComputeFaceAO(Snap, X, Y, Z, FACE_LEFT, Ao);
-                    AddGreedyFaceToMeshBuilder(State, MESH_TARGET_TRANSLUCENT, FACE_LEFT,
-                                               X, Y, Z, 1, 1, Def->TexSide,
-                                               GetFaceOverlay(Def, FACE_LEFT),
-                                               Ao, Tint565, Flip);
-                }
-                if (IsNeighbourTransparent(Snap, X, Y, Z+1, Id)) {
-                    Flip = ComputeFaceAO(Snap, X, Y, Z, FACE_FRONT, Ao);
-                    AddGreedyFaceToMeshBuilder(State, MESH_TARGET_TRANSLUCENT, FACE_FRONT,
-                                               X, Y, Z, 1, 1, Def->TexSide,
-                                               GetFaceOverlay(Def, FACE_FRONT),
-                                               Ao, Tint565, Flip);
-                }
-                if (IsNeighbourTransparent(Snap, X, Y, Z-1, Id)) {
-                    Flip = ComputeFaceAO(Snap, X, Y, Z, FACE_BACK, Ao);
-                    AddGreedyFaceToMeshBuilder(State, MESH_TARGET_TRANSLUCENT, FACE_BACK,
-                                               X, Y, Z, 1, 1, Def->TexSide,
-                                               GetFaceOverlay(Def, FACE_BACK),
-                                               Ao, Tint565, Flip);
-                }
-            }
+// Greedy merging for both cube targets. Translucent faces merge under the same
+// rules as opaque ones; the translucent pass draws whole chunks back to front
+// and never ordered the faces inside one, so merging changes no ordering.
+static void BuildGreedyFacePass(const ChunkSnapshot *Snap, const FaceDir *Fd, MesherState *State) {
+    FaceMaskData Mask[CHUNK_SIZE][CHUNK_SIZE];
+    for (int Slice = 0; Slice < CHUNK_SIZE; Slice++) {
+        if (BuildSliceMask(Snap, Fd, Slice, Mask) > 0) {
+            ScanGreedyMask(Mask, Fd, Slice, State);
         }
     }
 }
@@ -863,6 +817,9 @@ typedef struct {
     int Column;
     int PrevInColumn;
     int NextInColumn;
+    // What this chunk contributes to RenderableSet.VertexTotals, so an unload
+    // subtracts exactly what the upload added.
+    int VertexCounts[MESH_TARGET_COUNT];
 } RenderableRecord;
 
 typedef struct {
@@ -894,6 +851,8 @@ typedef struct {
     // The live columns, packed, so the per-frame walk touches nothing else.
     int ActiveColumns[MAX_ACTIVE_CHUNKS];
     int ActiveColumnCount;
+
+    int64_t VertexTotals[MESH_TARGET_COUNT];
 } RenderableSet;
 
 static RenderableSet *GetRenderableSet(void) {
@@ -1132,7 +1091,39 @@ bool RendererCheckRenderableSet(World *WorldVal) {
 }
 #endif
 
+static void ReleaseRecordVertexCounts(Chunk *ChunkVal) {
+    if (ChunkVal->RenderRecord == 0) { return; }
+    RenderableSet *Set = GetRenderableSet();
+    RenderableRecord *Rec = &Set->Records[ChunkVal->RenderRecord];
+    for (int Target = 0; Target < MESH_TARGET_COUNT; Target++) {
+        Set->VertexTotals[Target] -= Rec->VertexCounts[Target];
+        Rec->VertexCounts[Target] = 0;
+    }
+}
+
+static void RecordUploadedVertexCounts(const Chunk *ChunkVal,
+                                       const MeshBufferSet Sets[MESH_TARGET_COUNT]) {
+    if (ChunkVal->RenderRecord == 0) { return; }
+    RenderableSet *Set = GetRenderableSet();
+    RenderableRecord *Rec = &Set->Records[ChunkVal->RenderRecord];
+    bool Uploaded[MESH_TARGET_COUNT] = {
+        ChunkVal->HasMesh, ChunkVal->HasCutoutMesh, ChunkVal->HasTranslucentMesh};
+    for (int Target = 0; Target < MESH_TARGET_COUNT; Target++) {
+        int Count = Uploaded[Target] ? Sets[Target].VertexCount : 0;
+        Rec->VertexCounts[Target] = Count;
+        Set->VertexTotals[Target] += Count;
+    }
+}
+
+void RendererGetMeshVertexTotals(MeshVertexTotals *Out) {
+    const RenderableSet *Set = GetRenderableSet();
+    Out->Opaque = Set->VertexTotals[MESH_TARGET_OPAQUE];
+    Out->Cutout = Set->VertexTotals[MESH_TARGET_CUTOUT];
+    Out->Translucent = Set->VertexTotals[MESH_TARGET_TRANSLUCENT];
+}
+
 void UnloadChunkMesh(Chunk *ChunkVal) {
+    ReleaseRecordVertexCounts(ChunkVal);
     if (ChunkVal->HasMesh) {
         RenderFreeMesh(ChunkVal->ChunkMesh);
         ChunkVal->ChunkMesh = MESH_HANDLE_INVALID;
@@ -1270,7 +1261,6 @@ void RendererBuildMeshJob(int JobId, int MesherSlot) {
     for (int Fd = 0; Fd < FACE_DIRS_COUNT; Fd++) {
         BuildGreedyFacePass(Snap, &FACE_DIRS[Fd], State);
     }
-    BuildTransparentFacePass(Snap, State);
     BuildCrossPass(Snap, State);
 
     PROFILE_END(MeshBuildStart, PROFILE_MESH_BUILD);
@@ -1322,6 +1312,7 @@ bool RendererUploadFinishedMesh(void) {
             ChunkVal->HasTranslucentMesh =
                 (ChunkVal->TranslucentMesh != MESH_HANDLE_INVALID);
             SyncChunkRenderable(ChunkVal);
+            RecordUploadedVertexCounts(ChunkVal, Job->Sets);
 
             // Only now, and only if nothing edited the chunk after the snapshot
             // was taken. Clearing unconditionally would leave a block the player
@@ -1505,17 +1496,20 @@ void GetLastCullStats(RenderCullStats *Out) { *Out = *GetCullStatsState(); }
 // visible chunk ordered.
 //
 // The bucket count is the largest key the loaded set can produce. Loaded chunks
-// lie in a cylinder around the load centre: dx^2 + dz^2 <= R^2 and |dy| <= V, so
-// the key never exceeds MAX_RENDER_DISTANCE^2 + VERTICAL_RENDER_RADIUS^2 and
-// every distance stays exact. The camera can sit away from the load centre
-// (freecam), and those keys clamp into the last bucket: the far chunks then draw
-// in arbitrary order relative to each other, which is degradation rather than
-// breakage.
+// lie in a cylinder around the load centre: dx^2 + dz^2 <= R^2, and the vertical
+// window, which slides below the centre underground, keeps |dy| within
+// MAX_LOAD_LAYER_REACH. The key therefore never exceeds MAX_RENDER_DISTANCE^2 +
+// MAX_LOAD_LAYER_REACH^2 and every distance stays exact. The camera can sit away
+// from the load centre (freecam), and those keys clamp into the last bucket: the
+// far chunks then draw in arbitrary order relative to each other, which is
+// degradation rather than breakage.
 enum {
     CHUNK_DISTANCE_BUCKETS = (MAX_RENDER_DISTANCE * MAX_RENDER_DISTANCE) +
-                             (VERTICAL_RENDER_RADIUS * VERTICAL_RENDER_RADIUS) +
+                             (MAX_LOAD_LAYER_REACH * MAX_LOAD_LAYER_REACH) +
                              1
 };
+_Static_assert(MAX_LOAD_LAYER_REACH >= VERTICAL_RENDER_RADIUS,
+               "distance buckets must cover the symmetric window too");
 
 typedef struct {
     Chunk *ChunkVal;

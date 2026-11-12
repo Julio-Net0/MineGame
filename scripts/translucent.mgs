@@ -1,0 +1,70 @@
+# Translucent geometry check: open ocean and glass over water.
+#
+#   build/MineGame.exe --script scripts/translucent.mgs --script-timeout 300
+#
+# Writes automation_out/ocean_down.png, ocean_shallow.png, ocean_wireframe.png,
+# glass_water.png and their .json dumps. meshVertices.translucent in the dumps
+# is the number to compare across meshing changes; the screenshots show whether
+# water and glass still blend correctly.
+#
+# (304, 160) is the nearest Deep Ocean column for the deterministic script seed
+# (from "/locate biome deep_ocean").
+
+/noclip 1
+/tp 304 40 160
+look 0 -60
+wait loaded
+
+screenshot ocean_down
+state ocean_down
+
+look 0 -15
+wait frames 2
+screenshot ocean_shallow
+state ocean_shallow
+
+/debug wireframe 1
+look 0 -60
+wait frames 2
+screenshot ocean_wireframe
+/debug wireframe 0
+
+# Glass keeps id 6, the lowest colored id, so it is the first colored entry.
+inventory open
+inventory tab colored
+inventory pick 1
+inventory put 9
+wait ticks 2
+inventory close
+hotbar 9
+
+# A row of four glass blocks standing on the water surface (Y = 0), placed by
+# looking straight down at the water from just above it.
+look 0 -89
+/tp 302 3 160
+wait ticks 1
+press place
+wait ticks 2
+/tp 303 3 160
+wait ticks 1
+press place
+wait ticks 2
+/tp 304 3 160
+wait ticks 1
+press place
+wait ticks 2
+/tp 305 3 160
+wait ticks 1
+press place
+wait ticks 2
+wait loaded
+
+# Look back at the row across the water, so glass is seen in front of water.
+/tp 303.5 4 166
+look 180 -20
+wait frames 2
+wait loaded
+screenshot glass_water
+state glass_water
+
+quit

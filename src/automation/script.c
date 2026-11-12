@@ -1075,6 +1075,28 @@ static void ScriptAddChunksJson(cJSON *Root, const ScriptContext *Ctx) {
     cJSON_AddItemToObject(Node, "cull", CullNode);
   }
   cJSON_AddItemToObject(Root, "chunks", Node);
+
+  MeshVertexTotals Vertices = {0};
+  RendererGetMeshVertexTotals(&Vertices);
+  cJSON *VertexNode = cJSON_CreateObject();
+  if (VertexNode != (cJSON *)0) {
+    cJSON_AddNumberToObject(VertexNode, "opaque", (double)Vertices.Opaque);
+    cJSON_AddNumberToObject(VertexNode, "cutout", (double)Vertices.Cutout);
+    cJSON_AddNumberToObject(VertexNode, "translucent",
+                            (double)Vertices.Translucent);
+    cJSON_AddItemToObject(Root, "meshVertices", VertexNode);
+  }
+
+  LoadLayerRange Window = {0};
+  WorldGetLoadLayerRange(Ctx->WorldVal, ScriptLoadCenter(Ctx),
+                         Ctx->RenderDistance, &Window);
+  cJSON *WindowNode = cJSON_CreateObject();
+  if (WindowNode != (cJSON *)0) {
+    cJSON_AddNumberToObject(WindowNode, "lo", Window.Lo);
+    cJSON_AddNumberToObject(WindowNode, "hi", Window.Hi);
+    cJSON_AddNumberToObject(WindowNode, "layers", Window.Count);
+    cJSON_AddItemToObject(Root, "loadWindow", WindowNode);
+  }
 }
 
 #ifdef MINEGAME_PROFILE

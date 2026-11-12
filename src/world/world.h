@@ -13,6 +13,10 @@
 #define DEFAULT_RENDER_DISTANCE 8
 #define MAX_RENDER_DISTANCE 16
 #define VERTICAL_RENDER_RADIUS 8
+// Farthest an active layer can lie from the load centre's layer. The window
+// holds 2 * VERTICAL_RENDER_RADIUS + 1 layers and always contains the layer
+// above the centre, so at most 2 * VERTICAL_RENDER_RADIUS - 1 lie below it.
+#define MAX_LOAD_LAYER_REACH ((2 * VERTICAL_RENDER_RADIUS) - 1)
 
 // Lattice points with dx^2 + dz^2 <= MAX_RENDER_DISTANCE^2. A literal because
 // C17 cannot count them at compile time; the column table builder never
@@ -96,6 +100,25 @@ bool AreNeighborsGenerated(World *WorldVal, Chunk *ChunkVal);
 // neighbour-dirty bookkeeping). Headless servers query this directly because
 // no mesher runs to clear IsDirty.
 bool WorldIsGenerationSettled(World *WorldVal, Vec3 Center, int RenderDist);
+
+// Lowest and highest active chunk layer of the load volume UpdateWorld builds
+// for Center and RenderDist, and how many layers it holds. Count can be smaller
+// than Hi - Lo + 1 when the layers around the centre lie outside the world.
+typedef struct {
+  int Lo;
+  int Hi;
+  int Count;
+} LoadLayerRange;
+
+void WorldGetLoadLayerRange(const World *WorldVal, Vec3 Center, int RenderDist,
+                            LoadLayerRange *Out);
+
+#ifdef MINEGAME_PROFILE
+// Sweeps the load volume over chunk Y -40..70 and every render distance and
+// checks its invariants (layer budget, the centre and its neighbours present,
+// reach, ordering) plus the spec's worked windows. Logs the outcome.
+bool WorldCheckLoadVolumes(const World *WorldVal);
+#endif
 
 // True when chunk loading around Center has nothing left to do: every position
 // within RenderDist exists, has finished generating, and is not waiting to be

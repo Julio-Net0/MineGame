@@ -3,6 +3,7 @@
 #include "world/chunk_worker.h"
 #include "persistence/world_save.h"
 #include "core/profiler.h"
+#include "core/log.h"
 #include "world/worldgen_strata.h"
 #include <limits.h>
 #include <stddef.h>
@@ -125,10 +126,58 @@ static const ColumnOffset *GetColumnOffsets(int RenderDist, int *OutCount) {
   return Offsets;
 }
 
-// Layers are ([Cy - V, Cy + V] intersected with the world's range) united with
-// [Cy - 1, Cy + 1], so the chunks around the centre stay loaded even above the
-// generation ceiling. Both parts lie inside [Cy - V, Cy + V], which bounds the
-// layer count by MAX_LOAD_LAYERS.
+enum {
+  // Underground, each layer the centre sits below the first layer under the
+  // sea-level chunk moves this many window layers from above it to below it.
+  DEPTH_SHIFT_PER_LAYER = 1,
+  // Layers the window keeps above the centre however deep it is, so a cavern's
+  // ceiling stays loaded.
+  MIN_UP_LAYERS = 2
+};
+
+_Static_assert(MAX_LOAD_LAYERS == MAX_LOAD_LAYER_REACH + 2,
+               "a window of MAX_LOAD_LAYERS layers holding the layer above the "
+               "centre reaches at most MAX_LOAD_LAYER_REACH below it");
+
+// The 2V + 1 layer window around CenterY. Underground it is biased downward,
+// where the visible depth is; then it slides off the generation ceiling and the
+// bedrock floor instead of being cut there, so layers outside the world are
+// spent inside it. Each slide stops one layer short of the centre, so the
+// window always holds CenterY - 1 .. CenterY + 1.
+static void ComputeLayerWindow(int CenterY, int Vertical, int WorldLo,
+                               int WorldHi, int *OutLo, int *OutHi) {
+  int Depth = (FloorDivChunkSize(SEA_LEVEL) - 1) - CenterY;
+  if (Depth > Vertical) { Depth = Vertical; }
+  int Shift = Depth * DEPTH_SHIFT_PER_LAYER;
+  if (Shift > Vertical - MIN_UP_LAYERS) { Shift = Vertical - MIN_UP_LAYERS; }
+  if (Shift < 0) { Shift = 0; }
+
+  int Lo = CenterY - (Vertical + Shift);
+  int Hi = CenterY + (Vertical - Shift);
+
+  if (Hi > WorldHi) {
+    int Move = Hi - WorldHi;
+    int MaxMove = (Hi - CenterY) - 1;
+    if (Move > MaxMove) { Move = MaxMove; }
+    Lo -= Move;
+    Hi -= Move;
+  }
+  if (Lo < WorldLo) {
+    int Move = WorldLo - Lo;
+    int MaxMove = (CenterY - Lo) - 1;
+    if (Move > MaxMove) { Move = MaxMove; }
+    Lo += Move;
+    Hi += Move;
+  }
+
+  *OutLo = Lo;
+  *OutHi = Hi;
+}
+
+// Layers are (the window intersected with the world's range) united with
+// [Cy - 1, Cy + 1], so the chunks around the centre stay loaded even outside
+// the world. Both parts lie inside the window, which bounds the layer count by
+// MAX_LOAD_LAYERS. Layers are listed by distance from the centre, below first.
 static void BuildLoadVolume(const World *WorldVal, Vec3 Center, int RenderDist,
                             LoadVolume *Out) {
   int Radius = ClampRenderDistance(RenderDist);
@@ -140,13 +189,15 @@ static void BuildLoadVolume(const World *WorldVal, Vec3 Center, int RenderDist,
   Out->CenterZ = (int)__builtin_floorf(Center.z / CHUNK_SIZE);
   Out->Columns = GetColumnOffsets(Radius, &Out->ColumnCount);
 
-  int Lo = CenterY - Vertical;
-  int Hi = CenterY + Vertical;
+  int Lo = 0;
+  int Hi = 0;
+  ComputeLayerWindow(CenterY, Vertical, WorldVal->WorldLoChunkY,
+                     WorldVal->WorldHiChunkY, &Lo, &Hi);
   if (Lo < WorldVal->WorldLoChunkY) { Lo = WorldVal->WorldLoChunkY; }
   if (Hi > WorldVal->WorldHiChunkY) { Hi = WorldVal->WorldHiChunkY; }
 
   Out->LayerCount = 0;
-  for (int Step = 0; Step <= Vertical; Step++) {
+  for (int Step = 0; Step <= MAX_LOAD_LAYER_REACH; Step++) {
     int Below = CenterY - Step;
     int Above = CenterY + Step;
     if ((Below >= Lo && Below <= Hi) || Step <= 1) {
@@ -157,6 +208,87 @@ static void BuildLoadVolume(const World *WorldVal, Vec3 Center, int RenderDist,
     }
   }
 }
+
+#ifdef MINEGAME_PROFILE
+static bool LoadVolumeIsValid(const LoadVolume *Volume, int CenterY,
+                              int Vertical) {
+  if (Volume->LayerCount > (2 * Vertical) + 1) { return false; }
+  int NearSeen = 0;
+  int PrevDistance = 0;
+  for (int Idx = 0; Idx < Volume->LayerCount; Idx++) {
+    int Layer = Volume->Layers[Idx];
+    int Distance = abs(Layer - CenterY);
+    if (Distance > MAX_LOAD_LAYER_REACH || Distance < PrevDistance) {
+      return false;
+    }
+    PrevDistance = Distance;
+    for (int Other = 0; Other < Idx; Other++) {
+      if (Volume->Layers[Other] == Layer) { return false; }
+    }
+    if (Distance <= 1) { NearSeen++; }
+  }
+  return NearSeen == 3;
+}
+
+typedef struct {
+  int CenterY;
+  int Lo;
+  int Hi;
+} WindowExpectation;
+
+// A point inside chunk (0, CenterY, 0), away from any chunk border.
+static Vec3 PointInChunkLayer(int CenterY) {
+  return (Vec3){BLOCK_HALF_SIZE,
+                ((float)CenterY * CHUNK_SIZE) + BLOCK_HALF_SIZE,
+                BLOCK_HALF_SIZE};
+}
+
+bool WorldCheckLoadVolumes(const World *WorldVal) {
+  enum { SWEEP_LO = -40, SWEEP_HI = 70, SPEC_WORLD_LO = -33, SPEC_WORLD_HI = 40 };
+  int Failures = 0;
+  LoadVolume Volume;
+
+  for (int Radius = MIN_RENDER_DISTANCE; Radius <= MAX_RENDER_DISTANCE; Radius++) {
+    int Vertical = (Radius < VERTICAL_RENDER_RADIUS) ? Radius
+                                                     : VERTICAL_RENDER_RADIUS;
+    for (int CenterY = SWEEP_LO; CenterY <= SWEEP_HI; CenterY++) {
+      BuildLoadVolume(WorldVal, PointInChunkLayer(CenterY), Radius, &Volume);
+      if (!LoadVolumeIsValid(&Volume, CenterY, Vertical)) {
+        LogError("WORLD: load volume invalid at chunk Y %d, R %d", CenterY,
+                 Radius);
+        Failures++;
+      }
+    }
+  }
+
+  // The worked values of the cylindrical-chunk-loading spec, which assume the
+  // default strata.
+  if (WorldVal->WorldLoChunkY == SPEC_WORLD_LO &&
+      WorldVal->WorldHiChunkY == SPEC_WORLD_HI) {
+    static const WindowExpectation EXPECTED[] = {
+        {4, -4, 12},    {-1, -9, 7},  {-8, -22, -6},
+        {-32, -33, -17}, {38, 24, 40}, {60, 59, 61},
+    };
+    for (size_t Idx = 0; Idx < sizeof(EXPECTED) / sizeof(EXPECTED[0]); Idx++) {
+      const WindowExpectation *Case = &EXPECTED[Idx];
+      LoadLayerRange Range;
+      WorldGetLoadLayerRange(WorldVal, PointInChunkLayer(Case->CenterY),
+                             DEFAULT_RENDER_DISTANCE, &Range);
+      if (Range.Lo != Case->Lo || Range.Hi != Case->Hi) {
+        LogError("WORLD: chunk Y %d loads %d..%d, expected %d..%d",
+                 Case->CenterY, Range.Lo, Range.Hi, Case->Lo, Case->Hi);
+        Failures++;
+      }
+    }
+  }
+
+  if (Failures == 0) {
+    LogInfo("WORLD: load volumes valid for chunk Y %d..%d, R %d..%d",
+            SWEEP_LO, SWEEP_HI, MIN_RENDER_DISTANCE, MAX_RENDER_DISTANCE);
+  }
+  return Failures == 0;
+}
+#endif
 
 void InitWorld(World *WorldVal){
   WorldVal->ChunkCount = 0;
@@ -623,6 +755,20 @@ bool AreNeighborsGenerated(World *WorldVal, Chunk *ChunkVal) {
 #undef NEIGHBOR_COUNT
 
   return true;
+}
+
+void WorldGetLoadLayerRange(const World *WorldVal, Vec3 Center, int RenderDist,
+                            LoadLayerRange *Out) {
+  LoadVolume Volume;
+  BuildLoadVolume(WorldVal, Center, RenderDist, &Volume);
+
+  Out->Lo = Volume.Layers[0];
+  Out->Hi = Volume.Layers[0];
+  for (int Layer = 1; Layer < Volume.LayerCount; Layer++) {
+    if (Volume.Layers[Layer] < Out->Lo) { Out->Lo = Volume.Layers[Layer]; }
+    if (Volume.Layers[Layer] > Out->Hi) { Out->Hi = Volume.Layers[Layer]; }
+  }
+  Out->Count = Volume.LayerCount;
 }
 
 bool WorldIsGenerationSettled(World *WorldVal, Vec3 Center, int RenderDist) {
