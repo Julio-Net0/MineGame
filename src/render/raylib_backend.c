@@ -74,6 +74,11 @@ typedef struct {
   int ChunkOriginLocOpaque;
   int ChunkOriginLocCutout;
   int ActiveChunkOriginLoc;
+  // Vertex array the current chunk pass last bound, 0 outside a pass. Chunk
+  // draws replace the binding directly instead of resetting it to 0 after
+  // each one; the pass end releases it, so no buffer bound outside a pass
+  // (Raylib's batch flush, mesh uploads) is recorded into a chunk's VAO.
+  unsigned int BoundChunkVao;
 
   unsigned int ChunkSharedEbo;
   ChunkGpuMesh MeshPool[MESH_POOL_CAPACITY];
@@ -590,6 +595,7 @@ void RenderBeginChunkPass(ChunkPassKind Kind) {
   // Raylib batches its own immediate-mode geometry and flushes it lazily. Left
   // pending, it would be drawn later under this pass's shader.
   rlDrawRenderBatchActive();
+  State->BoundChunkVao = 0;
 
   rlEnableShader(Active->id);
 
@@ -610,6 +616,10 @@ void RenderEndChunkPass(void) {
   EndSolidOcclusionQuery(State);
 #endif
   State->ActiveChunkOriginLoc = -1;
+  if (State->BoundChunkVao != 0) {
+    rlDisableVertexArray();
+    State->BoundChunkVao = 0;
+  }
   rlDisableShader();
   glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
 }
@@ -675,9 +685,11 @@ void RenderDrawMesh(MeshHandle Handle, Vec3 ChunkOrigin) {
                 ChunkOrigin.z);
   }
 
-  rlEnableVertexArray(MeshVal->Vao);
+  if (State->BoundChunkVao != MeshVal->Vao) {
+    rlEnableVertexArray(MeshVal->Vao);
+    State->BoundChunkVao = MeshVal->Vao;
+  }
   rlDrawVertexArrayElements(0, MeshVal->IndexCount, 0);
-  rlDisableVertexArray();
 }
 
 // ---------------------------------------------------------------------------

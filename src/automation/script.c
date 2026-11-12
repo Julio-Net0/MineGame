@@ -1052,6 +1052,20 @@ static void ScriptAddChunksJson(cJSON *Root, const ScriptContext *Ctx) {
   cJSON_AddNumberToObject(Node, "meshing", Meshing);
   cJSON_AddNumberToObject(Node, "rendered", GetLastRenderedChunkCount());
   cJSON_AddBoolToObject(Node, "meshUploadPending", RendererHasPendingMeshWork());
+
+  RenderCullStats Cull = {0};
+  GetLastCullStats(&Cull);
+  cJSON *CullNode = cJSON_CreateObject();
+  if (CullNode != (cJSON *)0) {
+    cJSON_AddNumberToObject(CullNode, "renderable", Cull.Renderable);
+    cJSON_AddNumberToObject(CullNode, "columns", Cull.Columns);
+    cJSON_AddNumberToObject(CullNode, "columnsOutside", Cull.ColumnsOutside);
+    cJSON_AddNumberToObject(CullNode, "columnsInside", Cull.ColumnsInside);
+    cJSON_AddNumberToObject(CullNode, "columnsIntersecting", Cull.ColumnsIntersecting);
+    cJSON_AddNumberToObject(CullNode, "chunksTested", Cull.ChunksTested);
+    cJSON_AddNumberToObject(CullNode, "visible", Cull.Visible);
+    cJSON_AddItemToObject(Node, "cull", CullNode);
+  }
   cJSON_AddItemToObject(Root, "chunks", Node);
 }
 

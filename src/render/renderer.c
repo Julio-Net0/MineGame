@@ -94,7 +94,12 @@ static bool MesherHasRoom(const MesherState *State, MeshTarget Target) {
 
 void InitRenderer(void) { RenderBackendInit(); }
 
-void CloseRenderer(void) { RenderBackendShutdown(); }
+static void ResetRenderableSet(void);
+
+void CloseRenderer(void) {
+    ResetRenderableSet();
+    RenderBackendShutdown();
+}
 
 // ---------------------------------------------------------------------------
 // Biome tint
@@ -829,6 +834,304 @@ static MeshHandle UploadMeshBufferSet(const MeshBufferSet *Set) {
     return RenderUploadMesh(&Data);
 }
 
+// ---------------------------------------------------------------------------
+// Renderable set
+// ---------------------------------------------------------------------------
+
+// The chunks owning at least one mesh, grouped by column. Most loaded slots are
+// air or buried rock with nothing to draw, and the chunks stacked in one column
+// share their X/Z footprint, so the world draw tests a column's box once and
+// only descends to its chunks when the box straddles the frustum.
+//
+// Records and columns are 1-based so that 0 means "none" everywhere: in
+// Chunk.RenderRecord, in the column links and in the hash. A chunk owns a record
+// only while it occupies a slot, and every column holds at least one record, so
+// MAX_ACTIVE_CHUNKS bounds both pools. Columns can outnumber MAX_LOADED_COLUMNS
+// while the load centre moves and old chunks wait for eviction, which is why
+// the column pool is not sized by it.
+enum {
+    RENDER_COLUMN_HASH_SIZE = 32768,
+    RENDER_COLUMN_HASH_MASK = RENDER_COLUMN_HASH_SIZE - 1
+};
+_Static_assert(RENDER_COLUMN_HASH_SIZE >= 2 * MAX_ACTIVE_CHUNKS,
+               "column hash must stay at or below half load");
+_Static_assert((RENDER_COLUMN_HASH_SIZE & RENDER_COLUMN_HASH_MASK) == 0,
+               "column hash size must be a power of two");
+
+typedef struct {
+    Chunk *ChunkVal;
+    int Column;
+    int PrevInColumn;
+    int NextInColumn;
+} RenderableRecord;
+
+typedef struct {
+    int ChunkX;
+    int ChunkZ;
+    // Conservative: removals only mark the extent stale, so until it is
+    // recomputed it can only be wider than the members, never narrower.
+    int MinChunkY;
+    int MaxChunkY;
+    int Head;
+    int Count;
+    int DenseIndex;
+    bool ExtentStale;
+} RenderColumn;
+
+typedef struct {
+    RenderableRecord Records[MAX_ACTIVE_CHUNKS + 1];
+    int FreeRecords[MAX_ACTIVE_CHUNKS];
+    int FreeRecordCount;
+    int RecordsEverUsed;
+    int RecordCount;
+
+    RenderColumn Columns[MAX_ACTIVE_CHUNKS + 1];
+    int FreeColumns[MAX_ACTIVE_CHUNKS];
+    int FreeColumnCount;
+    int ColumnsEverUsed;
+    int ColumnHash[RENDER_COLUMN_HASH_SIZE];
+
+    // The live columns, packed, so the per-frame walk touches nothing else.
+    int ActiveColumns[MAX_ACTIVE_CHUNKS];
+    int ActiveColumnCount;
+} RenderableSet;
+
+static RenderableSet *GetRenderableSet(void) {
+    static RenderableSet Set;
+    return &Set;
+}
+
+// Spatial-hash primes; the final shift folds the high bits, where the products
+// carry most of their entropy, into the masked low bits.
+#define COLUMN_HASH_PRIME_X 73856093U
+#define COLUMN_HASH_PRIME_Z 19349663U
+#define COLUMN_HASH_FOLD_SHIFT 15U
+
+static int ColumnHomeSlot(int ChunkX, int ChunkZ) {
+    unsigned int Hash = ((unsigned int)ChunkX * COLUMN_HASH_PRIME_X) ^
+                        ((unsigned int)ChunkZ * COLUMN_HASH_PRIME_Z);
+    Hash ^= Hash >> COLUMN_HASH_FOLD_SHIFT;
+    return (int)(Hash & (unsigned int)RENDER_COLUMN_HASH_MASK);
+}
+
+static int FindOrCreateColumn(RenderableSet *Set, int ChunkX, int ChunkZ) {
+    int Slot = ColumnHomeSlot(ChunkX, ChunkZ);
+    while (Set->ColumnHash[Slot] != 0) {
+        int Existing = Set->ColumnHash[Slot];
+        if (Set->Columns[Existing].ChunkX == ChunkX &&
+            Set->Columns[Existing].ChunkZ == ChunkZ) {
+            return Existing;
+        }
+        Slot = (Slot + 1) & RENDER_COLUMN_HASH_MASK;
+    }
+
+    int Column = (Set->FreeColumnCount > 0)
+                     ? Set->FreeColumns[--Set->FreeColumnCount]
+                     : ++Set->ColumnsEverUsed;
+    Set->ColumnHash[Slot] = Column;
+    Set->Columns[Column] = (RenderColumn){
+        .ChunkX = ChunkX,
+        .ChunkZ = ChunkZ,
+        .DenseIndex = Set->ActiveColumnCount,
+    };
+    Set->ActiveColumns[Set->ActiveColumnCount++] = Column;
+    return Column;
+}
+
+// Backward-shift deletion: after emptying the slot, every entry further along
+// the probe run whose home does not lie cyclically in (Hole, Current] is moved
+// back into the hole, so lookups never need tombstones.
+static void RemoveColumnFromHash(RenderableSet *Set, int Column) {
+    const RenderColumn *Col = &Set->Columns[Column];
+    int Hole = ColumnHomeSlot(Col->ChunkX, Col->ChunkZ);
+    while (Set->ColumnHash[Hole] != Column) {
+        Hole = (Hole + 1) & RENDER_COLUMN_HASH_MASK;
+    }
+    Set->ColumnHash[Hole] = 0;
+
+    int Current = (Hole + 1) & RENDER_COLUMN_HASH_MASK;
+    while (Set->ColumnHash[Current] != 0) {
+        const RenderColumn *Moving = &Set->Columns[Set->ColumnHash[Current]];
+        int Home = ColumnHomeSlot(Moving->ChunkX, Moving->ChunkZ);
+        int FromHome = (Current - Home) & RENDER_COLUMN_HASH_MASK;
+        int FromHole = (Current - Hole) & RENDER_COLUMN_HASH_MASK;
+        if (FromHome >= FromHole) {
+            Set->ColumnHash[Hole] = Set->ColumnHash[Current];
+            Set->ColumnHash[Current] = 0;
+            Hole = Current;
+        }
+        Current = (Current + 1) & RENDER_COLUMN_HASH_MASK;
+    }
+}
+
+static void ReleaseColumn(RenderableSet *Set, int Column) {
+    RemoveColumnFromHash(Set, Column);
+
+    int Dense = Set->Columns[Column].DenseIndex;
+    int Last = --Set->ActiveColumnCount;
+    if (Dense != Last) {
+        int Moved = Set->ActiveColumns[Last];
+        Set->ActiveColumns[Dense] = Moved;
+        Set->Columns[Moved].DenseIndex = Dense;
+    }
+    Set->FreeColumns[Set->FreeColumnCount++] = Column;
+}
+
+static void InsertRenderable(RenderableSet *Set, Chunk *ChunkVal) {
+    int Record = (Set->FreeRecordCount > 0)
+                     ? Set->FreeRecords[--Set->FreeRecordCount]
+                     : ++Set->RecordsEverUsed;
+    int Column = FindOrCreateColumn(Set, ChunkVal->ChunkX, ChunkVal->ChunkZ);
+    RenderColumn *Col = &Set->Columns[Column];
+
+    if (Col->Count == 0) {
+        Col->MinChunkY = ChunkVal->ChunkY;
+        Col->MaxChunkY = ChunkVal->ChunkY;
+        Col->ExtentStale = false;
+    } else {
+        if (ChunkVal->ChunkY < Col->MinChunkY) { Col->MinChunkY = ChunkVal->ChunkY; }
+        if (ChunkVal->ChunkY > Col->MaxChunkY) { Col->MaxChunkY = ChunkVal->ChunkY; }
+    }
+
+    Set->Records[Record] = (RenderableRecord){
+        .ChunkVal = ChunkVal,
+        .Column = Column,
+        .NextInColumn = Col->Head,
+    };
+    if (Col->Head != 0) { Set->Records[Col->Head].PrevInColumn = Record; }
+    Col->Head = Record;
+    Col->Count++;
+
+    Set->RecordCount++;
+    ChunkVal->RenderRecord = Record;
+}
+
+static void RemoveRenderable(RenderableSet *Set, Chunk *ChunkVal) {
+    int Record = ChunkVal->RenderRecord;
+    const RenderableRecord *Rec = &Set->Records[Record];
+    RenderColumn *Col = &Set->Columns[Rec->Column];
+
+    if (Rec->PrevInColumn != 0) {
+        Set->Records[Rec->PrevInColumn].NextInColumn = Rec->NextInColumn;
+    } else {
+        Col->Head = Rec->NextInColumn;
+    }
+    if (Rec->NextInColumn != 0) {
+        Set->Records[Rec->NextInColumn].PrevInColumn = Rec->PrevInColumn;
+    }
+    Col->Count--;
+
+    if (Col->Count == 0) {
+        ReleaseColumn(Set, Rec->Column);
+    } else if (ChunkVal->ChunkY == Col->MinChunkY ||
+               ChunkVal->ChunkY == Col->MaxChunkY) {
+        Col->ExtentStale = true;
+    }
+
+    Set->Records[Record] = (RenderableRecord){0};
+    Set->FreeRecords[Set->FreeRecordCount++] = Record;
+    Set->RecordCount--;
+    ChunkVal->RenderRecord = 0;
+}
+
+static void SyncChunkRenderable(Chunk *ChunkVal) {
+    bool Wants = ChunkVal->HasMesh || ChunkVal->HasCutoutMesh ||
+                 ChunkVal->HasTranslucentMesh;
+    bool Present = ChunkVal->RenderRecord != 0;
+    if (Wants && !Present) {
+        InsertRenderable(GetRenderableSet(), ChunkVal);
+    } else if (!Wants && Present) {
+        RemoveRenderable(GetRenderableSet(), ChunkVal);
+    }
+}
+
+static void RefreshColumnExtent(const RenderableSet *Set, RenderColumn *Col) {
+    const Chunk *First = Set->Records[Col->Head].ChunkVal;
+    Col->MinChunkY = First->ChunkY;
+    Col->MaxChunkY = First->ChunkY;
+    for (int Rec = Set->Records[Col->Head].NextInColumn; Rec != 0;
+         Rec = Set->Records[Rec].NextInColumn) {
+        int ChunkY = Set->Records[Rec].ChunkVal->ChunkY;
+        if (ChunkY < Col->MinChunkY) { Col->MinChunkY = ChunkY; }
+        if (ChunkY > Col->MaxChunkY) { Col->MaxChunkY = ChunkY; }
+    }
+    Col->ExtentStale = false;
+}
+
+// The backend frees every mesh at shutdown without going through
+// UnloadChunkMesh, so the set is emptied with it. The chunks are not touched:
+// the world has already been freed by the time the renderer closes.
+static void ResetRenderableSet(void) {
+    memset(GetRenderableSet(), 0, sizeof(RenderableSet));
+}
+
+#ifdef MINEGAME_PROFILE
+static bool CheckRenderableColumns(const RenderableSet *Set) {
+    bool Consistent = true;
+    int Members = 0;
+    for (int Dense = 0; Dense < Set->ActiveColumnCount; Dense++) {
+        int Column = Set->ActiveColumns[Dense];
+        const RenderColumn *Col = &Set->Columns[Column];
+        if (Col->DenseIndex != Dense) { Consistent = false; }
+
+        int Length = 0;
+        int Prev = 0;
+        for (int Rec = Col->Head; Rec != 0; Rec = Set->Records[Rec].NextInColumn) {
+            const RenderableRecord *Entry = &Set->Records[Rec];
+            const Chunk *ChunkVal = Entry->ChunkVal;
+            if (Entry->Column != Column || Entry->PrevInColumn != Prev ||
+                ChunkVal->ChunkX != Col->ChunkX || ChunkVal->ChunkZ != Col->ChunkZ ||
+                ChunkVal->ChunkY < Col->MinChunkY ||
+                ChunkVal->ChunkY > Col->MaxChunkY) {
+                Consistent = false;
+            }
+            Prev = Rec;
+            Length++;
+        }
+        if (Length != Col->Count || Length == 0) { Consistent = false; }
+        Members += Length;
+    }
+
+    int Hashed = 0;
+    for (int Slot = 0; Slot < RENDER_COLUMN_HASH_SIZE; Slot++) {
+        if (Set->ColumnHash[Slot] != 0) { Hashed++; }
+    }
+    return Consistent && Members == Set->RecordCount &&
+           Hashed == Set->ActiveColumnCount;
+}
+
+bool RendererCheckRenderableSet(World *WorldVal) {
+    const RenderableSet *Set = GetRenderableSet();
+    int Expected = 0;
+    bool Consistent = true;
+    for (int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++) {
+        if (!WorldVal->SlotInUse[IdxI]) { continue; }
+        const Chunk *ChunkVal = &WorldVal->Chunks[IdxI];
+        bool Wants = ChunkVal->HasMesh || ChunkVal->HasCutoutMesh ||
+                     ChunkVal->HasTranslucentMesh;
+        if (!Wants) { continue; }
+        Expected++;
+        int Record = ChunkVal->RenderRecord;
+        if (Record <= 0 || Record > Set->RecordsEverUsed ||
+            Set->Records[Record].ChunkVal != ChunkVal) {
+            Consistent = false;
+        }
+    }
+    if (Expected != Set->RecordCount) { Consistent = false; }
+
+    bool ColumnsConsistent = CheckRenderableColumns(Set);
+    if (Consistent && ColumnsConsistent) {
+        LogInfo("RENDER: renderable set consistent (%d chunks in %d columns)",
+                Set->RecordCount, Set->ActiveColumnCount);
+    } else {
+        LogError("RENDER: renderable set inconsistent: %d records, %d chunks own "
+                 "a mesh, columns %s",
+                 Set->RecordCount, Expected, ColumnsConsistent ? "ok" : "corrupt");
+    }
+    return Consistent && ColumnsConsistent;
+}
+#endif
+
 void UnloadChunkMesh(Chunk *ChunkVal) {
     if (ChunkVal->HasMesh) {
         RenderFreeMesh(ChunkVal->ChunkMesh);
@@ -845,6 +1148,7 @@ void UnloadChunkMesh(Chunk *ChunkVal) {
         ChunkVal->TranslucentMesh = MESH_HANDLE_INVALID;
         ChunkVal->HasTranslucentMesh = false;
     }
+    SyncChunkRenderable(ChunkVal);
 }
 
 bool RendererHasPendingMeshWork(void) {
@@ -1017,6 +1321,7 @@ bool RendererUploadFinishedMesh(void) {
                 UploadMeshBufferSet(&Job->Sets[MESH_TARGET_TRANSLUCENT]);
             ChunkVal->HasTranslucentMesh =
                 (ChunkVal->TranslucentMesh != MESH_HANDLE_INVALID);
+            SyncChunkRenderable(ChunkVal);
 
             // Only now, and only if nothing edited the chunk after the snapshot
             // was taken. Clearing unconditionally would leave a block the player
@@ -1126,12 +1431,60 @@ static bool IsChunkVisible(const RenderFrustum *Frustum, const Chunk *ChunkVal) 
     return true;
 }
 
-static int *GetRenderedChunkCounter(void) {
-    static int Count = 0;
-    return &Count;
+typedef enum {
+    BOX_OUTSIDE = 0,
+    BOX_INSIDE,
+    BOX_INTERSECTING
+} BoxClass;
+
+// Per plane, the box corner furthest along the normal (p-vertex) decides
+// whether the box is wholly behind it, and the corner furthest against it
+// (n-vertex) whether the box is wholly in front. Outside on any plane is final;
+// inside requires every plane.
+static BoxClass ClassifyColumnBox(const RenderFrustum *Frustum, Vec3 Min, Vec3 Max) {
+    BoxClass Result = BOX_INSIDE;
+    for (int P = 0; P < FRUSTUM_PLANE_COUNT; P++) {
+        float Nx = Frustum->Planes[P][0];
+        float Ny = Frustum->Planes[P][1];
+        float Nz = Frustum->Planes[P][2];
+        float D = Frustum->Planes[P][3];
+
+        float Far = (Nx * ((Nx >= 0.0F) ? Max.x : Min.x)) +
+                    (Ny * ((Ny >= 0.0F) ? Max.y : Min.y)) +
+                    (Nz * ((Nz >= 0.0F) ? Max.z : Min.z)) + D;
+        if (Far < 0.0F) { return BOX_OUTSIDE; }
+
+        float Near = (Nx * ((Nx >= 0.0F) ? Min.x : Max.x)) +
+                     (Ny * ((Ny >= 0.0F) ? Min.y : Max.y)) +
+                     (Nz * ((Nz >= 0.0F) ? Min.z : Max.z)) + D;
+        if (Near < 0.0F) { Result = BOX_INTERSECTING; }
+    }
+    return Result;
 }
 
-int GetLastRenderedChunkCount(void) { return *GetRenderedChunkCounter(); }
+// A column's box spans its chunks' actual geometry: blocks are centred on
+// integer coordinates, so chunk C covers [C*16 - 0.5, C*16 + 15.5].
+static void GetColumnBox(const RenderColumn *Col, Vec3 *OutMin, Vec3 *OutMax) {
+    *OutMin = (Vec3){
+        (float)(Col->ChunkX * CHUNK_SIZE) - BLOCK_HALF_SIZE,
+        (float)(Col->MinChunkY * CHUNK_SIZE) - BLOCK_HALF_SIZE,
+        (float)(Col->ChunkZ * CHUNK_SIZE) - BLOCK_HALF_SIZE,
+    };
+    *OutMax = (Vec3){
+        (float)((Col->ChunkX + 1) * CHUNK_SIZE) - BLOCK_HALF_SIZE,
+        (float)((Col->MaxChunkY + 1) * CHUNK_SIZE) - BLOCK_HALF_SIZE,
+        (float)((Col->ChunkZ + 1) * CHUNK_SIZE) - BLOCK_HALF_SIZE,
+    };
+}
+
+static RenderCullStats *GetCullStatsState(void) {
+    static RenderCullStats Stats;
+    return &Stats;
+}
+
+int GetLastRenderedChunkCount(void) { return GetCullStatsState()->Rendered; }
+
+void GetLastCullStats(RenderCullStats *Out) { *Out = *GetCullStatsState(); }
 
 // Back-to-front ordering for the translucent pass.
 //
@@ -1165,7 +1518,7 @@ enum {
 };
 
 typedef struct {
-    int Index;
+    Chunk *ChunkVal;
     int Bucket;
 } ChunkOrderEntry;
 
@@ -1193,14 +1546,17 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
     RenderFrustum Frustum;
     BuildRenderFrustum(&Frustum);
 
-    static bool Visible[MAX_ACTIVE_CHUNKS];
     static ChunkOrderEntry VisibleChunks[MAX_ACTIVE_CHUNKS];
-    static int NearToFar[MAX_ACTIVE_CHUNKS];
-    static int SlotOrder[MAX_ACTIVE_CHUNKS];
+    static Chunk *NearToFar[MAX_ACTIVE_CHUNKS];
+    static Chunk *SetOrder[MAX_ACTIVE_CHUNKS];
 
     int BucketCounts[CHUNK_DISTANCE_BUCKETS] = {0};
     int VisibleCount = 0;
-    int ChunkCount = WorldVal->ChunkCount;
+    RenderableSet *Renderable = GetRenderableSet();
+    RenderCullStats Stats = {
+        .Renderable = Renderable->RecordCount,
+        .Columns = Renderable->ActiveColumnCount,
+    };
 
     // The camera's own chunk, so the per-chunk work below is integer subtraction
     // rather than anything in world space.
@@ -1208,24 +1564,50 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
     int CameraChunkY = (int)__builtin_floorf(CameraVal.Position.y / CHUNK_SIZE);
     int CameraChunkZ = (int)__builtin_floorf(CameraVal.Position.z / CHUNK_SIZE);
 
-    // Visibility and distance in one sweep. The bucket is what every pass sorts
-    // on, so deriving it here costs three integer multiplies per visible chunk
-    // per frame rather than one per chunk per pass.
-    for (int IdxI = 0; IdxI < ChunkCount; IdxI++) {
-        Chunk *ChunkVal = &WorldVal->Chunks[IdxI];
-        Visible[IdxI] = WorldVal->SlotInUse[IdxI] &&
-                        IsChunkVisible(&Frustum, ChunkVal);
-        if (!Visible[IdxI]) { continue; }
+    // Visibility and distance in one sweep over the columns holding a mesh;
+    // mesh-less slots are never visited. A column wholly outside or wholly
+    // inside the frustum settles all its chunks with one box test; only
+    // straddling columns test their chunks one by one. The bucket is what
+    // every pass sorts on, so deriving it here costs three integer multiplies
+    // per visible chunk per frame rather than one per chunk per pass.
+    for (int Dense = 0; Dense < Renderable->ActiveColumnCount; Dense++) {
+        RenderColumn *Col = &Renderable->Columns[Renderable->ActiveColumns[Dense]];
+        if (Col->ExtentStale) { RefreshColumnExtent(Renderable, Col); }
 
-        VisibleChunks[VisibleCount].Index = IdxI;
-        VisibleChunks[VisibleCount].Bucket =
-            ChunkDistanceBucket(ChunkVal->ChunkX - CameraChunkX,
-                                ChunkVal->ChunkY - CameraChunkY,
-                                ChunkVal->ChunkZ - CameraChunkZ);
-        BucketCounts[VisibleChunks[VisibleCount].Bucket]++;
-        SlotOrder[VisibleCount] = IdxI;
-        VisibleCount++;
+        Vec3 BoxMin;
+        Vec3 BoxMax;
+        GetColumnBox(Col, &BoxMin, &BoxMax);
+        BoxClass Class = ClassifyColumnBox(&Frustum, BoxMin, BoxMax);
+        if (Class == BOX_OUTSIDE) {
+            Stats.ColumnsOutside++;
+            continue;
+        }
+        bool TestEach = (Class == BOX_INTERSECTING);
+        if (TestEach) {
+            Stats.ColumnsIntersecting++;
+        } else {
+            Stats.ColumnsInside++;
+        }
+
+        for (int Rec = Col->Head; Rec != 0;
+             Rec = Renderable->Records[Rec].NextInColumn) {
+            Chunk *ChunkVal = Renderable->Records[Rec].ChunkVal;
+            if (TestEach) {
+                Stats.ChunksTested++;
+                if (!IsChunkVisible(&Frustum, ChunkVal)) { continue; }
+            }
+
+            VisibleChunks[VisibleCount].ChunkVal = ChunkVal;
+            VisibleChunks[VisibleCount].Bucket =
+                ChunkDistanceBucket(ChunkVal->ChunkX - CameraChunkX,
+                                    ChunkVal->ChunkY - CameraChunkY,
+                                    ChunkVal->ChunkZ - CameraChunkZ);
+            BucketCounts[VisibleChunks[VisibleCount].Bucket]++;
+            SetOrder[VisibleCount] = ChunkVal;
+            VisibleCount++;
+        }
     }
+    Stats.Visible = VisibleCount;
 
     // Counting sort walked from the near bucket up, so the output runs nearest
     // to farthest. The translucent pass reads the same array backwards.
@@ -1236,13 +1618,13 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
         Running += BucketCounts[B];
     }
     for (int IdxI = 0; IdxI < VisibleCount; IdxI++) {
-        NearToFar[Offsets[VisibleChunks[IdxI].Bucket]++] = VisibleChunks[IdxI].Index;
+        NearToFar[Offsets[VisibleChunks[IdxI].Bucket]++] = VisibleChunks[IdxI].ChunkVal;
     }
 
-    // The solid and cutout passes are the ones the toggle governs; SlotOrder is
-    // the visible chunks in the order the slots happen to sit in, which is what
-    // they traversed before this change.
-    const int *SolidOrder = GetDebugState()->SortChunks ? NearToFar : SlotOrder;
+    // The solid and cutout passes are the ones the toggle governs; SetOrder is
+    // the visible chunks in whatever order the renderable set holds them, the
+    // unsorted traversal the toggle compares against.
+    Chunk *const *SolidOrder = GetDebugState()->SortChunks ? NearToFar : SetOrder;
 
     int Rendered = 0;
 
@@ -1256,7 +1638,7 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
     RenderBeginChunkPass(GetDebugState()->ForceCutoutShader ? CHUNK_PASS_CUTOUT
                                                             : CHUNK_PASS_OPAQUE);
     for (int IdxI = 0; IdxI < VisibleCount; IdxI++) {
-        Chunk *ChunkVal = &WorldVal->Chunks[SolidOrder[IdxI]];
+        const Chunk *ChunkVal = SolidOrder[IdxI];
         if (!ChunkVal->HasMesh) { continue; }
         RenderDrawMesh(ChunkVal->ChunkMesh, GetChunkWorldOrigin(ChunkVal));
         Rendered++;
@@ -1267,18 +1649,22 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
     // with the solid pass; it runs after it and tests against the depth it wrote.
     RenderBeginChunkPass(CHUNK_PASS_CUTOUT);
     for (int IdxI = 0; IdxI < VisibleCount; IdxI++) {
-        Chunk *ChunkVal = &WorldVal->Chunks[SolidOrder[IdxI]];
+        const Chunk *ChunkVal = SolidOrder[IdxI];
         if (!ChunkVal->HasCutoutMesh) { continue; }
         RenderDrawMesh(ChunkVal->CutoutMesh, GetChunkWorldOrigin(ChunkVal));
     }
     RenderEndChunkPass();
 
     // Immediate-mode, and it binds its own shader and texture, so it stays
-    // outside the chunk passes rather than being interleaved with them.
+    // outside the chunk passes rather than being interleaved with them. It
+    // outlines mesh-less chunks too, so it keeps its own sweep over every slot,
+    // paid only while the overlay is on.
     if (GetDebugState()->ChunkBorders) {
-        for (int IdxI = 0; IdxI < ChunkCount; IdxI++) {
-            if (!Visible[IdxI]) { continue; }
-            Chunk *ChunkVal = &WorldVal->Chunks[IdxI];
+        for (int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++) {
+            const Chunk *ChunkVal = &WorldVal->Chunks[IdxI];
+            if (!WorldVal->SlotInUse[IdxI] || !IsChunkVisible(&Frustum, ChunkVal)) {
+                continue;
+            }
             Vec3 Center = {
                 (float)(ChunkVal->ChunkX * CHUNK_SIZE) + CHUNK_HALF_SIZE,
                 (float)(ChunkVal->ChunkY * CHUNK_SIZE) + CHUNK_HALF_SIZE,
@@ -1296,7 +1682,7 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
 
     RenderBeginChunkPass(CHUNK_PASS_CUTOUT);
     for (int IdxI = VisibleCount - 1; IdxI >= 0; IdxI--) {
-        Chunk *ChunkVal = &WorldVal->Chunks[NearToFar[IdxI]];
+        const Chunk *ChunkVal = NearToFar[IdxI];
         if (!ChunkVal->HasTranslucentMesh) { continue; }
         RenderDrawMesh(ChunkVal->TranslucentMesh, GetChunkWorldOrigin(ChunkVal));
     }
@@ -1304,7 +1690,8 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
 
     RenderEndTranslucentPass();
 
-    *GetRenderedChunkCounter() = Rendered;
+    Stats.Rendered = Rendered;
+    *GetCullStatsState() = Stats;
 
     if (GetDebugState()->Wireframe) { RenderSetWireframe(false); }
     PROFILE_END(DrawStart, PROFILE_WORLD_DRAW);

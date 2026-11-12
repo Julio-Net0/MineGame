@@ -75,23 +75,9 @@
 // whichever limit is reached first.
 #define MAX_MESHES_PER_FRAME 96
 
-static void FreeEvictedChunkMeshes(Chunk *Evicted) {
-  if (Evicted->HasMesh) {
-    RenderFreeMesh(Evicted->ChunkMesh);
-    Evicted->ChunkMesh = MESH_HANDLE_INVALID;
-    Evicted->HasMesh = false;
-  }
-  if (Evicted->HasCutoutMesh) {
-    RenderFreeMesh(Evicted->CutoutMesh);
-    Evicted->CutoutMesh = MESH_HANDLE_INVALID;
-    Evicted->HasCutoutMesh = false;
-  }
-  if (Evicted->HasTranslucentMesh) {
-    RenderFreeMesh(Evicted->TranslucentMesh);
-    Evicted->TranslucentMesh = MESH_HANDLE_INVALID;
-    Evicted->HasTranslucentMesh = false;
-  }
-}
+// Through the renderer rather than freeing the handles here, so the slot also
+// leaves the renderer's renderable set before it is reused.
+static void FreeEvictedChunkMeshes(Chunk *Evicted) { UnloadChunkMesh(Evicted); }
 
 // Returns false when startup could not complete; nothing is initialised in that
 // case, so the caller has nothing to tear down.
@@ -197,6 +183,9 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
 
 static void CleanupGame(World *WorldVal) {
   CloseChunkWorker();
+#ifdef MINEGAME_PROFILE
+  (void)RendererCheckRenderableSet(WorldVal);
+#endif
 
   // Sweep and save all modified chunks
   for (int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++) {

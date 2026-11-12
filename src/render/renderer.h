@@ -50,4 +50,27 @@ void DrawPrefabSelection(Player *PlayerVal);
 // finished counting.
 int GetLastRenderedChunkCount(void);
 
+// What the last DrawWorld's visibility pass did: how many chunks own a mesh and
+// how many columns they form, how the column boxes classified against the
+// frustum, how many chunks still needed an individual test, and how many were
+// accepted (Visible) and drew solid geometry (Rendered).
+typedef struct {
+  int Renderable;
+  int Columns;
+  int ColumnsOutside;
+  int ColumnsInside;
+  int ColumnsIntersecting;
+  int ChunksTested;
+  int Visible;
+  int Rendered;
+} RenderCullStats;
+
+void GetLastCullStats(RenderCullStats *Out);
+
+#ifdef MINEGAME_PROFILE
+// Recounts the loaded chunks owning a mesh and checks that each is in the
+// renderer's renderable set exactly once. Logs the outcome.
+bool RendererCheckRenderableSet(World *WorldVal);
+#endif
+
 #endif

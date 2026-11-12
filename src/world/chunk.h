@@ -43,6 +43,11 @@ typedef struct Chunk {
 
   MeshHandle TranslucentMesh;
 
+  // Owned by the renderer, never read by the world: the chunk's 1-based entry
+  // in the renderer's set of chunks holding a mesh, 0 when absent. Zero-filled
+  // slots therefore start outside the set.
+  int RenderRecord;
+
   BlockID Data[CHUNK_SIZE][CHUNK_SIZE][CHUNK_SIZE];
 
   // Derived from the seed and never saved to disk: FillChunkBiomeMap rebuilds it
