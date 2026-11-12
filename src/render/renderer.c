@@ -2165,6 +2165,10 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
     // The ForceCutoutShader toggle routes them back through the cutout shader,
     // restoring the pre-split behaviour so the two can be measured against each
     // other.
+    //
+    // Each pass is timed into "Chunk submit", nested inside "World draw", so the
+    // submission cost reads apart from the culling and ordering above.
+    PROFILE_BEGIN(SolidSubmitStart);
     RenderBeginChunkPass(GetDebugState()->ForceCutoutShader ? CHUNK_PASS_CUTOUT
                                                             : CHUNK_PASS_OPAQUE);
     for (int IdxI = 0; IdxI < VisibleCount; IdxI++) {
@@ -2176,9 +2180,11 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
         Rendered++;
     }
     RenderEndChunkPass();
+    PROFILE_END(SolidSubmitStart, PROFILE_CHUNK_SUBMIT);
 
     // Alpha-cutout flora, which needs the test the opaque shader drops. Ordered
     // with the solid pass; it runs after it and tests against the depth it wrote.
+    PROFILE_BEGIN(CutoutSubmitStart);
     RenderBeginChunkPass(CHUNK_PASS_CUTOUT);
     for (int IdxI = 0; IdxI < VisibleCount; IdxI++) {
         const Chunk *ChunkVal = SolidOrder[IdxI];
@@ -2188,6 +2194,7 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
             RecordVertexCount(Renderable, ChunkVal, MESH_TARGET_CUTOUT);
     }
     RenderEndChunkPass();
+    PROFILE_END(CutoutSubmitStart, PROFILE_CHUNK_SUBMIT);
 
     // Immediate-mode, and it binds its own shader and texture, so it stays
     // outside the chunk passes rather than being interleaved with them. It
@@ -2212,6 +2219,7 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
     // reverse. Alpha blending is order-dependent, so this pass stays sorted
     // whatever the solid pass is doing; defeating it would be a rendering fault
     // rather than a measurement.
+    PROFILE_BEGIN(TranslucentSubmitStart);
     RenderBeginTranslucentPass();
 
     RenderBeginChunkPass(CHUNK_PASS_CUTOUT);
@@ -2225,6 +2233,7 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
     RenderEndChunkPass();
 
     RenderEndTranslucentPass();
+    PROFILE_END(TranslucentSubmitStart, PROFILE_CHUNK_SUBMIT);
 
     Stats.Rendered = Rendered;
     *GetCullStatsState() = Stats;

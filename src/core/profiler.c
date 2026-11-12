@@ -14,7 +14,7 @@ static const char *const SCOPE_NAMES[PROFILE_SCOPE_COUNT] = {
     "Mesh build", "Mesh snap",  "Mesh upload", "World draw",  "World update",
     "Frame setup", "UI build",  "UI submit",   "Present",     "Player",
     "Worker gen",  "Gen column", "Gen terrain", "Gen features", "Mesh vis",
-    "Occlusion"};
+    "Occlusion",   "Chunk submit"};
 
 // Kept beside the names so the two cannot drift: a scope that changes threads
 // has to be updated here, and the overlay and any analysis read it rather than
@@ -35,7 +35,8 @@ static const bool SCOPE_IS_WORKER_SIDE[PROFILE_SCOPE_COUNT] = {
     true,  /* Gen terrain  */
     true,  /* Gen features */
     true,  /* Mesh vis     */
-    false  /* Occlusion    */
+    false, /* Occlusion    */
+    false  /* Chunk submit */
 };
 
 // Every scope is CPU-bound except Present, whose wall time is waiting on the
@@ -60,7 +61,8 @@ static const bool SCOPE_IS_CPU_BOUND[PROFILE_SCOPE_COUNT] = {
     false, /* Gen features */
     true,  /* Mesh vis     */
     // Nested inside World draw.
-    false  /* Occlusion    */
+    false, /* Occlusion    */
+    false  /* Chunk submit */
 };
 
 static const bool SCOPE_IS_NESTED[PROFILE_SCOPE_COUNT] = {
@@ -79,7 +81,8 @@ static const bool SCOPE_IS_NESTED[PROFILE_SCOPE_COUNT] = {
     true,  /* Gen terrain  */
     true,  /* Gen features */
     false, /* Mesh vis     */
-    true   /* Occlusion    */
+    true,  /* Occlusion    */
+    true   /* Chunk submit */
 };
 
 bool IsProfileScopeWorkerSide(ProfileScope Scope) {

@@ -26,8 +26,9 @@
 // MAIN-THREAD scopes is read as "time in no scope at all", which is how an
 // unaccounted stall gets found; a nested scope would be counted twice and make
 // that remainder lie. The exceptions are flagged by IsProfileScopeNested: the
-// generation sub-scopes split "Worker gen" by stage, and "Occlusion" splits the
-// traversal out of "World draw". They are breakdowns of their parent, excluded
+// generation sub-scopes split "Worker gen" by stage, and "Occlusion" and
+// "Chunk submit" split the traversal and the chunk-pass submission out of
+// "World draw". They are breakdowns of their parent, excluded
 // from the remainder, and not CPU-bound so --cpu-slowdown does not stretch the
 // same time twice.
 //
@@ -52,6 +53,7 @@ typedef enum {
   PROFILE_GEN_FEATURES,
   PROFILE_MESH_VISIBILITY,
   PROFILE_OCCLUSION,
+  PROFILE_CHUNK_SUBMIT,
   PROFILE_SCOPE_COUNT
 } ProfileScope;
 

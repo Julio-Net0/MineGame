@@ -843,6 +843,17 @@ int RenderGetMissingBlockTextureCount(void) {
   return GetBackendState()->MissingBlockTextures;
 }
 
+// glGetString returns NULL without a current context or on error; callers get
+// an empty string instead so they can print it unconditionally.
+static const char *GlStringOrEmpty(GLenum Name) {
+  const GLubyte *Value = glGetString(Name);
+  return (Value != (const GLubyte *)0) ? (const char *)Value : "";
+}
+
+const char *RenderGetDeviceName(void) { return GlStringOrEmpty(GL_RENDERER); }
+
+const char *RenderGetApiVersion(void) { return GlStringOrEmpty(GL_VERSION); }
+
 int RenderGetBlockIconGrid(void) {
   int Grid = GetBackendState()->BlockIconGrid;
   return (Grid > 0) ? Grid : MIN_ICON_GRID_DIM;

@@ -935,6 +935,8 @@ static void ScriptAddRenderJson(cJSON *Root) {
   }
   cJSON_AddNumberToObject(Node, "missingBlockTextures",
                           RenderGetMissingBlockTextureCount());
+  cJSON_AddStringToObject(Node, "glRenderer", RenderGetDeviceName());
+  cJSON_AddStringToObject(Node, "glVersion", RenderGetApiVersion());
   cJSON_AddItemToObject(Root, "render", Node);
 }
 

@@ -292,6 +292,286 @@ def differing_pixels(a: Path, b: Path) -> list[tuple[int, int]]:
     ]
 
 
+# Golden-image parity. A golden suite is captured from a reference binary on one
+# machine and compared against later builds on the same machine and driver, so
+# a renderer swap can be proven pixel-identical. Screenshots that differ between
+# the reference runs themselves (the F3 timing figures, for example) are kept
+# comparable outside the tiles that changed; everything else must match exactly.
+GOLDEN_MANIFEST = "manifest.json"
+GOLDEN_TILE = 16
+# Unstable tiles are grown by this many tiles in every direction: a figure that
+# happened to repeat across the reference runs sits next to one that did not.
+GOLDEN_TILE_DILATION = 1
+GOLDEN_DIFF_SUFFIX = "_golden_diff.png"
+
+
+def scenario_pngs(out_dir: Path) -> list[Path]:
+    return sorted(
+        p for p in out_dir.rglob("*.png") if not p.name.endswith(GOLDEN_DIFF_SUFFIX)
+    )
+
+
+def unstable_regions(diff: list[tuple[int, int]], width: int, height: int) -> list[list[int]]:
+    """Dilated GOLDEN_TILE tiles covering the differing pixels, merged into
+    horizontal runs per tile row, as [x0, y0, x1, y1) boxes."""
+    cols = (width + GOLDEN_TILE - 1) // GOLDEN_TILE
+    rows = (height + GOLDEN_TILE - 1) // GOLDEN_TILE
+    tiles: set[tuple[int, int]] = set()
+    for x, y in diff:
+        tx, ty = x // GOLDEN_TILE, y // GOLDEN_TILE
+        for dy in range(-GOLDEN_TILE_DILATION, GOLDEN_TILE_DILATION + 1):
+            for dx in range(-GOLDEN_TILE_DILATION, GOLDEN_TILE_DILATION + 1):
+                if 0 <= tx + dx < cols and 0 <= ty + dy < rows:
+                    tiles.add((tx + dx, ty + dy))
+    regions: list[list[int]] = []
+    for ty in range(rows):
+        tx = 0
+        while tx < cols:
+            if (tx, ty) not in tiles:
+                tx += 1
+                continue
+            start = tx
+            while tx < cols and (tx, ty) in tiles:
+                tx += 1
+            regions.append([
+                start * GOLDEN_TILE,
+                ty * GOLDEN_TILE,
+                min(tx * GOLDEN_TILE, width),
+                min((ty + 1) * GOLDEN_TILE, height),
+            ])
+    return regions
+
+
+def inside_regions(x: int, y: int, regions: list[list[int]]) -> bool:
+    return any(x0 <= x < x1 and y0 <= y < y1 for x0, y0, x1, y1 in regions)
+
+
+def png_dimensions(path: Path) -> tuple[int, int]:
+    data = path.read_bytes()[:24]
+    require(data[:8] == PNG_SIGNATURE, f"invalid PNG signature in {path}")
+    return struct.unpack(">II", data[16:24])
+
+
+def write_rgb_png(path: Path, width: int, height: int, rgb: bytes) -> None:
+    def chunk(kind: bytes, body: bytes) -> bytes:
+        crc = zlib.crc32(kind + body) & 0xFFFFFFFF
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", crc)
+
+    stride = width * 3
+    raw = b"".join(b"\x00" + rgb[row * stride:(row + 1) * stride] for row in range(height))
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    path.write_bytes(
+        PNG_SIGNATURE + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b"")
+    )
+
+
+def write_golden_diff(actual: Path, failing: list[tuple[int, int]]) -> Path:
+    """The actual image dimmed to a third, with every failing pixel in red."""
+    width, height, channels, pixels = decode_png_rgba(actual)
+    rgb = bytearray(width * height * 3)
+    for i in range(width * height):
+        src = pixels[i * channels:i * channels + 3] if channels >= 3 else pixels[i * channels:i * channels + 1] * 3
+        rgb[i * 3:i * 3 + 3] = bytes(c // 3 for c in src)
+    for x, y in failing:
+        k = (y * width + x) * 3
+        rgb[k:k + 3] = b"\xff\x00\x00"
+    out = actual.with_name(actual.stem + GOLDEN_DIFF_SUFFIX)
+    write_rgb_png(out, width, height, bytes(rgb))
+    return out
+
+
+def read_gl_renderer(out_dir: Path) -> str:
+    """The GL renderer string the state dumps report, or "" if none does."""
+    for path in sorted(out_dir.rglob("*.json")):
+        try:
+            state = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        render = state.get("render") if isinstance(state, dict) else None
+        if isinstance(render, dict) and render.get("glRenderer"):
+            return str(render["glRenderer"])
+    return ""
+
+
+def mesh_signatures(run_dir: Path) -> dict[Path, str | None]:
+    """The meshing variant each screenshot of a run was taken against.
+
+    Chunk meshing is asynchronous: whether a border chunk was meshed before or
+    after its neighbour arrived or left can change how its faces merge, so two
+    runs of one script can draw a few pixels differently with an identical
+    renderer. The mesh vertex totals of the nearest state dump identify that
+    variant: the dump with the screenshot's own name, otherwise the last one
+    written before it, otherwise the first one after it. None when the scenario
+    dumps no state.
+    """
+    dumps: list[tuple[float, Path, str]] = []
+    for path in run_dir.rglob("*.json"):
+        try:
+            state = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(state, dict) and isinstance(state.get("meshVertices"), dict):
+            dumps.append((path.stat().st_mtime, path, json.dumps(state["meshVertices"], sort_keys=True)))
+    dumps.sort()
+    by_stem = {path.with_suffix(""): sig for _, path, sig in dumps}
+    signatures: dict[Path, str | None] = {}
+    for png in scenario_pngs(run_dir):
+        sig = by_stem.get(png.with_suffix(""))
+        if sig is None and dumps:
+            written = png.stat().st_mtime
+            before = [d for d in dumps if d[0] <= written]
+            sig = (before[-1] if before else dumps[0])[2]
+        signatures[png] = sig
+    return signatures
+
+
+class GoldenCapture:
+    """Accumulates one render distance's golden images and manifest."""
+
+    def __init__(self, root: Path, render_distance: int, binary: Path, runs: int) -> None:
+        self.dir = root / f"r{render_distance}"
+        self.manifest: dict[str, Any] = {
+            "binary": str(binary),
+            "renderDistance": render_distance,
+            "runs": runs,
+            "tile": GOLDEN_TILE,
+            "glRenderer": "",
+            "images": {},
+        }
+        if self.dir.exists():
+            shutil.rmtree(self.dir)
+        self.dir.mkdir(parents=True)
+
+    def record(self, name: str, run_dirs: list[Path]) -> tuple[int, int, int]:
+        """Stores one golden image per meshing variant seen across the runs.
+
+        Returns (images, extra variants, images with unstable regions).
+        """
+        first = run_dirs[0]
+        if not self.manifest["glRenderer"]:
+            self.manifest["glRenderer"] = read_gl_renderer(first)
+        run_sigs = [mesh_signatures(run) for run in run_dirs]
+        images = extra_variants = unstable = 0
+        for png in scenario_pngs(first):
+            rel = png.relative_to(first)
+            copies = [run / rel for run in run_dirs]
+            for copy in copies:
+                require(copy.is_file(), f"golden capture: {name}/{rel} missing from a reference run")
+            sigs = [run_sig.get(copy) for run_sig, copy in zip(run_sigs, copies)]
+            width, height = png_dimensions(png)
+
+            # Runs that drew against the same meshes must agree; whatever still
+            # differs between them is timing, kept comparable outside its tiles.
+            variants: list[dict[str, Any]] = []
+            for sig in dict.fromkeys(sigs):
+                members = [c for c, s in zip(copies, sigs) if s == sig]
+                diff: set[tuple[int, int]] = set()
+                for other in members[1:]:
+                    diff.update(differing_pixels(members[0], other))
+                index = len(variants)
+                rel_file = rel if index == 0 else rel.with_name(f"{rel.stem}.v{index}{rel.suffix}")
+                dest = self.dir / name / rel_file
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(members[0], dest)
+                variants.append({
+                    "signature": sig,
+                    "file": f"{name}/{rel_file.as_posix()}",
+                    "runs": len(members),
+                    "unstable": unstable_regions(sorted(diff), width, height) if diff else [],
+                })
+            all_diff: set[tuple[int, int]] = set()
+            for other in copies[1:]:
+                all_diff.update(differing_pixels(png, other))
+
+            self.manifest["images"][f"{name}/{rel.as_posix()}"] = {
+                "width": width,
+                "height": height,
+                # Fallback for a run whose meshing variant no reference run had.
+                "unstable": unstable_regions(sorted(all_diff), width, height) if all_diff else [],
+                "variants": variants,
+            }
+            images += 1
+            extra_variants += len(variants) - 1
+            unstable += 1 if any(v["unstable"] for v in variants) else 0
+        return images, extra_variants, unstable
+
+    def write(self) -> Path:
+        path = self.dir / GOLDEN_MANIFEST
+        path.write_text(json.dumps(self.manifest, indent=2) + "\n", encoding="utf-8")
+        return path
+
+
+class GoldenComparison:
+    """Compares a run's screenshots against one render distance's golden images."""
+
+    def __init__(self, root: Path, render_distance: int) -> None:
+        self.dir = root / f"r{render_distance}"
+        manifest_path = self.dir / GOLDEN_MANIFEST
+        require(manifest_path.is_file(), f"golden: no manifest at {manifest_path}; capture one first")
+        self.manifest: dict[str, Any] = json.loads(manifest_path.read_text(encoding="utf-8"))
+        self.renderer_checked = False
+
+    def compare(self, name: str, out_dir: Path) -> tuple[int, int, int]:
+        """Raises on any mismatch.
+
+        Returns (images compared, images matched against their own meshing
+        variant, images that fell back to the all-runs unstable regions).
+        """
+        # Checked on the first scenario that dumps state; some take only screenshots.
+        actual_renderer = "" if self.renderer_checked else read_gl_renderer(out_dir)
+        if actual_renderer:
+            expected = self.manifest.get("glRenderer", "")
+            require(
+                actual_renderer == expected,
+                f"golden: captured on renderer '{expected}', this run reports '{actual_renderer}'",
+            )
+            self.renderer_checked = True
+
+        images: dict[str, Any] = self.manifest["images"]
+        expected_keys = {k for k in images if k.split("/", 1)[0] == name}
+        actual_pngs = {f"{name}/{p.relative_to(out_dir).as_posix()}": p for p in scenario_pngs(out_dir)}
+        missing = sorted(expected_keys - actual_pngs.keys())
+        extra = sorted(actual_pngs.keys() - expected_keys)
+        require(not missing, f"golden: {name} did not produce {', '.join(missing)}")
+        require(not extra, f"golden: {name} produced screenshots with no golden image: {', '.join(extra)}")
+
+        signatures = mesh_signatures(out_dir)
+        matched = fallback = 0
+        for key, actual in sorted(actual_pngs.items()):
+            entry = images[key]
+            width, height = png_dimensions(actual)
+            require(
+                (width, height) == (entry["width"], entry["height"]),
+                f"golden: {key} is {width}x{height}, golden is {entry['width']}x{entry['height']}",
+            )
+            sig = signatures.get(actual)
+            variant = next((v for v in entry["variants"] if v["signature"] == sig), None)
+            if variant is not None:
+                golden = self.dir / variant["file"]
+                regions = variant["unstable"]
+                matched += 1
+            else:
+                golden = self.dir / entry["variants"][0]["file"]
+                regions = entry["unstable"]
+                fallback += 1
+            require(golden.is_file(), f"golden: missing golden image {golden}")
+            failing = [
+                (x, y) for x, y in differing_pixels(golden, actual) if not inside_regions(x, y, regions)
+            ]
+            if failing:
+                diff_path = write_golden_diff(actual, failing)
+                cause = (
+                    f"against its meshing variant {golden.name}"
+                    if variant is not None
+                    else f"in a meshing variant no reference run had ({sig})"
+                )
+                raise RegressionFailure(
+                    f"golden: {key} differs from the golden image in {len(failing)} pixel(s) "
+                    f"{cause} (diff: {diff_path})"
+                )
+        return len(actual_pngs), matched, fallback
+
+
 # Rendered chunk counts per camera pose, with occlusion culling on (the engine
 # default). They depend on the generated terrain, on the loaded cylinder and on
 # which chunks are reachable from the camera, so they are recorded per generator
@@ -1084,6 +1364,7 @@ def run_scenario(
     verifier: Verifier,
     timeout_seconds: int,
     render_distance_arg: int | None,
+    gl_tier: int | None = None,
 ) -> float:
     out_dir = out_root / name
     if out_dir.exists():
@@ -1099,6 +1380,7 @@ def run_scenario(
         "--script-timeout",
         str(timeout_seconds),
         *render_distance_flag(render_distance_arg),
+        *(["--gl-tier", str(gl_tier)] if gl_tier is not None else []),
     ]
 
     start = time.monotonic()
@@ -1166,7 +1448,41 @@ def main() -> int:
             f"MineGameServer. Omit to check the engine default ({DEFAULT_RENDER_DISTANCE})."
         ),
     )
+    golden = parser.add_mutually_exclusive_group()
+    golden.add_argument(
+        "--golden-capture",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help=(
+            "Store every scenario's screenshots as the golden suite under DIR/r<render-distance>/, "
+            "classifying images that differ between reference runs as unstable."
+        ),
+    )
+    golden.add_argument(
+        "--golden",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="Compare every scenario's screenshots against the golden suite under DIR/r<render-distance>/.",
+    )
+    parser.add_argument(
+        "--golden-runs",
+        type=int,
+        default=5,
+        help="Reference runs per scenario during --golden-capture (at least 2).",
+    )
+    parser.add_argument(
+        "--gl-tier",
+        type=int,
+        choices=(0, 1, 2),
+        default=None,
+        help="Render tier cap forwarded to MineGame as --gl-tier. Omit to let the engine choose.",
+    )
     args = parser.parse_args()
+
+    if args.golden_runs < 2:
+        parser.error(f"--golden-runs must be at least 2, got {args.golden_runs}")
 
     if args.render_distance is not None and not (
         MIN_RENDER_DISTANCE <= args.render_distance <= MAX_RENDER_DISTANCE
@@ -1203,6 +1519,22 @@ def main() -> int:
         f"({'forwarded' if args.render_distance is not None else 'engine default'}); "
         f"loader mirror self-check passed"
     )
+    golden_capture: GoldenCapture | None = None
+    golden_compare: GoldenComparison | None = None
+    try:
+        if args.golden_capture is not None:
+            golden_capture = GoldenCapture(
+                args.golden_capture.resolve(), render_distance, binary, args.golden_runs
+            )
+            print(f"Capturing golden suite into {golden_capture.dir} ({args.golden_runs} runs per scenario)")
+        elif args.golden is not None:
+            golden_compare = GoldenComparison(args.golden.resolve(), render_distance)
+            print(f"Comparing against golden suite {golden_compare.dir}")
+    except RegressionFailure as exc:
+        print(f"[FAIL] {exc}", file=sys.stderr)
+        return 1
+    if args.gl_tier is not None:
+        print(f"Render tier capped at {args.gl_tier}")
     total_start = time.monotonic()
 
     sys.stdout.write(f"  -> {'headless_server':<16} ({server_binary.name} --ticks 100) ... ")
@@ -1264,12 +1596,41 @@ def main() -> int:
                 verifier=verifier,
                 timeout_seconds=max(args.timeout, min_timeout),
                 render_distance_arg=args.render_distance,
+                gl_tier=args.gl_tier,
             )
-            print(f"PASS ({elapsed:.2f}s)")
+            note = ""
+            if golden_capture is not None:
+                run_dirs = [out_root / name]
+                for run in range(1, args.golden_runs):
+                    rerun_root = out_root / "_golden_runs" / f"run{run}"
+                    # The engine creates only the leaf output directory.
+                    rerun_root.mkdir(parents=True, exist_ok=True)
+                    elapsed += run_scenario(
+                        binary=binary,
+                        repo_root=repo_root,
+                        out_root=rerun_root,
+                        name=name,
+                        script_rel=script_rel,
+                        verifier=verifier,
+                        timeout_seconds=max(args.timeout, min_timeout),
+                        render_distance_arg=args.render_distance,
+                        gl_tier=args.gl_tier,
+                    )
+                    run_dirs.append(rerun_root / name)
+                images, variants, unstable = golden_capture.record(name, run_dirs)
+                note = f", golden {images} captured, {variants} extra meshing variants, {unstable} unstable"
+            elif golden_compare is not None:
+                images, matched, fallback = golden_compare.compare(name, out_root / name)
+                note = f", golden {images} identical ({matched} by meshing variant, {fallback} fallback)"
+            print(f"PASS ({elapsed:.2f}s{note})")
         except Exception as exc:  # noqa: BLE001
             print("FAIL")
             print(f"[FAIL] {name}: {exc}", file=sys.stderr)
             return 1
+
+    if golden_capture is not None:
+        manifest_path = golden_capture.write()
+        print(f"Golden manifest written to {manifest_path}")
 
     total_elapsed = time.monotonic() - total_start
     print(f"All {len(SCENARIOS) + 3} regression scenarios passed in {total_elapsed:.2f}s.")

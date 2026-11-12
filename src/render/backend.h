@@ -140,6 +140,11 @@ int RenderGetBlockIconGrid(void);
 // startup, so a test run can fail on a missing or misspelled texture.
 int RenderGetMissingBlockTextureCount(void);
 
+// Driver-reported device and API version strings, for logs and for tagging a
+// golden capture with the GPU it was taken on. Never NULL; empty before init.
+const char *RenderGetDeviceName(void);
+const char *RenderGetApiVersion(void);
+
 // UI layer. The GUI atlas is uploaded once at startup; each frame's UI reaches
 // the backend as one draw list, drawn after the 3D pass with alpha blending and
 // no depth test.
