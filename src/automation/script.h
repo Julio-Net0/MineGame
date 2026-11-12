@@ -38,7 +38,7 @@ bool ScriptIsActive(void);
 // before input is polled, and runs statements until one blocks or the script
 // ends.
 void ScriptStep(ChatState *Chat, GameCamera *Camera, Player *PlayerVal,
-                World *WorldVal);
+                World *WorldVal, int RenderDistance);
 
 // This frame's synthetic player intent, to be folded into the pending input
 // the same way the polled intent is. Edge actions are handed over once and

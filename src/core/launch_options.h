@@ -38,6 +38,8 @@ typedef struct {
   int CoreCount;
   double CpuSlowdown;
   size_t RamLimitMb;
+  // Initial render distance in chunks; 0 when --render-distance was not given.
+  int RenderDistance;
   bool HasSeed;
   uint64_t Seed;
   const char *ScriptPath;

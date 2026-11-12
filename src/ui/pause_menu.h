@@ -15,7 +15,8 @@ bool PauseMenuIsOpen(void);
 // shutdown path, which saves the world.
 bool PauseMenuQuitRequested(void);
 
-// Draws the menu when open. The FOV slider writes Camera->FovY directly.
-void DrawPauseMenu(UiContext *Ctx, GameCamera *Camera);
+// Draws the menu when open. The FOV slider writes Camera->FovY directly; the
+// render distance slider writes *RenderDistance when the handle is released.
+void DrawPauseMenu(UiContext *Ctx, GameCamera *Camera, int *RenderDistance);
 
 #endif

@@ -3,14 +3,17 @@
 #include "world/chunk_worker.h"
 #include "persistence/world_save.h"
 #include "core/profiler.h"
+#include "world/worldgen_strata.h"
+#include <limits.h>
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #define DDA_MAX_CROSSED_AXES 3.0F
 
 #define HASH_EMPTY (-1)
-#define HASH_DELETED (-2)
 
 #define SPATIAL_PRIME_X (73856093)
 #define SPATIAL_PRIME_Y (19349663)
@@ -26,9 +29,133 @@ typedef struct {
   int LastStep;
 } DdaState;
 
+enum {
+  COLUMN_CANDIDATE_SIDE = (2 * MAX_RENDER_DISTANCE) + 1,
+  MAX_LOAD_LAYERS = (2 * VERTICAL_RENDER_RADIUS) + 1
+};
+
+typedef struct {
+  int Dx;
+  int Dz;
+} ColumnOffset;
+
+// Every chunk position the active set covers around one centre: column offsets
+// nearest first, and layers ordered by distance from the centre layer.
+typedef struct {
+  int CenterX;
+  int CenterZ;
+  const ColumnOffset *Columns;
+  int ColumnCount;
+  int Layers[MAX_LOAD_LAYERS];
+  int LayerCount;
+} LoadVolume;
+
 static int HashChunkPos(int Cx, int Cy, int Cz){
   unsigned int H = (unsigned int)((Cx * SPATIAL_PRIME_X) ^ (Cy * SPATIAL_PRIME_Y) ^ (Cz * SPATIAL_PRIME_Z));
   return (int)(H % (unsigned int)CHUNK_MAP_SIZE);
+}
+
+static int FloorDivChunkSize(int Value) {
+  int Quotient = Value / CHUNK_SIZE;
+  if ((Value % CHUNK_SIZE) != 0 && Value < 0) {
+    Quotient--;
+  }
+  return Quotient;
+}
+
+static void ResolveWorldChunkRange(int *OutLo, int *OutHi) {
+  int MinY = INT_MIN;
+  int MaxY = INT_MAX;
+  if (!GetStratumRange(STRATUM_GEN_BEDROCK_BAND, &MinY, &MaxY) &&
+      !GetStratumRange(STRATUM_GEN_OVERWORLD, &MinY, &MaxY)) {
+    MinY = INT_MIN;
+  }
+  *OutLo = FloorDivChunkSize(MinY);
+  *OutHi = FloorDivChunkSize(GetGenerationCeiling());
+}
+
+int ClampRenderDistance(int RenderDist) {
+  if (RenderDist < MIN_RENDER_DISTANCE) { return MIN_RENDER_DISTANCE; }
+  if (RenderDist > MAX_RENDER_DISTANCE) { return MAX_RENDER_DISTANCE; }
+  return RenderDist;
+}
+
+int WorldActiveChunkCount(const World *WorldVal) {
+  return MAX_ACTIVE_CHUNKS - WorldVal->FreeCount;
+}
+
+static int CompareColumnOffsets(const void *Lhs, const void *Rhs) {
+  const ColumnOffset *A = (const ColumnOffset *)Lhs;
+  const ColumnOffset *B = (const ColumnOffset *)Rhs;
+  int DistA = (A->Dx * A->Dx) + (A->Dz * A->Dz);
+  int DistB = (B->Dx * B->Dx) + (B->Dz * B->Dz);
+  if (DistA != DistB) { return (DistA < DistB) ? -1 : 1; }
+  if (A->Dx != B->Dx) { return (A->Dx < B->Dx) ? -1 : 1; }
+  if (A->Dz != B->Dz) { return (A->Dz < B->Dz) ? -1 : 1; }
+  return 0;
+}
+
+// Disc of column offsets for RenderDist, sorted nearest first. Rebuilt only
+// when the radius changes; the world is driven from one thread.
+static const ColumnOffset *GetColumnOffsets(int RenderDist, int *OutCount) {
+  static ColumnOffset Offsets[COLUMN_CANDIDATE_SIDE * COLUMN_CANDIDATE_SIDE];
+  static int Count = 0;
+  static int CachedRadius = -1;
+
+  if (CachedRadius != RenderDist) {
+    int RadiusSq = RenderDist * RenderDist;
+    Count = 0;
+    for (int Dx = -RenderDist; Dx <= RenderDist; Dx++) {
+      for (int Dz = -RenderDist; Dz <= RenderDist; Dz++) {
+        if ((Dx * Dx) + (Dz * Dz) <= RadiusSq) {
+          Offsets[Count++] = (ColumnOffset){Dx, Dz};
+        }
+      }
+    }
+    qsort(Offsets, (size_t)Count, sizeof(Offsets[0]), CompareColumnOffsets);
+    // Unreachable while RenderDist is clamped to MAX_RENDER_DISTANCE; dropping
+    // the farthest columns keeps the slot pool from ever being oversubscribed.
+    if (Count > MAX_LOADED_COLUMNS) {
+      Count = MAX_LOADED_COLUMNS;
+    }
+    CachedRadius = RenderDist;
+  }
+
+  *OutCount = Count;
+  return Offsets;
+}
+
+// Layers are ([Cy - V, Cy + V] intersected with the world's range) united with
+// [Cy - 1, Cy + 1], so the chunks around the centre stay loaded even above the
+// generation ceiling. Both parts lie inside [Cy - V, Cy + V], which bounds the
+// layer count by MAX_LOAD_LAYERS.
+static void BuildLoadVolume(const World *WorldVal, Vec3 Center, int RenderDist,
+                            LoadVolume *Out) {
+  int Radius = ClampRenderDistance(RenderDist);
+  int Vertical = (Radius < VERTICAL_RENDER_RADIUS) ? Radius
+                                                   : VERTICAL_RENDER_RADIUS;
+  int CenterY = (int)__builtin_floorf(Center.y / CHUNK_SIZE);
+
+  Out->CenterX = (int)__builtin_floorf(Center.x / CHUNK_SIZE);
+  Out->CenterZ = (int)__builtin_floorf(Center.z / CHUNK_SIZE);
+  Out->Columns = GetColumnOffsets(Radius, &Out->ColumnCount);
+
+  int Lo = CenterY - Vertical;
+  int Hi = CenterY + Vertical;
+  if (Lo < WorldVal->WorldLoChunkY) { Lo = WorldVal->WorldLoChunkY; }
+  if (Hi > WorldVal->WorldHiChunkY) { Hi = WorldVal->WorldHiChunkY; }
+
+  Out->LayerCount = 0;
+  for (int Step = 0; Step <= Vertical; Step++) {
+    int Below = CenterY - Step;
+    int Above = CenterY + Step;
+    if ((Below >= Lo && Below <= Hi) || Step <= 1) {
+      Out->Layers[Out->LayerCount++] = Below;
+    }
+    if (Step > 0 && ((Above >= Lo && Above <= Hi) || Step <= 1)) {
+      Out->Layers[Out->LayerCount++] = Above;
+    }
+  }
 }
 
 void InitWorld(World *WorldVal){
@@ -38,9 +165,12 @@ void InitWorld(World *WorldVal){
     WorldVal->ChunkHashMap[IdxI] = HASH_EMPTY;
   }
 
+  // Stacked so the lowest index pops first: ChunkCount then tracks how many
+  // slots the chosen render distance actually needs, not the whole pool.
   WorldVal->FreeCount = MAX_ACTIVE_CHUNKS;
   for(int IdxI = 0; IdxI < MAX_ACTIVE_CHUNKS; IdxI++){
-    WorldVal->FreeList[IdxI] = IdxI;
+    WorldVal->FreeList[IdxI] = MAX_ACTIVE_CHUNKS - 1 - IdxI;
+    WorldVal->SlotInUse[IdxI] = false;
   }
 
   WorldVal->LastLoadChunkX = 0;
@@ -48,6 +178,7 @@ void InitWorld(World *WorldVal){
   WorldVal->LastLoadChunkZ = 0;
   WorldVal->LastLoadRenderDist = 0;
   WorldVal->HasLoadedOnce = false;
+  ResolveWorldChunkRange(&WorldVal->WorldLoChunkY, &WorldVal->WorldHiChunkY);
   WorldVal->OnChunkEvict = (ChunkEvictCallback)0;
   WorldVal->OnBlockChange = (BlockChangeCallback)0;
   WorldVal->BlockChangeUserData = NULL;
@@ -63,44 +194,72 @@ void WorldSetBlockChangeCallback(World *WorldVal, BlockChangeCallback Callback,
   WorldVal->BlockChangeUserData = UserData;
 }
 
-static void InsertChunkIntoMap(World *WorldVal, int ChunkIndex) {
-  int Cx = WorldVal->Chunks[ChunkIndex].ChunkX;
-  int Cy = WorldVal->Chunks[ChunkIndex].ChunkY;
-  int Cz = WorldVal->Chunks[ChunkIndex].ChunkZ;
-  int Hash = HashChunkPos(Cx, Cy, Cz);
+static int HashChunkSlot(const World *WorldVal, int ChunkIndex) {
+  const Chunk *ChunkVal = &WorldVal->Chunks[ChunkIndex];
+  return HashChunkPos(ChunkVal->ChunkX, ChunkVal->ChunkY, ChunkVal->ChunkZ);
+}
 
-  while(WorldVal->ChunkHashMap[Hash] >= 0){
+static bool ChunkIsAt(const World *WorldVal, int ChunkIndex, int ChunkX,
+                      int ChunkY, int ChunkZ) {
+  const Chunk *ChunkVal = &WorldVal->Chunks[ChunkIndex];
+  return ChunkVal->ChunkX == ChunkX && ChunkVal->ChunkY == ChunkY &&
+         ChunkVal->ChunkZ == ChunkZ;
+}
+
+// Cyclic number of probe steps from slot From forward to slot To.
+static int ProbeDistance(int From, int To) {
+  return (To - From + CHUNK_MAP_SIZE) % CHUNK_MAP_SIZE;
+}
+
+// The map is at most 25% full (CHUNK_MAP_SIZE = 4 * MAX_ACTIVE_CHUNKS), so
+// every probe sequence reaches an empty slot and these loops terminate.
+static void InsertChunkIntoMap(World *WorldVal, int ChunkIndex) {
+  int Hash = HashChunkSlot(WorldVal, ChunkIndex);
+
+  while(WorldVal->ChunkHashMap[Hash] != HASH_EMPTY){
     Hash = (Hash + 1) % CHUNK_MAP_SIZE;
   }
   WorldVal->ChunkHashMap[Hash] = ChunkIndex;
 }
 
+// Backward-shift deletion: rather than leaving a tombstone, entries after the
+// hole that probed past it are moved back into it, so the table ends up exactly
+// as if the removed chunk had never been inserted. An entry may fill the hole
+// only when the hole lies on its probe path, i.e. between its home slot and its
+// current slot (cyclically); otherwise moving it would put it before its home
+// and lookups starting there would miss it.
 static void RemoveChunkFromMap(World *WorldVal, int ChunkX, int ChunkY, int ChunkZ) {
-  int Hash = HashChunkPos(ChunkX, ChunkY, ChunkZ);
-  int InitialHash = Hash;
+  int Hole = HashChunkPos(ChunkX, ChunkY, ChunkZ);
 
-  while(WorldVal->ChunkHashMap[Hash] != HASH_EMPTY) {
-    int Idx = WorldVal->ChunkHashMap[Hash];
-    if(Idx >= 0 && WorldVal->Chunks[Idx].ChunkX == ChunkX && WorldVal->Chunks[Idx].ChunkY == ChunkY && WorldVal->Chunks[Idx].ChunkZ == ChunkZ) {
-      WorldVal->ChunkHashMap[Hash] = HASH_DELETED;
-      return;
-    }
-    Hash = (Hash + 1) % CHUNK_MAP_SIZE;
-    if(Hash == InitialHash) { break; }
+  for(;;) {
+    int Idx = WorldVal->ChunkHashMap[Hole];
+    if(Idx == HASH_EMPTY) { return; }
+    if(ChunkIsAt(WorldVal, Idx, ChunkX, ChunkY, ChunkZ)) { break; }
+    Hole = (Hole + 1) % CHUNK_MAP_SIZE;
   }
+
+  int Next = (Hole + 1) % CHUNK_MAP_SIZE;
+  while(WorldVal->ChunkHashMap[Next] != HASH_EMPTY) {
+    int Idx = WorldVal->ChunkHashMap[Next];
+    int Home = HashChunkSlot(WorldVal, Idx);
+    if(ProbeDistance(Home, Next) >= ProbeDistance(Hole, Next)) {
+      WorldVal->ChunkHashMap[Hole] = Idx;
+      Hole = Next;
+    }
+    Next = (Next + 1) % CHUNK_MAP_SIZE;
+  }
+  WorldVal->ChunkHashMap[Hole] = HASH_EMPTY;
 }
 
 Chunk* GetChunkFromWorld(World *WorldVal, int ChunkX, int ChunkY, int ChunkZ){
   int Hash = HashChunkPos(ChunkX, ChunkY, ChunkZ);
-  int InitialHash = Hash;
 
   while(WorldVal->ChunkHashMap[Hash] != HASH_EMPTY) {
     int Idx = WorldVal->ChunkHashMap[Hash];
-    if(Idx >= 0 && WorldVal->Chunks[Idx].ChunkX == ChunkX && WorldVal->Chunks[Idx].ChunkY == ChunkY && WorldVal->Chunks[Idx].ChunkZ == ChunkZ) {
+    if(ChunkIsAt(WorldVal, Idx, ChunkX, ChunkY, ChunkZ)) {
       return &WorldVal->Chunks[Idx];
     }
     Hash = (Hash + 1) % CHUNK_MAP_SIZE;
-    if(Hash == InitialHash) { break; }
   }
   return (Chunk *)0;
 }
@@ -113,15 +272,14 @@ Chunk* GetChunkAtPos(World *WorldVal, Vec3 Pos){
   return GetChunkFromWorld(WorldVal, ChunkX, ChunkY, ChunkZ);
 }
 
-static void MarkUsefulChunks(World *WorldVal, int PChunkX, int PChunkY, int PChunkZ, int RenderDist, bool *KeepChunk){
-  for(int IdxX = PChunkX - RenderDist; IdxX <= PChunkX + RenderDist; IdxX++){
-    for(int IdxY = PChunkY - RenderDist; IdxY <= PChunkY + RenderDist; IdxY++){
-      for(int IdxZ = PChunkZ - RenderDist; IdxZ <= PChunkZ + RenderDist; IdxZ++){
-        Chunk* ChunkVal = GetChunkFromWorld(WorldVal, IdxX, IdxY, IdxZ);
-        if(ChunkVal != (Chunk *)0){
-          int Idx = (int)(ChunkVal - WorldVal->Chunks);
-          KeepChunk[Idx] = true;
-        }
+static void MarkUsefulChunks(World *WorldVal, const LoadVolume *Volume, bool *KeepChunk){
+  for(int Col = 0; Col < Volume->ColumnCount; Col++){
+    int ChunkX = Volume->CenterX + Volume->Columns[Col].Dx;
+    int ChunkZ = Volume->CenterZ + Volume->Columns[Col].Dz;
+    for(int Layer = 0; Layer < Volume->LayerCount; Layer++){
+      Chunk* ChunkVal = GetChunkFromWorld(WorldVal, ChunkX, Volume->Layers[Layer], ChunkZ);
+      if(ChunkVal != (Chunk *)0){
+        KeepChunk[ChunkVal - WorldVal->Chunks] = true;
       }
     }
   }
@@ -137,10 +295,10 @@ void UpdateNeighborsDirtyFlag(World *WorldVal, int Cx, int Cy, int Cz){
   Neighbor = GetChunkFromWorld(WorldVal, Cx, Cy, Cz + 1); if (Neighbor != (Chunk *)0) { Neighbor->IsDirty = true; }
 }
 
-static void EvictUnneededChunks(World *WorldVal, bool *KeepChunk){
+static void EvictUnneededChunks(World *WorldVal, const bool *KeepChunk){
   for(int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++){
-    if(KeepChunk[IdxI] || WorldVal->Chunks[IdxI].IsGenerating ||
-       WorldVal->Chunks[IdxI].IsMeshing){
+    if(!WorldVal->SlotInUse[IdxI] || KeepChunk[IdxI] ||
+       WorldVal->Chunks[IdxI].IsGenerating || WorldVal->Chunks[IdxI].IsMeshing){
       continue;
     }
 
@@ -160,7 +318,7 @@ static void EvictUnneededChunks(World *WorldVal, bool *KeepChunk){
     RemoveChunkFromMap(WorldVal, OldX, OldY, OldZ);
     UpdateNeighborsDirtyFlag(WorldVal, OldX, OldY, OldZ);
 
-    KeepChunk[IdxI] = true;
+    WorldVal->SlotInUse[IdxI] = false;
     WorldVal->FreeList[WorldVal->FreeCount++] = IdxI;
   }
 }
@@ -171,6 +329,13 @@ static bool CreateOrRecycleChunk(World *WorldVal, int ChunkX, int ChunkY, int Ch
   }
 
   int IdxI = WorldVal->FreeList[--WorldVal->FreeCount];
+
+  // A slot above the high-water mark has never held a chunk; its memory is
+  // whatever malloc returned, so it starts from a known all-false state.
+  if(IdxI >= WorldVal->ChunkCount){
+    memset(&WorldVal->Chunks[IdxI], 0, sizeof(WorldVal->Chunks[IdxI]));
+  }
+  WorldVal->SlotInUse[IdxI] = true;
 
   WorldVal->Chunks[IdxI].ChunkX = ChunkX;
   WorldVal->Chunks[IdxI].ChunkY = ChunkY;
@@ -187,11 +352,7 @@ static bool CreateOrRecycleChunk(World *WorldVal, int ChunkX, int ChunkY, int Ch
 
 void UpdateWorld(World *WorldVal, Vec3 PlayerPos, int RenderDist){
   PROFILE_BEGIN(UpdateStart);
-  int Side = (2 * RenderDist) + 1;
-  int RequiredChunks = Side * Side * Side;
-  if(RequiredChunks > MAX_ACTIVE_CHUNKS){
-    RenderDist = MAX_RENDER_DISTANCE;
-  }
+  RenderDist = ClampRenderDistance(RenderDist);
 
   int PChunkX = (int)__builtin_floorf(PlayerPos.x / CHUNK_SIZE);
   int PChunkY = (int)__builtin_floorf(PlayerPos.y / CHUNK_SIZE);
@@ -210,20 +371,27 @@ void UpdateWorld(World *WorldVal, Vec3 PlayerPos, int RenderDist){
     return;
   }
 
-  bool KeepChunk[MAX_ACTIVE_CHUNKS] = { false };
+  // Static: at MAX_ACTIVE_CHUNKS entries it is too large to want on the stack,
+  // and UpdateWorld only runs on the thread driving the world.
+  static bool KeepChunk[MAX_ACTIVE_CHUNKS];
+  memset(KeepChunk, 0, sizeof(KeepChunk));
 
-  MarkUsefulChunks(WorldVal, PChunkX, PChunkY, PChunkZ, RenderDist, KeepChunk);
+  LoadVolume Volume;
+  BuildLoadVolume(WorldVal, PlayerPos, RenderDist, &Volume);
+
+  MarkUsefulChunks(WorldVal, &Volume, KeepChunk);
   EvictUnneededChunks(WorldVal, KeepChunk);
 
+  // Volume order is nearest first, so generation is enqueued nearest first.
   bool AllCreated = true;
-  for(int IdxX = PChunkX - RenderDist; IdxX <= PChunkX + RenderDist; IdxX++){
-    for(int IdxY = PChunkY - RenderDist; IdxY <= PChunkY + RenderDist; IdxY++){
-      for(int IdxZ = PChunkZ - RenderDist; IdxZ <= PChunkZ + RenderDist; IdxZ++){
-        if(GetChunkFromWorld(WorldVal, IdxX, IdxY, IdxZ) == (Chunk *)0){
-          if(!CreateOrRecycleChunk(WorldVal, IdxX, IdxY, IdxZ)){
-            AllCreated = false;
-          }
-        }
+  for(int Col = 0; Col < Volume.ColumnCount; Col++){
+    int ChunkX = Volume.CenterX + Volume.Columns[Col].Dx;
+    int ChunkZ = Volume.CenterZ + Volume.Columns[Col].Dz;
+    for(int Layer = 0; Layer < Volume.LayerCount; Layer++){
+      int ChunkY = Volume.Layers[Layer];
+      if(GetChunkFromWorld(WorldVal, ChunkX, ChunkY, ChunkZ) == (Chunk *)0 &&
+         !CreateOrRecycleChunk(WorldVal, ChunkX, ChunkY, ChunkZ)){
+        AllCreated = false;
       }
     }
   }
@@ -458,27 +626,21 @@ bool AreNeighborsGenerated(World *WorldVal, Chunk *ChunkVal) {
 }
 
 bool WorldIsGenerationSettled(World *WorldVal, Vec3 Center, int RenderDist) {
-  int Side = (2 * RenderDist) + 1;
-  if ((Side * Side * Side) > MAX_ACTIVE_CHUNKS) {
-    RenderDist = MAX_RENDER_DISTANCE;
-  }
+  LoadVolume Volume;
+  BuildLoadVolume(WorldVal, Center, RenderDist, &Volume);
 
-  int CenterX = (int)__builtin_floorf(Center.x / CHUNK_SIZE);
-  int CenterY = (int)__builtin_floorf(Center.y / CHUNK_SIZE);
-  int CenterZ = (int)__builtin_floorf(Center.z / CHUNK_SIZE);
-
-  for (int IdxX = CenterX - RenderDist; IdxX <= CenterX + RenderDist; IdxX++) {
-    for (int IdxY = CenterY - RenderDist; IdxY <= CenterY + RenderDist; IdxY++) {
-      for (int IdxZ = CenterZ - RenderDist; IdxZ <= CenterZ + RenderDist;
-           IdxZ++) {
-        Chunk *ChunkVal = GetChunkFromWorld(WorldVal, IdxX, IdxY, IdxZ);
-        if (ChunkVal == (Chunk *)0) {
-          return false;
-        }
-        if (!ChunkVal->IsGenerated || ChunkVal->IsGenerating ||
-            ChunkVal->TerrainJustGenerated) {
-          return false;
-        }
+  for (int Col = 0; Col < Volume.ColumnCount; Col++) {
+    int ChunkX = Volume.CenterX + Volume.Columns[Col].Dx;
+    int ChunkZ = Volume.CenterZ + Volume.Columns[Col].Dz;
+    for (int Layer = 0; Layer < Volume.LayerCount; Layer++) {
+      Chunk *ChunkVal =
+          GetChunkFromWorld(WorldVal, ChunkX, Volume.Layers[Layer], ChunkZ);
+      if (ChunkVal == (Chunk *)0) {
+        return false;
+      }
+      if (!ChunkVal->IsGenerated || ChunkVal->IsGenerating ||
+          ChunkVal->TerrainJustGenerated) {
+        return false;
       }
     }
   }
@@ -490,25 +652,19 @@ bool WorldIsSettled(World *WorldVal, Vec3 Center, int RenderDist) {
     return false;
   }
 
-  int Side = (2 * RenderDist) + 1;
-  if ((Side * Side * Side) > MAX_ACTIVE_CHUNKS) {
-    RenderDist = MAX_RENDER_DISTANCE;
-  }
+  // The same volume UpdateWorld loads, so this asks about exactly the set that
+  // was asked for.
+  LoadVolume Volume;
+  BuildLoadVolume(WorldVal, Center, RenderDist, &Volume);
 
-  // The same coordinate derivation UpdateWorld uses to decide what to load, so
-  // this asks about exactly the set that was asked for.
-  int CenterX = (int)__builtin_floorf(Center.x / CHUNK_SIZE);
-  int CenterY = (int)__builtin_floorf(Center.y / CHUNK_SIZE);
-  int CenterZ = (int)__builtin_floorf(Center.z / CHUNK_SIZE);
-
-  for (int IdxX = CenterX - RenderDist; IdxX <= CenterX + RenderDist; IdxX++) {
-    for (int IdxY = CenterY - RenderDist; IdxY <= CenterY + RenderDist; IdxY++) {
-      for (int IdxZ = CenterZ - RenderDist; IdxZ <= CenterZ + RenderDist;
-           IdxZ++) {
-        Chunk *ChunkVal = GetChunkFromWorld(WorldVal, IdxX, IdxY, IdxZ);
-        if (ChunkVal == (Chunk *)0 || ChunkVal->IsDirty || ChunkVal->IsMeshing) {
-          return false;
-        }
+  for (int Col = 0; Col < Volume.ColumnCount; Col++) {
+    int ChunkX = Volume.CenterX + Volume.Columns[Col].Dx;
+    int ChunkZ = Volume.CenterZ + Volume.Columns[Col].Dz;
+    for (int Layer = 0; Layer < Volume.LayerCount; Layer++) {
+      Chunk *ChunkVal =
+          GetChunkFromWorld(WorldVal, ChunkX, Volume.Layers[Layer], ChunkZ);
+      if (ChunkVal == (Chunk *)0 || ChunkVal->IsDirty || ChunkVal->IsMeshing) {
+        return false;
       }
     }
   }
@@ -523,6 +679,9 @@ void WorldGetLoadCounts(World *WorldVal, int *OutGenerated, int *OutGenerating,
   int Meshing = 0;
 
   for (int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++) {
+    if (!WorldVal->SlotInUse[IdxI]) {
+      continue;
+    }
     Chunk *ChunkVal = &WorldVal->Chunks[IdxI];
     if (ChunkVal->IsGenerated) {
       Generated++;

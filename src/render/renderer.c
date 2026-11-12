@@ -86,7 +86,7 @@ static MesherState *GetMesherStateSlot(int Slot) {
 
 // Emitting past the buffer would wrap the 16-bit indices and produce garbage
 // geometry silently. A chunk dense enough to reach this is pathological, so a
-// truncated mesh is the right degradation — but it must be bounded rather than
+// truncated mesh is the right degradation Ã¢â‚¬â€ but it must be bounded rather than
 // left to corrupt.
 static bool MesherHasRoom(const MesherState *State, MeshTarget Target) {
   return (State->Sets[Target].VCount + VERTICES_PER_FACE) <= MAX_MESH_VERTICES;
@@ -485,7 +485,7 @@ static bool MasksCompatible(const FaceMaskData *A, const FaceMaskData *B) {
     if (A->TexIndex != B->TexIndex) { return false; }
     if (A->FlipQuad != B->FlipQuad) { return false; }
     // A merged quad carries one tint, so two faces may only merge when they
-    // already agree on it — otherwise the rectangle would take one block's
+    // already agree on it Ã¢â‚¬â€ otherwise the rectangle would take one block's
     // colour and paint it across the whole span.
     if (A->Tint565 != B->Tint565) { return false; }
     for (int IdxI = 0; IdxI < VERTICES_PER_FACE; IdxI++) { if (A->Ao[IdxI] != B->Ao[IdxI]) { return false; } }
@@ -1151,13 +1151,17 @@ int GetLastRenderedChunkCount(void) { return *GetRenderedChunkCounter(); }
 // translucent mesh needed it, less so now that the solid pass wants every
 // visible chunk ordered.
 //
-// The bucket count bounds the render distance this can express: with dx, dy and
-// dz each up to r, the largest value is 3r^2, so 256 buckets cover a render
-// distance of 9. Beyond that the clamp puts the far chunks in one bucket and
-// they draw in arbitrary order relative to each other, which is degradation
-// rather than breakage.
+// The bucket count is the largest key the loaded set can produce. Loaded chunks
+// lie in a cylinder around the load centre: dx^2 + dz^2 <= R^2 and |dy| <= V, so
+// the key never exceeds MAX_RENDER_DISTANCE^2 + VERTICAL_RENDER_RADIUS^2 and
+// every distance stays exact. The camera can sit away from the load centre
+// (freecam), and those keys clamp into the last bucket: the far chunks then draw
+// in arbitrary order relative to each other, which is degradation rather than
+// breakage.
 enum {
-    CHUNK_DISTANCE_BUCKETS = 256
+    CHUNK_DISTANCE_BUCKETS = (MAX_RENDER_DISTANCE * MAX_RENDER_DISTANCE) +
+                             (VERTICAL_RENDER_RADIUS * VERTICAL_RENDER_RADIUS) +
+                             1
 };
 
 typedef struct {
@@ -1209,7 +1213,8 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
     // per frame rather than one per chunk per pass.
     for (int IdxI = 0; IdxI < ChunkCount; IdxI++) {
         Chunk *ChunkVal = &WorldVal->Chunks[IdxI];
-        Visible[IdxI] = IsChunkVisible(&Frustum, ChunkVal);
+        Visible[IdxI] = WorldVal->SlotInUse[IdxI] &&
+                        IsChunkVisible(&Frustum, ChunkVal);
         if (!Visible[IdxI]) { continue; }
 
         VisibleChunks[VisibleCount].Index = IdxI;

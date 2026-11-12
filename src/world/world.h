@@ -5,8 +5,21 @@
 #include "world/chunk.h"
 #include <stdbool.h>
 
-#define MAX_RENDER_DISTANCE 5
-#define MAX_ACTIVE_CHUNKS 1331 //Recommended size: (2 * MAX_RENDER_DISTANCE + 1)^3
+// The active set is a horizontal disc of columns (dx^2 + dz^2 <= R^2) times a
+// vertical window of at most 2 * VERTICAL_RENDER_RADIUS + 1 layers around the
+// load centre, clamped to the world's generated range. Capacity therefore grows
+// with R^2 rather than R^3.
+#define MIN_RENDER_DISTANCE 2
+#define DEFAULT_RENDER_DISTANCE 8
+#define MAX_RENDER_DISTANCE 16
+#define VERTICAL_RENDER_RADIUS 8
+
+// Lattice points with dx^2 + dz^2 <= MAX_RENDER_DISTANCE^2. A literal because
+// C17 cannot count them at compile time; the column table builder never
+// exceeds it.
+#define MAX_LOADED_COLUMNS 797
+#define MAX_ACTIVE_CHUNKS \
+  (MAX_LOADED_COLUMNS * ((2 * VERTICAL_RENDER_RADIUS) + 1))
 // Open-addressing hash map: ~25% load factor keeps probe chains short
 #define CHUNK_MAP_SIZE (MAX_ACTIVE_CHUNKS * 4)
 
@@ -20,7 +33,11 @@ typedef void (*BlockChangeCallback)(void *UserData, int BlockX, int BlockY,
 typedef struct World {
   Chunk Chunks[MAX_ACTIVE_CHUNKS];
   int ChunkHashMap[CHUNK_MAP_SIZE];
+  // High-water mark of slots ever used, not the number in use: slots below it
+  // may be free. Loops over [0, ChunkCount) must skip slots whose SlotInUse is
+  // false, since a free slot keeps its last chunk's stale contents.
   int ChunkCount;
+  bool SlotInUse[MAX_ACTIVE_CHUNKS];
   int FreeList[MAX_ACTIVE_CHUNKS];
   int FreeCount;
 
@@ -29,6 +46,11 @@ typedef struct World {
   int LastLoadChunkZ;
   int LastLoadRenderDist;
   bool HasLoadedOnce;
+
+  // Inclusive chunk-Y range holding generated content (bedrock band up to the
+  // generation ceiling), resolved from the strata table in InitWorld.
+  int WorldLoChunkY;
+  int WorldHiChunkY;
 
   ChunkEvictCallback OnChunkEvict;
   BlockChangeCallback OnBlockChange;
@@ -46,13 +68,20 @@ void InitWorld(World *WorldVal);
 void WorldSetChunkEvictCallback(World *WorldVal, ChunkEvictCallback Callback);
 void WorldSetBlockChangeCallback(World *WorldVal, BlockChangeCallback Callback,
                                  void *UserData);
+// Clamps a requested render distance to [MIN_RENDER_DISTANCE,
+// MAX_RENDER_DISTANCE].
+int ClampRenderDistance(int RenderDist);
+
+// Number of slots currently holding a chunk.
+int WorldActiveChunkCount(const World *WorldVal);
+
 void UpdateWorld(World *WorldVal, Vec3 PlayerPos, int RenderDist);
 void UpdateNeighborsDirtyFlag(World *WorldVal, int Cx, int Cy, int Cz);
 int GetBlockIDFromWorld(World *WorldVal, Vec3 GlobalPos);
 
 // Biome id of a global biome cell (cell C spans blocks [C*BIOME_CELL_SIZE ..
-// +BIOME_CELL_SIZE-1]). When the owning chunk is not loaded, returns Fallback —
-// the caller's own cell — rather than a default biome, so tint interpolation at
+// +BIOME_CELL_SIZE-1]). When the owning chunk is not loaded, returns Fallback ???
+// the caller's own cell ??? rather than a default biome, so tint interpolation at
 // the edge of the loaded world degrades to the local color instead of a seam.
 unsigned char GetBiomeCellFromWorld(World *WorldVal, int CellX, int CellY,
                                     int CellZ, unsigned char Fallback);

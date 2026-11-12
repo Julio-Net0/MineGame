@@ -201,6 +201,9 @@ bool ServerSendChunkToClient(ServerState *Server, int ChunkX, int ChunkY,
 
 void ServerUpdateWorldChunks(World *WorldVal) {
   for (int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++) {
+    if (!WorldVal->SlotInUse[IdxI]) {
+      continue;
+    }
     Chunk *ChunkVal = &WorldVal->Chunks[IdxI];
     if (ChunkVal->IsGenerated && ChunkVal->TerrainJustGenerated) {
       UpdateNeighborsDirtyFlag(WorldVal, ChunkVal->ChunkX, ChunkVal->ChunkY,
@@ -238,10 +241,9 @@ bool ServerInit(ServerState *Server, const ServerConfig *Config) {
 
   *Server = (ServerState){0};
   Server->PendingInput.HotbarSelect = -1;
-  Server->RenderDistance = (Config->RenderDistance > 0 &&
-                            Config->RenderDistance <= MAX_RENDER_DISTANCE)
-                               ? Config->RenderDistance
-                               : MAX_RENDER_DISTANCE;
+  Server->RenderDistance = (Config->RenderDistance > 0)
+                               ? ClampRenderDistance(Config->RenderDistance)
+                               : DEFAULT_RENDER_DISTANCE;
 
   Server->WorldVal = (World *)malloc(sizeof(World));
   if (Server->WorldVal == (World *)0) {
@@ -357,7 +359,8 @@ void ServerShutdown(ServerState *Server) {
   CloseChunkWorker();
 
   for (int IdxI = 0; IdxI < Server->WorldVal->ChunkCount; IdxI++) {
-    if (Server->WorldVal->Chunks[IdxI].IsModified) {
+    if (Server->WorldVal->SlotInUse[IdxI] &&
+        Server->WorldVal->Chunks[IdxI].IsModified) {
       SaveChunkToDisk(&Server->WorldVal->Chunks[IdxI]);
     }
   }

@@ -297,14 +297,8 @@ static void DrawDebugScreen(UiContext *Ctx, Player *PlayerVal, World *WorldVal) 
   Y = DrawDebugLine(Ctx, DebugText, Y);
 
   int ActiveChunks = 0;
-  int WorldChunkCount = WorldVal->ChunkCount;
-  int TargetCount = WorldChunkCount < MAX_ACTIVE_CHUNKS ? WorldChunkCount : MAX_ACTIVE_CHUNKS;
-
-  for (int Idx = 0; Idx < MAX_ACTIVE_CHUNKS; Idx++) {
-    if (Idx >= TargetCount) {
-      break;
-    }
-    if (WorldVal->Chunks[Idx].IsGenerated) {
+  for (int Idx = 0; Idx < WorldVal->ChunkCount; Idx++) {
+    if (WorldVal->SlotInUse[Idx] && WorldVal->Chunks[Idx].IsGenerated) {
       ActiveChunks++;
     }
   }

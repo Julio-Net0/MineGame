@@ -1,4 +1,5 @@
 #include "world/chunk_worker.h"
+#include "world/world.h"
 #include "world/worldgen_column_cache.h"
 #include "world/feature.h"
 #include "persistence/world_save.h"
@@ -10,7 +11,10 @@
 #include <stdint.h>
 #include <stdio.h>
 
-#define QUEUE_SIZE 2048
+// A ring holds QUEUE_SIZE - 1 jobs. Column affinity can route every active
+// chunk to the same worker, so each ring must fit the whole slot pool: a
+// single recompute at the maximum render distance enqueues all of it.
+#define QUEUE_SIZE (MAX_ACTIVE_CHUNKS + 1)
 
 // Meshing and generation share one pool rather than getting one each. The queue
 // lock, condition variable and shutdown path already do what mesh work needs,

@@ -101,7 +101,7 @@ static ServerLaunchOptions ParseServerOptions(int Argc, char **Argv) {
       .Config =
           {
               .WorkerCount = CHUNK_WORKER_MAX_THREADS,
-              .RenderDistance = MAX_RENDER_DISTANCE,
+              .RenderDistance = DEFAULT_RENDER_DISTANCE,
               .HasSeed = false,
               .Seed = 0,
               .ReadOnly = false,
@@ -138,6 +138,7 @@ static ServerLaunchOptions ParseServerOptions(int Argc, char **Argv) {
 
     bool NeedsValue = (strcmp(Arg, "--ticks") == 0) ||
                       (strcmp(Arg, "--seed") == 0) ||
+                      (strcmp(Arg, "--render-distance") == 0) ||
                       (strcmp(Arg, "--workers") == 0) ||
                       (strcmp(Arg, "--cores") == 0) ||
                       (strcmp(Arg, "--cpu-slowdown") == 0) ||
@@ -170,6 +171,15 @@ static ServerLaunchOptions ParseServerOptions(int Argc, char **Argv) {
       } else {
         LogWarn("SERVER: --seed must be an unsigned 64-bit integer; ignoring \"%s\"",
                 ValueStr);
+      }
+    } else if (strcmp(Arg, "--render-distance") == 0) {
+      long Value = 0;
+      if (ParseStrictLong(ValueStr, &Value) && Value >= MIN_RENDER_DISTANCE &&
+          Value <= MAX_RENDER_DISTANCE) {
+        Options.Config.RenderDistance = (int)Value;
+      } else {
+        LogWarn("SERVER: --render-distance must be in [%d, %d]; ignoring \"%s\"",
+                MIN_RENDER_DISTANCE, MAX_RENDER_DISTANCE, ValueStr);
       }
     } else if (strcmp(Arg, "--workers") == 0) {
       long Value = 0;
@@ -311,7 +321,7 @@ int main(int Argc, char **Argv) {
           "vel=(%.1f, %.1f, %.1f) grounded=%s",
           (unsigned long long)Server.TickCount,
           (unsigned long long)GetWorldSeed(), Settled ? "true" : "false",
-          Server.WorldVal->ChunkCount, Generated, Generating, Meshing,
+          WorldActiveChunkCount(Server.WorldVal), Generated, Generating, Meshing,
           (double)Server.PlayerVal.Position.x,
           (double)Server.PlayerVal.Position.y,
           (double)Server.PlayerVal.Position.z,

@@ -2,6 +2,7 @@
 
 #include "core/log.h"
 #include "world/chunk_worker.h"
+#include "world/world.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -39,6 +40,7 @@ static LaunchOptions *GetMutableLaunchOptions(void) {
       .CoreCount = 0,
       .CpuSlowdown = 1.0,
       .RamLimitMb = 0,
+      .RenderDistance = 0,
       .HasSeed = false,
       .Seed = 0,
       .ScriptPath = (const char *)0,
@@ -232,6 +234,19 @@ static void ParseRamLimitValue(const char *ValueStr, LaunchOptions *Options) {
   Options->RamLimitMb = (size_t)Value;
 }
 
+static void ParseRenderDistanceValue(const char *ValueStr,
+                                     LaunchOptions *Options) {
+  long Value = 0;
+  if (!ParseStrictLong(ValueStr, &Value) || Value < MIN_RENDER_DISTANCE ||
+      Value > MAX_RENDER_DISTANCE) {
+    LogWarn("MAIN: --render-distance must be an integer in [%d, %d]; ignoring "
+            "\"%s\"",
+            MIN_RENDER_DISTANCE, MAX_RENDER_DISTANCE, ValueStr);
+    return;
+  }
+  Options->RenderDistance = (int)Value;
+}
+
 static void ParseSeedValue(const char *ValueStr, LaunchOptions *Options) {
   uint64_t Value = 0;
   if (!ParseStrictUint64(ValueStr, &Value)) {
@@ -256,6 +271,7 @@ void ParseLaunchOptions(int Argc, char **Argv) {
       .CoreCount = 0,
       .CpuSlowdown = 1.0,
       .RamLimitMb = 0,
+      .RenderDistance = 0,
       .HasSeed = false,
       .Seed = 0,
       .ScriptPath = (const char *)0,
@@ -287,6 +303,7 @@ void ParseLaunchOptions(int Argc, char **Argv) {
                      (strcmp(Arg, "--cpu-slowdown") == 0) ||
                      (strcmp(Arg, "--ram-limit") == 0) ||
                      (strcmp(Arg, "--seed") == 0) ||
+                     (strcmp(Arg, "--render-distance") == 0) ||
                      (strcmp(Arg, "--script") == 0) ||
                      (strcmp(Arg, "--script-out") == 0) ||
                      (strcmp(Arg, "--script-timeout") == 0);
@@ -315,6 +332,8 @@ void ParseLaunchOptions(int Argc, char **Argv) {
       ParseRamLimitValue(ValueStr, Options);
     } else if (strcmp(Arg, "--seed") == 0) {
       ParseSeedValue(ValueStr, Options);
+    } else if (strcmp(Arg, "--render-distance") == 0) {
+      ParseRenderDistanceValue(ValueStr, Options);
     } else if (strcmp(Arg, "--script") == 0) {
       Options->ScriptPath = ValueStr;
     } else if (strcmp(Arg, "--script-out") == 0) {

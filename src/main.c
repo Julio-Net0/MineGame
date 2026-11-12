@@ -200,7 +200,7 @@ static void CleanupGame(World *WorldVal) {
 
   // Sweep and save all modified chunks
   for (int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++) {
-    if (WorldVal->Chunks[IdxI].IsModified) {
+    if (WorldVal->SlotInUse[IdxI] && WorldVal->Chunks[IdxI].IsModified) {
       SaveChunkToDisk(&WorldVal->Chunks[IdxI]);
     }
   }
@@ -273,6 +273,9 @@ static void UpdateCameras(GameCamera *PlayerCamera, GameCamera *FreeCamera,
 // frame pays here; the mask scanning it feeds happens off-thread.
 static void QueueMeshWork(World *WorldVal) {
   for (int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++) {
+    if (!WorldVal->SlotInUse[IdxI]) {
+      continue;
+    }
     Chunk *ChunkVal = &WorldVal->Chunks[IdxI];
 
     // Already in flight: queueing it again would build the same chunk twice and
@@ -333,7 +336,8 @@ static void UploadFinishedMeshes(int CountAllowance, double Deadline) {
 
 static void RenderGame(World *WorldVal, Player *PlayerVal, GameCamera *ActiveCamera,
                        GameCamera *PlayerCamera, ChatState *ChatVal,
-                       bool ShowDebug, const InventoryInput *InvInput) {
+                       bool ShowDebug, const InventoryInput *InvInput,
+                       int *RenderDistance) {
   RenderCamera Cam = {
       .Position = ActiveCamera->Position,
       .Target = ActiveCamera->Target,
@@ -370,7 +374,7 @@ static void RenderGame(World *WorldVal, Player *PlayerVal, GameCamera *ActiveCam
   DrawHUD(Ui, PlayerVal, WorldVal, *ActiveCamera, ShowDebug);
   DrawCreativeInventory(Ui, InvInput);
   DrawChat(Ui, ChatVal);
-  DrawPauseMenu(Ui, PlayerCamera);
+  DrawPauseMenu(Ui, PlayerCamera, RenderDistance);
   UiEndFrame(Ui);
   PROFILE_END(UiBuildStart, PROFILE_UI_BUILD);
 
@@ -392,6 +396,9 @@ int main(int Argc, char **Argv) {
 
   ParseLaunchOptions(Argc, Argv);
   const LaunchOptions *Options = GetLaunchOptions();
+  int RenderDistance = (Options->RenderDistance > 0)
+                           ? ClampRenderDistance(Options->RenderDistance)
+                           : DEFAULT_RENDER_DISTANCE;
   if (Options->CoreCount > 0) {
     int AppliedCores = 0;
     if (OsLimitPhysicalCores(Options->CoreCount, &AppliedCores)) {
@@ -438,7 +445,7 @@ int main(int Argc, char **Argv) {
          !ScriptRunEnded()) {
     // Before input is polled, so a statement takes effect on the frame it is
     // reached rather than the next one.
-    ScriptStep(&ChatVal, ActiveCamera, &PlayerVal, WorldVal);
+    ScriptStep(&ChatVal, ActiveCamera, &PlayerVal, WorldVal, RenderDistance);
 
     // Real input is ignored for the duration of a scripted run, so a key or a
     // mouse movement from whoever is watching cannot change its result. The
@@ -489,7 +496,7 @@ int main(int Argc, char **Argv) {
       Vec3 LoadCenter = (GetDebugState()->Freecam && WasFreecam)
                             ? FreeCamera.Position
                             : PlayerVal.Position;
-      UpdateWorld(WorldVal, LoadCenter, MAX_RENDER_DISTANCE);
+      UpdateWorld(WorldVal, LoadCenter, RenderDistance);
 
       PROFILE_BEGIN(PlayerStart);
       PlayerVal.PrevPosition = PlayerVal.Position;
@@ -540,7 +547,7 @@ int main(int Argc, char **Argv) {
     }
 
     RenderGame(WorldVal, &PlayerVal, ActiveCamera, &PlayerCamera, &ChatVal,
-               ShowDebug, &InvInput);
+               ShowDebug, &InvInput, &RenderDistance);
     // The pause menu's FOV slider edits the player camera; the free camera
     // follows so switching to it keeps the chosen field of view.
     FreeCamera.FovY = PlayerCamera.FovY;

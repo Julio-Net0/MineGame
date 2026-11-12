@@ -468,14 +468,9 @@ static void CommandSave(const char *Args, CommandContext *Ctx) {
     return;
   }
   int SavedCount = 0;
-  int WorldChunkCount = Ctx->World->ChunkCount;
-  int TargetCount = WorldChunkCount < MAX_ACTIVE_CHUNKS ? WorldChunkCount : MAX_ACTIVE_CHUNKS;
-  for (int Index = 0; Index < MAX_ACTIVE_CHUNKS; Index++) {
-    if (Index >= TargetCount) {
-      break;
-    }
+  for (int Index = 0; Index < Ctx->World->ChunkCount; Index++) {
     Chunk *CurrentChunk = &Ctx->World->Chunks[Index];
-    if (CurrentChunk->IsModified) {
+    if (Ctx->World->SlotInUse[Index] && CurrentChunk->IsModified) {
       SaveChunkToDisk(CurrentChunk);
       SavedCount++;
     }

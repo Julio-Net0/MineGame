@@ -70,6 +70,7 @@ typedef struct {
   GameCamera *Camera;
   Player *PlayerVal;
   World *WorldVal;
+  int RenderDistance;
 } ScriptContext;
 
 typedef enum {
@@ -882,7 +883,7 @@ static Vec3 ScriptLoadCenter(const ScriptContext *Ctx) {
 // finished.
 static bool ScriptWorldSettled(const ScriptContext *Ctx) {
   return WorldIsSettled(Ctx->WorldVal, ScriptLoadCenter(Ctx),
-                        MAX_RENDER_DISTANCE) &&
+                        Ctx->RenderDistance) &&
          !RendererHasPendingMeshWork();
 }
 
@@ -1044,7 +1045,7 @@ static void ScriptAddChunksJson(cJSON *Root, const ScriptContext *Ctx) {
   if (Node == (cJSON *)0) {
     return;
   }
-  cJSON_AddNumberToObject(Node, "active", Ctx->WorldVal->ChunkCount);
+  cJSON_AddNumberToObject(Node, "active", WorldActiveChunkCount(Ctx->WorldVal));
   cJSON_AddNumberToObject(Node, "generated", Generated);
   cJSON_AddNumberToObject(Node, "generating", Generating);
   cJSON_AddNumberToObject(Node, "dirty", Dirty);
@@ -1112,7 +1113,7 @@ static bool ScriptWriteState(const ScriptContext *Ctx, const char *Name,
   cJSON_AddNumberToObject(Root, "frame", (double)State->Frame);
   cJSON_AddNumberToObject(Root, "tick", (double)State->Tick);
   cJSON_AddBoolToObject(Root, "settled", ScriptWorldSettled(Ctx));
-  cJSON_AddNumberToObject(Root, "renderDistance", MAX_RENDER_DISTANCE);
+  cJSON_AddNumberToObject(Root, "renderDistance", Ctx->RenderDistance);
   ScriptAddPlayerJson(Root, Ctx);
   ScriptAddCameraJson(Root, Ctx);
   ScriptAddTargetBlockJson(Root, Ctx);
@@ -1262,7 +1263,7 @@ static bool ScriptRunInventory(const ScriptStatement *Step,
 }
 
 void ScriptStep(ChatState *Chat, GameCamera *Camera, Player *PlayerVal,
-                World *WorldVal) {
+                World *WorldVal, int RenderDistance) {
   ScriptState *State = GetScriptState();
   if (!State->Active || State->Ended) {
     return;
@@ -1284,6 +1285,7 @@ void ScriptStep(ChatState *Chat, GameCamera *Camera, Player *PlayerVal,
       .Camera = Camera,
       .PlayerVal = PlayerVal,
       .WorldVal = WorldVal,
+      .RenderDistance = RenderDistance,
   };
 
   if (ScriptIsWaiting(&Ctx)) {
