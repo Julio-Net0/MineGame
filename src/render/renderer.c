@@ -1,5 +1,6 @@
 #include "render/renderer.h"
 #include "render/backend.h"
+#include "render/chunk_visibility.h"
 #include "world/biome.h"
 #include "world/block_system.h"
 #include "world/chunk.h"
@@ -67,6 +68,8 @@ typedef struct {
   // Everything the passes read. Held here so it travels with the scratch when
   // meshing moves to the worker threads.
   ChunkSnapshot Snapshot;
+
+  FaceVisScratch Visibility;
 } MesherState;
 
 // Indexed per meshing thread. One slot today; the workers claim their own once
@@ -92,7 +95,10 @@ static bool MesherHasRoom(const MesherState *State, MeshTarget Target) {
   return (State->Sets[Target].VCount + VERTICES_PER_FACE) <= MAX_MESH_VERTICES;
 }
 
-void InitRenderer(void) { RenderBackendInit(); }
+void InitRenderer(void) {
+    RenderBackendInit();
+    InitChunkVisibility();
+}
 
 static void ResetRenderableSet(void);
 
@@ -736,6 +742,9 @@ typedef struct {
 
   MeshBufferSet Sets[MESH_TARGET_COUNT];
 
+  // Written by the worker with the meshes, committed with them on upload.
+  FaceVisibility Visibility;
+
   atomic_int Stage;
   int ChunkX;
   int ChunkY;
@@ -787,6 +796,65 @@ static MeshHandle UploadMeshBufferSet(const MeshBufferSet *Set) {
     };
     return RenderUploadMesh(&Data);
 }
+
+// ---------------------------------------------------------------------------
+// Chunk visibility
+// ---------------------------------------------------------------------------
+
+// Face connectivity per chunk slot. Kept here rather than on Chunk or in the
+// renderable set: records exist only for chunks with geometry, and the
+// occlusion traversal has to cross air and buried chunks that have none.
+typedef struct {
+    const Chunk *Base;
+    FaceVisibility Slots[MAX_ACTIVE_CHUNKS];
+} ChunkVisibilityTable;
+
+static ChunkVisibilityTable *GetChunkVisibilityTable(void) {
+    static ChunkVisibilityTable Table;
+    return &Table;
+}
+
+void RendererAttachWorld(const World *WorldVal) {
+    GetChunkVisibilityTable()->Base = WorldVal->Chunks;
+}
+
+static int ChunkVisibilitySlot(const Chunk *ChunkVal) {
+    const ChunkVisibilityTable *Table = GetChunkVisibilityTable();
+    if (Table->Base == NULL) { return -1; }
+    ptrdiff_t Offset = ChunkVal - Table->Base;
+    if (Offset < 0 || Offset >= (ptrdiff_t)MAX_ACTIVE_CHUNKS) { return -1; }
+    return (int)Offset;
+}
+
+static void SetChunkVisibility(const Chunk *ChunkVal, FaceVisibility Vis) {
+    int Slot = ChunkVisibilitySlot(ChunkVal);
+    if (Slot >= 0) { GetChunkVisibilityTable()->Slots[Slot] = Vis; }
+}
+
+#ifdef MINEGAME_PROFILE
+void RendererLogVisibilityStats(const World *WorldVal) {
+    const ChunkVisibilityTable *Table = GetChunkVisibilityTable();
+    int Unknown = 0;
+    int Sealed = 0;
+    int Open = 0;
+    int Partial = 0;
+    for (int Idx = 0; Idx < WorldVal->ChunkCount; Idx++) {
+        if (!WorldVal->SlotInUse[Idx]) { continue; }
+        FaceVisibility Vis = Table->Slots[Idx];
+        if (Vis == FACE_VIS_UNKNOWN) {
+            Unknown++;
+        } else if (Vis == FACE_VIS_NONE) {
+            Sealed++;
+        } else if (Vis == FACE_VIS_ALL) {
+            Open++;
+        } else {
+            Partial++;
+        }
+    }
+    LogInfo("RENDER: chunk visibility: %d open, %d partial, %d sealed, %d unknown",
+            Open, Partial, Sealed, Unknown);
+}
+#endif
 
 // ---------------------------------------------------------------------------
 // Renderable set
@@ -1123,6 +1191,10 @@ void RendererGetMeshVertexTotals(MeshVertexTotals *Out) {
 }
 
 void UnloadChunkMesh(Chunk *ChunkVal) {
+    // Unknown until a new result is committed. Every path that replaces a mesh,
+    // evicts a slot or empties a chunk passes through here, so a slot never
+    // keeps the connectivity of whatever occupied it before.
+    SetChunkVisibility(ChunkVal, FACE_VIS_UNKNOWN);
     ReleaseRecordVertexCounts(ChunkVal);
     if (ChunkVal->HasMesh) {
         RenderFreeMesh(ChunkVal->ChunkMesh);
@@ -1169,6 +1241,7 @@ int RendererQueueMeshJob(World *WorldVal, Chunk *ChunkVal) {
     // occupying a slot and a worker to produce nothing.
     if (ChunkVal->SolidBlockCount == 0) {
         UnloadChunkMesh(ChunkVal);
+        SetChunkVisibility(ChunkVal, FACE_VIS_ALL);
         ChunkVal->IsDirty = false;
         return -1;
     }
@@ -1265,6 +1338,10 @@ void RendererBuildMeshJob(int JobId, int MesherSlot) {
 
     PROFILE_END(MeshBuildStart, PROFILE_MESH_BUILD);
 
+    PROFILE_BEGIN(VisibilityStart);
+    Job->Visibility = ComputeFaceVisibility(Snap, &State->Visibility);
+    PROFILE_END(VisibilityStart, PROFILE_MESH_VISIBILITY);
+
     // Copied out so the worker can take the next chunk instead of waiting for
     // the main thread to consume its scratch.
     for (int Target = 0; Target < MESH_TARGET_COUNT; Target++) {
@@ -1313,6 +1390,7 @@ bool RendererUploadFinishedMesh(void) {
                 (ChunkVal->TranslucentMesh != MESH_HANDLE_INVALID);
             SyncChunkRenderable(ChunkVal);
             RecordUploadedVertexCounts(ChunkVal, Job->Sets);
+            SetChunkVisibility(ChunkVal, Job->Visibility);
 
             // Only now, and only if nothing edited the chunk after the snapshot
             // was taken. Clearing unconditionally would leave a block the player
@@ -1522,12 +1600,395 @@ static int ChunkDistanceBucket(int DeltaX, int DeltaY, int DeltaZ) {
     return Bucket;
 }
 
+static int64_t RecordVertexCount(const RenderableSet *Set, const Chunk *ChunkVal,
+                                 MeshTarget Target) {
+    return Set->Records[ChunkVal->RenderRecord].VertexCounts[Target];
+}
+
 static Vec3 GetChunkWorldOrigin(const Chunk *ChunkVal) {
     return (Vec3){
         (float)(ChunkVal->ChunkX * CHUNK_SIZE) - BLOCK_HALF_SIZE,
         (float)(ChunkVal->ChunkY * CHUNK_SIZE) - BLOCK_HALF_SIZE,
         (float)(ChunkVal->ChunkZ * CHUNK_SIZE) - BLOCK_HALF_SIZE,
     };
+}
+
+// ---------------------------------------------------------------------------
+// Occlusion traversal
+// ---------------------------------------------------------------------------
+
+// Walks the loaded chunk grid outward from the camera and stamps every chunk a
+// sight line could reach. A step leaves a chunk through face F only when:
+//   - it does not reverse a direction already taken from the camera's chunk (a
+//     straight sight line is monotonic on every axis);
+//   - the chunk connects the face it was entered by to F;
+//   - the neighbour is loaded and touches the view frustum.
+//
+// Every step moves one chunk further from the camera's chunk in Manhattan
+// distance, since none may reverse an axis already travelled. With a FIFO queue,
+// every arrival at a chunk therefore comes from the previous distance and lands
+// before the chunk itself is dequeued. A chunk is expanded once, with the union
+// of the faces it was entered by and the intersection of the directions its
+// arrivals took -- only ever more permissive than any single arrival, so
+// nothing a sight line could reach is dropped (keeping just the first arrival
+// would, and that is what makes chunks pop in and out at some angles). Should
+// an arrival still widen a chunk after its expansion, which only the many seeds
+// of the boundary-layer start can cause, it is queued again; both fields change
+// monotonically, so that settles.
+enum {
+    OCCLUSION_DIR_MASK = (1 << CHUNK_FACE_COUNT) - 1,
+    // Entry flag of the camera's own chunk: the camera stands inside it, so its
+    // connectivity does not limit where sight lines leave it.
+    OCCLUSION_START_ENTRY = 1 << CHUNK_FACE_COUNT,
+    // A slot sits in the queue at most once at a time.
+    OCCLUSION_QUEUE_CAPACITY = MAX_ACTIVE_CHUNKS,
+    // Index of the near plane in RenderFrustum (left, right, bottom, top, near,
+    // far). The traversal ignores it: sight lines start at the camera, behind
+    // the near plane, and a chunk holding only that first stretch of a line
+    // must still pass.
+    FRUSTUM_NEAR_PLANE = 4
+};
+
+typedef struct {
+    // Slot + 1, 0 when never resolved.
+    int Slot;
+    uint32_t Epoch;
+} OcclusionLink;
+
+// Everything the traversal reads or writes per slot, packed so that visiting a
+// chunk touches one cache line rather than one per field: slots are reached in
+// no particular memory order, so separate arrays each cost their own miss.
+typedef struct {
+    uint32_t VisitStamp;
+    // Valid while VisitStamp matches the frame.
+    uint8_t EntryFaces;
+    uint8_t Dirs;
+    bool Queued;
+    // Per-frame frustum result: a chunk reached through several faces is
+    // tested once.
+    bool FrustumInside;
+    uint32_t FrustumStamp;
+    // Bumped by eviction; a link made to an earlier epoch no longer holds.
+    uint32_t Epoch;
+    // Grid position, carried along the traversal so it never reads the Chunk:
+    // its coordinates sit past the 8 KB block array, a cold line per neighbour.
+    int Pos[3];
+} OcclusionSlot;
+
+typedef struct {
+    uint32_t Frame;
+    OcclusionSlot Slots[MAX_ACTIVE_CHUNKS];
+
+    // Neighbour links kept across frames. A link names the neighbour's slot and
+    // that slot's epoch when the link was made; eviction bumps the epoch, so a
+    // link to a recycled slot misses and is resolved again through the chunk
+    // hash, and clears the evicted slot's own links.
+    OcclusionLink Neighbor[MAX_ACTIVE_CHUNKS][CHUNK_FACE_COUNT];
+
+    int Queue[OCCLUSION_QUEUE_CAPACITY];
+    int Head;
+    int Count;
+    int Reachable;
+    int Nodes;
+} OcclusionState;
+
+static OcclusionState *GetOcclusionState(void) {
+    static OcclusionState State;
+    return &State;
+}
+
+static const int FACE_STEP[CHUNK_FACE_COUNT][3] = {
+    {-1, 0, 0}, {1, 0, 0}, {0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1},
+};
+
+enum { TRAVERSAL_PLANE_COUNT = FRUSTUM_PLANE_COUNT - 1 };
+
+// The frustum minus its near plane, rewritten once per frame for grid
+// coordinates. For each plane the corner of a chunk box furthest along the
+// normal is fixed by the normal's signs, so "the box lies wholly behind the
+// plane" becomes A*X + B*Y + C*Z + K < 0 on the chunk's integer coordinates:
+// three multiply-adds with no per-axis selection.
+typedef struct {
+    float A[TRAVERSAL_PLANE_COUNT];
+    float B[TRAVERSAL_PLANE_COUNT];
+    float C[TRAVERSAL_PLANE_COUNT];
+    float K[TRAVERSAL_PLANE_COUNT];
+} TraversalFrustum;
+
+static void BuildTraversalFrustum(const RenderFrustum *Frustum,
+                                  TraversalFrustum *Out) {
+    int Index = 0;
+    for (int P = 0; P < FRUSTUM_PLANE_COUNT; P++) {
+        if (P == FRUSTUM_NEAR_PLANE) { continue; }
+        float Nx = Frustum->Planes[P][0];
+        float Ny = Frustum->Planes[P][1];
+        float Nz = Frustum->Planes[P][2];
+        // Box min corner is 16 * Chunk - 0.5 on each axis; the far corner adds
+        // the chunk width on every axis whose normal component is positive.
+        float FarOffset = (fmaxf(Nx, 0.0F) + fmaxf(Ny, 0.0F) + fmaxf(Nz, 0.0F)) *
+                          (float)CHUNK_SIZE;
+        Out->A[Index] = Nx * (float)CHUNK_SIZE;
+        Out->B[Index] = Ny * (float)CHUNK_SIZE;
+        Out->C[Index] = Nz * (float)CHUNK_SIZE;
+        Out->K[Index] = Frustum->Planes[P][3] + FarOffset -
+                        ((Nx + Ny + Nz) * BLOCK_HALF_SIZE);
+        Index++;
+    }
+}
+
+// Conservative box test against the frustum minus its near plane: rejects only
+// a chunk wholly behind one of the other five planes. Takes grid coordinates so
+// a position can be rejected before anything is looked up for it.
+static bool IsChunkBoxInTraversalFrustum(const TraversalFrustum *Frustum,
+                                         int ChunkX, int ChunkY, int ChunkZ) {
+    float X = (float)ChunkX;
+    float Y = (float)ChunkY;
+    float Z = (float)ChunkZ;
+    for (int P = 0; P < TRAVERSAL_PLANE_COUNT; P++) {
+        float Far = (Frustum->A[P] * X) + (Frustum->B[P] * Y) +
+                    (Frustum->C[P] * Z) + Frustum->K[P];
+        if (Far < 0.0F) { return false; }
+    }
+    return true;
+}
+
+static void PushSlot(OcclusionState *State, int Slot) {
+    int Tail = State->Head + State->Count;
+    if (Tail >= OCCLUSION_QUEUE_CAPACITY) { Tail -= OCCLUSION_QUEUE_CAPACITY; }
+    State->Queue[Tail] = Slot;
+    State->Count++;
+    State->Slots[Slot].Queued = true;
+}
+
+// EntryFaces holds one bit per face entered by, or OCCLUSION_START_ENTRY.
+// Pos is the slot's grid position.
+static void ArriveAt(OcclusionState *State, int Slot, const int Pos[3],
+                     unsigned EntryFaces, unsigned Dirs) {
+    if (State->Slots[Slot].VisitStamp != State->Frame) {
+        State->Slots[Slot].VisitStamp = State->Frame;
+        State->Slots[Slot].Pos[0] = Pos[0];
+        State->Slots[Slot].Pos[1] = Pos[1];
+        State->Slots[Slot].Pos[2] = Pos[2];
+        State->Slots[Slot].EntryFaces = (uint8_t)EntryFaces;
+        State->Slots[Slot].Dirs = (uint8_t)Dirs;
+        State->Reachable++;
+        PushSlot(State, Slot);
+        return;
+    }
+    unsigned Faces = State->Slots[Slot].EntryFaces | EntryFaces;
+    unsigned Merged = State->Slots[Slot].Dirs & Dirs;
+    if (Faces == State->Slots[Slot].EntryFaces && Merged == State->Slots[Slot].Dirs) { return; }
+    State->Slots[Slot].EntryFaces = (uint8_t)Faces;
+    State->Slots[Slot].Dirs = (uint8_t)Merged;
+    if (!State->Slots[Slot].Queued) { PushSlot(State, Slot); }
+}
+
+// Faces a chunk can be left through, given the faces it was entered by.
+static unsigned ExitFaces(FaceVisibility Vis, unsigned EntryFaces) {
+    if ((EntryFaces & (unsigned)OCCLUSION_START_ENTRY) != 0) {
+        return OCCLUSION_DIR_MASK;
+    }
+    return FaceVisExits(Vis, EntryFaces);
+}
+
+// The slot of the loaded neighbour across Face if it touches the frustum, or -1;
+// writes the neighbour's grid position to OutPos. A link whose epoch still
+// matches is followed without touching the chunk hash or the chunk; otherwise
+// the position is frustum-tested first, so the hash is probed only for
+// neighbours that could matter.
+static int ResolveNeighbor(World *WorldVal, const TraversalFrustum *Frustum,
+                           OcclusionState *State, int Slot, int Face,
+                           int OutPos[3]) {
+    int X = State->Slots[Slot].Pos[0] + FACE_STEP[Face][0];
+    int Y = State->Slots[Slot].Pos[1] + FACE_STEP[Face][1];
+    int Z = State->Slots[Slot].Pos[2] + FACE_STEP[Face][2];
+    OutPos[0] = X;
+    OutPos[1] = Y;
+    OutPos[2] = Z;
+
+    OcclusionLink *Link = &State->Neighbor[Slot][Face];
+    int Next = Link->Slot - 1;
+    if (Next >= 0 && State->Slots[Next].Epoch == Link->Epoch) {
+        if (State->Slots[Next].FrustumStamp != State->Frame) {
+            State->Slots[Next].FrustumStamp = State->Frame;
+            State->Slots[Next].FrustumInside = IsChunkBoxInTraversalFrustum(Frustum, X, Y, Z);
+        }
+        return State->Slots[Next].FrustumInside ? Next : -1;
+    }
+
+    if (!IsChunkBoxInTraversalFrustum(Frustum, X, Y, Z)) { return -1; }
+    const Chunk *Found = GetChunkFromWorld(WorldVal, X, Y, Z);
+    if (Found == NULL) { return -1; }
+    Next = (int)(Found - WorldVal->Chunks);
+    *Link = (OcclusionLink){Next + 1, State->Slots[Next].Epoch};
+    State->Slots[Next].FrustumStamp = State->Frame;
+    State->Slots[Next].FrustumInside = true;
+    return Next;
+}
+
+void RendererForgetChunk(Chunk *ChunkVal) {
+    UnloadChunkMesh(ChunkVal);
+    int Slot = ChunkVisibilitySlot(ChunkVal);
+    if (Slot < 0) { return; }
+    OcclusionState *State = GetOcclusionState();
+    State->Slots[Slot].Epoch++;
+    memset(State->Neighbor[Slot], 0, sizeof(State->Neighbor[Slot]));
+}
+
+static void ExpandChunk(World *WorldVal, const TraversalFrustum *Frustum,
+                        OcclusionState *State, int Slot) {
+    unsigned Dirs = State->Slots[Slot].Dirs;
+    unsigned Exits = ExitFaces(GetChunkVisibilityTable()->Slots[Slot],
+                               State->Slots[Slot].EntryFaces);
+    for (int Face = 0; Face < CHUNK_FACE_COUNT; Face++) {
+        if ((Exits & (1U << (unsigned)Face)) == 0) { continue; }
+        int Back = (int)OppositeChunkFace((ChunkFace)Face);
+        if ((Dirs & (1U << (unsigned)Back)) != 0) { continue; }
+        int Pos[3];
+        int Next = ResolveNeighbor(WorldVal, Frustum, State, Slot, Face, Pos);
+        if (Next < 0) { continue; }
+        ArriveAt(State, Next, Pos, 1U << (unsigned)Back,
+                 Dirs | (1U << (unsigned)Face));
+    }
+}
+
+static void BeginOcclusionFrame(OcclusionState *State) {
+    State->Frame++;
+    if (State->Frame == 0) {
+        // Only the stamps: clearing epochs could revive links to recycled slots.
+        for (int Slot = 0; Slot < MAX_ACTIVE_CHUNKS; Slot++) {
+            State->Slots[Slot].VisitStamp = 0;
+            State->Slots[Slot].FrustumStamp = 0;
+        }
+        State->Frame = 1;
+    }
+    State->Head = 0;
+    State->Count = 0;
+    State->Reachable = 0;
+    State->Nodes = 0;
+}
+
+// The camera is above or below the loaded layers of its column: every loaded
+// chunk of the boundary layer facing it is entered from the camera's side.
+static bool SeedFromBoundaryLayer(World *WorldVal, const TraversalFrustum *Frustum,
+                                  OcclusionState *State, int CameraChunkY) {
+    int Radius = WorldVal->LastLoadRenderDist;
+    Vec3 Center = {
+        ((float)WorldVal->LastLoadChunkX * CHUNK_SIZE) + CHUNK_HALF_SIZE,
+        ((float)WorldVal->LastLoadChunkY * CHUNK_SIZE) + CHUNK_HALF_SIZE,
+        ((float)WorldVal->LastLoadChunkZ * CHUNK_SIZE) + CHUNK_HALF_SIZE,
+    };
+    LoadLayerRange Window;
+    WorldGetLoadLayerRange(WorldVal, Center, Radius, &Window);
+
+    int Layer = 0;
+    int EntryFace = 0;
+    unsigned Dirs = 0;
+    if (CameraChunkY > Window.Hi) {
+        Layer = Window.Hi;
+        EntryFace = CHUNK_FACE_POS_Y;
+        Dirs = 1U << CHUNK_FACE_NEG_Y;
+    } else if (CameraChunkY < Window.Lo) {
+        Layer = Window.Lo;
+        EntryFace = CHUNK_FACE_NEG_Y;
+        Dirs = 1U << CHUNK_FACE_POS_Y;
+    } else {
+        // Inside the window but not loaded yet: nothing sound to start from.
+        return false;
+    }
+
+    for (int Dx = -Radius; Dx <= Radius; Dx++) {
+        for (int Dz = -Radius; Dz <= Radius; Dz++) {
+            if ((Dx * Dx) + (Dz * Dz) > Radius * Radius) { continue; }
+            Chunk *Seed = GetChunkFromWorld(WorldVal, WorldVal->LastLoadChunkX + Dx,
+                                            Layer, WorldVal->LastLoadChunkZ + Dz);
+            if (Seed == NULL ||
+                !IsChunkBoxInTraversalFrustum(Frustum, Seed->ChunkX, Seed->ChunkY,
+                                              Seed->ChunkZ)) {
+                continue;
+            }
+            int Pos[3] = {WorldVal->LastLoadChunkX + Dx, Layer,
+                          WorldVal->LastLoadChunkZ + Dz};
+            ArriveAt(State, (int)(Seed - WorldVal->Chunks), Pos,
+                     1U << (unsigned)EntryFace, Dirs);
+        }
+    }
+    return true;
+}
+
+// Half-width of the box around the camera checked for opaque blocks. Covers
+// the near-plane rectangle with a wide margin, since geometry the near plane
+// clips away is just as see-through as geometry the camera sits inside.
+#define CAMERA_CLEARANCE 0.1F
+enum { CAMERA_PROBE_CORNERS = 8 };
+
+// From inside an opaque block the camera looks out through back faces, which
+// are culled, so the rock around it hides nothing and the face connectivity --
+// which assumes the viewer stands in open space -- does not apply.
+static bool IsCameraInsideOpaque(World *WorldVal, Vec3 CameraPos) {
+    for (int Corner = 0; Corner < CAMERA_PROBE_CORNERS; Corner++) {
+        float Ox = ((Corner & 1) != 0) ? CAMERA_CLEARANCE : -CAMERA_CLEARANCE;
+        float Oy = ((Corner & 2) != 0) ? CAMERA_CLEARANCE : -CAMERA_CLEARANCE;
+        float Oz = ((Corner & 4) != 0) ? CAMERA_CLEARANCE : -CAMERA_CLEARANCE;
+        // Block B is drawn over [B - 0.5, B + 0.5], so rounding names it.
+        Vec3 Block = {floorf(CameraPos.x + Ox + BLOCK_HALF_SIZE),
+                      floorf(CameraPos.y + Oy + BLOCK_HALF_SIZE),
+                      floorf(CameraPos.z + Oz + BLOCK_HALF_SIZE)};
+        int Id = GetBlockIDFromWorld(WorldVal, Block);
+        if (Id > 0 && IsBlockOpaqueForVisibility((BlockID)Id)) { return true; }
+    }
+    return false;
+}
+
+// Returns false when the frame must fall back to frustum culling alone.
+static bool RunOcclusionTraversal(World *WorldVal, const RenderFrustum *Frustum,
+                                  Vec3 CameraPos) {
+    OcclusionState *State = GetOcclusionState();
+    BeginOcclusionFrame(State);
+    TraversalFrustum Planes;
+    BuildTraversalFrustum(Frustum, &Planes);
+    if (IsCameraInsideOpaque(WorldVal, CameraPos)) { return false; }
+
+    // Blocks are centred on integer coordinates, so chunk C spans
+    // [16C - 0.5, 16C + 15.5]; the half-block shift picks the chunk the camera
+    // is really in, not the one a plain floor names near a boundary.
+    int CameraX = (int)floorf((CameraPos.x + BLOCK_HALF_SIZE) / CHUNK_SIZE);
+    int CameraY = (int)floorf((CameraPos.y + BLOCK_HALF_SIZE) / CHUNK_SIZE);
+    int CameraZ = (int)floorf((CameraPos.z + BLOCK_HALF_SIZE) / CHUNK_SIZE);
+
+    const Chunk *Start = GetChunkFromWorld(WorldVal, CameraX, CameraY, CameraZ);
+    if (Start != NULL) {
+        int Pos[3] = {CameraX, CameraY, CameraZ};
+        ArriveAt(State, (int)(Start - WorldVal->Chunks), Pos,
+                 OCCLUSION_START_ENTRY, 0);
+    } else {
+        int Dx = CameraX - WorldVal->LastLoadChunkX;
+        int Dz = CameraZ - WorldVal->LastLoadChunkZ;
+        int Radius = WorldVal->LastLoadRenderDist;
+        if (!WorldVal->HasLoadedOnce || (Dx * Dx) + (Dz * Dz) > Radius * Radius) {
+            return false;
+        }
+        if (!SeedFromBoundaryLayer(WorldVal, &Planes, State, CameraY)) {
+            return false;
+        }
+    }
+
+    while (State->Count > 0) {
+        int Slot = State->Queue[State->Head];
+        State->Head++;
+        if (State->Head == OCCLUSION_QUEUE_CAPACITY) { State->Head = 0; }
+        State->Count--;
+        State->Nodes++;
+
+        State->Slots[Slot].Queued = false;
+        ExpandChunk(WorldVal, &Planes, State, Slot);
+    }
+    return true;
+}
+
+static bool WasChunkReached(const World *WorldVal, const Chunk *ChunkVal) {
+    const OcclusionState *State = GetOcclusionState();
+    return State->Slots[ChunkVal - WorldVal->Chunks].VisitStamp == State->Frame;
 }
 
 void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
@@ -1550,7 +2011,21 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
     RenderCullStats Stats = {
         .Renderable = Renderable->RecordCount,
         .Columns = Renderable->ActiveColumnCount,
+        .OcclusionEnabled = GetDebugState()->Occlusion,
     };
+
+    // Stamps every chunk a sight line from the camera can reach. On fallback
+    // (camera outside the loaded set) the frame keeps frustum culling alone.
+    bool OcclusionActive = false;
+    if (Stats.OcclusionEnabled) {
+        PROFILE_BEGIN(OcclusionStart);
+        OcclusionActive = RunOcclusionTraversal(WorldVal, &Frustum, CameraVal.Position);
+        PROFILE_END(OcclusionStart, PROFILE_OCCLUSION);
+        const OcclusionState *Occlusion = GetOcclusionState();
+        Stats.OcclusionFallback = !OcclusionActive;
+        Stats.OcclusionNodes = OcclusionActive ? Occlusion->Nodes : 0;
+        Stats.OcclusionReachable = OcclusionActive ? Occlusion->Reachable : 0;
+    }
 
     // The camera's own chunk, so the per-chunk work below is integer subtraction
     // rather than anything in world space.
@@ -1590,6 +2065,10 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
                 Stats.ChunksTested++;
                 if (!IsChunkVisible(&Frustum, ChunkVal)) { continue; }
             }
+            if (OcclusionActive && !WasChunkReached(WorldVal, ChunkVal)) {
+                Stats.Occluded++;
+                continue;
+            }
 
             VisibleChunks[VisibleCount].ChunkVal = ChunkVal;
             VisibleChunks[VisibleCount].Bucket =
@@ -1601,7 +2080,8 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
             VisibleCount++;
         }
     }
-    Stats.Visible = VisibleCount;
+    // Frustum candidates, whether or not occlusion then removed them.
+    Stats.Visible = VisibleCount + Stats.Occluded;
 
     // Counting sort walked from the near bucket up, so the output runs nearest
     // to farthest. The translucent pass reads the same array backwards.
@@ -1635,6 +2115,8 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
         const Chunk *ChunkVal = SolidOrder[IdxI];
         if (!ChunkVal->HasMesh) { continue; }
         RenderDrawMesh(ChunkVal->ChunkMesh, GetChunkWorldOrigin(ChunkVal));
+        Stats.SubmittedVertices +=
+            RecordVertexCount(Renderable, ChunkVal, MESH_TARGET_OPAQUE);
         Rendered++;
     }
     RenderEndChunkPass();
@@ -1646,6 +2128,8 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
         const Chunk *ChunkVal = SolidOrder[IdxI];
         if (!ChunkVal->HasCutoutMesh) { continue; }
         RenderDrawMesh(ChunkVal->CutoutMesh, GetChunkWorldOrigin(ChunkVal));
+        Stats.SubmittedVertices +=
+            RecordVertexCount(Renderable, ChunkVal, MESH_TARGET_CUTOUT);
     }
     RenderEndChunkPass();
 
@@ -1679,6 +2163,8 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
         const Chunk *ChunkVal = NearToFar[IdxI];
         if (!ChunkVal->HasTranslucentMesh) { continue; }
         RenderDrawMesh(ChunkVal->TranslucentMesh, GetChunkWorldOrigin(ChunkVal));
+        Stats.SubmittedVertices +=
+            RecordVertexCount(Renderable, ChunkVal, MESH_TARGET_TRANSLUCENT);
     }
     RenderEndChunkPass();
 

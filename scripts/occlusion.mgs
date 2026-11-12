@@ -1,0 +1,98 @@
+# Occlusion culling parity and reduction check.
+#
+#   build/MineGame.exe --script scripts/occlusion.mgs --script-timeout 600
+#
+# Every pose is captured twice without moving the camera: with /debug occlusion 1
+# and with /debug occlusion 0. Occlusion culling only removes chunks that cannot
+# contribute a pixel, so each <pose>_on.png must be pixel-identical to its
+# <pose>_off.png, while <pose>_on.json reports how many frustum-visible chunks
+# were skipped (chunks.occluded). Writes automation_out/<pose>_{on,off}.{png,json}.
+#
+# Every toggle prints a chat line, and the chat stays on screen for four seconds
+# of wall time, so each capture waits 100 ticks (five seconds) for it to fade;
+# otherwise the two screenshots differ by the message alone.
+
+/noclip 1
+
+# Eye level at spawn, looking along the terrain: hills hide what lies behind.
+/tp ~ ~2 ~
+look 90 -5
+wait loaded
+/debug occlusion 1
+wait ticks 100
+screenshot surface_on
+state surface_on
+/debug occlusion 0
+wait ticks 100
+screenshot surface_off
+state surface_off
+
+# 120 blocks above the surface pose, looking steeply down: surface chunks hide
+# what is beneath them.
+/tp ~ ~120 ~
+look 0 -70
+wait loaded
+/debug occlusion 1
+wait ticks 100
+screenshot sky_on
+state sky_on
+/debug occlusion 0
+wait ticks 100
+screenshot sky_off
+state sky_off
+
+# The far pose of loaded.mgs, turned toward the ground ahead.
+/tp 500 90 500
+look 225 -10
+wait loaded
+/debug occlusion 1
+wait ticks 100
+screenshot hillside_on
+state hillside_on
+/debug occlusion 0
+wait ticks 100
+screenshot hillside_off
+state hillside_off
+
+# Inside open caves, looking along them: the rock around the cave hides the
+# other caves and the surface. Both positions were found by probing for air.
+/tp 0 -80 64
+look 0 0
+wait loaded
+/debug occlusion 1
+wait ticks 100
+screenshot cave_80_on
+state cave_80_on
+/debug occlusion 0
+wait ticks 100
+screenshot cave_80_off
+state cave_80_off
+
+/tp 64 -150 0
+look 45 -10
+wait loaded
+/debug occlusion 1
+wait ticks 100
+screenshot cave_150_on
+state cave_150_on
+/debug occlusion 0
+wait ticks 100
+screenshot cave_150_off
+state cave_150_off
+
+# Camera buried in solid rock. The camera sees out through back faces there, so
+# occlusion must fall back to frustum culling (chunks.cull.occlusionFallback).
+/tp 0 -90 0
+look 0 0
+wait loaded
+/debug occlusion 1
+wait ticks 100
+screenshot buried_on
+state buried_on
+/debug occlusion 0
+wait ticks 100
+screenshot buried_off
+state buried_off
+
+/debug occlusion 1
+quit

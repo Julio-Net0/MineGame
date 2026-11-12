@@ -24,6 +24,11 @@ typedef struct {
   // before the ordering existed. The translucent pass ignores it: unordered
   // blending is a rendering fault, not an alternative worth measuring.
   bool SortChunks;
+
+  // Measurement aid, enabled by default like SortChunks. Off, the world draw
+  // skips the occlusion traversal and draws every frustum-visible chunk, so the
+  // two can be compared in one sitting.
+  bool Occlusion;
 } DebugState;
 
 DebugState *GetDebugState(void);

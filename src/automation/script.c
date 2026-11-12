@@ -1063,6 +1063,8 @@ static void ScriptAddChunksJson(cJSON *Root, const ScriptContext *Ctx) {
 
   RenderCullStats Cull = {0};
   GetLastCullStats(&Cull);
+  cJSON_AddBoolToObject(Node, "occlusion", Cull.OcclusionEnabled);
+  cJSON_AddNumberToObject(Node, "occluded", Cull.Occluded);
   cJSON *CullNode = cJSON_CreateObject();
   if (CullNode != (cJSON *)0) {
     cJSON_AddNumberToObject(CullNode, "renderable", Cull.Renderable);
@@ -1072,6 +1074,12 @@ static void ScriptAddChunksJson(cJSON *Root, const ScriptContext *Ctx) {
     cJSON_AddNumberToObject(CullNode, "columnsIntersecting", Cull.ColumnsIntersecting);
     cJSON_AddNumberToObject(CullNode, "chunksTested", Cull.ChunksTested);
     cJSON_AddNumberToObject(CullNode, "visible", Cull.Visible);
+    cJSON_AddNumberToObject(CullNode, "occlusionNodes", Cull.OcclusionNodes);
+    cJSON_AddNumberToObject(CullNode, "occlusionReachable",
+                            Cull.OcclusionReachable);
+    cJSON_AddBoolToObject(CullNode, "occlusionFallback", Cull.OcclusionFallback);
+    cJSON_AddNumberToObject(CullNode, "submittedVertices",
+                            (double)Cull.SubmittedVertices);
     cJSON_AddItemToObject(Node, "cull", CullNode);
   }
   cJSON_AddItemToObject(Root, "chunks", Node);

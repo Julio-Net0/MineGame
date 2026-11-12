@@ -25,6 +25,7 @@
 #include "player/player.h"
 #include "pthread.h"
 #include "render/backend.h"
+#include "render/chunk_visibility.h"
 #include "render/renderer.h"
 #include "server/server.h"
 #include "core/launch_options.h"
@@ -77,7 +78,7 @@
 
 // Through the renderer rather than freeing the handles here, so the slot also
 // leaves the renderer's renderable set before it is reused.
-static void FreeEvictedChunkMeshes(Chunk *Evicted) { UnloadChunkMesh(Evicted); }
+static void FreeEvictedChunkMeshes(Chunk *Evicted) { RendererForgetChunk(Evicted); }
 
 // Returns false when startup could not complete; nothing is initialised in that
 // case, so the caller has nothing to tear down.
@@ -105,6 +106,9 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
   // paths are relative to; before InitRenderer, which loads block textures.
   ResourcePacksInit();
   InitRenderer();
+  // Cheap enough to run on every start; a scripted run's log then always
+  // records whether occlusion would be fed correct connectivity.
+  (void)RunFaceVisibilitySelfTest();
 
   // Every module registers its GUI sprites before the atlas is packed.
   UiInit();
@@ -154,6 +158,7 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
   NoisePrepareSeed(GetWorldSeed());
   InitWorld(*WorldVal);
   WorldSetChunkEvictCallback(*WorldVal, FreeEvictedChunkMeshes);
+  RendererAttachWorld(*WorldVal);
   LogInfo("MAIN THREAD ID: %llu", (unsigned long long)pthread_self());
 
   int WorkerCount = (Options->WorkerCount > 0) ? Options->WorkerCount
@@ -185,6 +190,7 @@ static void CleanupGame(World *WorldVal) {
   CloseChunkWorker();
 #ifdef MINEGAME_PROFILE
   (void)RendererCheckRenderableSet(WorldVal);
+  RendererLogVisibilityStats(WorldVal);
   (void)WorldCheckLoadVolumes(WorldVal);
 #endif
 

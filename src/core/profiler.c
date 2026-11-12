@@ -13,7 +13,8 @@
 static const char *const SCOPE_NAMES[PROFILE_SCOPE_COUNT] = {
     "Mesh build", "Mesh snap",  "Mesh upload", "World draw",  "World update",
     "Frame setup", "UI build",  "UI submit",   "Present",     "Player",
-    "Worker gen",  "Gen column", "Gen terrain", "Gen features"};
+    "Worker gen",  "Gen column", "Gen terrain", "Gen features", "Mesh vis",
+    "Occlusion"};
 
 // Kept beside the names so the two cannot drift: a scope that changes threads
 // has to be updated here, and the overlay and any analysis read it rather than
@@ -32,12 +33,15 @@ static const bool SCOPE_IS_WORKER_SIDE[PROFILE_SCOPE_COUNT] = {
     true,  /* Worker gen   */
     true,  /* Gen column   */
     true,  /* Gen terrain  */
-    true   /* Gen features */
+    true,  /* Gen features */
+    true,  /* Mesh vis     */
+    false  /* Occlusion    */
 };
 
 // Every scope is CPU-bound except Present, whose wall time is waiting on the
-// GPU and swap, and the generation sub-scopes, which nest inside Worker gen. Kept beside SCOPE_NAMES and SCOPE_IS_WORKER_SIDE so the three
-// tables stay aligned when scopes are added or reordered.
+// GPU and swap, and the nested scopes, whose parent already carries the
+// slowdown. Kept beside SCOPE_NAMES and SCOPE_IS_WORKER_SIDE so the tables stay
+// aligned when scopes are added or reordered.
 static const bool SCOPE_IS_CPU_BOUND[PROFILE_SCOPE_COUNT] = {
     true,  /* Mesh build   */
     true,  /* Mesh snap    */
@@ -53,7 +57,29 @@ static const bool SCOPE_IS_CPU_BOUND[PROFILE_SCOPE_COUNT] = {
     // Nested inside Worker gen, which already carries the slowdown.
     false, /* Gen column   */
     false, /* Gen terrain  */
-    false  /* Gen features */
+    false, /* Gen features */
+    true,  /* Mesh vis     */
+    // Nested inside World draw.
+    false  /* Occlusion    */
+};
+
+static const bool SCOPE_IS_NESTED[PROFILE_SCOPE_COUNT] = {
+    false, /* Mesh build   */
+    false, /* Mesh snap    */
+    false, /* Mesh upload  */
+    false, /* World draw   */
+    false, /* World update */
+    false, /* Frame setup  */
+    false, /* UI build     */
+    false, /* UI submit    */
+    false, /* Present      */
+    false, /* Player       */
+    false, /* Worker gen   */
+    true,  /* Gen column   */
+    true,  /* Gen terrain  */
+    true,  /* Gen features */
+    false, /* Mesh vis     */
+    true   /* Occlusion    */
 };
 
 bool IsProfileScopeWorkerSide(ProfileScope Scope) {
@@ -68,6 +94,13 @@ bool IsProfileScopeCpuBound(ProfileScope Scope) {
     return false;
   }
   return SCOPE_IS_CPU_BOUND[Scope];
+}
+
+bool IsProfileScopeNested(ProfileScope Scope) {
+  if (Scope < 0 || Scope >= PROFILE_SCOPE_COUNT) {
+    return false;
+  }
+  return SCOPE_IS_NESTED[Scope];
 }
 
 const char *GetProfileScopeName(ProfileScope Scope) {

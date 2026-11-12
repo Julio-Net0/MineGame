@@ -25,10 +25,11 @@
 // Main-thread scopes must not nest. The frame total minus the sum of the
 // MAIN-THREAD scopes is read as "time in no scope at all", which is how an
 // unaccounted stall gets found; a nested scope would be counted twice and make
-// that remainder lie. The generation sub-scopes are the one exception: they are
-// worker-side (outside the remainder), nest inside "Worker gen" to split it by
-// stage, and are not CPU-bound so --cpu-slowdown does not stretch the same time
-// twice.
+// that remainder lie. The exceptions are flagged by IsProfileScopeNested: the
+// generation sub-scopes split "Worker gen" by stage, and "Occlusion" splits the
+// traversal out of "World draw". They are breakdowns of their parent, excluded
+// from the remainder, and not CPU-bound so --cpu-slowdown does not stretch the
+// same time twice.
 //
 // Which side a scope runs on is data, not a name to recognise. Mesh building
 // moved from the main thread to the workers, and anything that had hardcoded
@@ -49,6 +50,8 @@ typedef enum {
   PROFILE_GEN_COLUMN,
   PROFILE_GEN_TERRAIN,
   PROFILE_GEN_FEATURES,
+  PROFILE_MESH_VISIBILITY,
+  PROFILE_OCCLUSION,
   PROFILE_SCOPE_COUNT
 } ProfileScope;
 
@@ -71,6 +74,10 @@ bool IsProfileScopeWorkerSide(ProfileScope Scope);
 
 // True when the scope measures CPU work rather than GPU/swap presentation wait.
 bool IsProfileScopeCpuBound(ProfileScope Scope);
+
+// True when the scope runs inside another scope and breaks down part of its
+// time. Such a scope must not be added to its parent when summing a frame.
+bool IsProfileScopeNested(ProfileScope Scope);
 
 #ifdef MINEGAME_PROFILE
 

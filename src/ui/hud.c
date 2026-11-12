@@ -311,8 +311,12 @@ static int DrawTimingPanel(UiContext *Ctx, int Y) {
     // the frame is not the obvious interpretation. Asked of the profiler rather
     // than hardcoded: mesh building moved to the workers, and a hardcoded test
     // would have kept labelling it as main-thread time.
-    const char *Suffix =
-        IsProfileScopeWorkerSide((ProfileScope)Scope) ? "(worker)" : "";
+    const char *Suffix = "";
+    if (IsProfileScopeWorkerSide((ProfileScope)Scope)) {
+      Suffix = "(worker)";
+    } else if (IsProfileScopeNested((ProfileScope)Scope)) {
+      Suffix = "(nested)";
+    }
     snprintf(Avg, sizeof(Avg), "%u", Stats->AverageUs);
     snprintf(Max, sizeof(Max), "%u", Stats->MaxUs);
     snprintf(Low, sizeof(Low), "%u", Stats->OnePercentLowUs);
@@ -455,8 +459,12 @@ static void DrawDebugScreen(UiContext *Ctx, Player *PlayerVal, World *WorldVal,
 
   // Taken from the draw loop rather than recomputed: it already counted, and
   // re-running the visibility test here was a second full scan over every chunk.
-  snprintf(DebugText, sizeof(DebugText), "Rendered Chunks: %d / %d",
-           GetLastRenderedChunkCount(), MAX_ACTIVE_CHUNKS);
+  RenderCullStats Cull = {0};
+  GetLastCullStats(&Cull);
+  snprintf(DebugText, sizeof(DebugText),
+           "Rendered Chunks: %d / %d (occluded %d%s)", Cull.Rendered,
+           MAX_ACTIVE_CHUNKS, Cull.Occluded,
+           Cull.OcclusionEnabled ? "" : ", occlusion off");
   Y = DrawDebugLine(Ctx, DebugText, Y);
   Y = DrawSimulationDebugLine(Ctx, Y);
 

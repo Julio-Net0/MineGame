@@ -5,6 +5,7 @@
 #include "player/player.h"
 #include "world/world.h"
 #include "render/backend.h"
+#include <stdbool.h>
 #include <stdint.h>
 
 typedef enum {
@@ -42,6 +43,15 @@ bool RendererHasMeshJobCapacity(void);
 // the mesh it produces reaches the GPU.
 bool RendererHasPendingMeshWork(void);
 void UnloadChunkMesh(Chunk *ChunkVal);
+
+// Binds the renderer's per-slot chunk bookkeeping to the world's slot array.
+// Call once after InitWorld.
+void RendererAttachWorld(const World *WorldVal);
+
+// Eviction hook: releases the chunk's meshes and drops every per-slot record the
+// renderer keeps for it, so nothing follows the slot to its next occupant.
+void RendererForgetChunk(Chunk *ChunkVal);
+
 void DrawWorld(World *WorldVal, RenderCamera CameraVal);
 void DrawAABBDebug(World *WorldVal, Player *PlayerVal);
 void DrawPrefabSelection(Player *PlayerVal);
@@ -54,7 +64,13 @@ int GetLastRenderedChunkCount(void);
 // What the last DrawWorld's visibility pass did: how many chunks own a mesh and
 // how many columns they form, how the column boxes classified against the
 // frustum, how many chunks still needed an individual test, and how many were
-// accepted (Visible) and drew solid geometry (Rendered).
+// accepted by the frustum (Visible) and drew solid geometry (Rendered).
+//
+// Occluded is how many of the Visible chunks the occlusion traversal rejected;
+// OcclusionNodes and OcclusionReachable are the traversal's work and reach, and
+// OcclusionFallback is set when the camera stood outside the loaded set and the
+// frame fell back to frustum culling alone. SubmittedVertices sums every mesh
+// the passes actually drew -- a machine-independent proxy for GPU load.
 typedef struct {
   int Renderable;
   int Columns;
@@ -64,6 +80,12 @@ typedef struct {
   int ChunksTested;
   int Visible;
   int Rendered;
+  int Occluded;
+  int OcclusionNodes;
+  int OcclusionReachable;
+  int64_t SubmittedVertices;
+  bool OcclusionEnabled;
+  bool OcclusionFallback;
 } RenderCullStats;
 
 void GetLastCullStats(RenderCullStats *Out);
@@ -82,6 +104,10 @@ void RendererGetMeshVertexTotals(MeshVertexTotals *Out);
 // Recounts the loaded chunks owning a mesh and checks that each is in the
 // renderer's renderable set exactly once. Logs the outcome.
 bool RendererCheckRenderableSet(World *WorldVal);
+
+// Logs how many loaded chunks are fully open, partially open, sealed or not
+// yet analysed by the face connectivity pass.
+void RendererLogVisibilityStats(const World *WorldVal);
 #endif
 
 #endif
