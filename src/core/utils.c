@@ -145,3 +145,101 @@ int ParseInt(const char *Str, char **EndPtr) {
   }
   return Sign * Value;
 }
+
+bool NameMatchesExact(const char *Name, const char *Query) {
+  if (Name == (void *)0 || Query == (void *)0) {
+    return false;
+  }
+  const char *Pn = Name;
+  const char *Pq = Query;
+  for (int Loop = 0; Loop < MAX_STR_LOOP; Loop++) {
+    while (*Pn == ' ' || *Pn == '_' || *Pn == '-') {
+      Pn++;
+    }
+    while (*Pq == ' ' || *Pq == '_' || *Pq == '-') {
+      Pq++;
+    }
+    if (*Pn == '\0' || *Pq == '\0') {
+      break;
+    }
+    char Cn = *Pn;
+    char Cq = *Pq;
+    if (Cn >= 'A' && Cn <= 'Z') {
+      Cn = (char)(Cn + ('a' - 'A'));
+    }
+    if (Cq >= 'A' && Cq <= 'Z') {
+      Cq = (char)(Cq + ('a' - 'A'));
+    }
+    if (Cn != Cq) {
+      return false;
+    }
+    Pn++;
+    Pq++;
+  }
+  while (*Pn == ' ' || *Pn == '_' || *Pn == '-') {
+    Pn++;
+  }
+  while (*Pq == ' ' || *Pq == '_' || *Pq == '-') {
+    Pq++;
+  }
+  return *Pn == '\0' && *Pq == '\0';
+}
+
+bool NameMatchesPrefix(const char *Name, const char *Query) {
+  if (Name == (void *)0 || Query == (void *)0 || *Query == '\0') {
+    return false;
+  }
+  const char *Pn = Name;
+  const char *Pq = Query;
+  for (int Loop = 0; Loop < MAX_STR_LOOP; Loop++) {
+    while (*Pn == ' ' || *Pn == '_' || *Pn == '-') {
+      Pn++;
+    }
+    while (*Pq == ' ' || *Pq == '_' || *Pq == '-') {
+      Pq++;
+    }
+    if (*Pn == '\0' || *Pq == '\0') {
+      break;
+    }
+    char Cn = *Pn;
+    char Cq = *Pq;
+    if (Cn >= 'A' && Cn <= 'Z') {
+      Cn = (char)(Cn + ('a' - 'A'));
+    }
+    if (Cq >= 'A' && Cq <= 'Z') {
+      Cq = (char)(Cq + ('a' - 'A'));
+    }
+    if (Cn != Cq) {
+      return false;
+    }
+    Pn++;
+    Pq++;
+  }
+  while (*Pq == ' ' || *Pq == '_' || *Pq == '-') {
+    Pq++;
+  }
+  return *Pq == '\0';
+}
+
+bool PrefixMatchesNoCase(const char *Str, const char *Prefix, SizeType PrefixLen) {
+  if (Str == (void *)0 || Prefix == (void *)0) {
+    return false;
+  }
+  for (SizeType Index = 0; Index < PrefixLen; Index++) {
+    if (Str[Index] == '\0') {
+      return false;
+    }
+    char Cs = Str[Index];
+    char Cp = Prefix[Index];
+    if (Cs >= 'A' && Cs <= 'Z') {
+      Cs = (char)(Cs + ('a' - 'A'));
+    }
+    if (Cp >= 'A' && Cp <= 'Z') {
+      Cp = (char)(Cp + ('a' - 'A'));
+    }
+    if (Cs != Cp) {
+      return false;
+    }
+  }
+  return true;
+}

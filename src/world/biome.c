@@ -363,6 +363,101 @@ Color8 GetBiomeTint(int BiomeId, TintSource Source) {
   }
 }
 
+bool FindBiomeLocation(int BiomeId, int StartX, int StartZ, int MaxRadius,
+                       uint64_t Seed, int *OutX, int *OutZ, float *OutDistance) {
+  const BiomeType *Target = GetBiomeDef(BiomeId);
+  if (Target == NULL || Target->Id == -1) {
+    return false;
+  }
+
+  bool IsUnderground = (strcmp(Target->Family, "underground") == 0);
+  const int STEP = 16;
+  const int UNDERGROUND_DEPTH_OFFSET = 25;
+  int MaxRings = MaxRadius / STEP;
+  if (MaxRings < 1) {
+    MaxRings = 1;
+  }
+
+  int CenterSampleY =
+      IsUnderground
+          ? (GetPreliminaryFloor(StartX, StartZ, Seed) - UNDERGROUND_DEPTH_OFFSET)
+          : GetPreliminaryFloor(StartX, StartZ, Seed);
+  if (SampleBiomeAt(StartX, CenterSampleY, StartZ, Seed, NULL) == BiomeId) {
+    if (OutX != NULL) {
+      *OutX = StartX;
+    }
+    if (OutZ != NULL) {
+      *OutZ = StartZ;
+    }
+    if (OutDistance != NULL) {
+      *OutDistance = 0.0F;
+    }
+    return true;
+  }
+
+  const int MAX_EVALUATIONS = 40000;
+  int Evaluations = 0;
+
+  bool Found = false;
+  float BestDist = RANGE_UNBOUNDED_MAX;
+  int BestX = 0;
+  int BestZ = 0;
+
+  for (int Ring = 1; Ring <= MaxRings; Ring++) {
+    int Side = 2 * Ring;
+    int PosX = StartX - (Ring * STEP);
+    int PosZ = StartZ - (Ring * STEP);
+    const int STEP_X[4] = {STEP, 0, -STEP, 0};
+    const int STEP_Z[4] = {0, STEP, 0, -STEP};
+
+    for (int Edge = 0; Edge < 4; Edge++) {
+      for (int StepIdx = 0; StepIdx < Side; StepIdx++) {
+        if (++Evaluations > MAX_EVALUATIONS) {
+          goto ExitBiomeSearch;
+        }
+
+        int SampleY =
+            IsUnderground
+                ? (GetPreliminaryFloor(PosX, PosZ, Seed) - UNDERGROUND_DEPTH_OFFSET)
+                : GetPreliminaryFloor(PosX, PosZ, Seed);
+        if (SampleBiomeAt(PosX, SampleY, PosZ, Seed, NULL) == BiomeId) {
+          float Dx = (float)(PosX - StartX);
+          float Dz = (float)(PosZ - StartZ);
+          float Dist = sqrtf((Dx * Dx) + (Dz * Dz));
+          if (!Found || Dist < BestDist) {
+            Found = true;
+            BestDist = Dist;
+            BestX = PosX;
+            BestZ = PosZ;
+          }
+        }
+
+        PosX += STEP_X[Edge];
+        PosZ += STEP_Z[Edge];
+      }
+    }
+
+    if (Found) {
+      break;
+    }
+  }
+
+ExitBiomeSearch:
+  if (Found) {
+    if (OutX != NULL) {
+      *OutX = BestX;
+    }
+    if (OutZ != NULL) {
+      *OutZ = BestZ;
+    }
+    if (OutDistance != NULL) {
+      *OutDistance = BestDist;
+    }
+    return true;
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // JSON loading
 // ---------------------------------------------------------------------------

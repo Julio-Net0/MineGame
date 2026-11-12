@@ -23,7 +23,8 @@ PlayerInput PollPlayerInput(bool HasControl) {
 
   Input.Jump = IsKeyPressed(KEY_SPACE);
   Input.AscendHeld = IsKeyDown(KEY_SPACE);
-  Input.DescendHeld = IsKeyDown(KEY_LEFT_CONTROL);
+  Input.DescendHeld = IsKeyDown(KEY_LEFT_SHIFT);
+  Input.SprintHeld = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
 
   for (int IdxI = 0; IdxI < HOTBAR_SIZE; IdxI++) {
     if (IsKeyPressed(KEY_ONE + IdxI)) {
@@ -35,6 +36,7 @@ PlayerInput PollPlayerInput(bool HasControl) {
 
   Input.Break = IsMouseButtonPressed(MOUSE_LEFT_BUTTON);
   Input.Place = IsMouseButtonPressed(MOUSE_RIGHT_BUTTON);
+  Input.PickBlock = IsMouseButtonPressed(MOUSE_MIDDLE_BUTTON);
 
   return Input;
 }
@@ -44,6 +46,7 @@ SystemInput PollSystemInput(void) {
   System.FullscreenToggle = IsKeyPressed(KEY_F11);
   System.DebugToggle = IsKeyPressed(KEY_F3);
   System.ChatOpen = IsKeyPressed(KEY_T);
+  System.CommandOpen = IsKeyPressed(KEY_SLASH);
   System.PauseToggle = IsKeyPressed(KEY_ESCAPE);
   System.InventoryToggle = IsKeyPressed(KEY_E);
   System.HotbarKey = -1;
@@ -58,6 +61,9 @@ SystemInput PollSystemInput(void) {
 TextInput PollTextInput(void) {
   TextInput Text = {0};
 
+  bool Ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+  bool Shift = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+
   int Key = GetCharPressed();
   for (int LoopIdx = 0; LoopIdx < CHAT_MAX_INPUT_CHARS; LoopIdx++) {
     if (Key <= 0) {
@@ -65,7 +71,7 @@ TextInput PollTextInput(void) {
     }
     // Any printable codepoint, encoded as UTF-8, so accented letters typed
     // on the keyboard reach the chat. Only whole sequences are appended.
-    if (Key >= ' ' && Key != DELETE_CODEPOINT) {
+    if (Key >= ' ' && Key != DELETE_CODEPOINT && !Ctrl) {
       int Size = 0;
       const char *Encoded = CodepointToUTF8(Key, &Size);
       if (Size > 0 && Text.Count + Size <= CHAT_MAX_INPUT_CHARS) {
@@ -77,8 +83,28 @@ TextInput PollTextInput(void) {
   }
 
   Text.Backspace = IsKeyPressed(KEY_BACKSPACE) || IsKeyPressedRepeat(KEY_BACKSPACE);
+  Text.Delete = IsKeyPressed(KEY_DELETE) || IsKeyPressedRepeat(KEY_DELETE);
   Text.Submit = IsKeyPressed(KEY_ENTER);
-  Text.Cancel = IsKeyPressed(KEY_ESCAPE) || IsKeyPressed(KEY_DELETE);
+  Text.Cancel = IsKeyPressed(KEY_ESCAPE);
+  Text.MoveLeft = IsKeyPressed(KEY_LEFT) || IsKeyPressedRepeat(KEY_LEFT);
+  Text.MoveRight = IsKeyPressed(KEY_RIGHT) || IsKeyPressedRepeat(KEY_RIGHT);
+  Text.MoveHome = IsKeyPressed(KEY_HOME);
+  Text.MoveEnd = IsKeyPressed(KEY_END);
+  Text.WordStep = Ctrl;
+  Text.ShiftHeld = Shift;
+
+  if (Ctrl) {
+    Text.SelectAll = IsKeyPressed(KEY_A);
+    Text.Copy = IsKeyPressed(KEY_C);
+    Text.Paste = IsKeyPressed(KEY_V);
+    Text.Cut = IsKeyPressed(KEY_X);
+    Text.Undo = IsKeyPressed(KEY_Z);
+  }
+
+  Text.HistoryPrev = IsKeyPressed(KEY_UP) || IsKeyPressedRepeat(KEY_UP);
+  Text.HistoryNext = IsKeyPressed(KEY_DOWN) || IsKeyPressedRepeat(KEY_DOWN);
+  Text.Autocomplete = IsKeyPressed(KEY_TAB);
+
   return Text;
 }
 
@@ -100,4 +126,8 @@ int InputGetScrollDelta(void) {
 
 Vec2 InputGetLookDelta(void) {
   return Vec2FromRL(GetMouseDelta());
+}
+
+bool InputIsShiftDown(void) {
+  return IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
 }

@@ -63,6 +63,7 @@ static bool InputsEqual(const PktClientInput *A, const PktClientInput *B) {
          A->Input.HotbarSelect == B->Input.HotbarSelect &&
          A->Input.HotbarScroll == B->Input.HotbarScroll &&
          A->Input.Break == B->Input.Break && A->Input.Place == B->Input.Place &&
+         A->Input.PickBlock == B->Input.PickBlock &&
          A->Forward.x == B->Forward.x && A->Forward.y == B->Forward.y &&
          A->Forward.z == B->Forward.z;
 }
@@ -907,6 +908,7 @@ static bool OnlyDeltaIs(const ClientInbox *Inbox, Vec3 BlockPos,
 static bool TestServerBreakAndPlace(ServerState *Server, NetLoopback *Channel,
                                     ClientInbox *Inbox, uint64_t *NextTick,
                                     Vec3 *OutBlockPos) {
+  Server->PlayerVal.Hotbar[0] = (BlockID)STONE_BLOCK_ID;
   int Slot = FindPlaceableSlot(&Server->PlayerVal);
   if (!Expect(Slot >= 0, "server_hotbar_has_placeable_block")) {
     return false;

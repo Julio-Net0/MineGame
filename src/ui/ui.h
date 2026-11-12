@@ -2,6 +2,7 @@
 #define UI_UI_H
 
 #include "core/color.h"
+#include "platform/platform.h"
 #include "ui/draw_list.h"
 #include "ui/gui_atlas.h"
 #include <stdbool.h>
@@ -37,15 +38,46 @@ typedef struct {
   bool LeftReleased;
 } UiPointer;
 
+#define UI_TEXT_FIELD_MAX_CHARS 256
+
 // One frame of text entry for a text field: UTF-8 bytes typed plus the edit
-// edges.
+// edges and keyboard shortcuts.
 typedef struct {
   const char *Chars;
   int Count;
   bool Backspace;
+  bool Delete;
   bool Submit;
   bool Cancel;
+  bool MoveLeft;
+  bool MoveRight;
+  bool MoveHome;
+  bool MoveEnd;
+  bool WordStep;
+  bool ShiftHeld;
+  bool SelectAll;
+  bool Copy;
+  bool Cut;
+  bool Paste;
+  bool Undo;
+  bool HistoryPrev;
+  bool HistoryNext;
+  bool Autocomplete;
 } UiTextEvents;
+
+// State of an active editable text field across frames.
+typedef struct {
+  int Cursor;
+  int SelectionStart;
+  int SelectionEnd;
+  char UndoText[UI_TEXT_FIELD_MAX_CHARS + 1];
+  int UndoCursor;
+  bool HasUndo;
+  float ScrollOffset;
+} UiTextEditState;
+
+void UiTextEditStateInit(UiTextEditState *State);
+void UiTextEditStateReset(UiTextEditState *State);
 
 typedef enum {
   UI_TEXT_NONE,
@@ -62,6 +94,7 @@ typedef struct {
   int GuiHeight;
   UiScissor Scissor;
   UiPointer Pointer;
+  PlatformCursorShape CursorShape;
   // Hot is the widget under the pointer this frame; active is the one the
   // left button went down on, kept until the button is released, so a press
   // that drags off a button does not click whatever it is released over.
@@ -145,13 +178,12 @@ bool UiSlider(UiContext *Ctx, int Id, UiRect Rect, const char *Label,
 // Capacity bytes including the terminator. Characters are appended and
 // removed as whole sequences, so a full buffer or a backspace never leaves
 // half a character. Returns whether the frame submitted or cancelled.
-UiTextAction UiTextFieldEdit(char *Buffer, int Capacity,
+UiTextAction UiTextFieldEdit(char *Buffer, int Capacity, UiTextEditState *State,
                              const UiTextEvents *Events);
 
-// Draws a text field showing Text, scrolled so its end stays visible and
-// clipped to the field. Bordered fields use the vanilla text_field sprite;
-// borderless ones (the chat line) a translucent dark strip.
+// Draws a text field showing Text, scrolled so its caret stays visible and
+// clipped to the field. Handles mouse cursor positioning and drag selection.
 void UiTextFieldDraw(UiContext *Ctx, UiRect Rect, const char *Text,
-                     bool Focused, bool Bordered);
+                     UiTextEditState *State, bool Focused, bool Bordered);
 
 #endif

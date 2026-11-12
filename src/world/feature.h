@@ -54,4 +54,11 @@ int FeatureTerrainTop(int WorldX, int WorldZ, uint64_t Seed);
 // Column is the cache entry for this chunk's column; the surface comes from it.
 void PlaceChunkFlora(Chunk *ChunkVal, const struct ColumnEntry *Column);
 
+// Finds the nearest placed structure whose prefab name matches PrefabName
+// within MaxRadius blocks of (StartX, StartZ), searching in concentric rings of
+// grid cells. Returns the stamp origin (OutX, OutY, OutZ) and Euclidean distance.
+bool FindStructureByName(const char *PrefabName, int StartX, int StartZ,
+                         int MaxRadius, uint64_t Seed, int *OutX, int *OutY,
+                         int *OutZ, float *OutDistance);
+
 #endif

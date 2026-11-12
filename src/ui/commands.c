@@ -2,6 +2,7 @@
 #include "world/block_system.h"
 #include "world/biome.h"
 #include "world/chunk.h"
+#include "world/feature.h"
 #include "world/prefab.h"
 #include "world/prefab_capture.h"
 #include "world/surface.h"
@@ -15,12 +16,15 @@
 #include "persistence/world_save.h"
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 enum {
   FILLCHAT_DEFAULT_LINES = 20,
   DEBUG_HELP_LINE_SIZE = 128,
   DEBUG_STATUS_MSG_SIZE = 64,
-  MSG_BUFFER_SIZE = 256
+  MSG_BUFFER_SIZE = 256,
+  MAX_AUTOCOMPLETE_CANDIDATES = 64,
+  MAX_AUTOCOMPLETE_TOKEN_LENGTH = 64
 };
 
 static void CommandHelp(const char *Args, CommandContext *Ctx);
@@ -28,11 +32,13 @@ static void CommandTP(const char *Args, CommandContext *Ctx);
 static void CommandPos(const char *Args, CommandContext *Ctx);
 static void CommandList(const char *Args, CommandContext *Ctx);
 static void CommandNoclip(const char *Args, CommandContext *Ctx);
+static void CommandSpeed(const char *Args, CommandContext *Ctx);
 static void CommandDebug(const char *Args, CommandContext *Ctx);
 static void CommandSeed(const char *Args, CommandContext *Ctx);
 static void CommandSave(const char *Args, CommandContext *Ctx);
 static void CommandPrefab(const char *Args, CommandContext *Ctx);
 static void CommandBiome(const char *Args, CommandContext *Ctx);
+static void CommandLocate(const char *Args, CommandContext *Ctx);
 static void CommandGuiScale(const char *Args, CommandContext *Ctx);
 static void CommandFillChat(const char *Args, CommandContext *Ctx);
 #ifdef MINEGAME_PROFILE
@@ -46,8 +52,10 @@ static const CommandInfo AVAILABLECOMMANDS[] = {
      CommandTP},
     {"/pos", "Use: /pos", "Returns your current position", CommandPos},
     {"/list", "Use: /list", "Returns all loaded block assets", CommandList},
-    {"/noclip", "Use: /noclip <1/0>", "Activate or deactivate noclip flight",
-     CommandNoclip},
+    {"/noclip", "Use: /noclip <1/0 | speed <val>>",
+     "Activate/deactivate noclip flight or adjust speed", CommandNoclip},
+    {"/speed", "Use: /speed [val]", "Sets or queries noclip flight speed",
+     CommandSpeed},
     {"/debug", "Use: /debug <debug/help> <1/0>",
      "Activate or deactivate debugs overlay", CommandDebug},
     {"/seed", "Use: /seed", "Returns the world seed", CommandSeed},
@@ -59,6 +67,8 @@ static const CommandInfo AVAILABLECOMMANDS[] = {
     {"/biome", "Use: /biome",
      "Returns the biome and its raw climate values at your position",
      CommandBiome},
+    {"/locate", "Use: /locate <biome | prefab> <name>",
+     "Locates the nearest biome or prefab structure", CommandLocate},
     {"/guiscale", "Use: /guiscale <0-4>",
      "Sets the GUI scale; 0 picks the largest that fits the window",
      CommandGuiScale},
@@ -411,6 +421,172 @@ static void CommandBiome(const char *Args, CommandContext *Ctx) {
                 Msg);
 }
 
+static int FindBiomeByMatch(const char *Name) {
+  int BiomeTotal = GetLoadedBiomesCount();
+  for (int Idx = 0; Idx < BiomeTotal; Idx++) {
+    const BiomeType *B = GetBiomeDef(Idx);
+    if (B != (void *)0 && B->Name[0] != '\0' && NameMatchesExact(B->Name, Name)) {
+      return Idx;
+    }
+  }
+  for (int Idx = 0; Idx < BiomeTotal; Idx++) {
+    const BiomeType *B = GetBiomeDef(Idx);
+    if (B != (void *)0 && B->Name[0] != '\0' && NameMatchesPrefix(B->Name, Name)) {
+      return Idx;
+    }
+  }
+  return -1;
+}
+
+static int FindPrefabByMatch(const char *Name) {
+  int PrefabTotal = GetLoadedPrefabsCount();
+  for (int Idx = 0; Idx < PrefabTotal; Idx++) {
+    const Prefab *P = GetPrefabByIndex(Idx);
+    if (P != (void *)0 && P->Name[0] != '\0' && NameMatchesExact(P->Name, Name)) {
+      return Idx;
+    }
+  }
+  for (int Idx = 0; Idx < PrefabTotal; Idx++) {
+    const Prefab *P = GetPrefabByIndex(Idx);
+    if (P != (void *)0 && P->Name[0] != '\0' && NameMatchesPrefix(P->Name, Name)) {
+      return Idx;
+    }
+  }
+  return -1;
+}
+
+static void CommandLocate(const char *Args, CommandContext *Ctx) {
+  if (Args == (void *)0) {
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR,
+                  "Use: /locate <biome | prefab> <name>");
+    return;
+  }
+
+  char ArgsCopy[CHAT_MAX_INPUT_CHARS];
+  SafeStrncpy(ArgsCopy, Args, (int)sizeof(ArgsCopy));
+
+  char *SavePtr = ArgsCopy;
+  char *Subcmd = TokenizeSpace(&SavePtr);
+  if (Subcmd == (void *)0 || SavePtr == (void *)0) {
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR,
+                  "Use: /locate <biome | prefab> <name>");
+    return;
+  }
+
+  while (*SavePtr == ' ') {
+    SavePtr++;
+  }
+  if (*SavePtr == '"') {
+    SavePtr++;
+    char *EndQuote = strrchr(SavePtr, '"');
+    if (EndQuote != (void *)0) {
+      *EndQuote = '\0';
+    }
+  }
+  int NameLen = (int)strlen(SavePtr);
+  while (NameLen > 0 && SavePtr[NameLen - 1] == ' ') {
+    SavePtr[--NameLen] = '\0';
+  }
+
+  if (SavePtr[0] == '\0') {
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR,
+                  "Missing name. Use: /locate <biome | prefab> <name>");
+    return;
+  }
+
+  int PlayerX = (int)__builtin_floorf(Ctx->Player->Position.x);
+  int PlayerZ = (int)__builtin_floorf(Ctx->Player->Position.z);
+  uint64_t Seed = GetWorldSeed();
+  const int MAX_SEARCH_RADIUS = 3000;
+
+  if (CompareString(Subcmd, "biome") == 0) {
+    int BiomeId = FindBiomeByMatch(SavePtr);
+    if (BiomeId < 0) {
+      char Msg[MSG_BUFFER_SIZE];
+      snprintf(Msg, sizeof(Msg),
+               "Unknown biome '%s'. Use Tab for suggestions.", SavePtr);
+      ReturnCommand(Ctx->Chat, LOG_LEVEL_WARN, Msg);
+      return;
+    }
+    const BiomeType *Def = GetBiomeDef(BiomeId);
+    int FoundX = 0;
+    int FoundZ = 0;
+    float Distance = 0.0F;
+    if (FindBiomeLocation(BiomeId, PlayerX, PlayerZ, MAX_SEARCH_RADIUS, Seed,
+                          &FoundX, &FoundZ, &Distance)) {
+      char Msg[MSG_BUFFER_SIZE];
+      snprintf(Msg, sizeof(Msg),
+               "Nearest %s is at [%d, ~, %d] (%.1f blocks away)",
+               Def->Name, FoundX, FoundZ, (double)Distance);
+      ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
+    } else {
+      char Msg[MSG_BUFFER_SIZE];
+      snprintf(Msg, sizeof(Msg),
+               "Could not find biome '%s' within %d blocks.", Def->Name,
+               MAX_SEARCH_RADIUS);
+      ReturnCommand(Ctx->Chat, LOG_LEVEL_WARN, Msg);
+    }
+  } else if (CompareString(Subcmd, "prefab") == 0 ||
+             CompareString(Subcmd, "structure") == 0) {
+    int PrefabIdx = FindPrefabByMatch(SavePtr);
+    if (PrefabIdx < 0) {
+      char Msg[MSG_BUFFER_SIZE];
+      snprintf(Msg, sizeof(Msg),
+               "Unknown prefab '%s'. Use Tab for suggestions.", SavePtr);
+      ReturnCommand(Ctx->Chat, LOG_LEVEL_WARN, Msg);
+      return;
+    }
+    const Prefab *P = GetPrefabByIndex(PrefabIdx);
+    int FoundX = 0;
+    int FoundY = 0;
+    int FoundZ = 0;
+    float Distance = 0.0F;
+    if (FindStructureByName(P->Name, PlayerX, PlayerZ, MAX_SEARCH_RADIUS,
+                            Seed, &FoundX, &FoundY, &FoundZ, &Distance)) {
+      char Msg[MSG_BUFFER_SIZE];
+      snprintf(Msg, sizeof(Msg),
+               "Nearest %s is at [%d, %d, %d] (%.1f blocks away)",
+               P->Name, FoundX, FoundY, FoundZ, (double)Distance);
+      ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
+    } else {
+      bool Spawns = false;
+      int BiomeCount = GetLoadedBiomesCount();
+      for (int BIdx = 0; BIdx < BiomeCount; BIdx++) {
+        const BiomeType *B = GetBiomeDef(BIdx);
+        if (B == (void *)0) {
+          continue;
+        }
+        for (int SIdx = 0; SIdx < B->StructureCount; SIdx++) {
+          if (B->Structures[SIdx].PrefabIndex == PrefabIdx) {
+            Spawns = true;
+            break;
+          }
+        }
+        if (Spawns) {
+          break;
+        }
+      }
+      char Msg[MSG_BUFFER_SIZE];
+      if (!Spawns) {
+        snprintf(Msg, sizeof(Msg),
+                 "Prefab '%s' is not configured to spawn naturally in any biome.",
+                 P->Name);
+      } else {
+        snprintf(Msg, sizeof(Msg),
+                 "Could not find prefab '%s' within %d blocks.", P->Name,
+                 MAX_SEARCH_RADIUS);
+      }
+      ReturnCommand(Ctx->Chat, LOG_LEVEL_WARN, Msg);
+    }
+  } else {
+    char Msg[MSG_BUFFER_SIZE];
+    snprintf(Msg, sizeof(Msg),
+             "Invalid locate category '%s'. Use: /locate <biome | prefab> <name>",
+             Subcmd);
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR, Msg);
+  }
+}
+
 static void CommandGuiScale(const char *Args, CommandContext *Ctx) {
   char *End = (char *)0;
   int Setting = ParseInt(Args, &End);
@@ -738,7 +914,8 @@ static void CommandList(const char *Args, CommandContext *Ctx) {
 
 static void CommandNoclip(const char *Args, CommandContext *Ctx) {
   if (Args == (void*)0) {
-    ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR, "Incorrect Format. try: /noclip <1/0>");
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR,
+                  "Incorrect Format. try: /noclip <1/0 | speed <val>>");
     return;
   }
 
@@ -747,19 +924,79 @@ static void CommandNoclip(const char *Args, CommandContext *Ctx) {
 
   char *SavePtr = ArgsCopy;
   char *OptStr = TokenizeSpace(&SavePtr);
+  char *SpeedStr = TokenizeSpace(&SavePtr);
 
   if (OptStr) {
+    if (CompareString(OptStr, "speed") == 0) {
+      if (SpeedStr != (void*)0) {
+        float SpeedVal = ParseFloat(SpeedStr, (char **)0);
+        if (SpeedVal > 0.0F) {
+          Ctx->Player->NoclipSpeed = SpeedVal;
+          char Msg[MSG_BUFFER_SIZE];
+          snprintf(Msg, sizeof(Msg), "Noclip speed set to %.1f", (double)SpeedVal);
+          ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
+          return;
+        }
+      }
+      char Msg[MSG_BUFFER_SIZE];
+      snprintf(Msg, sizeof(Msg), "Current noclip speed: %.1f",
+               (double)Ctx->Player->NoclipSpeed);
+      ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
+      return;
+    }
+
     int Opt = ParseInt(OptStr, (char **)0);
     if (Opt == 1) {
       Ctx->Player->Noclip = true;
-      ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, "Noclip activated");
+      if (SpeedStr != (void*)0) {
+        float SpeedVal = ParseFloat(SpeedStr, (char **)0);
+        if (SpeedVal > 0.0F) {
+          Ctx->Player->NoclipSpeed = SpeedVal;
+        }
+      } else {
+        Ctx->Player->NoclipSpeed = PLAYER_DEFAULT_NOCLIP_SPEED;
+      }
+      char Msg[MSG_BUFFER_SIZE];
+      snprintf(Msg, sizeof(Msg), "Noclip activated (speed: %.1f)",
+               (double)Ctx->Player->NoclipSpeed);
+      ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
     } else {
       Ctx->Player->Noclip = false;
       ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, "Noclip deactivated");
     }
   } else {
-    ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR, "Incorrect Format. try: /noclip <1/0>");
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR,
+                  "Incorrect Format. try: /noclip <1/0 | speed <val>>");
   }
+}
+
+static void CommandSpeed(const char *Args, CommandContext *Ctx) {
+  if (Args == (void*)0) {
+    char Msg[MSG_BUFFER_SIZE];
+    snprintf(Msg, sizeof(Msg), "Current noclip speed: %.1f",
+             (double)Ctx->Player->NoclipSpeed);
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
+    return;
+  }
+
+  char ArgsCopy[CHAT_MAX_INPUT_CHARS];
+  SafeStrncpy(ArgsCopy, Args, (int)sizeof(ArgsCopy));
+
+  char *SavePtr = ArgsCopy;
+  char *SpeedStr = TokenizeSpace(&SavePtr);
+
+  if (SpeedStr != (void*)0) {
+    float SpeedVal = ParseFloat(SpeedStr, (char **)0);
+    if (SpeedVal > 0.0F) {
+      Ctx->Player->NoclipSpeed = SpeedVal;
+      char Msg[MSG_BUFFER_SIZE];
+      snprintf(Msg, sizeof(Msg), "Noclip speed set to %.1f", (double)SpeedVal);
+      ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
+      return;
+    }
+  }
+  ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR,
+                "Incorrect Format. try: /speed <val>");
 }
 
 static void DebugAABB(CommandContext *Ctx, bool State) {
@@ -895,4 +1132,272 @@ void PollCommandEvents(ChatState *Chat) {
 #else
   (void)Chat;
 #endif
+}
+
+int CommandAutocomplete(const char *Buffer, int CursorPos, char *OutCompleted,
+                        int Capacity, int *OutNewCursor, ChatState *Chat,
+                        int CycleIndex) {
+  if (Buffer == NULL || OutCompleted == NULL || OutNewCursor == NULL ||
+      Capacity <= 0 || Buffer[0] != '/' || CursorPos <= 0) {
+    return 0;
+  }
+
+  int TokenStart = CursorPos;
+  while (TokenStart > 0 && Buffer[TokenStart - 1] != ' ') {
+    TokenStart--;
+  }
+
+  char CurrentToken[MAX_AUTOCOMPLETE_TOKEN_LENGTH];
+  int TokenLen = CursorPos - TokenStart;
+  if (TokenLen >= MAX_AUTOCOMPLETE_TOKEN_LENGTH) {
+    TokenLen = MAX_AUTOCOMPLETE_TOKEN_LENGTH - 1;
+  }
+  if (TokenLen > 0) {
+    memcpy(CurrentToken, &Buffer[TokenStart], (size_t)TokenLen);
+  }
+  CurrentToken[TokenLen] = '\0';
+
+  int TokenIndex = 0;
+  char FirstToken[MAX_AUTOCOMPLETE_TOKEN_LENGTH] = {0};
+  char SecondToken[MAX_AUTOCOMPLETE_TOKEN_LENGTH] = {0};
+
+  {
+    int Scan = 0;
+    while (Scan < TokenStart && Buffer[Scan] == ' ') {
+      Scan++;
+    }
+    int WordIdx = 0;
+    while (Scan < TokenStart) {
+      int WStart = Scan;
+      while (Scan < TokenStart && Buffer[Scan] != ' ') {
+        Scan++;
+      }
+      int WLen = Scan - WStart;
+      if (WordIdx == 0) {
+        int CopyLen = WLen < MAX_AUTOCOMPLETE_TOKEN_LENGTH - 1
+                          ? WLen
+                          : MAX_AUTOCOMPLETE_TOKEN_LENGTH - 1;
+        memcpy(FirstToken, &Buffer[WStart], (size_t)CopyLen);
+        FirstToken[CopyLen] = '\0';
+      } else if (WordIdx == 1) {
+        int CopyLen = WLen < MAX_AUTOCOMPLETE_TOKEN_LENGTH - 1
+                          ? WLen
+                          : MAX_AUTOCOMPLETE_TOKEN_LENGTH - 1;
+        memcpy(SecondToken, &Buffer[WStart], (size_t)CopyLen);
+        SecondToken[CopyLen] = '\0';
+      }
+      WordIdx++;
+      while (Scan < TokenStart && Buffer[Scan] == ' ') {
+        Scan++;
+      }
+    }
+    TokenIndex = WordIdx;
+  }
+
+  const char *Candidates[MAX_AUTOCOMPLETE_CANDIDATES];
+  int CandidateCount = 0;
+
+  if (TokenIndex == 0) {
+    for (int Idx = 0;
+         Idx < AVAILABLECOMMANDSCOUNT && CandidateCount < MAX_AUTOCOMPLETE_CANDIDATES;
+         Idx++) {
+      Candidates[CandidateCount++] = AVAILABLECOMMANDS[Idx].Name;
+    }
+  } else if (TokenIndex == 1) {
+    if (CompareString(FirstToken, "/debug") == 0) {
+      for (int Idx = 0;
+           Idx < AVAILABLEDEBUGSCOUNT && CandidateCount < MAX_AUTOCOMPLETE_CANDIDATES;
+           Idx++) {
+        Candidates[CandidateCount++] = AVAILABLEDEBUGS[Idx].Name;
+      }
+      if (CandidateCount < MAX_AUTOCOMPLETE_CANDIDATES) {
+        Candidates[CandidateCount++] = "help";
+      }
+    } else if (CompareString(FirstToken, "/prefab") == 0) {
+      static const char *PrefabSubcommands[] = {"list", "stamp", "pos1",
+                                                "pos2", "offset", "save"};
+      int SubCount = (int)(sizeof(PrefabSubcommands) / sizeof(PrefabSubcommands[0]));
+      for (int Idx = 0;
+           Idx < SubCount && CandidateCount < MAX_AUTOCOMPLETE_CANDIDATES;
+           Idx++) {
+        Candidates[CandidateCount++] = PrefabSubcommands[Idx];
+      }
+    } else if (CompareString(FirstToken, "/noclip") == 0) {
+      Candidates[CandidateCount++] = "1";
+      Candidates[CandidateCount++] = "0";
+      Candidates[CandidateCount++] = "speed";
+    } else if (CompareString(FirstToken, "/speed") == 0) {
+      static const char *SpeedVals[] = {"10", "15", "25", "50"};
+      int SpeedCount = (int)(sizeof(SpeedVals) / sizeof(SpeedVals[0]));
+      for (int Idx = 0;
+           Idx < SpeedCount && CandidateCount < MAX_AUTOCOMPLETE_CANDIDATES;
+           Idx++) {
+        Candidates[CandidateCount++] = SpeedVals[Idx];
+      }
+    } else if (CompareString(FirstToken, "/guiscale") == 0) {
+      static const char *GuiScales[] = {"0", "1", "2", "3", "4"};
+      int ScaleCount = (int)(sizeof(GuiScales) / sizeof(GuiScales[0]));
+      for (int Idx = 0;
+           Idx < ScaleCount && CandidateCount < MAX_AUTOCOMPLETE_CANDIDATES;
+           Idx++) {
+        Candidates[CandidateCount++] = GuiScales[Idx];
+      }
+#ifdef MINEGAME_PROFILE
+    } else if (CompareString(FirstToken, "/profile") == 0) {
+      static const char *ProfileSubcommands[] = {"start", "stop", "dump",
+                                                 "reset"};
+      int SubCount =
+          (int)(sizeof(ProfileSubcommands) / sizeof(ProfileSubcommands[0]));
+      for (int Idx = 0;
+           Idx < SubCount && CandidateCount < MAX_AUTOCOMPLETE_CANDIDATES;
+           Idx++) {
+        Candidates[CandidateCount++] = ProfileSubcommands[Idx];
+      }
+#endif
+    } else if (CompareString(FirstToken, "/help") == 0) {
+      for (int Idx = 0;
+           Idx < AVAILABLECOMMANDSCOUNT && CandidateCount < MAX_AUTOCOMPLETE_CANDIDATES;
+           Idx++) {
+        Candidates[CandidateCount++] = AVAILABLECOMMANDS[Idx].Name + 1;
+      }
+    } else if (CompareString(FirstToken, "/locate") == 0) {
+      Candidates[CandidateCount++] = "biome";
+      Candidates[CandidateCount++] = "prefab";
+      Candidates[CandidateCount++] = "structure";
+    }
+  } else if (TokenIndex == 2) {
+    if (CompareString(FirstToken, "/prefab") == 0 &&
+        CompareString(SecondToken, "stamp") == 0) {
+      int PrefabTotal = GetLoadedPrefabsCount();
+      for (int Idx = 0;
+           Idx < PrefabTotal && CandidateCount < MAX_AUTOCOMPLETE_CANDIDATES;
+           Idx++) {
+        const Prefab *P = GetPrefabByIndex(Idx);
+        if (P != NULL && P->Name[0] != '\0') {
+          Candidates[CandidateCount++] = P->Name;
+        }
+      }
+    } else if (CompareString(FirstToken, "/debug") == 0) {
+      Candidates[CandidateCount++] = "1";
+      Candidates[CandidateCount++] = "0";
+    } else if (CompareString(FirstToken, "/noclip") == 0) {
+      static const char *SpeedVals[] = {"10", "15", "25", "50"};
+      int SpeedCount = (int)(sizeof(SpeedVals) / sizeof(SpeedVals[0]));
+      for (int Idx = 0;
+           Idx < SpeedCount && CandidateCount < MAX_AUTOCOMPLETE_CANDIDATES;
+           Idx++) {
+        Candidates[CandidateCount++] = SpeedVals[Idx];
+      }
+    } else if (CompareString(FirstToken, "/locate") == 0 &&
+               CompareString(SecondToken, "biome") == 0) {
+      int BiomeTotal = GetLoadedBiomesCount();
+      for (int Idx = 0;
+           Idx < BiomeTotal && CandidateCount < MAX_AUTOCOMPLETE_CANDIDATES;
+           Idx++) {
+        const BiomeType *B = GetBiomeDef(Idx);
+        if (B != NULL && B->Name[0] != '\0') {
+          Candidates[CandidateCount++] = B->Name;
+        }
+      }
+    } else if (CompareString(FirstToken, "/locate") == 0 &&
+               (CompareString(SecondToken, "prefab") == 0 ||
+                CompareString(SecondToken, "structure") == 0)) {
+      int PrefabTotal = GetLoadedPrefabsCount();
+      for (int Idx = 0;
+           Idx < PrefabTotal && CandidateCount < MAX_AUTOCOMPLETE_CANDIDATES;
+           Idx++) {
+        const Prefab *P = GetPrefabByIndex(Idx);
+        if (P != NULL && P->Name[0] != '\0') {
+          Candidates[CandidateCount++] = P->Name;
+        }
+      }
+    }
+  }
+
+  const char *Matches[MAX_AUTOCOMPLETE_CANDIDATES];
+  int MatchCount = 0;
+  for (int Idx = 0; Idx < CandidateCount; Idx++) {
+    if (TokenLen == 0 ||
+        PrefixMatchesNoCase(Candidates[Idx], CurrentToken, (SizeType)TokenLen)) {
+      Matches[MatchCount++] = Candidates[Idx];
+    }
+  }
+
+  if (MatchCount == 0) {
+    return 0;
+  }
+
+  if (MatchCount == 1) {
+    const char *Match = Matches[0];
+    int MatchLen = (int)strlen(Match);
+    int SuffixLen = (int)strlen(&Buffer[CursorPos]);
+    int Needed = TokenStart + MatchLen + 1 + SuffixLen + 1;
+    if (Needed > Capacity) {
+      return 0;
+    }
+    memcpy(OutCompleted, Buffer, (size_t)TokenStart);
+    memcpy(&OutCompleted[TokenStart], Match, (size_t)MatchLen);
+    OutCompleted[TokenStart + MatchLen] = ' ';
+    memcpy(&OutCompleted[TokenStart + MatchLen + 1], &Buffer[CursorPos],
+           (size_t)SuffixLen + 1U);
+    *OutNewCursor = TokenStart + MatchLen + 1;
+    return 1;
+  }
+
+  int LcpLen = (int)strlen(Matches[0]);
+  for (int Idx = 1; Idx < MatchCount; Idx++) {
+    int CharIdx = 0;
+    while (CharIdx < LcpLen && Matches[0][CharIdx] == Matches[Idx][CharIdx]) {
+      CharIdx++;
+    }
+    LcpLen = CharIdx;
+  }
+
+  if (LcpLen > TokenLen) {
+    int SuffixLen = (int)strlen(&Buffer[CursorPos]);
+    int Needed = TokenStart + LcpLen + SuffixLen + 1;
+    if (Needed > Capacity) {
+      return 0;
+    }
+    memcpy(OutCompleted, Buffer, (size_t)TokenStart);
+    memcpy(&OutCompleted[TokenStart], Matches[0], (size_t)LcpLen);
+    memcpy(&OutCompleted[TokenStart + LcpLen], &Buffer[CursorPos],
+           (size_t)SuffixLen + 1U);
+    *OutNewCursor = TokenStart + LcpLen;
+    return MatchCount;
+  }
+
+  int Picked = CycleIndex % MatchCount;
+  if (Picked < 0) {
+    Picked += MatchCount;
+  }
+  const char *Choice = Matches[Picked];
+  int ChoiceLen = (int)strlen(Choice);
+  int SuffixLen = (int)strlen(&Buffer[CursorPos]);
+  int Needed = TokenStart + ChoiceLen + SuffixLen + 1;
+  if (Needed > Capacity) {
+    return 0;
+  }
+
+  if (CycleIndex == 0 && Chat != NULL) {
+    char Summary[MSG_BUFFER_SIZE];
+    int Pos = snprintf(Summary, sizeof(Summary), "Matches: ");
+    for (int Idx = 0; Idx < MatchCount; Idx++) {
+      int Written = snprintf(&Summary[Pos], sizeof(Summary) - (size_t)Pos,
+                             "%s%s", (Idx > 0 ? ", " : ""), Matches[Idx]);
+      if (Written > 0 && (size_t)Pos + (size_t)Written < sizeof(Summary)) {
+        Pos += Written;
+      } else {
+        break;
+      }
+    }
+    AddChatHistory(Chat, Summary);
+  }
+
+  memcpy(OutCompleted, Buffer, (size_t)TokenStart);
+  memcpy(&OutCompleted[TokenStart], Choice, (size_t)ChoiceLen);
+  memcpy(&OutCompleted[TokenStart + ChoiceLen], &Buffer[CursorPos],
+         (size_t)SuffixLen + 1U);
+  *OutNewCursor = TokenStart + ChoiceLen;
+  return MatchCount;
 }

@@ -26,8 +26,10 @@ hold forward 60
 wait ticks 60
 state after_walk
 
-# Look straight down at the block underfoot and break it.
+# Look straight down at the block underfoot, pick it, and break it.
 look 0 -89
+wait ticks 1
+press pick
 wait ticks 1
 state before_break
 press break
@@ -36,8 +38,7 @@ wait loaded
 state after_break
 screenshot after_break
 
-# Put one back from the hotbar's third slot.
-hotbar 3
+# Put one back using the picked block in the active hotbar slot.
 press place
 wait ticks 2
 wait loaded

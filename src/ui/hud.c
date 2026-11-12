@@ -7,9 +7,13 @@
 #include "ui/block_icon.h"
 #include "ui/font.h"
 #include "world/world.h"
+#include "world/biome.h"
+#include "world/block_system.h"
 #include "world/worldgen_column_cache.h"
+#include "persistence/world_save.h"
 #include "core/launch_options.h"
 #include "core/profiler.h"
+#include <math.h>
 #include <stdio.h>
 
 // Hotbar and crosshair sizes are vanilla's, in GUI units: the sprites are
@@ -55,7 +59,77 @@ void InitHud(void) {
   Sprites->Crosshair = GuiAtlasRegister("hud/crosshair");
 }
 
+typedef struct {
+  BlockID LastBlockId;
+  int LastSelectedSlot;
+  double ToastStartTime;
+} HudToastState;
+
+static HudToastState *GetHudToastState(void) {
+  static HudToastState State = {.LastBlockId = 0,
+                                .LastSelectedSlot = -1,
+                                .ToastStartTime = 0.0};
+  return &State;
+}
+
+static void DrawItemNameToast(UiContext *Ctx, Player *PlayerVal) {
+  HudToastState *Toast = GetHudToastState();
+  int CurrentSlot = PlayerVal->SelectedHotbarSlot;
+  BlockID CurrentBlock = (CurrentSlot >= 0 && CurrentSlot < HOTBAR_SIZE)
+                             ? PlayerVal->Hotbar[CurrentSlot]
+                             : 0;
+
+  if (CurrentSlot != Toast->LastSelectedSlot ||
+      CurrentBlock != Toast->LastBlockId) {
+    Toast->LastSelectedSlot = CurrentSlot;
+    Toast->LastBlockId = CurrentBlock;
+    if (CurrentBlock != 0) {
+      Toast->ToastStartTime = PlatformGetTime();
+    } else {
+      Toast->ToastStartTime = 0.0;
+    }
+  }
+
+  const double TOAST_SOLID_TIME = 1.5;
+  const double TOAST_FADE_TIME = 0.5;
+  const double TOAST_TOTAL_TIME = TOAST_SOLID_TIME + TOAST_FADE_TIME;
+
+  if (Toast->LastBlockId == 0 || Toast->ToastStartTime <= 0.0) {
+    return;
+  }
+
+  double Elapsed = PlatformGetTime() - Toast->ToastStartTime;
+  if (Elapsed < 0.0 || Elapsed >= TOAST_TOTAL_TIME) {
+    return;
+  }
+
+  float Alpha = 1.0F;
+  if (Elapsed > TOAST_SOLID_TIME) {
+    Alpha = (float)(1.0 - ((Elapsed - TOAST_SOLID_TIME) / TOAST_FADE_TIME));
+    if (Alpha < 0.0F) {
+      Alpha = 0.0F;
+    }
+  }
+
+  const BlockType *Def = GetBlockDef(Toast->LastBlockId);
+  if (Def == (void *)0 || Def->DisplayName[0] == '\0') {
+    return;
+  }
+
+  const char *Name = Def->DisplayName;
+  float TextWidth = UiMeasureText(Name);
+  float TextX = ((float)Ctx->GuiWidth - TextWidth) * UI_HALF;
+  const float TOAST_OFFSET_Y = 16.0F;
+  float TextY = (float)(Ctx->GuiHeight - HOTBAR_HEIGHT) - TOAST_OFFSET_Y;
+
+  const float ALPHA_SCALE = 255.0F;
+  unsigned char AlphaByte = (unsigned char)(Alpha * ALPHA_SCALE);
+  Color8 TextColor = (Color8){COLOR_WHITE.R, COLOR_WHITE.G, COLOR_WHITE.B, AlphaByte};
+  UiTextShadow(Ctx, Name, TextX, TextY, TextColor);
+}
+
 static void DrawHotbar(UiContext *Ctx, Player *PlayerVal) {
+  DrawItemNameToast(Ctx, PlayerVal);
   HudSprites *Sprites = GetHudSprites();
   int StartX = (Ctx->GuiWidth - HOTBAR_WIDTH) / 2;
   int StartY = Ctx->GuiHeight - HOTBAR_HEIGHT;
@@ -284,7 +358,17 @@ static int DrawSimulationDebugLine(UiContext *Ctx, int Y) {
   return DrawDebugLine(Ctx, Line, Y);
 }
 
-static void DrawDebugScreen(UiContext *Ctx, Player *PlayerVal, World *WorldVal) {
+static int FloorDiv(int Numerator, int Denominator) {
+  int Quotient = Numerator / Denominator;
+  int Remainder = Numerator % Denominator;
+  if (Remainder != 0 && ((Remainder < 0) != (Denominator < 0))) {
+    Quotient--;
+  }
+  return Quotient;
+}
+
+static void DrawDebugScreen(UiContext *Ctx, Player *PlayerVal, World *WorldVal,
+                            GameCamera Camera) {
   char DebugText[DEBUG_TEXT_CAPACITY];
   int Y = DEBUG_MARGIN;
 
@@ -293,7 +377,70 @@ static void DrawDebugScreen(UiContext *Ctx, Player *PlayerVal, World *WorldVal) 
   Y = DrawDebugLine(Ctx, DebugText, Y);
 
   snprintf(DebugText, sizeof(DebugText), "XYZ: %.3f / %.5f / %.3f",
-           PlayerVal->Position.x, PlayerVal->Position.y, PlayerVal->Position.z);
+           (double)PlayerVal->Position.x, (double)PlayerVal->Position.y,
+           (double)PlayerVal->Position.z);
+  Y = DrawDebugLine(Ctx, DebugText, Y);
+
+  int BlockX = (int)floorf(PlayerVal->Position.x);
+  int BlockY = (int)floorf(PlayerVal->Position.y);
+  int BlockZ = (int)floorf(PlayerVal->Position.z);
+  snprintf(DebugText, sizeof(DebugText), "Block: %d %d %d", BlockX, BlockY,
+           BlockZ);
+  Y = DrawDebugLine(Ctx, DebugText, Y);
+
+  int ChunkX = FloorDiv(BlockX, CHUNK_SIZE);
+  int ChunkY = FloorDiv(BlockY, CHUNK_SIZE);
+  int ChunkZ = FloorDiv(BlockZ, CHUNK_SIZE);
+  snprintf(DebugText, sizeof(DebugText), "Chunk: %d %d %d", ChunkX, ChunkY,
+           ChunkZ);
+  Y = DrawDebugLine(Ctx, DebugText, Y);
+
+  Vec3 CamDir = Vec3Normalize(Vec3Sub(Camera.Target, Camera.Position));
+  const char *FacingDir = (void *)0;
+  const char *FacingAxis = (void *)0;
+  if (fabsf(CamDir.x) > fabsf(CamDir.z)) {
+    if (CamDir.x > 0.0F) {
+      FacingDir = "East";
+      FacingAxis = "Towards positive X";
+    } else {
+      FacingDir = "West";
+      FacingAxis = "Towards negative X";
+    }
+  } else {
+    if (CamDir.z > 0.0F) {
+      FacingDir = "South";
+      FacingAxis = "Towards positive Z";
+    } else {
+      FacingDir = "North";
+      FacingAxis = "Towards negative Z";
+    }
+  }
+  snprintf(DebugText, sizeof(DebugText), "Facing: %s (%s)", FacingDir,
+           FacingAxis);
+  Y = DrawDebugLine(Ctx, DebugText, Y);
+
+  uint64_t WorldSeed = GetWorldSeed();
+  int BiomeId = SampleBiomeAt(BlockX, BlockY, BlockZ, WorldSeed, (void *)0);
+  const BiomeType *BiomeDef = GetBiomeDef(BiomeId);
+  const char *BiomeName =
+      (BiomeDef != (void *)0 && BiomeDef->Id >= 0) ? BiomeDef->Name : "Unknown";
+  snprintf(DebugText, sizeof(DebugText), "Biome: %s", BiomeName);
+  Y = DrawDebugLine(Ctx, DebugText, Y);
+
+  if (PlayerVal->TargetBlock.Hit) {
+    int Tx = (int)floorf(PlayerVal->TargetBlock.BlockPos.x);
+    int Ty = (int)floorf(PlayerVal->TargetBlock.BlockPos.y);
+    int Tz = (int)floorf(PlayerVal->TargetBlock.BlockPos.z);
+    const BlockType *Def = GetBlockDef(PlayerVal->TargetBlock.BlockId);
+    const char *Name = (Def != (void *)0 && Def->DisplayName[0] != '\0')
+                           ? Def->DisplayName
+                           : "Unknown";
+    snprintf(DebugText, sizeof(DebugText),
+             "Targeted Block: %s (ID: %d) at %d %d %d", Name,
+             PlayerVal->TargetBlock.BlockId, Tx, Ty, Tz);
+  } else {
+    snprintf(DebugText, sizeof(DebugText), "Targeted Block: none");
+  }
   Y = DrawDebugLine(Ctx, DebugText, Y);
 
   int ActiveChunks = 0;
@@ -322,10 +469,9 @@ static void DrawDebugScreen(UiContext *Ctx, Player *PlayerVal, World *WorldVal) 
 
 void DrawHUD(UiContext *Ctx, Player *PlayerVal, World *WorldVal,
              GameCamera Camera, bool ShowDebugF3) {
-  (void)Camera;
   DrawHotbar(Ctx, PlayerVal);
   if (ShowDebugF3) {
-    DrawDebugScreen(Ctx, PlayerVal, WorldVal);
+    DrawDebugScreen(Ctx, PlayerVal, WorldVal, Camera);
   }
   DrawCrosshair(Ctx);
 }

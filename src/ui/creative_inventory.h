@@ -22,6 +22,8 @@ typedef enum {
 typedef struct {
   int WheelDelta; // positive scrolls the catalog up
   int HotbarKey;  // -1, or the 0-based slot whose number key was pressed
+  bool ShiftHeld; // true when Shift key is held
+  int SelectedHotbarSlot; // active hotbar slot
 } InventoryInput;
 
 // Registers the screen's sprites and builds the per-tab block lists. Must run

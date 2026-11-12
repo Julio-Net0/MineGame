@@ -25,14 +25,43 @@ double PlatformGetTime(void) { return GetTime(); }
 
 void PlatformToggleFullscreen(void) { ToggleBorderlessWindowed(); }
 
+static PlatformCursorShape CurrentCursorShape = PLATFORM_CURSOR_DEFAULT;
+
 void PlatformSetCursorDisabled(bool Disabled) {
   if (Disabled) {
     DisableCursor();
+    CurrentCursorShape = PLATFORM_CURSOR_DEFAULT;
+    SetMouseCursor(MOUSE_CURSOR_DEFAULT);
   } else {
     EnableCursor();
   }
 }
 
+void PlatformSetCursorShape(PlatformCursorShape Shape) {
+  if (Shape == CurrentCursorShape) {
+    return;
+  }
+  CurrentCursorShape = Shape;
+  int RaylibCursor = MOUSE_CURSOR_DEFAULT;
+  switch (Shape) {
+  case PLATFORM_CURSOR_IBEAM:
+    RaylibCursor = MOUSE_CURSOR_IBEAM;
+    break;
+  case PLATFORM_CURSOR_POINTING_HAND:
+    RaylibCursor = MOUSE_CURSOR_POINTING_HAND;
+    break;
+  case PLATFORM_CURSOR_DEFAULT:
+  default:
+    RaylibCursor = MOUSE_CURSOR_DEFAULT;
+    break;
+  }
+  SetMouseCursor(RaylibCursor);
+}
+
 int PlatformGetScreenWidth(void) { return GetScreenWidth(); }
 
 int PlatformGetScreenHeight(void) { return GetScreenHeight(); }
+
+const char *PlatformGetClipboardText(void) { return GetClipboardText(); }
+
+void PlatformSetClipboardText(const char *Text) { SetClipboardText(Text); }

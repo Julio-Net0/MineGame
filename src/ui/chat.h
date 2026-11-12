@@ -13,6 +13,12 @@
 #define CHAT_DISPLAY_TIME 3.0F
 #define CHAT_FADE_TIME 1.0F
 #define CHAT_MAX_WRAPPED_LINES 16
+#define CHAT_COMMAND_HISTORY_CAPACITY 32
+
+typedef struct {
+  char Entries[CHAT_COMMAND_HISTORY_CAPACITY][CHAT_MAX_INPUT_CHARS];
+  int Count;
+} ChatCommandHistory;
 
 typedef struct {
   char Text[CHAT_MAX_INPUT_CHARS];
@@ -29,6 +35,15 @@ typedef struct {
   ChatMessage History[CHAT_MAX_HISTORY];
 
   char InputText[CHAT_MAX_INPUT_CHARS + 1];
+  UiTextEditState EditState;
+
+  ChatCommandHistory CommandHistory;
+  int HistoryBrowseIndex;
+  char SavedDraft[CHAT_MAX_INPUT_CHARS + 1];
+
+  int AutocompleteTabCount;
+  int AutocompleteTokenStart;
+  char AutocompleteBasePrefix[CHAT_MAX_INPUT_CHARS];
 
   int HistoryCount;
   int ScrollOffset;

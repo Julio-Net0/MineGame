@@ -31,6 +31,8 @@ void UiTextShadow(UiContext *Ctx, const char *Text, float X, float Y,
                   Color8 Color);
 
 float UiMeasureText(const char *Text);
+float UiMeasureTextRange(const char *Text, int Length);
+int UiTextIndexAt(const char *Text, float TargetX);
 
 // Draws the first Length bytes of Text with the vanilla drop shadow.
 void UiTextRangeShadow(UiContext *Ctx, const char *Text, int Length, float X,

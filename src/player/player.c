@@ -3,26 +3,6 @@
 #include "world/block_system.h"
 #include "world/world.h"
 
-#define INIT_SLOT_0 0
-#define INIT_SLOT_1 1
-#define INIT_SLOT_2 2
-#define INIT_SLOT_3 3
-#define INIT_SLOT_4 4
-#define INIT_SLOT_5 5
-#define INIT_SLOT_6 6
-#define INIT_SLOT_7 7
-#define INIT_SLOT_8 8
-
-#define INIT_BLOCK_1 1
-#define INIT_BLOCK_2 2
-#define INIT_BLOCK_3 3
-#define INIT_BLOCK_4 4
-#define INIT_BLOCK_5 5
-#define INIT_BLOCK_6 6
-#define INIT_BLOCK_7 7
-#define INIT_BLOCK_8 8
-#define INIT_BLOCK_9 9
-
 Player InitPlayer(Vec3 SpawnPos) {
   Player PlayerObj = {0};
 
@@ -33,6 +13,7 @@ Player InitPlayer(Vec3 SpawnPos) {
   PlayerObj.Size = PLAYER_SIZE;
   PlayerObj.Radius = PLAYER_RADIUS;
   PlayerObj.Speed = PLAYER_SPEED;
+  PlayerObj.NoclipSpeed = PLAYER_DEFAULT_NOCLIP_SPEED;
   PlayerObj.SelectedHotbarSlot = 0;
   PlayerObj.ReachDistance = PLAYER_REACH_DISTANCE;
   PlayerObj.HeadOffset = PLAYER_HEAD_OFFSET;
@@ -41,16 +22,6 @@ Player InitPlayer(Vec3 SpawnPos) {
   PlayerObj.HasSelectionA = false;
   PlayerObj.HasSelectionB = false;
   PlayerObj.HasSelectionOffset = false;
-
-  SetHotbarSlot(&PlayerObj, INIT_SLOT_0, INIT_BLOCK_1);
-  SetHotbarSlot(&PlayerObj, INIT_SLOT_1, INIT_BLOCK_2);
-  SetHotbarSlot(&PlayerObj, INIT_SLOT_2, INIT_BLOCK_3);
-  SetHotbarSlot(&PlayerObj, INIT_SLOT_3, INIT_BLOCK_4);
-  SetHotbarSlot(&PlayerObj, INIT_SLOT_4, INIT_BLOCK_5);
-  SetHotbarSlot(&PlayerObj, INIT_SLOT_5, INIT_BLOCK_6);
-  SetHotbarSlot(&PlayerObj, INIT_SLOT_6, INIT_BLOCK_7);
-  SetHotbarSlot(&PlayerObj, INIT_SLOT_7, INIT_BLOCK_8);
-  SetHotbarSlot(&PlayerObj, INIT_SLOT_8, INIT_BLOCK_9);
 
   return PlayerObj;
 }
@@ -292,13 +263,24 @@ static void PhysicalMov(Player *PlayerVal, World *WorldVal, float Dt,
 }
 
 static void NoClipMov(Player *PlayerVal, float Dt, bool AscendHeld,
-                      bool DescendHeld) {
+                      bool DescendHeld, bool SprintHeld, Vec3 MoveDir) {
+  float CurrentSpeed = PlayerVal->NoclipSpeed;
+  if (CurrentSpeed <= 0.0F) {
+    CurrentSpeed = PLAYER_DEFAULT_NOCLIP_SPEED;
+  }
+  if (SprintHeld) {
+    CurrentSpeed *= PLAYER_NOCLIP_SPRINT_MULTIPLIER;
+  }
+
+  PlayerVal->Velocity.x = MoveDir.x * CurrentSpeed;
+  PlayerVal->Velocity.z = MoveDir.z * CurrentSpeed;
   PlayerVal->Velocity.y = 0.0F;
+
   if (AscendHeld) {
-    PlayerVal->Position.y += PlayerVal->Speed * Dt;
+    PlayerVal->Position.y += CurrentSpeed * Dt;
   }
   if (DescendHeld) {
-    PlayerVal->Position.y -= PlayerVal->Speed * Dt;
+    PlayerVal->Position.y -= CurrentSpeed * Dt;
   }
 
   PlayerVal->Position.x += PlayerVal->Velocity.x * Dt;
@@ -326,13 +308,13 @@ void UpdatePlayer(Player *PlayerVal, World *WorldVal, PlayerView View,
                   PlayerInput Input, float Dt) {
   Vec3 MoveDir = CalculateMoveDir(View.Forward, Input.MoveX, Input.MoveForward);
 
-  PlayerVal->Velocity.x = MoveDir.x * PlayerVal->Speed;
-  PlayerVal->Velocity.z = MoveDir.z * PlayerVal->Speed;
-
   if (!PlayerVal->Noclip) {
+    PlayerVal->Velocity.x = MoveDir.x * PlayerVal->Speed;
+    PlayerVal->Velocity.z = MoveDir.z * PlayerVal->Speed;
     PhysicalMov(PlayerVal, WorldVal, Dt, Input.Jump);
   } else {
-    NoClipMov(PlayerVal, Dt, Input.AscendHeld, Input.DescendHeld);
+    NoClipMov(PlayerVal, Dt, Input.AscendHeld, Input.DescendHeld,
+              Input.SprintHeld, MoveDir);
   }
 }
 
@@ -350,9 +332,11 @@ PlayerInput FoldPlayerInput(PlayerInput Pending, PlayerInput Sample) {
   Pending.MoveForward = Sample.MoveForward;
   Pending.AscendHeld = Sample.AscendHeld;
   Pending.DescendHeld = Sample.DescendHeld;
+  Pending.SprintHeld = Sample.SprintHeld;
   Pending.Jump = Pending.Jump || Sample.Jump;
   Pending.Break = Pending.Break || Sample.Break;
   Pending.Place = Pending.Place || Sample.Place;
+  Pending.PickBlock = Pending.PickBlock || Sample.PickBlock;
   if (Sample.HotbarSelect >= 0) {
     Pending.HotbarSelect = Sample.HotbarSelect;
   }
@@ -370,6 +354,7 @@ PlayerInput ClearPlayerInputEdges(PlayerInput Pending) {
   Pending.Jump = false;
   Pending.Break = false;
   Pending.Place = false;
+  Pending.PickBlock = false;
   Pending.HotbarSelect = -1;
   Pending.HotbarScroll = 0;
   Pending.HotbarSetRequested = false;
@@ -422,6 +407,22 @@ void HandlePlayerInteraction(Player *PlayerVal, World *WorldVal,
   }
 
   if (PlayerVal->TargetBlock.Hit) {
+    if (Input.PickBlock && PlayerVal->TargetBlock.BlockId != BLOCK_ID_AIR) {
+      BlockID TargetId = (BlockID)PlayerVal->TargetBlock.BlockId;
+      int ExistingSlot = -1;
+      for (int Slot = 0; Slot < HOTBAR_SIZE; Slot++) {
+        if (PlayerVal->Hotbar[Slot] == TargetId) {
+          ExistingSlot = Slot;
+          break;
+        }
+      }
+      if (ExistingSlot >= 0) {
+        PlayerVal->SelectedHotbarSlot = ExistingSlot;
+      } else {
+        PlayerVal->Hotbar[PlayerVal->SelectedHotbarSlot] = TargetId;
+      }
+    }
+
     if (Input.Break) {
       RequestBlockBreak(WorldVal, PlayerVal->TargetBlock.BlockPos);
     }

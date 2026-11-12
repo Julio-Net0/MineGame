@@ -27,9 +27,22 @@ double PlatformGetTime(void);
 void PlatformToggleFullscreen(void);
 void PlatformSetCursorDisabled(bool Disabled);
 
+// Mouse cursor shapes for interactive UI elements.
+typedef enum {
+  PLATFORM_CURSOR_DEFAULT = 0,
+  PLATFORM_CURSOR_IBEAM,
+  PLATFORM_CURSOR_POINTING_HAND,
+} PlatformCursorShape;
+
+void PlatformSetCursorShape(PlatformCursorShape Shape);
+
 // Screen dimensions in pixels.
 int PlatformGetScreenWidth(void);
 int PlatformGetScreenHeight(void);
+
+// System clipboard access.
+const char *PlatformGetClipboardText(void);
+void PlatformSetClipboardText(const char *Text);
 
 // Future seam: a Vulkan backend creates its device and swapchain from the
 // native window handle, so a `void *PlatformGetNativeWindowHandle(void)` will

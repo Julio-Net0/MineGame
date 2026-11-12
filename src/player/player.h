@@ -10,6 +10,8 @@
 #define PLAYER_SIZE (Vec3){0.6F, 1.8F, 0.6F}
 #define PLAYER_RADIUS (PLAYER_SIZE.x / 2.0F)
 #define PLAYER_SPEED 5.0F
+#define PLAYER_DEFAULT_NOCLIP_SPEED 15.0F
+#define PLAYER_NOCLIP_SPRINT_MULTIPLIER 2.5F
 #define HOTBAR_SIZE 9
 #define PLAYER_HEAD_OFFSET 1.6F
 #define PLAYER_DEBUG_AABB_SQUARES_SIZE 0.05F
@@ -40,6 +42,7 @@ typedef struct {
   float ReachDistance;
   float Radius;
   float Speed;
+  float NoclipSpeed;
   float HeadOffset;
   int Id;
   int SelectedHotbarSlot;
@@ -66,10 +69,12 @@ typedef struct {
   bool Jump;         // edge: jump requested this tick
   bool AscendHeld;   // held: noclip ascend
   bool DescendHeld;  // held: noclip descend
+  bool SprintHeld;   // held: sprint / fast flight modifier
   int HotbarSelect;  // -1 = none, else 0..HOTBAR_SIZE-1 (edge)
   int HotbarScroll;  // hotbar scroll delta this tick
   bool Break;        // edge: break targeted block
   bool Place;        // edge: place block
+  bool PickBlock;    // edge: pick targeted block into hotbar
   // Edge: replace the whole hotbar with HotbarSet. The full contents travel
   // rather than a single slot edit, so several edits made between two ticks
   // fold into the latest request and none is lost.

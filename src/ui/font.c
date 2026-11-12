@@ -617,6 +617,34 @@ float UiMeasureText(const char *Text) {
   return RunText(NULL, Text, -1, 0.0F, 0.0F, COLOR_WHITE);
 }
 
+float UiMeasureTextRange(const char *Text, int Length) {
+  return RunText(NULL, Text, Length, 0.0F, 0.0F, COLOR_WHITE);
+}
+
+int UiTextIndexAt(const char *Text, float TargetX) {
+  if (Text == NULL || TargetX <= 0.0F) {
+    return 0;
+  }
+  const float HALF_ROUNDING = 0.5F;
+  FontState *State = GetFontState();
+  float Pen = 0.0F;
+  int Offset = 0;
+  while (Text[Offset] != '\0') {
+    uint32_t Codepoint = 0;
+    int Bytes = DecodeUtf8((const unsigned char *)&Text[Offset], &Codepoint);
+    if (Bytes <= 0) {
+      break;
+    }
+    float Advance = GlyphAdvance(State, Codepoint);
+    if (TargetX < Pen + (Advance * HALF_ROUNDING)) {
+      return Offset;
+    }
+    Pen += Advance;
+    Offset += Bytes;
+  }
+  return Offset;
+}
+
 int UiWrapText(const char *Text, float MaxWidth, int *OutStarts, int MaxLines) {
   if (Text == NULL || OutStarts == NULL || MaxLines <= 0) {
     return 0;

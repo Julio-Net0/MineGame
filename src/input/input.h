@@ -12,6 +12,7 @@ typedef struct {
   bool FullscreenToggle;
   bool DebugToggle;
   bool ChatOpen;
+  bool CommandOpen;
   bool PauseToggle;
   bool InventoryToggle;
   // -1, or the 0-based hotbar slot whose number key was pressed this frame.
@@ -27,8 +28,23 @@ typedef struct {
   char Chars[CHAT_MAX_INPUT_CHARS];
   int Count;
   bool Backspace;
+  bool Delete;
   bool Submit;
   bool Cancel;
+  bool MoveLeft;
+  bool MoveRight;
+  bool MoveHome;
+  bool MoveEnd;
+  bool WordStep;
+  bool ShiftHeld;
+  bool SelectAll;
+  bool Copy;
+  bool Cut;
+  bool Paste;
+  bool Undo;
+  bool HistoryPrev;
+  bool HistoryNext;
+  bool Autocomplete;
 } TextInput;
 
 // Per-frame pointer state for UI widgets: cursor position in window pixels and
@@ -53,6 +69,7 @@ TextInput PollTextInput(void);
 PointerInput PollPointerInput(void);
 int InputGetScrollDelta(void);
 Vec2 InputGetLookDelta(void);
+bool InputIsShiftDown(void);
 PlayerView PlayerViewFromCamera(GameCamera Camera);
 
 #endif

@@ -387,7 +387,7 @@ static void HandleHotbarClick(InventoryState *State, int Slot) {
 }
 
 static void HandlePress(const UiContext *Ctx, InventoryState *State,
-                        InventoryOrigin Origin) {
+                        InventoryOrigin Origin, const InventoryInput *Input) {
   int Tab = HoveredTab(Ctx, Origin);
   if (Tab != NO_ENTRY) {
     CreativeInventorySelectTab((InventoryTab)Tab);
@@ -395,11 +395,37 @@ static void HandlePress(const UiContext *Ctx, InventoryState *State,
   }
   int Entry = HoveredGridEntry(Ctx, Origin);
   if (Entry != NO_ENTRY) {
+    if (Input != (void *)0 && Input->ShiftHeld) {
+      BlockID Block = EntryBlock(State, Entry);
+      if (Block != BLOCK_ID_AIR) {
+        int VacantSlot = -1;
+        for (int Slot = 0; Slot < HOTBAR_SIZE; Slot++) {
+          if (State->DesiredHotbar[Slot] == BLOCK_ID_AIR) {
+            VacantSlot = Slot;
+            break;
+          }
+        }
+        if (VacantSlot != -1) {
+          SetDesiredSlot(State, VacantSlot, Block);
+        } else {
+          int TargetSlot = (Input->SelectedHotbarSlot >= 0 &&
+                            Input->SelectedHotbarSlot < HOTBAR_SIZE)
+                               ? Input->SelectedHotbarSlot
+                               : 0;
+          SetDesiredSlot(State, TargetSlot, Block);
+        }
+      }
+      return;
+    }
     CreativeInventoryPickEntry(Entry);
     return;
   }
   int Slot = HoveredHotbarSlot(Ctx, Origin);
   if (Slot != NO_ENTRY) {
+    if (Input != (void *)0 && Input->ShiftHeld) {
+      SetDesiredSlot(State, Slot, BLOCK_ID_AIR);
+      return;
+    }
     HandleHotbarClick(State, Slot);
     return;
   }
@@ -416,7 +442,7 @@ static void HandlePress(const UiContext *Ctx, InventoryState *State,
 static void HandleInput(const UiContext *Ctx, InventoryState *State,
                         InventoryOrigin Origin, const InventoryInput *Input) {
   if (Ctx->Pointer.LeftPressed) {
-    HandlePress(Ctx, State, Origin);
+    HandlePress(Ctx, State, Origin, Input);
   }
   if (State->DraggingScroller) {
     if (Ctx->Pointer.LeftDown) {
@@ -428,10 +454,19 @@ static void HandleInput(const UiContext *Ctx, InventoryState *State,
   if (Input->WheelDelta != 0) {
     CreativeInventoryScrollRows(-Input->WheelDelta);
   }
-  if (Input->HotbarKey >= 0) {
-    BlockID Hovered = EntryBlock(State, HoveredGridEntry(Ctx, Origin));
-    if (Hovered != BLOCK_ID_AIR) {
-      SetDesiredSlot(State, Input->HotbarKey, Hovered);
+  if (Input->HotbarKey >= 0 && Input->HotbarKey < HOTBAR_SIZE) {
+    int Entry = HoveredGridEntry(Ctx, Origin);
+    int Slot = HoveredHotbarSlot(Ctx, Origin);
+    if (Entry != NO_ENTRY) {
+      BlockID Hovered = EntryBlock(State, Entry);
+      if (Hovered != BLOCK_ID_AIR) {
+        SetDesiredSlot(State, Input->HotbarKey, Hovered);
+      }
+    } else if (Slot != NO_ENTRY) {
+      BlockID Current = State->DesiredHotbar[Slot];
+      BlockID Target = State->DesiredHotbar[Input->HotbarKey];
+      SetDesiredSlot(State, Input->HotbarKey, Current);
+      SetDesiredSlot(State, Slot, Target);
     }
   }
 }

@@ -1,5 +1,6 @@
 #include "world/feature.h"
 #include "core/hash.h"
+#include "core/utils.h"
 #include "world/chunk.h"
 #include "world/surface.h"
 #include "world/terrain_density.h"
@@ -450,6 +451,215 @@ bool FindStructureAnchor(int CellRadius, uint64_t Seed, int *OutX, int *OutY,
       *OutZ = Candidate.WorldZ;
       return true;
     }
+  }
+  return false;
+}
+
+bool FindStructureByName(const char *PrefabName, int StartX, int StartZ,
+                         int MaxRadius, uint64_t Seed, int *OutX, int *OutY,
+                         int *OutZ, float *OutDistance) {
+  if (PrefabName == NULL || PrefabName[0] == '\0') {
+    return false;
+  }
+
+  int TargetPrefabIdx = -1;
+  const Prefab *TargetPrefab = NULL;
+
+  int LoadedPrefabs = GetLoadedPrefabsCount();
+  for (int Idx = 0; Idx < LoadedPrefabs; Idx++) {
+    const Prefab *P = GetPrefabByIndex(Idx);
+    if (P != NULL && NameMatchesExact(P->Name, PrefabName)) {
+      TargetPrefabIdx = Idx;
+      TargetPrefab = P;
+      break;
+    }
+  }
+  if (TargetPrefabIdx == -1) {
+    for (int Idx = 0; Idx < LoadedPrefabs; Idx++) {
+      const Prefab *P = GetPrefabByIndex(Idx);
+      if (P != NULL && NameMatchesPrefix(P->Name, PrefabName)) {
+        TargetPrefabIdx = Idx;
+        TargetPrefab = P;
+        break;
+      }
+    }
+  }
+
+  if (TargetPrefab == NULL || TargetPrefabIdx == -1) {
+    return false;
+  }
+
+  bool SpawnsInAnyBiome = false;
+  int LoadedBiomes = GetLoadedBiomesCount();
+  for (int BIdx = 0; BIdx < LoadedBiomes; BIdx++) {
+    const BiomeType *B = GetBiomeDef(BIdx);
+    if (B == NULL) {
+      continue;
+    }
+    for (int SIdx = 0; SIdx < B->StructureCount; SIdx++) {
+      if (B->Structures[SIdx].PrefabIndex == TargetPrefabIdx) {
+        SpawnsInAnyBiome = true;
+        break;
+      }
+    }
+    if (SpawnsInAnyBiome) {
+      break;
+    }
+  }
+
+  if (!SpawnsInAnyBiome) {
+    return false;
+  }
+
+  int CenterCellX = FloorDiv(StartX, GRID_CELL_SIZE);
+  int CenterCellZ = FloorDiv(StartZ, GRID_CELL_SIZE);
+  int MaxCellRadius = MaxRadius / GRID_CELL_SIZE;
+  if (MaxCellRadius < 1) {
+    MaxCellRadius = 1;
+  }
+
+  const int MAX_EVALUATIONS = 50000;
+  int Evaluations = 0;
+
+  const float INITIAL_SEARCH_DISTANCE = 1.0e9F;
+  bool Found = false;
+  float BestDist = INITIAL_SEARCH_DISTANCE;
+  int BestX = 0;
+  int BestY = 0;
+  int BestZ = 0;
+
+  const uint64_t MASK16 = 0xFFFFULL;
+  const float DENSITY_SCALE = 65536.0F;
+
+  for (int Ring = 0; Ring <= MaxCellRadius; Ring++) {
+    if (Ring == 0) {
+      int CandX = 0;
+      int CandZ = 0;
+      CellCandidate(CenterCellX, CenterCellZ, Seed, &CandX, &CandZ);
+      int Prelim = GetPreliminarySurface(CandX, CandZ, Seed);
+      int BId = SampleBiomeAt(CandX, Prelim, CandZ, Seed, NULL);
+      const BiomeType *BiomeDef = GetBiomeDef(BId);
+      if (BiomeDef != NULL && BiomeDef->StructureCount > 0 &&
+          BiomeDef->StructureTotalWeight > 0) {
+        bool HasPrefab = false;
+        for (int StructIdx = 0; StructIdx < BiomeDef->StructureCount; StructIdx++) {
+          if (BiomeDef->Structures[StructIdx].PrefabIndex == TargetPrefabIdx) {
+            HasPrefab = true;
+            break;
+          }
+        }
+        if (HasPrefab) {
+          uint64_t ExHash =
+              HashCell(CandX, CandZ, Seed ^ STRUCTURE_EXIST_SALT);
+          float DensityRoll = (float)(ExHash & MASK16) / DENSITY_SCALE;
+          if (DensityRoll < BiomeDef->StructureDensity) {
+            uint64_t KdHash =
+                HashCell(CandX, CandZ, Seed ^ STRUCTURE_KIND_SALT);
+            if (PickStructurePrefab(BiomeDef, KdHash) == TargetPrefabIdx) {
+              int SolidBelow = 0;
+              int Surface =
+                  CachedTerrainTop(CandX, CandZ, Seed, &SolidBelow);
+              if (Surface > SEA_LEVEL && SolidBelow >= GROUND_THICKNESS - 1) {
+                float Dx = (float)(CandX - StartX);
+                float Dz = (float)(CandZ - StartZ);
+                float Dist = sqrtf((Dx * Dx) + (Dz * Dz));
+                Found = true;
+                BestDist = Dist;
+                BestX = CandX;
+                BestY = Surface + 1;
+                BestZ = CandZ;
+              }
+            }
+          }
+        }
+      }
+      if (Found) {
+        break;
+      }
+      continue;
+    }
+
+    int Side = 2 * Ring;
+    int CellX = CenterCellX - Ring;
+    int CellZ = CenterCellZ - Ring;
+    const int STEP_X[4] = {1, 0, -1, 0};
+    const int STEP_Z[4] = {0, 1, 0, -1};
+
+    for (int Edge = 0; Edge < 4; Edge++) {
+      for (int StepIdx = 0; StepIdx < Side; StepIdx++) {
+        if (++Evaluations > MAX_EVALUATIONS) {
+          goto ExitPrefabSearch;
+        }
+
+        int CandX = 0;
+        int CandZ = 0;
+        CellCandidate(CellX, CellZ, Seed, &CandX, &CandZ);
+        int Prelim = GetPreliminarySurface(CandX, CandZ, Seed);
+        int BId = SampleBiomeAt(CandX, Prelim, CandZ, Seed, NULL);
+        const BiomeType *BiomeDef = GetBiomeDef(BId);
+        if (BiomeDef != NULL && BiomeDef->StructureCount > 0 &&
+            BiomeDef->StructureTotalWeight > 0) {
+          bool HasPrefab = false;
+          for (int StructIdx = 0; StructIdx < BiomeDef->StructureCount; StructIdx++) {
+            if (BiomeDef->Structures[StructIdx].PrefabIndex == TargetPrefabIdx) {
+              HasPrefab = true;
+              break;
+            }
+          }
+          if (HasPrefab) {
+            uint64_t ExHash =
+                HashCell(CandX, CandZ, Seed ^ STRUCTURE_EXIST_SALT);
+            float DensityRoll = (float)(ExHash & MASK16) / DENSITY_SCALE;
+            if (DensityRoll < BiomeDef->StructureDensity) {
+              uint64_t KdHash =
+                  HashCell(CandX, CandZ, Seed ^ STRUCTURE_KIND_SALT);
+              if (PickStructurePrefab(BiomeDef, KdHash) == TargetPrefabIdx) {
+                int SolidBelow = 0;
+                int Surface =
+                    CachedTerrainTop(CandX, CandZ, Seed, &SolidBelow);
+                if (Surface > SEA_LEVEL &&
+                    SolidBelow >= GROUND_THICKNESS - 1) {
+                  float Dx = (float)(CandX - StartX);
+                  float Dz = (float)(CandZ - StartZ);
+                  float Dist = sqrtf((Dx * Dx) + (Dz * Dz));
+                  if (!Found || Dist < BestDist) {
+                    Found = true;
+                    BestDist = Dist;
+                    BestX = CandX;
+                    BestY = Surface + 1;
+                    BestZ = CandZ;
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        CellX += STEP_X[Edge];
+        CellZ += STEP_Z[Edge];
+      }
+    }
+
+    if (Found) {
+      break;
+    }
+  }
+
+ExitPrefabSearch:
+  if (Found) {
+    if (OutX != NULL) {
+      *OutX = BestX;
+    }
+    if (OutY != NULL) {
+      *OutY = BestY;
+    }
+    if (OutZ != NULL) {
+      *OutZ = BestZ;
+    }
+    if (OutDistance != NULL) {
+      *OutDistance = BestDist;
+    }
+    return true;
   }
   return false;
 }

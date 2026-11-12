@@ -1,5 +1,6 @@
 #include "ui/ui.h"
 #include "core/log.h"
+#include "core/utils.h"
 #include "render/backend.h"
 #include "ui/font.h"
 #include "platform/platform.h"
@@ -12,7 +13,12 @@ enum {
   SLIDER_HANDLE_WIDTH = 8,
   TEXT_FIELD_INSET = 4,
   TEXT_FIELD_INSET_BORDERLESS = 2,
+  TEXT_FIELD_SCROLL_MARGIN = 6,
   CARET_BLINK_RATE = 2,
+  SELECTION_COLOR_R = 0,
+  SELECTION_COLOR_G = 120,
+  SELECTION_COLOR_B = 215,
+  SELECTION_COLOR_A = 160,
   UTF8_CONTINUATION_MASK = 0xC0,
   UTF8_CONTINUATION_TAG = 0x80,
   UTF8_TWO_MASK = 0xE0,
@@ -26,6 +32,9 @@ enum {
 #define UI_LABEL_COLOR ((Color8){255, 255, 255, 255})
 #define UI_LABEL_DISABLED_COLOR ((Color8){160, 160, 160, 255})
 #define UI_TEXT_FIELD_BG_ALPHA 0.5F
+#define UI_SELECTION_COLOR                                                     \
+  ((Color8){SELECTION_COLOR_R, SELECTION_COLOR_G, SELECTION_COLOR_B,           \
+            SELECTION_COLOR_A})
 
 typedef struct {
   UiSpriteId Button;
@@ -134,6 +143,7 @@ void UiBeginFrame(UiContext *Ctx, int ScreenWidth, int ScreenHeight,
   Ctx->Pointer.X /= (float)Ctx->Scale;
   Ctx->Pointer.Y /= (float)Ctx->Scale;
   Ctx->HotId = UI_ID_NONE;
+  Ctx->CursorShape = PLATFORM_CURSOR_DEFAULT;
 }
 
 void UiEndFrame(UiContext *Ctx) {
@@ -142,6 +152,7 @@ void UiEndFrame(UiContext *Ctx) {
   if (!Ctx->Pointer.LeftDown) {
     Ctx->ActiveId = UI_ID_NONE;
   }
+  PlatformSetCursorShape(Ctx->CursorShape);
 }
 
 void UiSetScissor(UiContext *Ctx, UiRect Rect) {
@@ -430,53 +441,362 @@ static int Utf8SequenceLength(unsigned char Lead) {
   return 1;
 }
 
-UiTextAction UiTextFieldEdit(char *Buffer, int Capacity,
+void UiTextEditStateInit(UiTextEditState *State) {
+  if (State == NULL) {
+    return;
+  }
+  memset(State, 0, sizeof(*State));
+  State->SelectionStart = -1;
+  State->SelectionEnd = -1;
+}
+
+void UiTextEditStateReset(UiTextEditState *State) {
+  if (State == NULL) {
+    return;
+  }
+  State->Cursor = 0;
+  State->SelectionStart = -1;
+  State->SelectionEnd = -1;
+  State->ScrollOffset = 0.0F;
+}
+
+static int Utf8Prev(const char *Buffer, int Index) {
+  if (Index <= 0) {
+    return 0;
+  }
+  Index--;
+  while (Index > 0 && (((unsigned char)Buffer[Index]) &
+                       UTF8_CONTINUATION_MASK) == UTF8_CONTINUATION_TAG) {
+    Index--;
+  }
+  return Index;
+}
+
+static int Utf8Next(const char *Buffer, int Length, int Index) {
+  if (Index >= Length) {
+    return Length;
+  }
+  int Seq = Utf8SequenceLength((unsigned char)Buffer[Index]);
+  if (Index + Seq > Length) {
+    return Length;
+  }
+  return Index + Seq;
+}
+
+static int Utf8PrevWord(const char *Buffer, int Index) {
+  Index = Utf8Prev(Buffer, Index);
+  while (Index > 0 && Buffer[Index] == ' ') {
+    Index = Utf8Prev(Buffer, Index);
+  }
+  while (Index > 0 && Buffer[Index] != ' ') {
+    int Prev = Utf8Prev(Buffer, Index);
+    if (Buffer[Prev] == ' ') {
+      break;
+    }
+    Index = Prev;
+  }
+  return Index;
+}
+
+static int Utf8NextWord(const char *Buffer, int Length, int Index) {
+  while (Index < Length && Buffer[Index] != ' ') {
+    Index = Utf8Next(Buffer, Length, Index);
+  }
+  while (Index < Length && Buffer[Index] == ' ') {
+    Index = Utf8Next(Buffer, Length, Index);
+  }
+  return Index;
+}
+
+static bool HasSelection(const UiTextEditState *State) {
+  return State != NULL && State->SelectionStart >= 0 &&
+         State->SelectionEnd >= 0 &&
+         State->SelectionStart != State->SelectionEnd;
+}
+
+static void GetSelectionBounds(const UiTextEditState *State, int *OutMin,
+                               int *OutMax) {
+  if (State->SelectionStart < State->SelectionEnd) {
+    *OutMin = State->SelectionStart;
+    *OutMax = State->SelectionEnd;
+  } else {
+    *OutMin = State->SelectionEnd;
+    *OutMax = State->SelectionStart;
+  }
+}
+
+static void ClearSelection(UiTextEditState *State) {
+  if (State != NULL) {
+    State->SelectionStart = -1;
+    State->SelectionEnd = -1;
+  }
+}
+
+static void SaveUndo(UiTextEditState *State, const char *Buffer) {
+  if (State == NULL || Buffer == NULL) {
+    return;
+  }
+  size_t Len = strlen(Buffer);
+  if (Len > UI_TEXT_FIELD_MAX_CHARS) {
+    Len = UI_TEXT_FIELD_MAX_CHARS;
+  }
+  memcpy(State->UndoText, Buffer, Len);
+  State->UndoText[Len] = '\0';
+  State->UndoCursor = State->Cursor;
+  State->HasUndo = true;
+}
+
+static void DeleteRange(char *Buffer, int *Length, int Start, int End) {
+  if (Start >= End || Start < 0 || End > *Length) {
+    return;
+  }
+  int Count = End - Start;
+  size_t ShiftBytes = (size_t)(*Length - End) + 1U;
+  memmove(&Buffer[Start], &Buffer[End], ShiftBytes);
+  *Length -= Count;
+}
+
+static void InsertCharsAtCursor(char *Buffer, int Capacity,
+                                UiTextEditState *State, const char *Chars,
+                                int CharsCount, int *Length) {
+  if (Chars == NULL || CharsCount <= 0 || *Length >= Capacity - 1) {
+    return;
+  }
+  int Avail = Capacity - 1 - *Length;
+  int ValidBytes = 0;
+  int Idx = 0;
+  while (Idx < CharsCount) {
+    int Seq = Utf8SequenceLength((unsigned char)Chars[Idx]);
+    if (Idx + Seq > CharsCount || ValidBytes + Seq > Avail) {
+      break;
+    }
+    ValidBytes += Seq;
+    Idx += Seq;
+  }
+  if (ValidBytes <= 0) {
+    return;
+  }
+  size_t ShiftBytes = (size_t)(*Length - State->Cursor) + 1U;
+  memmove(&Buffer[State->Cursor + ValidBytes], &Buffer[State->Cursor], ShiftBytes);
+  memcpy(&Buffer[State->Cursor], Chars, (size_t)ValidBytes);
+  *Length += ValidBytes;
+  State->Cursor += ValidBytes;
+}
+
+UiTextAction UiTextFieldEdit(char *Buffer, int Capacity, UiTextEditState *State,
                              const UiTextEvents *Events) {
   if (Buffer == NULL || Capacity <= 0 || Events == NULL) {
     return UI_TEXT_NONE;
   }
-  int Length = 0;
-  while (Length < Capacity - 1 && Buffer[Length] != '\0') {
-    Length++;
-  }
-  Buffer[Length] = '\0';
-
-  int Idx = 0;
-  while (Events->Chars != NULL && Idx < Events->Count) {
-    int Sequence = Utf8SequenceLength((unsigned char)Events->Chars[Idx]);
-    if (Sequence > Events->Count - Idx) {
-      break;
-    }
-    if (Sequence <= Capacity - 1 - Length) {
-      memcpy(&Buffer[Length], &Events->Chars[Idx], (size_t)Sequence);
-      Length += Sequence;
-      Buffer[Length] = '\0';
-    }
-    Idx += Sequence;
-  }
-
-  if (Events->Backspace && Length > 0) {
-    Length--;
-    while (Length > 0 && (((unsigned char)Buffer[Length]) &
-                          UTF8_CONTINUATION_MASK) == UTF8_CONTINUATION_TAG) {
-      Length--;
-    }
+  int Length = (int)strlen(Buffer);
+  if (Length >= Capacity) {
+    Length = Capacity - 1;
     Buffer[Length] = '\0';
+  }
+  if (State != NULL) {
+    if (State->Cursor < 0) {
+      State->Cursor = 0;
+    }
+    if (State->Cursor > Length) {
+      State->Cursor = Length;
+    }
   }
 
   if (Events->Cancel) {
     return UI_TEXT_CANCEL;
   }
-  return Events->Submit ? UI_TEXT_SUBMIT : UI_TEXT_NONE;
+  if (Events->Submit) {
+    return UI_TEXT_SUBMIT;
+  }
+
+  if (State == NULL) {
+    return UI_TEXT_NONE;
+  }
+
+  if (Events->SelectAll) {
+    State->SelectionStart = 0;
+    State->SelectionEnd = Length;
+    State->Cursor = Length;
+  }
+
+  if ((Events->Copy || Events->Cut) && HasSelection(State)) {
+    int Min = 0;
+    int Max = 0;
+    GetSelectionBounds(State, &Min, &Max);
+    char CopyBuf[UI_TEXT_FIELD_MAX_CHARS + 1];
+    int CopyLen = Max - Min;
+    if (CopyLen > UI_TEXT_FIELD_MAX_CHARS) {
+      CopyLen = UI_TEXT_FIELD_MAX_CHARS;
+    }
+    memcpy(CopyBuf, &Buffer[Min], (size_t)CopyLen);
+    CopyBuf[CopyLen] = '\0';
+    PlatformSetClipboardText(CopyBuf);
+    if (Events->Cut) {
+      SaveUndo(State, Buffer);
+      DeleteRange(Buffer, &Length, Min, Max);
+      State->Cursor = Min;
+      ClearSelection(State);
+    }
+  }
+
+  if (Events->Paste) {
+    const char *Clip = PlatformGetClipboardText();
+    if (Clip != NULL && Clip[0] != '\0') {
+      SaveUndo(State, Buffer);
+      if (HasSelection(State)) {
+        int Min = 0;
+        int Max = 0;
+        GetSelectionBounds(State, &Min, &Max);
+        DeleteRange(Buffer, &Length, Min, Max);
+        State->Cursor = Min;
+        ClearSelection(State);
+      }
+      InsertCharsAtCursor(Buffer, Capacity, State, Clip, (int)strlen(Clip),
+                          &Length);
+    }
+  }
+
+  if (Events->Undo && State->HasUndo) {
+    char TempText[UI_TEXT_FIELD_MAX_CHARS + 1];
+    int TempCursor = State->Cursor;
+    SafeStrncpy(TempText, Buffer, (int)sizeof(TempText));
+    SafeStrncpy(Buffer, State->UndoText, Capacity);
+    Length = (int)strlen(Buffer);
+    State->Cursor = State->UndoCursor;
+    if (State->Cursor > Length) {
+      State->Cursor = Length;
+    }
+    ClearSelection(State);
+    SafeStrncpy(State->UndoText, TempText, (int)sizeof(State->UndoText));
+    State->UndoCursor = TempCursor;
+  }
+
+  if (Events->MoveLeft) {
+    if (Events->ShiftHeld) {
+      if (State->SelectionStart < 0) {
+        State->SelectionStart = State->Cursor;
+      }
+      State->Cursor = Events->WordStep ? Utf8PrevWord(Buffer, State->Cursor)
+                                       : Utf8Prev(Buffer, State->Cursor);
+      State->SelectionEnd = State->Cursor;
+    } else if (HasSelection(State)) {
+      int Min = 0;
+      int Max = 0;
+      GetSelectionBounds(State, &Min, &Max);
+      State->Cursor = Min;
+      ClearSelection(State);
+    } else {
+      State->Cursor = Events->WordStep ? Utf8PrevWord(Buffer, State->Cursor)
+                                       : Utf8Prev(Buffer, State->Cursor);
+    }
+  }
+
+  if (Events->MoveRight) {
+    if (Events->ShiftHeld) {
+      if (State->SelectionStart < 0) {
+        State->SelectionStart = State->Cursor;
+      }
+      State->Cursor = Events->WordStep
+                          ? Utf8NextWord(Buffer, Length, State->Cursor)
+                          : Utf8Next(Buffer, Length, State->Cursor);
+      State->SelectionEnd = State->Cursor;
+    } else if (HasSelection(State)) {
+      int Min = 0;
+      int Max = 0;
+      GetSelectionBounds(State, &Min, &Max);
+      State->Cursor = Max;
+      ClearSelection(State);
+    } else {
+      State->Cursor = Events->WordStep
+                          ? Utf8NextWord(Buffer, Length, State->Cursor)
+                          : Utf8Next(Buffer, Length, State->Cursor);
+    }
+  }
+
+  if (Events->MoveHome) {
+    if (Events->ShiftHeld) {
+      if (State->SelectionStart < 0) {
+        State->SelectionStart = State->Cursor;
+      }
+      State->Cursor = 0;
+      State->SelectionEnd = 0;
+    } else {
+      State->Cursor = 0;
+      ClearSelection(State);
+    }
+  }
+
+  if (Events->MoveEnd) {
+    if (Events->ShiftHeld) {
+      if (State->SelectionStart < 0) {
+        State->SelectionStart = State->Cursor;
+      }
+      State->Cursor = Length;
+      State->SelectionEnd = Length;
+    } else {
+      State->Cursor = Length;
+      ClearSelection(State);
+    }
+  }
+
+  if (Events->Backspace) {
+    if (HasSelection(State)) {
+      SaveUndo(State, Buffer);
+      int Min = 0;
+      int Max = 0;
+      GetSelectionBounds(State, &Min, &Max);
+      DeleteRange(Buffer, &Length, Min, Max);
+      State->Cursor = Min;
+      ClearSelection(State);
+    } else if (State->Cursor > 0) {
+      SaveUndo(State, Buffer);
+      int Prev = Utf8Prev(Buffer, State->Cursor);
+      DeleteRange(Buffer, &Length, Prev, State->Cursor);
+      State->Cursor = Prev;
+    }
+  }
+
+  if (Events->Delete) {
+    if (HasSelection(State)) {
+      SaveUndo(State, Buffer);
+      int Min = 0;
+      int Max = 0;
+      GetSelectionBounds(State, &Min, &Max);
+      DeleteRange(Buffer, &Length, Min, Max);
+      State->Cursor = Min;
+      ClearSelection(State);
+    } else if (State->Cursor < Length) {
+      SaveUndo(State, Buffer);
+      int Next = Utf8Next(Buffer, Length, State->Cursor);
+      DeleteRange(Buffer, &Length, State->Cursor, Next);
+    }
+  }
+
+  if (Events->Chars != NULL && Events->Count > 0) {
+    SaveUndo(State, Buffer);
+    if (HasSelection(State)) {
+      int Min = 0;
+      int Max = 0;
+      GetSelectionBounds(State, &Min, &Max);
+      DeleteRange(Buffer, &Length, Min, Max);
+      State->Cursor = Min;
+      ClearSelection(State);
+    }
+    InsertCharsAtCursor(Buffer, Capacity, State, Events->Chars, Events->Count,
+                        &Length);
+  }
+
+  return UI_TEXT_NONE;
 }
 
 void UiTextFieldDraw(UiContext *Ctx, UiRect Rect, const char *Text,
-                     bool Focused, bool Bordered) {
+                     UiTextEditState *State, bool Focused, bool Bordered) {
   const WidgetSprites *Sprites = GetWidgetSprites();
   int Inset = TEXT_FIELD_INSET_BORDERLESS;
   float TextY = (float)(Rect.Y + TEXT_FIELD_INSET_BORDERLESS);
   if (Bordered) {
-    UiNineSlice(Ctx, Focused ? Sprites->TextFieldHighlighted : Sprites->TextField,
+    UiNineSlice(Ctx,
+                Focused ? Sprites->TextFieldHighlighted : Sprites->TextField,
                 Rect, COLOR_WHITE);
     Inset = TEXT_FIELD_INSET;
     TextY = (float)Rect.Y + ((float)(Rect.H - BUTTON_LABEL_HEIGHT) * UI_HALF);
@@ -485,21 +805,78 @@ void UiTextFieldDraw(UiContext *Ctx, UiRect Rect, const char *Text,
   }
 
   UiRect Inner = {Rect.X + Inset, Rect.Y, Rect.W - (Inset * 2), Rect.H};
+  float Px = Ctx->Pointer.X;
+  float Py = Ctx->Pointer.Y;
+  bool InRect = Px >= (float)Rect.X && Px <= (float)(Rect.X + Rect.W) &&
+                Py >= (float)Rect.Y && Py <= (float)(Rect.Y + Rect.H);
+  if (InRect) {
+    Ctx->CursorShape = PLATFORM_CURSOR_IBEAM;
+  }
+
+  if (State != NULL && Focused) {
+    bool InInner = Px >= (float)Inner.X && Px <= (float)(Inner.X + Inner.W) &&
+                   Py >= (float)Inner.Y && Py <= (float)(Inner.Y + Inner.H);
+    float TextX = (float)Inner.X - State->ScrollOffset;
+
+    if (Ctx->Pointer.LeftPressed && InInner) {
+      int ClickIdx = UiTextIndexAt(Text, Px - TextX);
+      State->Cursor = ClickIdx;
+      State->SelectionStart = ClickIdx;
+      State->SelectionEnd = ClickIdx;
+    } else if (Ctx->Pointer.LeftDown && State->SelectionStart >= 0) {
+      int DragIdx = UiTextIndexAt(Text, Px - TextX);
+      State->Cursor = DragIdx;
+      State->SelectionEnd = DragIdx;
+    } else if (Ctx->Pointer.LeftReleased && State->SelectionStart >= 0) {
+      if (State->SelectionStart == State->SelectionEnd) {
+        ClearSelection(State);
+      }
+    }
+  }
+
+  float CaretRelX = 0.0F;
+  if (State != NULL) {
+    CaretRelX = UiMeasureTextRange(Text, State->Cursor);
+    float InnerW = (float)(Inner.W - TEXT_FIELD_SCROLL_MARGIN);
+    if (CaretRelX - State->ScrollOffset > InnerW) {
+      State->ScrollOffset = CaretRelX - InnerW;
+    }
+    if (CaretRelX - State->ScrollOffset < 0.0F) {
+      State->ScrollOffset = CaretRelX;
+    }
+    if (State->ScrollOffset < 0.0F) {
+      State->ScrollOffset = 0.0F;
+    }
+  }
+
+  float TextX = (float)Inner.X - (State != NULL ? State->ScrollOffset : 0.0F);
   bool ShowCaret =
       Focused && ((int)(PlatformGetTime() * CARET_BLINK_RATE)) % 2 == 0;
-  float TextWidth = UiMeasureText(Text);
-  float CaretWidth = UiMeasureText("_");
-
-  // Scrolled left just enough that the end of the text and the caret stay in
-  // view, as vanilla's edit box does while typing.
-  float Overflow = TextWidth + CaretWidth - (float)Inner.W;
-  float TextX = (float)Inner.X - ((Overflow > 0.0F) ? Overflow : 0.0F);
 
   UiScissor Previous = Ctx->Scissor;
   UiSetScissor(Ctx, Inner);
-  UiTextShadow(Ctx, Text, TextX, TextY, UI_LABEL_COLOR);
-  if (ShowCaret) {
-    UiTextShadow(Ctx, "_", TextX + TextWidth, TextY, UI_LABEL_COLOR);
+
+  if (State != NULL && HasSelection(State)) {
+    int Min = 0;
+    int Max = 0;
+    GetSelectionBounds(State, &Min, &Max);
+    float SelX0 = TextX + UiMeasureTextRange(Text, Min);
+    float SelX1 = TextX + UiMeasureTextRange(Text, Max);
+    UiFillRect(Ctx,
+               (UiRect){(int)SelX0, (int)TextY, (int)(SelX1 - SelX0),
+                        BUTTON_LABEL_HEIGHT},
+               UI_SELECTION_COLOR);
   }
+
+  UiTextShadow(Ctx, Text, TextX, TextY, UI_LABEL_COLOR);
+
+  if (ShowCaret && State != NULL) {
+    float CaretX = TextX + CaretRelX;
+    UiFillRect(Ctx,
+               (UiRect){(int)CaretX, (int)TextY - 1, 1,
+                        BUTTON_LABEL_HEIGHT + 2},
+               COLOR_WHITE);
+  }
+
   Ctx->Scissor = Previous;
 }

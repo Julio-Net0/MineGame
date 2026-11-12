@@ -440,12 +440,17 @@ int main(int Argc, char **Argv) {
     // mouse movement from whoever is watching cannot change its result. The
     // window's close button still ends the process.
     bool ScriptDriven = ScriptIsActive();
-    InventoryInput InvInput = {.WheelDelta = 0, .HotbarKey = -1};
+    InventoryInput InvInput = {.WheelDelta = 0,
+                               .HotbarKey = -1,
+                               .ShiftHeld = false,
+                               .SelectedHotbarSlot = 0};
     if (!ScriptDriven) {
       SystemInput System = UpdateSystemInputs(&ShowDebug, &ChatVal, &PlayerVal);
       if (CreativeInventoryIsOpen()) {
         InvInput.WheelDelta = InputGetScrollDelta();
         InvInput.HotbarKey = System.HotbarKey;
+        InvInput.ShiftHeld = InputIsShiftDown();
+        InvInput.SelectedHotbarSlot = PlayerVal.SelectedHotbarSlot;
       }
     }
 

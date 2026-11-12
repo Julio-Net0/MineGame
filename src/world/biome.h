@@ -185,4 +185,10 @@ int SampleBiomeAt(int X, int Y, int Z, uint64_t Seed, BiomeClimate *OutClimate);
 // biome, so an untinted face multiplies by 1 and keeps its current color.
 Color8 GetBiomeTint(int BiomeId, TintSource Source);
 
+// Locates the nearest cell of BiomeId within MaxRadius blocks from (StartX, StartZ)
+// in concentric square rings with Step block increments. Returns true if found,
+// filling OutX, OutZ, and OutDistance.
+bool FindBiomeLocation(int BiomeId, int StartX, int StartZ, int MaxRadius,
+                       uint64_t Seed, int *OutX, int *OutZ, float *OutDistance);
+
 #endif

@@ -26,8 +26,10 @@ enum {
   INPUT_FLAG_BREAK = 1 << 3,
   INPUT_FLAG_PLACE = 1 << 4,
   INPUT_FLAG_HOTBAR_SET = 1 << 5,
+  INPUT_FLAG_PICK_BLOCK = 1 << 6,
   INPUT_FLAG_MASK = INPUT_FLAG_JUMP | INPUT_FLAG_ASCEND | INPUT_FLAG_DESCEND |
-                    INPUT_FLAG_BREAK | INPUT_FLAG_PLACE | INPUT_FLAG_HOTBAR_SET,
+                    INPUT_FLAG_BREAK | INPUT_FLAG_PLACE |
+                    INPUT_FLAG_HOTBAR_SET | INPUT_FLAG_PICK_BLOCK,
 };
 
 enum {
@@ -255,6 +257,7 @@ int NetEncodeClientInput(const PktClientInput *Pkt, uint8_t *OutBuf,
   Flags |= Input->DescendHeld ? (unsigned)INPUT_FLAG_DESCEND : 0U;
   Flags |= Input->Break ? (unsigned)INPUT_FLAG_BREAK : 0U;
   Flags |= Input->Place ? (unsigned)INPUT_FLAG_PLACE : 0U;
+  Flags |= Input->PickBlock ? (unsigned)INPUT_FLAG_PICK_BLOCK : 0U;
   Flags |= Input->HotbarSetRequested ? (unsigned)INPUT_FLAG_HOTBAR_SET : 0U;
 
   int HotbarSelect =
@@ -327,6 +330,7 @@ bool NetDecodeClientInput(PktClientInput *OutPkt, const uint8_t *Buf,
               .HotbarScroll = HotbarScroll,
               .Break = (Flags & (unsigned)INPUT_FLAG_BREAK) != 0U,
               .Place = (Flags & (unsigned)INPUT_FLAG_PLACE) != 0U,
+              .PickBlock = (Flags & (unsigned)INPUT_FLAG_PICK_BLOCK) != 0U,
               .HotbarSetRequested = HotbarSetRequested,
           },
       .Forward = Forward,

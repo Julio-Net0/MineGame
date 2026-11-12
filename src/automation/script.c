@@ -111,13 +111,15 @@ typedef enum {
   SCRIPT_AXIS_RIGHT,
   SCRIPT_AXIS_ASCEND,
   SCRIPT_AXIS_DESCEND,
+  SCRIPT_AXIS_SPRINT,
   SCRIPT_AXIS_COUNT
 } ScriptAxis;
 
 typedef enum {
   SCRIPT_PRESS_JUMP,
   SCRIPT_PRESS_BREAK,
-  SCRIPT_PRESS_PLACE
+  SCRIPT_PRESS_PLACE,
+  SCRIPT_PRESS_PICK
 } ScriptPressKind;
 
 // One parsed statement. Text always holds the source line as written, which is
@@ -179,6 +181,7 @@ typedef struct {
   bool PressJump;
   bool PressBreak;
   bool PressPlace;
+  bool PressPick;
   int HotbarSelect;
 
   double TimeoutSeconds;
@@ -367,7 +370,7 @@ static bool ParseFinite(const char *Str, float *OutValue) {
 
 // Names accepted by `hold`, in ScriptAxis order.
 static const char *const AXIS_NAMES[SCRIPT_AXIS_COUNT] = {
-    "forward", "back", "left", "right", "ascend", "descend"};
+    "forward", "back", "left", "right", "ascend", "descend", "sprint"};
 
 static int FindAxis(const char *Name) {
   for (int Idx = 0; Idx < SCRIPT_AXIS_COUNT; Idx++) {
@@ -650,10 +653,12 @@ static bool ParseStatement(char *Statement, int LineNumber) {
         Kind = SCRIPT_PRESS_BREAK;
       } else if (CompareString(Tokens[1], "place") == 0) {
         Kind = SCRIPT_PRESS_PLACE;
+      } else if (CompareString(Tokens[1], "pick") == 0) {
+        Kind = SCRIPT_PRESS_PICK;
       }
     }
     if (Kind < 0) {
-      ParseError(LineNumber, "expected \"press <jump|break|place>\"");
+      ParseError(LineNumber, "expected \"press <jump|break|place|pick>\"");
       return false;
     }
     return AppendStatement((ScriptStatement){.Kind = SCRIPT_OP_PRESS,
@@ -813,16 +818,19 @@ PlayerInput ScriptPollInput(void) {
                 (State->HoldTicks[SCRIPT_AXIS_LEFT] > 0 ? 1.0F : 0.0F);
   Input.AscendHeld = State->HoldTicks[SCRIPT_AXIS_ASCEND] > 0;
   Input.DescendHeld = State->HoldTicks[SCRIPT_AXIS_DESCEND] > 0;
+  Input.SprintHeld = State->HoldTicks[SCRIPT_AXIS_SPRINT] > 0;
 
   // Handed over once. The caller latches edges until a tick consumes them, so
   // an edge raised on a frame that runs no tick is not lost.
   Input.Jump = State->PressJump;
   Input.Break = State->PressBreak;
   Input.Place = State->PressPlace;
+  Input.PickBlock = State->PressPick;
   Input.HotbarSelect = State->HotbarSelect;
   State->PressJump = false;
   State->PressBreak = false;
   State->PressPlace = false;
+  State->PressPick = false;
   State->HotbarSelect = -1;
 
   return Input;
@@ -1360,8 +1368,10 @@ void ScriptStep(ChatState *Chat, GameCamera *Camera, Player *PlayerVal,
         State->PressJump = true;
       } else if (Step->Index == SCRIPT_PRESS_BREAK) {
         State->PressBreak = true;
-      } else {
+      } else if (Step->Index == SCRIPT_PRESS_PLACE) {
         State->PressPlace = true;
+      } else if (Step->Index == SCRIPT_PRESS_PICK) {
+        State->PressPick = true;
       }
       break;
     case SCRIPT_OP_HOTBAR:
