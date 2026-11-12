@@ -35,7 +35,7 @@ DENSE_SLAB_CAPACITY = 512
 CHUNK_SIZE = 16
 MIN_RENDER_DISTANCE = 2
 DEFAULT_RENDER_DISTANCE = 8
-MAX_RENDER_DISTANCE = 16
+MAX_RENDER_DISTANCE = 32
 VERTICAL_RENDER_RADIUS = 8
 DEPTH_SHIFT_PER_LAYER = 1
 MIN_UP_LAYERS = 2
@@ -101,6 +101,7 @@ def self_check_loader_mirror() -> None:
     """Checks the mirror against the cylindrical-chunk-loading spec scenarios."""
     require(disc_columns(8) == 197, f"loader mirror: disc_columns(8) == {disc_columns(8)}, expected 197")
     require(disc_columns(16) == 797, f"loader mirror: disc_columns(16) == {disc_columns(16)}, expected 797")
+    require(disc_columns(32) == 3209, f"loader mirror: disc_columns(32) == {disc_columns(32)}, expected 3209")
     window_cases = (
         (4, 8, list(range(-4, 13))),
         (-1, 8, list(range(-9, 8))),
