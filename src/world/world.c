@@ -458,20 +458,55 @@ static void MarkUsefulChunks(World *WorldVal, const LoadVolume *Volume, bool *Ke
   }
 }
 
-void UpdateNeighborsDirtyFlag(World *WorldVal, int Cx, int Cy, int Cz){
-  Chunk *Neighbor;
-  Neighbor = GetChunkFromWorld(WorldVal, Cx - 1, Cy, Cz); if (Neighbor != (Chunk *)0) { Neighbor->IsDirty = true; }
-  Neighbor = GetChunkFromWorld(WorldVal, Cx + 1, Cy, Cz); if (Neighbor != (Chunk *)0) { Neighbor->IsDirty = true; }
-  Neighbor = GetChunkFromWorld(WorldVal, Cx, Cy - 1, Cz); if (Neighbor != (Chunk *)0) { Neighbor->IsDirty = true; }
-  Neighbor = GetChunkFromWorld(WorldVal, Cx, Cy + 1, Cz); if (Neighbor != (Chunk *)0) { Neighbor->IsDirty = true; }
-  Neighbor = GetChunkFromWorld(WorldVal, Cx, Cy, Cz - 1); if (Neighbor != (Chunk *)0) { Neighbor->IsDirty = true; }
-  Neighbor = GetChunkFromWorld(WorldVal, Cx, Cy, Cz + 1); if (Neighbor != (Chunk *)0) { Neighbor->IsDirty = true; }
+// A mesh already in flight was built from a snapshot taken before this change,
+// so it is stale. Completion clears IsDirty only when DirtiedWhileMeshing is
+// unset; setting IsDirty alone would be overwritten and the chunk would keep a
+// mesh built against a neighbour that has since arrived, left or changed.
+static void MarkChunkDirty(Chunk *ChunkVal) {
+  if (ChunkVal == (Chunk *)0) {
+    return;
+  }
+  ChunkVal->IsDirty = true;
+  if (ChunkVal->IsMeshing) { ChunkVal->DirtiedWhileMeshing = true; }
 }
 
-static void EvictUnneededChunks(World *WorldVal, const bool *KeepChunk){
+// The mesh snapshot reads all 26 surrounding chunks, not only the six sharing a
+// face: ambient occlusion reaches diagonally across chunk edges and corners,
+// and tint samples the neighbouring biome cells. Every chunk whose mesh a
+// change can reach therefore has to be marked, or one meshed while an edge or
+// corner neighbour was missing keeps that stale shading forever.
+void UpdateNeighborsDirtyFlag(World *WorldVal, int Cx, int Cy, int Cz){
+  for (int Dx = -1; Dx <= 1; Dx++) {
+    for (int Dy = -1; Dy <= 1; Dy++) {
+      for (int Dz = -1; Dz <= 1; Dz++) {
+        if (Dx != 0 || Dy != 0 || Dz != 0) {
+          MarkChunkDirty(GetChunkFromWorld(WorldVal, Cx + Dx, Cy + Dy, Cz + Dz));
+        }
+      }
+    }
+  }
+}
+
+// -1 when a local coordinate sits on the low face, +1 on the high face, 0
+// otherwise: the direction in which an edit at it reaches the next chunk.
+static int BorderStep(int Local) {
+  if (Local == 0) { return -1; }
+  if (Local == CHUNK_SIZE - 1) { return 1; }
+  return 0;
+}
+
+// Returns true when a chunk that should go had to stay because work was still
+// in flight on it. The caller must then come back: until it does, that chunk
+// stays loaded outside the volume, and a border chunk meshed while it exists
+// keeps faces it would not have against an empty neighbour.
+static bool EvictUnneededChunks(World *WorldVal, const bool *KeepChunk){
+  bool Deferred = false;
   for(int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++){
-    if(!WorldVal->SlotInUse[IdxI] || KeepChunk[IdxI] ||
-       WorldVal->Chunks[IdxI].IsGenerating || WorldVal->Chunks[IdxI].IsMeshing){
+    if(!WorldVal->SlotInUse[IdxI] || KeepChunk[IdxI]){
+      continue;
+    }
+    if(WorldVal->Chunks[IdxI].IsGenerating || WorldVal->Chunks[IdxI].IsMeshing){
+      Deferred = true;
       continue;
     }
 
@@ -495,6 +530,7 @@ static void EvictUnneededChunks(World *WorldVal, const bool *KeepChunk){
     WorldVal->SlotInUse[IdxI] = false;
     WorldVal->FreeList[WorldVal->FreeCount++] = IdxI;
   }
+  return Deferred;
 }
 
 static bool CreateOrRecycleChunk(World *WorldVal, int ChunkX, int ChunkY, int ChunkZ){
@@ -560,7 +596,7 @@ void UpdateWorld(World *WorldVal, Vec3 PlayerPos, int RenderDist){
   BuildLoadVolume(WorldVal, PlayerPos, RenderDist, &Volume);
 
   MarkUsefulChunks(WorldVal, &Volume, KeepChunk);
-  EvictUnneededChunks(WorldVal, KeepChunk);
+  bool EvictionDeferred = EvictUnneededChunks(WorldVal, KeepChunk);
 
   // Volume order is nearest first, so generation is enqueued nearest first.
   bool AllCreated = true;
@@ -580,7 +616,9 @@ void UpdateWorld(World *WorldVal, Vec3 PlayerPos, int RenderDist){
   WorldVal->LastLoadChunkY = PChunkY;
   WorldVal->LastLoadChunkZ = PChunkZ;
   WorldVal->LastLoadRenderDist = RenderDist;
-  WorldVal->HasLoadedOnce = AllCreated;
+  // The gate above only opens again when the player changes chunk, so a load
+  // that left chunks uncreated or unevicted keeps it shut off until it is done.
+  WorldVal->HasLoadedOnce = AllCreated && !EvictionDeferred;
   PROFILE_END(UpdateStart, PROFILE_WORLD_UPDATE);
 }
 
@@ -611,36 +649,28 @@ void SetBlockInWorld(World *WorldVal, Vec3 Pos, BlockID BlockId){
 
   BlockID PreviousId = ChunkGetLocal(ChunkVal, LocalX, LocalY, LocalZ);
   SetBlockInChunk(ChunkVal, (Vec3){(float)LocalX, (float)LocalY, (float)LocalZ}, BlockId);
-  ChunkVal->IsDirty = true;
-  // A mesh already in flight was built from a snapshot taken before this edit,
-  // so it is stale. Completion checks this rather than clearing IsDirty blindly.
-  if (ChunkVal->IsMeshing) { ChunkVal->DirtiedWhileMeshing = true; }
+  MarkChunkDirty(ChunkVal);
 
-  if (LocalX == 0) {
-    Chunk *Neighbor = GetChunkFromWorld(WorldVal, ChunkVal->ChunkX - 1, ChunkVal->ChunkY, ChunkVal->ChunkZ);
-    if (Neighbor != (Chunk *)0) { Neighbor->IsDirty = true; }
-  } 
-  else if (LocalX == CHUNK_SIZE - 1) {
-    Chunk *Neighbor = GetChunkFromWorld(WorldVal, ChunkVal->ChunkX + 1, ChunkVal->ChunkY, ChunkVal->ChunkZ);
-    if (Neighbor != (Chunk *)0) { Neighbor->IsDirty = true; }
-  }
-
-  if (LocalY == 0) {
-    Chunk *Neighbor = GetChunkFromWorld(WorldVal, ChunkVal->ChunkX, ChunkVal->ChunkY - 1, ChunkVal->ChunkZ);
-    if (Neighbor != (Chunk *)0) { Neighbor->IsDirty = true; }
-  } 
-  else if (LocalY == CHUNK_SIZE - 1) {
-    Chunk *Neighbor = GetChunkFromWorld(WorldVal, ChunkVal->ChunkX, ChunkVal->ChunkY + 1, ChunkVal->ChunkZ);
-    if (Neighbor != (Chunk *)0) { Neighbor->IsDirty = true; }
-  }
-
-  if (LocalZ == 0) {
-    Chunk *Neighbor = GetChunkFromWorld(WorldVal, ChunkVal->ChunkX, ChunkVal->ChunkY, ChunkVal->ChunkZ - 1);
-    if (Neighbor != (Chunk *)0) { Neighbor->IsDirty = true; }
-  } 
-  else if (LocalZ == CHUNK_SIZE - 1) {
-    Chunk *Neighbor = GetChunkFromWorld(WorldVal, ChunkVal->ChunkX, ChunkVal->ChunkY, ChunkVal->ChunkZ + 1);
-    if (Neighbor != (Chunk *)0) { Neighbor->IsDirty = true; }
+  // A block on a face, edge or corner of its chunk is read by the face, edge
+  // and corner neighbours across it: face culling by the first, ambient
+  // occlusion by all of them. On each axis the offset is 0 or the one step
+  // toward the border the block touches.
+  int StepX = BorderStep(LocalX);
+  int StepY = BorderStep(LocalY);
+  int StepZ = BorderStep(LocalZ);
+  for (int Dx = -1; Dx <= 1; Dx++) {
+    if (Dx != 0 && Dx != StepX) { continue; }
+    for (int Dy = -1; Dy <= 1; Dy++) {
+      if (Dy != 0 && Dy != StepY) { continue; }
+      for (int Dz = -1; Dz <= 1; Dz++) {
+        if ((Dz != 0 && Dz != StepZ) || (Dx == 0 && Dy == 0 && Dz == 0)) {
+          continue;
+        }
+        MarkChunkDirty(GetChunkFromWorld(WorldVal, ChunkVal->ChunkX + Dx,
+                                         ChunkVal->ChunkY + Dy,
+                                         ChunkVal->ChunkZ + Dz));
+      }
+    }
   }
 
   if (WorldVal->OnBlockChange != (BlockChangeCallback)0 && PreviousId != BlockId) {
@@ -779,31 +809,27 @@ RaycastResult RayCastToWorld(World *WorldVal, Vec3 RayOrigin, Vec3 RayDir, float
   return Result;
 }
 
+// Covers the same 26 chunks the mesh snapshot reads. A loaded neighbour still
+// generating would be captured as air, and its completion would then have to
+// remesh this chunk; waiting for it instead meshes each chunk once. An absent
+// neighbour lies outside the load volume and counts as air for good.
 bool AreNeighborsGenerated(World *WorldVal, Chunk *ChunkVal) {
-  int Cx = ChunkVal->ChunkX;
-  int Cy = ChunkVal->ChunkY;
-  int Cz = ChunkVal->ChunkZ;
-
-#define NEIGHBOR_COUNT 6
-  int NeighborCoords[NEIGHBOR_COUNT][3] = {
-    {Cx - 1, Cy, Cz},
-    {Cx + 1, Cy, Cz},
-    {Cx, Cy - 1, Cz},
-    {Cx, Cy + 1, Cz},
-    {Cx, Cy, Cz - 1},
-    {Cx, Cy, Cz + 1}
-  };
-
-  for (int IdxI = 0; IdxI < NEIGHBOR_COUNT; IdxI++) {
-    Chunk *Neighbor = GetChunkFromWorld(WorldVal, NeighborCoords[IdxI][0], NeighborCoords[IdxI][1], NeighborCoords[IdxI][2]);
-    if (Neighbor != (Chunk *)0) {
-      if (!Neighbor->IsGenerated || Neighbor->IsGenerating) {
-        return false;
+  for (int Dx = -1; Dx <= 1; Dx++) {
+    for (int Dy = -1; Dy <= 1; Dy++) {
+      for (int Dz = -1; Dz <= 1; Dz++) {
+        if (Dx == 0 && Dy == 0 && Dz == 0) {
+          continue;
+        }
+        const Chunk *Neighbor =
+            GetChunkFromWorld(WorldVal, ChunkVal->ChunkX + Dx,
+                              ChunkVal->ChunkY + Dy, ChunkVal->ChunkZ + Dz);
+        if (Neighbor != (Chunk *)0 &&
+            (!Neighbor->IsGenerated || Neighbor->IsGenerating)) {
+          return false;
+        }
       }
     }
   }
-#undef NEIGHBOR_COUNT
-
   return true;
 }
 
@@ -844,6 +870,12 @@ bool WorldIsGenerationSettled(World *WorldVal, Vec3 Center, int RenderDist) {
 }
 
 bool WorldIsSettled(World *WorldVal, Vec3 Center, int RenderDist) {
+  // A load still owes evictions while this is false. A chunk left outside the
+  // volume is still drawn and still a neighbour to the border chunks, so the
+  // world is not in the state it is converging to until it has gone.
+  if (!WorldVal->HasLoadedOnce) {
+    return false;
+  }
   if (!WorldIsGenerationSettled(WorldVal, Center, RenderDist)) {
     return false;
   }
