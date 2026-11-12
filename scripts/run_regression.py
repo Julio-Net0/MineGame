@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 from pathlib import Path
 import shutil
@@ -21,7 +22,112 @@ EXPECTED_SEED = "16412814131703521744"
 # Number of "PROTOCOL_TEST: ok" lines MineGameServer --test-protocol logs; a
 # mismatch means a check was silently skipped or added without updating this.
 EXPECTED_PROTOCOL_CHECKS = 36
-EXPECTED_ACTIVE_CHUNKS = 1331
+
+# Mirror of the engine's chunk loader, used to derive expected active chunk
+# counts. Keep in sync with src/world/world.h (render distance limits,
+# VERTICAL_RENDER_RADIUS) and ComputeLayerWindow / BuildLoadVolume in
+# src/world/world.c. WORLD_LO/HI_CHUNK_Y are the chunk layers holding the
+# bedrock band's lowest Y and the generation ceiling for the default strata;
+# SEA_CHUNK_Y is the chunk layer holding SEA_LEVEL.
+CHUNK_SIZE = 16
+MIN_RENDER_DISTANCE = 2
+DEFAULT_RENDER_DISTANCE = 8
+MAX_RENDER_DISTANCE = 16
+VERTICAL_RENDER_RADIUS = 8
+DEPTH_SHIFT_PER_LAYER = 1
+MIN_UP_LAYERS = 2
+SEA_CHUNK_Y = 0
+WORLD_LO_CHUNK_Y = -33
+WORLD_HI_CHUNK_Y = 40
+
+
+def disc_columns(render_distance: int) -> int:
+    r = render_distance
+    return sum(1 for dx in range(-r, r + 1) for dz in range(-r, r + 1) if dx * dx + dz * dz <= r * r)
+
+
+def chunk_layer(position_y: float) -> int:
+    return math.floor(float(position_y) / CHUNK_SIZE)
+
+
+def load_layers(center_y: int, render_distance: int) -> list[int]:
+    """Active chunk layers for a load centre layer, as ComputeLayerWindow and
+    BuildLoadVolume produce them."""
+    vertical = min(render_distance, VERTICAL_RENDER_RADIUS)
+    depth = min((SEA_CHUNK_Y - 1) - center_y, vertical)
+    shift = max(0, min(depth * DEPTH_SHIFT_PER_LAYER, vertical - MIN_UP_LAYERS))
+    lo = center_y - (vertical + shift)
+    hi = center_y + (vertical - shift)
+
+    # Slide off the ceiling, then the floor, each stopping one layer short of
+    # the centre so [center_y - 1, center_y + 1] always stays inside.
+    if hi > WORLD_HI_CHUNK_Y:
+        move = min(hi - WORLD_HI_CHUNK_Y, (hi - center_y) - 1)
+        lo -= move
+        hi -= move
+    if lo < WORLD_LO_CHUNK_Y:
+        move = min(WORLD_LO_CHUNK_Y - lo, (center_y - lo) - 1)
+        lo += move
+        hi += move
+
+    layers = set(range(max(lo, WORLD_LO_CHUNK_Y), min(hi, WORLD_HI_CHUNK_Y) + 1))
+    layers.update((center_y - 1, center_y, center_y + 1))
+    return sorted(layers)
+
+
+def load_window(center_y: int, render_distance: int) -> tuple[int, int, int]:
+    """(lo, hi, layers) as the state dump's loadWindow reports them."""
+    layers = load_layers(center_y, render_distance)
+    return layers[0], layers[-1], len(layers)
+
+
+def expected_active(position_y: float, render_distance: int) -> int:
+    return disc_columns(render_distance) * len(load_layers(chunk_layer(position_y), render_distance))
+
+
+def effective_render_distance(render_distance_arg: int | None) -> int:
+    return DEFAULT_RENDER_DISTANCE if render_distance_arg is None else render_distance_arg
+
+
+def render_distance_flag(render_distance_arg: int | None) -> list[str]:
+    """Forwarded only when given, so a default run checks the engine default."""
+    return [] if render_distance_arg is None else ["--render-distance", str(render_distance_arg)]
+
+
+def self_check_loader_mirror() -> None:
+    """Checks the mirror against the cylindrical-chunk-loading spec scenarios."""
+    require(disc_columns(8) == 197, f"loader mirror: disc_columns(8) == {disc_columns(8)}, expected 197")
+    require(disc_columns(16) == 797, f"loader mirror: disc_columns(16) == {disc_columns(16)}, expected 797")
+    window_cases = (
+        (4, 8, list(range(-4, 13))),
+        (-1, 8, list(range(-9, 8))),
+        (-8, 8, list(range(-22, -5))),
+        (-32, 8, list(range(-33, -16))),
+        (38, 8, list(range(24, 41))),
+        (60, 8, [59, 60, 61]),
+    )
+    for center_y, r, expected in window_cases:
+        actual = load_layers(center_y, r)
+        require(
+            actual == expected,
+            f"loader mirror: layers for Cy={center_y} R={r} are {actual}, expected {expected}",
+        )
+    for r in range(MIN_RENDER_DISTANCE, MAX_RENDER_DISTANCE + 1):
+        budget = 2 * min(r, VERTICAL_RENDER_RADIUS) + 1
+        for center_y in range(-40, 71):
+            layers = load_layers(center_y, r)
+            require(
+                len(layers) <= budget,
+                f"loader mirror: Cy={center_y} R={r} has {len(layers)} layers, budget {budget}",
+            )
+            require(
+                all(y in layers for y in (center_y - 1, center_y, center_y + 1)),
+                f"loader mirror: Cy={center_y} R={r} misses a layer around the centre",
+            )
+            # Two layers above the centre exist only when both are in the world.
+            if r == 3 and WORLD_LO_CHUNK_Y <= center_y and center_y + 2 <= WORLD_HI_CHUNK_Y:
+                above = sum(1 for y in layers if y > center_y)
+                require(above >= 2, f"loader mirror: Cy={center_y} R=3 keeps {above} layers above the centre")
 
 PROFILER_SCOPES = (
     "frame",
@@ -90,55 +196,96 @@ def assert_png(path: Path, width: int = EXPECTED_WIDTH, height: int = EXPECTED_H
 
 
 # Frustum-culled chunk counts per camera pose. They depend on the generated
-# terrain, so they are recorded per generator version (worldgen.generatorVersion
-# in the dumps); a version with no entry fails instead of comparing against
-# another generator's numbers.
-EXPECTED_RENDERED: dict[int, dict[str, int]] = {
+# terrain and on the loaded cylinder, so they are recorded per generator version
+# (worldgen.generatorVersion in the dumps) and then per render distance; a
+# missing entry fails instead of comparing against other numbers.
+EXPECTED_RENDERED: dict[int, dict[int, dict[str, int]]] = {
     # Only the current generator's counts are kept: every terrain change
     # replaces them, and an older version's numbers could only mislead.
     6: {
-        "spawn": 367,
-        "far": 33,
-        "after_ticks": 33,
-        "landed": 239,
-        "after_walk": 339,
-        "after_break": 312,
-        "after_place": 303,
-        "after_jump": 314,
+        8: {
+            "spawn": 618,
+            "far": 380,
+            "after_ticks": 380,
+            "landed": 594,
+            "after_walk": 577,
+            "after_break": 803,
+            "after_place": 792,
+            "after_jump": 805,
+        },
+        16: {
+            "spawn": 690,
+            "far": 982,
+            "after_ticks": 982,
+            "landed": 764,
+            "after_walk": 750,
+            "after_break": 994,
+            "after_place": 970,
+            "after_jump": 996,
+        },
     },
 }
 
 
-def expected_rendered(state: dict[str, Any], pose: str) -> int:
+def lookup_versioned(
+    table: dict[int, dict[int, Any]], state: dict[str, Any], render_distance: int, what: str
+) -> Any:
     version = state.get("worldgen", {}).get("generatorVersion")
-    table = EXPECTED_RENDERED.get(version)
+    entry = table.get(version, {}).get(render_distance)
     require(
-        table is not None,
-        f"no expected rendered chunk counts recorded for generator version {version}",
+        entry is not None,
+        f"no expected {what} recorded for generator version {version} at render distance {render_distance}",
     )
-    return table[pose]
+    return entry
 
 
-def assert_settled_chunks(state: dict[str, Any], label: str, expected_rendered: int) -> None:
+def expected_rendered(state: dict[str, Any], render_distance: int, pose: str) -> int:
+    return lookup_versioned(EXPECTED_RENDERED, state, render_distance, "rendered chunk counts")[pose]
+
+
+def assert_load_window(state: dict[str, Any], label: str, render_distance: int) -> None:
+    window = state.get("loadWindow")
+    if window is None:
+        return
+    center_y = chunk_layer(state["player"]["position"]["y"])
+    lo, hi, layers = load_window(center_y, render_distance)
+    actual = (window.get("lo"), window.get("hi"), window.get("layers"))
+    require(
+        actual == (lo, hi, layers),
+        f"{label}: expected loadWindow (lo, hi, layers) == {(lo, hi, layers)} for chunk layer {center_y}, got {actual}",
+    )
+
+
+def assert_settled_chunks(
+    state: dict[str, Any], label: str, render_distance: int, pose: str | None = None
+) -> None:
+    """Settled-world checks; pose selects the rendered count, None skips it."""
     require(state.get("settled") is True, f"{label}: expected settled == true")
-    require(state.get("renderDistance") == 5, f"{label}: expected renderDistance == 5")
+    require(
+        state.get("renderDistance") == render_distance,
+        f"{label}: expected renderDistance == {render_distance}, got {state.get('renderDistance')}",
+    )
+    active = expected_active(state["player"]["position"]["y"], render_distance)
     chunks = state.get("chunks", {})
     require(
-        chunks.get("active") == EXPECTED_ACTIVE_CHUNKS,
-        f"{label}: expected chunks.active == {EXPECTED_ACTIVE_CHUNKS}, got {chunks.get('active')}",
+        chunks.get("active") == active,
+        f"{label}: expected chunks.active == {active}, got {chunks.get('active')}",
     )
     require(
-        chunks.get("generated") == EXPECTED_ACTIVE_CHUNKS,
-        f"{label}: expected chunks.generated == {EXPECTED_ACTIVE_CHUNKS}, got {chunks.get('generated')}",
+        chunks.get("generated") == active,
+        f"{label}: expected chunks.generated == {active}, got {chunks.get('generated')}",
     )
     require(chunks.get("generating") == 0, f"{label}: expected chunks.generating == 0")
     require(chunks.get("dirty") == 0, f"{label}: expected chunks.dirty == 0")
     require(chunks.get("meshing") == 0, f"{label}: expected chunks.meshing == 0")
     require(chunks.get("meshUploadPending") is False, f"{label}: expected meshUploadPending == false")
-    require(
-        chunks.get("rendered") == expected_rendered,
-        f"{label}: expected chunks.rendered == {expected_rendered}, got {chunks.get('rendered')}",
-    )
+    assert_load_window(state, label, render_distance)
+    if pose is not None:
+        rendered = expected_rendered(state, render_distance, pose)
+        require(
+            chunks.get("rendered") == rendered,
+            f"{label}: expected chunks.rendered == {rendered}, got {chunks.get('rendered')}",
+        )
 
 
 def assert_idle_profiler(state: dict[str, Any], label: str) -> None:
@@ -166,7 +313,7 @@ def assert_idle_profiler(state: dict[str, Any], label: str) -> None:
         require(0.05 < overdraw < 3.0, f"{label}: unexpected solidOverdraw {overdraw}")
 
 
-def verify_smoke(out_dir: Path, run_log: str) -> None:
+def verify_smoke(out_dir: Path, run_log: str, render_distance: int) -> None:
     require("Noclip activated" in run_log, "smoke: missing 'Noclip activated' in run.log")
     require("Tp to X:0.0 Y:80.0 Z:0.0" in run_log, "smoke: missing teleport confirmation in run.log")
     require("X:0.0 Y:80.0 Z:0.0" in run_log, "smoke: missing /pos output in run.log")
@@ -176,7 +323,7 @@ def verify_smoke(out_dir: Path, run_log: str) -> None:
     )
 
 
-def verify_spawn_overview(out_dir: Path, _run_log: str) -> None:
+def verify_spawn_overview(out_dir: Path, _run_log: str, render_distance: int) -> None:
     normal_png = assert_png(out_dir / "spawn.png")
     wireframe_png = assert_png(out_dir / "spawn_wireframe.png")
     require(
@@ -185,7 +332,7 @@ def verify_spawn_overview(out_dir: Path, _run_log: str) -> None:
     )
 
     spawn = load_json(out_dir / "spawn.json")
-    assert_settled_chunks(spawn, "spawn.json", expected_rendered=expected_rendered(spawn, "spawn"))
+    assert_settled_chunks(spawn, "spawn.json", render_distance, "spawn")
     assert_idle_profiler(spawn, "spawn.json")
 
     # The script teleports 40 blocks above the spawn feet position.
@@ -201,14 +348,14 @@ def verify_spawn_overview(out_dir: Path, _run_log: str) -> None:
     )
 
 
-def verify_loaded(out_dir: Path, _run_log: str) -> None:
+def verify_loaded(out_dir: Path, _run_log: str, render_distance: int) -> None:
     assert_png(out_dir / "far.png")
 
     far = load_json(out_dir / "far.json")
     after_ticks = load_json(out_dir / "after_ticks.json")
 
-    assert_settled_chunks(far, "far.json", expected_rendered=expected_rendered(far, "far"))
-    assert_settled_chunks(after_ticks, "after_ticks.json", expected_rendered=expected_rendered(after_ticks, "after_ticks"))
+    assert_settled_chunks(far, "far.json", render_distance, "far")
+    assert_settled_chunks(after_ticks, "after_ticks.json", render_distance, "after_ticks")
     assert_idle_profiler(far, "far.json")
     assert_idle_profiler(after_ticks, "after_ticks.json")
 
@@ -232,7 +379,7 @@ def verify_loaded(out_dir: Path, _run_log: str) -> None:
     )
 
 
-def verify_interact(out_dir: Path, _run_log: str) -> None:
+def verify_interact(out_dir: Path, _run_log: str, render_distance: int) -> None:
     break_png = assert_png(out_dir / "after_break.png")
     place_png = assert_png(out_dir / "after_place.png")
     require(
@@ -261,7 +408,7 @@ def verify_interact(out_dir: Path, _run_log: str) -> None:
 
     # 1. Gravity & ground collision after falling from the spawn height. Blocks
     #    are centered on integer coordinates, so feet rest at surface + 0.5.
-    assert_settled_chunks(landed, "landed.json", expected_rendered=expected_rendered(landed, "landed"))
+    assert_settled_chunks(landed, "landed.json", render_distance, "landed")
     assert_idle_profiler(landed, "landed.json")
     require(landed["player"]["grounded"] is True, "landed.json: expected player.grounded == true")
     require(landed["player"]["noclip"] is False, "landed.json: expected player.noclip == false")
@@ -270,7 +417,7 @@ def verify_interact(out_dir: Path, _run_log: str) -> None:
     require(landed["targetBlock"]["hit"] is True, "landed.json: expected targetBlock.hit == true")
 
     # 2. Walking forward along +Z with real collision.
-    assert_settled_chunks(after_walk, "after_walk.json", expected_rendered=expected_rendered(after_walk, "after_walk"))
+    assert_settled_chunks(after_walk, "after_walk.json", render_distance, "after_walk")
     require(after_walk["player"]["grounded"] is True, "after_walk.json: expected player.grounded == true")
     z_before = float(before_walk["player"]["position"]["z"])
     z_after = float(after_walk["player"]["position"]["z"])
@@ -298,7 +445,7 @@ def verify_interact(out_dir: Path, _run_log: str) -> None:
             f"before_break.json: expected {before_break['worldgen']['surfaceBlock']}, got {target.get('blockName')}",
         )
 
-    assert_settled_chunks(after_break, "after_break.json", expected_rendered=expected_rendered(after_break, "after_break"))
+    assert_settled_chunks(after_break, "after_break.json", render_distance, "after_break")
     require(after_break["targetBlock"]["hit"] is True, "after_break.json: expected targetBlock.hit == true")
     assert_vec3(after_break["targetBlock"]["position"], bx, by - 1.0, bz, "after_break.json targetBlock.position")
     require(
@@ -306,22 +453,28 @@ def verify_interact(out_dir: Path, _run_log: str) -> None:
         "after_break.json: expected a solid block under the broken one",
     )
 
-    # 4. Selecting hotbar slot 3 (index 2, Stone) and placing it where the broken
-    #    block was.
-    assert_settled_chunks(after_place, "after_place.json", expected_rendered=expected_rendered(after_place, "after_place"))
+    # 4. The block picked before breaking lands in the active slot (the
+    #    initial hotbar is empty, so slot 1 / index 0) and is placed back where
+    #    the broken block was.
+    picked_id = target["blockId"]
+    assert_settled_chunks(after_place, "after_place.json", render_distance, "after_place")
     require(
-        after_place["player"]["hotbarSlot"] == 2,
-        f"after_place.json: expected hotbarSlot == 2, got {after_place['player']['hotbarSlot']}",
+        after_place["player"]["hotbarSlot"] == 0,
+        f"after_place.json: expected hotbarSlot == 0, got {after_place['player']['hotbarSlot']}",
+    )
+    require(
+        after_place["player"]["hotbar"][0] == picked_id,
+        f"after_place.json: expected the picked block {picked_id} in slot 1, got {after_place['player']['hotbar'][0]}",
     )
     require(after_place["targetBlock"]["hit"] is True, "after_place.json: expected targetBlock.hit == true")
     assert_vec3(after_place["targetBlock"]["position"], bx, by, bz, "after_place.json targetBlock.position")
     require(
-        after_place["targetBlock"]["blockId"] == 3,
-        f"after_place.json: expected Stone (3), got {after_place['targetBlock']['blockId']}",
+        after_place["targetBlock"]["blockId"] == picked_id,
+        f"after_place.json: expected the picked block {picked_id}, got {after_place['targetBlock']['blockId']}",
     )
 
     # 5. Jumping leaves the ground with positive vertical velocity.
-    assert_settled_chunks(after_jump, "after_jump.json", expected_rendered=expected_rendered(after_jump, "after_jump"))
+    assert_settled_chunks(after_jump, "after_jump.json", render_distance, "after_jump")
     require(after_jump["player"]["grounded"] is False, "after_jump.json: expected player.grounded == false")
     require(
         float(after_jump["player"]["velocity"]["y"]) > 0.0,
@@ -334,7 +487,6 @@ def verify_interact(out_dir: Path, _run_log: str) -> None:
 
 
 GLASS_BLOCK_ID = 6
-WATER_BLOCK_ID = 5
 
 
 INVENTORY_TABS = ("building", "colored", "natural")
@@ -364,7 +516,7 @@ def verify_inventory_tab(out_dir: Path, tab: str) -> bytes:
     return pages[0]
 
 
-def verify_inventory(out_dir: Path, _run_log: str) -> None:
+def verify_inventory(out_dir: Path, _run_log: str, render_distance: int) -> None:
     first_pages = [verify_inventory_tab(out_dir, tab) for tab in INVENTORY_TABS]
     require(len(set(first_pages)) == len(first_pages), "inventory: two tabs render identically")
     tooltip_png = assert_png(out_dir / "inv_tooltip.png")
@@ -384,9 +536,12 @@ def verify_inventory(out_dir: Path, _run_log: str) -> None:
     hotbar = after_put["player"]["hotbar"]
     require(len(hotbar) == 9, f"after_put.json: expected 9 hotbar slots, got {len(hotbar)}")
     require(hotbar[8] == GLASS_BLOCK_ID, f"after_put.json: expected glass in slot 9, got {hotbar[8]}")
-    # Water is hidden from the tabs but already in the default hotbar; an edit
-    # to another slot must not drop it.
-    require(hotbar[4] == WATER_BLOCK_ID, f"after_put.json: expected water kept in slot 5, got {hotbar[4]}")
+    # An edit to slot 9 must leave every other slot as it was before the put.
+    before = inv_open["player"]["hotbar"]
+    require(
+        hotbar[:8] == before[:8],
+        f"after_put.json: slots 1-8 changed from {before[:8]} to {hotbar[:8]}",
+    )
     require(after_put["inventory"]["carried"] == 0, "after_put.json: expected nothing carried after put")
 
     require(inv_closed["inventory"]["open"] is False, "inv_closed.json: expected inventory.open == false")
@@ -416,7 +571,7 @@ MODIFIER_MIN_AGREEMENT = 0.95
 ORE_MIN_KINDS = 4
 
 
-def verify_worldgen(out_dir: Path, _run_log: str) -> None:
+def verify_worldgen(out_dir: Path, _run_log: str, render_distance: int) -> None:
     for suffix in ("height", "biome"):
         assert_png(out_dir / f"spawn_{suffix}.png", WORLDGEN_PREVIEW_SIZE, WORLDGEN_PREVIEW_SIZE)
     assert_png(out_dir / "spawn_slice.png", WORLDGEN_PREVIEW_SIZE, WORLDGEN_SLICE_HEIGHT)
@@ -493,13 +648,72 @@ def verify_worldgen(out_dir: Path, _run_log: str) -> None:
     require(cache["hits"] > 0, "worldgen.json: the column cache recorded no hits")
 
 
-SCENARIOS: tuple[tuple[str, str, Callable[[Path, str], None]], ...] = (
-    ("smoke", "scripts/smoke.mgs", verify_smoke),
-    ("spawn_overview", "scripts/spawn_overview.mgs", verify_spawn_overview),
-    ("loaded", "scripts/loaded.mgs", verify_loaded),
-    ("interact", "scripts/interact.mgs", verify_interact),
-    ("inventory", "scripts/inventory.mgs", verify_inventory),
-    ("worldgen", "scripts/worldgen.mgs", verify_worldgen),
+# Upper bound on translucent vertices over open ocean (ocean_down.json), per
+# generator version and render distance. Recorded as the calibrated count: a
+# lower value (better merging) passes, a higher one means translucent faces
+# stopped merging.
+EXPECTED_TRANSLUCENT_VERTICES_MAX: dict[int, dict[int, int]] = {
+    6: {
+        # Known engine non-determinism: the nominal count is 7208 (7 of 10
+        # runs), but 3 of 10 runs report 7220 (+3 quads). The likely cause is
+        # the order in which neighbours at the cylinder's outer edge are evicted
+        # and remeshed after the /tp. The ceiling admits the higher value; a loss
+        # of translucent merging still exceeds it by far more than 3 quads.
+        8: 7220,
+        16: 138672,
+    },
+}
+
+
+def verify_translucent(out_dir: Path, _run_log: str, render_distance: int) -> None:
+    pngs = {
+        name: assert_png(out_dir / f"{name}.png")
+        for name in ("ocean_down", "ocean_shallow", "ocean_wireframe", "glass_water")
+    }
+    require(
+        pngs["ocean_down"] != pngs["ocean_wireframe"],
+        "translucent: ocean_down.png and ocean_wireframe.png are byte-identical",
+    )
+
+    for name in ("ocean_down", "glass_water"):
+        state = load_json(out_dir / f"{name}.json")
+        assert_settled_chunks(state, f"{name}.json", render_distance)
+        translucent = state["meshVertices"]["translucent"]
+        require(translucent > 0, f"{name}.json: expected meshVertices.translucent > 0, got {translucent}")
+        if name == "ocean_down":
+            ceiling = lookup_versioned(
+                EXPECTED_TRANSLUCENT_VERTICES_MAX, state, render_distance, "translucent vertex ceiling"
+            )
+            require(
+                translucent <= ceiling,
+                f"{name}.json: meshVertices.translucent {translucent} exceeds the recorded ceiling {ceiling}",
+            )
+
+
+DEEP_POSES = (("deep_60", -60.0), ("deep_120", -120.0), ("deep_500", -500.0))
+
+
+def verify_deep(out_dir: Path, _run_log: str, render_distance: int) -> None:
+    for name, y in DEEP_POSES:
+        assert_png(out_dir / f"{name}.png")
+        state = load_json(out_dir / f"{name}.json")
+        assert_vec3(state["player"]["position"], 0.0, y, 0.0, f"{name}.json player.position")
+        assert_settled_chunks(state, f"{name}.json", render_distance)
+        require("loadWindow" in state, f"{name}.json: missing loadWindow")
+
+
+Verifier = Callable[[Path, str, int], None]
+
+# (name, script, verifier, minimum --script-timeout in seconds)
+SCENARIOS: tuple[tuple[str, str, Verifier, int], ...] = (
+    ("smoke", "scripts/smoke.mgs", verify_smoke, 0),
+    ("spawn_overview", "scripts/spawn_overview.mgs", verify_spawn_overview, 0),
+    ("loaded", "scripts/loaded.mgs", verify_loaded, 0),
+    ("interact", "scripts/interact.mgs", verify_interact, 0),
+    ("inventory", "scripts/inventory.mgs", verify_inventory, 0),
+    ("worldgen", "scripts/worldgen.mgs", verify_worldgen, 0),
+    ("translucent", "scripts/translucent.mgs", verify_translucent, 300),
+    ("deep", "scripts/deep.mgs", verify_deep, 600),
 )
 
 
@@ -543,6 +757,7 @@ def run_headless_server_scenario(
     repo_root: Path,
     out_root: Path,
     timeout_seconds: int,
+    render_distance_arg: int | None,
 ) -> float:
     out_dir = out_root / "headless_server"
     if out_dir.exists():
@@ -556,7 +771,9 @@ def run_headless_server_scenario(
         "--seed",
         EXPECTED_SEED,
         "--read-only",
+        *render_distance_flag(render_distance_arg),
     ]
+    render_distance = effective_render_distance(render_distance_arg)
 
     start = time.monotonic()
     completed = subprocess.run(
@@ -581,9 +798,10 @@ def run_headless_server_scenario(
     spawn_match = re.search(r"SERVER: spawn column \((-?\d+), (-?\d+)\) surface (-?\d+)", combined_log)
     require(spawn_match is not None, "headless_server: missing 'SERVER: spawn column' line in server.log")
     spawn_x, spawn_z, spawn_surface = (int(value) for value in spawn_match.groups())
+    active = expected_active(spawn_surface + 0.5, render_distance)
     expected_summary = (
         f"SERVER: summary ticks=100 seed={EXPECTED_SEED} settled=true "
-        f"active={EXPECTED_ACTIVE_CHUNKS} generated={EXPECTED_ACTIVE_CHUNKS} "
+        f"active={active} generated={active} "
         f"generating=0 meshing=0 pos=({spawn_x:.1f}, {spawn_surface + 0.5:.1f}, {spawn_z:.1f}) "
         f"vel=(0.0, 0.0, 0.0) grounded=true"
     )
@@ -675,8 +893,9 @@ def run_scenario(
     out_root: Path,
     name: str,
     script_rel: str,
-    verifier: Callable[[Path, str], None],
+    verifier: Verifier,
     timeout_seconds: int,
+    render_distance_arg: int | None,
 ) -> float:
     out_dir = out_root / name
     if out_dir.exists():
@@ -691,6 +910,7 @@ def run_scenario(
         str(out_dir.resolve()),
         "--script-timeout",
         str(timeout_seconds),
+        *render_distance_flag(render_distance_arg),
     ]
 
     start = time.monotonic()
@@ -719,7 +939,7 @@ def run_scenario(
     require("OK: " in run_log, f"{name}: run.log did not record an 'OK:' completion line")
     require("exit 0 " in run_log, f"{name}: run.log did not record 'exit 0'")
 
-    verifier(out_dir, run_log)
+    verifier(out_dir, run_log, effective_render_distance(render_distance_arg))
     return elapsed
 
 
@@ -745,7 +965,30 @@ def main() -> int:
         default=180,
         help="Per-script timeout in seconds passed to --script-timeout.",
     )
+    parser.add_argument(
+        "--render-distance",
+        type=int,
+        default=None,
+        help=(
+            f"Render distance in [{MIN_RENDER_DISTANCE}, {MAX_RENDER_DISTANCE}] forwarded to MineGame and "
+            f"MineGameServer. Omit to check the engine default ({DEFAULT_RENDER_DISTANCE})."
+        ),
+    )
     args = parser.parse_args()
+
+    if args.render_distance is not None and not (
+        MIN_RENDER_DISTANCE <= args.render_distance <= MAX_RENDER_DISTANCE
+    ):
+        parser.error(
+            f"--render-distance must be in [{MIN_RENDER_DISTANCE}, {MAX_RENDER_DISTANCE}], "
+            f"got {args.render_distance}"
+        )
+
+    try:
+        self_check_loader_mirror()
+    except RegressionFailure as exc:
+        print(f"[FAIL] {exc}", file=sys.stderr)
+        return 1
 
     try:
         binary = args.binary.resolve() if args.binary else find_default_binary(repo_root)
@@ -761,7 +1004,13 @@ def main() -> int:
     out_root = args.out_root.resolve()
     out_root.mkdir(parents=True, exist_ok=True)
 
+    render_distance = effective_render_distance(args.render_distance)
     print(f"Running regression suite with binary: {binary}")
+    print(
+        f"Render distance {render_distance} "
+        f"({'forwarded' if args.render_distance is not None else 'engine default'}); "
+        f"loader mirror self-check passed"
+    )
     total_start = time.monotonic()
 
     sys.stdout.write(f"  -> {'headless_server':<16} ({server_binary.name} --ticks 100) ... ")
@@ -772,6 +1021,7 @@ def main() -> int:
             repo_root=repo_root,
             out_root=out_root,
             timeout_seconds=args.timeout,
+            render_distance_arg=args.render_distance,
         )
         print(f"PASS ({server_elapsed:.2f}s)")
     except Exception as exc:  # noqa: BLE001
@@ -809,7 +1059,7 @@ def main() -> int:
         print(f"[FAIL] server_worldgen: {exc}", file=sys.stderr)
         return 1
 
-    for name, script_rel, verifier in SCENARIOS:
+    for name, script_rel, verifier, min_timeout in SCENARIOS:
         sys.stdout.write(f"  -> {name:<16} ({script_rel}) ... ")
         sys.stdout.flush()
         try:
@@ -820,7 +1070,8 @@ def main() -> int:
                 name=name,
                 script_rel=script_rel,
                 verifier=verifier,
-                timeout_seconds=args.timeout,
+                timeout_seconds=max(args.timeout, min_timeout),
+                render_distance_arg=args.render_distance,
             )
             print(f"PASS ({elapsed:.2f}s)")
         except Exception as exc:  # noqa: BLE001
