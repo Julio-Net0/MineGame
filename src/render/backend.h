@@ -11,8 +11,8 @@
 
 // Abstract render backend interface. The engine issues backend-agnostic mesh,
 // draw, and frame commands; a single backend implementation TU (currently
-// render/raylib_backend.c) fulfils them. This header exposes no renderer
-// (Raylib) types, so it can be implemented by any backend (e.g. Vulkan later).
+// render/gl_backend.c) fulfils them. This header exposes no graphics-API type,
+// so it can be implemented by any backend (e.g. Vulkan later).
 
 // Sized to what a 16-bit index buffer can address (65532 vertices = 16383
 // four-vertex quads). Shared between the mesher and the backend's static EBO.

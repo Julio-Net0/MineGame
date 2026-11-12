@@ -243,3 +243,51 @@ bool PrefixMatchesNoCase(const char *Str, const char *Prefix, SizeType PrefixLen
   }
   return true;
 }
+
+// UTF-8 layout: a lead byte carrying the sequence length in its high bits,
+// followed by continuation bytes of six payload bits each.
+enum {
+  UTF8_ONE_BYTE_MAX = 0x7F,
+  UTF8_TWO_BYTE_MAX = 0x7FF,
+  UTF8_THREE_BYTE_MAX = 0xFFFF,
+  UTF8_CODEPOINT_MAX = 0x10FFFF,
+  UTF8_SURROGATE_FIRST = 0xD800,
+  UTF8_SURROGATE_LAST = 0xDFFF,
+  UTF8_PAYLOAD_BITS = 6,
+  UTF8_PAYLOAD_MASK = 0x3F,
+  UTF8_CONTINUATION = 0x80,
+  UTF8_LEAD_TWO = 0xC0,
+  UTF8_LEAD_THREE = 0xE0,
+  UTF8_LEAD_FOUR = 0xF0
+};
+
+static char Utf8Continuation(unsigned int Codepoint, unsigned int Shift) {
+  return (char)(((Codepoint >> Shift) & UTF8_PAYLOAD_MASK) | UTF8_CONTINUATION);
+}
+
+int EncodeUtf8(unsigned int Codepoint, char Out[UTF8_MAX_BYTES]) {
+  if (Codepoint > UTF8_CODEPOINT_MAX ||
+      (Codepoint >= UTF8_SURROGATE_FIRST && Codepoint <= UTF8_SURROGATE_LAST)) {
+    return 0;
+  }
+  if (Codepoint <= UTF8_ONE_BYTE_MAX) {
+    Out[0] = (char)Codepoint;
+    return 1;
+  }
+  if (Codepoint <= UTF8_TWO_BYTE_MAX) {
+    Out[0] = (char)((Codepoint >> UTF8_PAYLOAD_BITS) | UTF8_LEAD_TWO);
+    Out[1] = Utf8Continuation(Codepoint, 0);
+    return 2;
+  }
+  if (Codepoint <= UTF8_THREE_BYTE_MAX) {
+    Out[0] = (char)((Codepoint >> (2U * UTF8_PAYLOAD_BITS)) | UTF8_LEAD_THREE);
+    Out[1] = Utf8Continuation(Codepoint, UTF8_PAYLOAD_BITS);
+    Out[2] = Utf8Continuation(Codepoint, 0);
+    return 3;
+  }
+  Out[0] = (char)((Codepoint >> (3U * UTF8_PAYLOAD_BITS)) | UTF8_LEAD_FOUR);
+  Out[1] = Utf8Continuation(Codepoint, 2U * UTF8_PAYLOAD_BITS);
+  Out[2] = Utf8Continuation(Codepoint, UTF8_PAYLOAD_BITS);
+  Out[3] = Utf8Continuation(Codepoint, 0);
+  return 4;
+}

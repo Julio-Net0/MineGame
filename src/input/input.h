@@ -62,7 +62,7 @@ typedef struct {
 // Client input layer: polls the input library into an abstract PlayerInput,
 // reports system-toggle edges and the mouse-look delta, and builds a PlayerView
 // from the client camera. In multiplayer, a network layer would produce these
-// instead. Implemented by a single swappable input TU (input/raylib_input.c).
+// instead. Implemented by a single swappable input TU (input/glfw_input.c).
 PlayerInput PollPlayerInput(bool HasControl);
 SystemInput PollSystemInput(void);
 TextInput PollTextInput(void);

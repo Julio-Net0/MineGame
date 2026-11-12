@@ -2,8 +2,8 @@
 #include "core/camera.h"
 #include "core/vecmath.h"
 
-// Raylib-free input logic: derives the simulation's movement/interaction view
-// from the engine camera. Raw polling stays in input/raylib_input.c.
+// Library-free input logic: derives the simulation's movement/interaction view
+// from the engine camera. Raw polling stays in input/glfw_input.c.
 PlayerView PlayerViewFromCamera(GameCamera Camera) {
   PlayerView View;
   View.EyePosition = Camera.Position;

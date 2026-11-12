@@ -59,14 +59,21 @@ option(MINEGAME_SNAPSHOT_VERIFY "Cross-check chunk snapshots against live world 
 
 include(FetchContent)
 FetchContent_Declare(
-  raylib
-  GIT_REPOSITORY https://github.com/raysan5/raylib.git
-  GIT_TAG        5.5
+  glfw
+  GIT_REPOSITORY https://github.com/glfw/glfw.git
+  GIT_TAG        3.4
 )
 
-set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
+# X11 only on Linux, as the raylib build the engine used before: native Wayland
+# changes window placement and cursor capture behaviour and needs extra
+# packages, and XWayland covers Wayland desktops.
+set(GLFW_BUILD_WAYLAND OFF CACHE BOOL "" FORCE)
 
-FetchContent_MakeAvailable(raylib)
+FetchContent_MakeAvailable(glfw)
 
 set(MINEGAME_SIM_SOURCES
   src/server/server.c
@@ -110,8 +117,8 @@ add_executable(${PROJECT_NAME}
   src/automation/worldgen_preview.c
   ${MINEGAME_SIM_SOURCES}
   src/input/input.c
-  src/input/raylib_input.c
-  src/platform/raylib_platform.c
+  src/input/glfw_input.c
+  src/platform/glfw_platform.c
   src/render/renderer.c
   src/render/chunk_visibility.c
   src/render/gl_backend.c
@@ -131,6 +138,7 @@ add_executable(${PROJECT_NAME}
   src/core/resource_pack.c
   src/core/launch_options.c
   src/third_party/png_write.c
+  src/third_party/glad/src/gl.c
 )
 
 add_executable(MineGameServer
@@ -140,19 +148,22 @@ add_executable(MineGameServer
   ${MINEGAME_SIM_SOURCES}
 )
 
-target_link_libraries(${PROJECT_NAME} raylib Threads::Threads)
+# GLFW creates the OpenGL context and GLAD loads its entry points through
+# glfwGetProcAddress, so no OpenGL library is linked directly.
+target_link_libraries(${PROJECT_NAME} glfw Threads::Threads)
 target_link_libraries(MineGameServer Threads::Threads)
 if(WIN32)
+  target_link_libraries(${PROJECT_NAME} psapi)
   target_link_libraries(MineGameServer psapi)
 else()
-  # The client gets libm transitively through raylib; the server must link it.
+  target_link_libraries(${PROJECT_NAME} m)
   target_link_libraries(MineGameServer m)
 endif()
 
-# Applied to the game targets only, not to raylib. The cross-TU inlining worth
-# having is within this project's own code; raylib is called once per draw,
-# where inlining buys nothing, and leaving it out avoids its build interacting
-# with LTO under MinGW. Debug keeps full inlining off so it stays debuggable.
+# Applied to the game targets only, not to GLFW. The cross-TU inlining worth
+# having is within this project's own code; GLFW is called a few times per
+# frame, where inlining buys nothing, and leaving it out avoids its build
+# interacting with LTO under MinGW. Debug keeps full inlining off so it stays debuggable.
 if(MINEGAME_IPO_SUPPORTED AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
   set_property(TARGET ${PROJECT_NAME}
                PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
@@ -160,7 +171,7 @@ if(MINEGAME_IPO_SUPPORTED AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
                PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
 endif()
 
-target_include_directories(${PROJECT_NAME} PUBLIC src ${raylib_SOURCE_DIR}/src)
+target_include_directories(${PROJECT_NAME} PUBLIC src src/third_party/glad/include)
 target_include_directories(MineGameServer PUBLIC src)
 
 # Terrain generation and its pure density probe must compute bit-identical

@@ -6,13 +6,13 @@
 // Abstract platform/window layer. The engine drives the application shell —
 // window lifecycle, the frame clock, the quit signal, fullscreen, cursor
 // capture, and screen size — through these backend-agnostic calls. A single
-// platform implementation TU (currently platform/raylib_platform.c) fulfils
-// them. This header exposes no renderer (Raylib) types, so it can be
-// implemented by any platform (e.g. a GLFW/Vulkan pairing later).
+// platform implementation TU (platform/glfw_platform.c) fulfils them. This
+// header exposes no windowing or graphics library type.
 
-// Window lifecycle. PlatformInit creates the window (and, with the current
-// Raylib backend, the graphics context the render backend draws into), so it
-// must run before the render backend is initialized.
+// Window lifecycle. PlatformInit creates the window and the OpenGL 3.3 core
+// context the render backend draws into, so it must run before the render
+// backend is initialized. It ends the process with a logged error when the
+// driver cannot provide that context.
 void PlatformInit(int Width, int Height, const char *Title);
 void PlatformShutdown(void);
 
@@ -67,9 +67,9 @@ void PlatformGetFramebufferSize(int *OutWidth, int *OutHeight);
 const char *PlatformGetClipboardText(void);
 void PlatformSetClipboardText(const char *Text);
 
-// Future seam: a Vulkan backend creates its device and swapchain from the
-// native window handle, so a `void *PlatformGetNativeWindowHandle(void)` will
-// be added here when a non-Raylib backend is written. Not implemented now — the
-// Raylib backend creates and owns its context internally and does not need it.
+// The windowing library's window object (a GLFWwindow), opaque to the engine.
+// A future Vulkan backend creates its surface from it. NULL before
+// PlatformInit and after PlatformShutdown.
+void *PlatformGetNativeWindowHandle(void);
 
 #endif
