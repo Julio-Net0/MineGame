@@ -32,6 +32,10 @@ enum {
   WORLDGEN_VERSION = 6
 };
 
+typedef BlockID DenseBlockBuffer[CHUNK_SIZE][CHUNK_SIZE][CHUNK_SIZE];
+
+struct DenseBlockPool;
+
 typedef struct Chunk {
   MeshHandle ChunkMesh;
 
@@ -48,7 +52,14 @@ typedef struct Chunk {
   // slots therefore start outside the set.
   int RenderRecord;
 
-  BlockID Data[CHUNK_SIZE][CHUNK_SIZE][CHUNK_SIZE];
+  // A chunk whose cells all hold one block keeps only that id and no buffer.
+  // Blocks is NULL exactly when IsUniform is set.
+  DenseBlockBuffer *Blocks;
+  // Owner of Blocks, and where promotion leases from. NULL for a standalone
+  // chunk (tests, previews) whose buffer the caller attached and owns.
+  struct DenseBlockPool *Pool;
+  BlockID UniformBlockId;
+  bool IsUniform;
 
   // Derived from the seed and never saved to disk: FillChunkBiomeMap rebuilds it
   // for chunks loaded from disk exactly as it does for generated ones. Network
@@ -128,6 +139,36 @@ void FillChunkBiomeMap(Chunk *ChunkVal, const struct ColumnEntry *Column);
 // Biome id of the cell containing a chunk-local block position.
 unsigned char GetChunkBiomeAtLocal(const Chunk *ChunkVal, int LocalX,
                                    int LocalY, int LocalZ);
+
+// Unchecked read of a chunk-local cell.
+static inline BlockID ChunkGetLocal(const Chunk *ChunkVal, int LocalX,
+                                    int LocalY, int LocalZ) {
+  return (ChunkVal->Blocks != (DenseBlockBuffer *)0)
+             ? (*ChunkVal->Blocks)[LocalX][LocalY][LocalZ]
+             : ChunkVal->UniformBlockId;
+}
+
+// Gives a standalone chunk a caller-owned buffer; it is never compacted.
+void ChunkAttachBuffer(Chunk *ChunkVal, DenseBlockBuffer *Buffer);
+
+// A zeroed chunk outside any world, with its own heap buffer (all air). NULL on
+// allocation failure. Free it with ChunkFreeStandalone.
+Chunk *ChunkCreateStandalone(void);
+void ChunkFreeStandalone(Chunk *ChunkVal);
+
+// Returns any leased buffer to the pool and makes the chunk uniform BlockId.
+void ChunkResetStorage(Chunk *ChunkVal, BlockID BlockId);
+
+// Whole-chunk writers (generation, deserialization) bracket their writes with
+// these. Begin guarantees Blocks is writable, leasing a buffer if needed, and
+// fails only when the pool cannot grow. End releases the buffer again when the
+// result turned out uniform.
+bool ChunkBeginFill(Chunk *ChunkVal);
+void ChunkEndFill(Chunk *ChunkVal);
+
+// Leases a buffer for a uniform chunk and fills it with UniformBlockId. True
+// when the chunk is dense afterwards.
+bool PromoteChunkToDense(Chunk *ChunkVal);
 
 void SetBlockInChunk(Chunk *ChunkVal, Vec3 Pos, BlockID BlockId);
 

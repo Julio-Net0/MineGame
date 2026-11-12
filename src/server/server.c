@@ -366,6 +366,7 @@ void ServerShutdown(ServerState *Server) {
   }
 
   CloseWorldSave();
+  DestroyWorld(Server->WorldVal);
   free(Server->WorldVal);
   Server->WorldVal = (World *)0;
 }

@@ -85,6 +85,36 @@ int WorldActiveChunkCount(const World *WorldVal) {
   return MAX_ACTIVE_CHUNKS - WorldVal->FreeCount;
 }
 
+DenseBlockBuffer *WorldAcquireDenseBuffer(World *WorldVal) {
+  return DensePoolAcquire(&WorldVal->DensePool);
+}
+
+void WorldReleaseDenseBuffer(World *WorldVal, DenseBlockBuffer *Buffer) {
+  DensePoolRelease(&WorldVal->DensePool, Buffer);
+}
+
+void WorldGetDensePoolStats(World *WorldVal, DensePoolStats *Out) {
+  DensePoolGetStats(&WorldVal->DensePool, Out);
+}
+
+void WorldGetChunkStorageCounts(const World *WorldVal, ChunkStorageCounts *Out) {
+  ChunkStorageCounts Counts = {0};
+  for (int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++) {
+    if (!WorldVal->SlotInUse[IdxI]) {
+      continue;
+    }
+    const Chunk *ChunkVal = &WorldVal->Chunks[IdxI];
+    if (!ChunkVal->IsUniform) {
+      Counts.Dense++;
+    } else if (ChunkVal->UniformBlockId == BLOCK_ID_AIR) {
+      Counts.UniformAir++;
+    } else {
+      Counts.UniformSolid++;
+    }
+  }
+  *Out = Counts;
+}
+
 static int CompareColumnOffsets(const void *Lhs, const void *Rhs) {
   const ColumnOffset *A = (const ColumnOffset *)Lhs;
   const ColumnOffset *B = (const ColumnOffset *)Rhs;
@@ -305,6 +335,8 @@ void InitWorld(World *WorldVal){
     WorldVal->SlotInUse[IdxI] = false;
   }
 
+  DensePoolInit(&WorldVal->DensePool);
+
   WorldVal->LastLoadChunkX = 0;
   WorldVal->LastLoadChunkY = 0;
   WorldVal->LastLoadChunkZ = 0;
@@ -314,6 +346,15 @@ void InitWorld(World *WorldVal){
   WorldVal->OnChunkEvict = (ChunkEvictCallback)0;
   WorldVal->OnBlockChange = (BlockChangeCallback)0;
   WorldVal->BlockChangeUserData = NULL;
+}
+
+void DestroyWorld(World *WorldVal) {
+  for (int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++) {
+    if (WorldVal->SlotInUse[IdxI]) {
+      ChunkResetStorage(&WorldVal->Chunks[IdxI], BLOCK_ID_AIR);
+    }
+  }
+  DensePoolDestroy(&WorldVal->DensePool);
 }
 
 void WorldSetChunkEvictCallback(World *WorldVal, ChunkEvictCallback Callback) {
@@ -449,6 +490,7 @@ static void EvictUnneededChunks(World *WorldVal, const bool *KeepChunk){
 
     RemoveChunkFromMap(WorldVal, OldX, OldY, OldZ);
     UpdateNeighborsDirtyFlag(WorldVal, OldX, OldY, OldZ);
+    ChunkResetStorage(Evicted, BLOCK_ID_AIR);
 
     WorldVal->SlotInUse[IdxI] = false;
     WorldVal->FreeList[WorldVal->FreeCount++] = IdxI;
@@ -468,6 +510,12 @@ static bool CreateOrRecycleChunk(World *WorldVal, int ChunkX, int ChunkY, int Ch
     memset(&WorldVal->Chunks[IdxI], 0, sizeof(WorldVal->Chunks[IdxI]));
   }
   WorldVal->SlotInUse[IdxI] = true;
+
+  // Eviction already returned any buffer; a fresh slot has none to return.
+  WorldVal->Chunks[IdxI].Pool = &WorldVal->DensePool;
+  WorldVal->Chunks[IdxI].Blocks = (DenseBlockBuffer *)0;
+  WorldVal->Chunks[IdxI].UniformBlockId = BLOCK_ID_AIR;
+  WorldVal->Chunks[IdxI].IsUniform = true;
 
   WorldVal->Chunks[IdxI].ChunkX = ChunkX;
   WorldVal->Chunks[IdxI].ChunkY = ChunkY;
@@ -550,7 +598,8 @@ static Chunk* GetLocalCoords(World *WorldVal, Vec3 GlobalPos, int *LocalX, int *
 
 void SetBlockInWorld(World *WorldVal, Vec3 Pos, BlockID BlockId){
   Chunk *ChunkVal = GetChunkAtPos(WorldVal, Pos);
-  if (ChunkVal == (Chunk *)0) { return; }
+  // A worker owns the storage of a chunk until it is generated.
+  if (ChunkVal == (Chunk *)0 || !ChunkVal->IsGenerated) { return; }
 
   int LocalX = ((int)__builtin_floorf(Pos.x)) % CHUNK_SIZE;
   int LocalY = ((int)__builtin_floorf(Pos.y)) % CHUNK_SIZE;
@@ -560,7 +609,7 @@ void SetBlockInWorld(World *WorldVal, Vec3 Pos, BlockID BlockId){
   if (LocalY < 0) { LocalY += CHUNK_SIZE; }
   if (LocalZ < 0) { LocalZ += CHUNK_SIZE; }
 
-  BlockID PreviousId = ChunkVal->Data[LocalX][LocalY][LocalZ];
+  BlockID PreviousId = ChunkGetLocal(ChunkVal, LocalX, LocalY, LocalZ);
   SetBlockInChunk(ChunkVal, (Vec3){(float)LocalX, (float)LocalY, (float)LocalZ}, BlockId);
   ChunkVal->IsDirty = true;
   // A mesh already in flight was built from a snapshot taken before this edit,
@@ -609,7 +658,8 @@ int GetBlockIDFromWorld(World *WorldVal, Vec3 GlobalPos){
 
   Chunk *ChunkVal = GetLocalCoords(WorldVal, GlobalPos, &Lx, &Ly, &Lz);
 
-  if(ChunkVal != (Chunk *)0){
+  // Not generated reads as unloaded: the worker may still swap its storage.
+  if(ChunkVal != (Chunk *)0 && ChunkVal->IsGenerated){
     return GetBlockIdInChunk(ChunkVal, (Vec3){(float)Lx, (float)Ly, (float)Lz});
   }
 

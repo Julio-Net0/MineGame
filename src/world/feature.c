@@ -688,6 +688,10 @@ static int PickFloraBlock(const BiomeType *Biome, uint64_t Hash) {
 
 void PlaceChunkFlora(Chunk *ChunkVal, const ColumnEntry *Column) {
   (void)Column;
+  // Uniform cubes hold no surface block with air above it inside the cube.
+  if (ChunkVal->Blocks == (DenseBlockBuffer *)0) {
+    return;
+  }
   uint64_t Seed = GetWorldSeed();
   const uint64_t MASK16 = 0xFFFFULL;
   const float DENSITY_SCALE = 65536.0F;
@@ -710,8 +714,8 @@ void PlaceChunkFlora(Chunk *ChunkVal, const ColumnEntry *Column) {
         if (BaseY + Ly <= SEA_LEVEL) {
           break;
         }
-        BlockID Ground = ChunkVal->Data[Lx][Ly][Lz];
-        if (Ground == 0 || ChunkVal->Data[Lx][Ly + 1][Lz] != 0) {
+        BlockID Ground = ChunkGetLocal(ChunkVal, Lx, Ly, Lz);
+        if (Ground == 0 || ChunkGetLocal(ChunkVal, Lx, Ly + 1, Lz) != 0) {
           continue;
         }
         const BiomeType *Biome =
@@ -728,7 +732,7 @@ void PlaceChunkFlora(Chunk *ChunkVal, const ColumnEntry *Column) {
           if (Roll < Biome->FloraDensity) {
             uint64_t KindHash =
                 HashCell(WorldX, WorldZ, Seed ^ FLORA_KIND_SALT);
-            ChunkVal->Data[Lx][Ly + 1][Lz] =
+            (*ChunkVal->Blocks)[Lx][Ly + 1][Lz] =
                 (BlockID)PickFloraBlock(Biome, KindHash);
             ChunkVal->SolidBlockCount++;
           }

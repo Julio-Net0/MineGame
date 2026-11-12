@@ -3,6 +3,8 @@
 #include "core/log.h"
 #include "net/loopback.h"
 #include "net/protocol.h"
+#include "persistence/chunk_serial.h"
+#include "world/dense_pool.h"
 #include "world/block_system.h"
 
 #include <math.h>
@@ -362,7 +364,7 @@ static void FillLayeredChunk(Chunk *ChunkVal) {
         } else if (Y == STONE_LAYER_TOP) {
           Id = (BlockID)WIDE_BLOCK_ID;
         }
-        ChunkVal->Data[X][Y][Z] = Id;
+        (*ChunkVal->Blocks)[X][Y][Z] = Id;
       }
     }
   }
@@ -379,7 +381,7 @@ static void FillNoisyChunk(Chunk *ChunkVal) {
   ChunkVal->ChunkY = SAMPLE_CHUNK_Y;
   ChunkVal->ChunkZ = 0;
   uint32_t State = 1U;
-  BlockID *Flat = &ChunkVal->Data[0][0][0];
+  BlockID *Flat = &(*ChunkVal->Blocks)[0][0][0];
   for (int Idx = 0; Idx < (int)CHUNK_VOLUME; Idx++) {
     State = (State * (uint32_t)LCG_MULTIPLIER) + (uint32_t)LCG_INCREMENT;
     Flat[Idx] = (BlockID)((State >> LCG_SHIFT) % RAW_BLOCK_ID_RANGE);
@@ -391,12 +393,30 @@ static void FillNoisyChunk(Chunk *ChunkVal) {
 }
 
 static int CountSolid(const Chunk *ChunkVal) {
-  const BlockID *Flat = &ChunkVal->Data[0][0][0];
   int Count = 0;
-  for (int Idx = 0; Idx < (int)CHUNK_VOLUME; Idx++) {
-    Count += (Flat[Idx] != 0U) ? 1 : 0;
+  for (int X = 0; X < CHUNK_SIZE; X++) {
+    for (int Y = 0; Y < CHUNK_SIZE; Y++) {
+      for (int Z = 0; Z < CHUNK_SIZE; Z++) {
+        Count += (ChunkGetLocal(ChunkVal, X, Y, Z) != 0U) ? 1 : 0;
+      }
+    }
   }
   return Count;
+}
+
+// Cell by cell, so a uniform chunk compares equal to a dense one holding the
+// same blocks.
+static bool ChunkCellsEqual(const Chunk *Left, const Chunk *Right) {
+  for (int X = 0; X < CHUNK_SIZE; X++) {
+    for (int Y = 0; Y < CHUNK_SIZE; Y++) {
+      for (int Z = 0; Z < CHUNK_SIZE; Z++) {
+        if (ChunkGetLocal(Left, X, Y, Z) != ChunkGetLocal(Right, X, Y, Z)) {
+          return false;
+        }
+      }
+    }
+  }
+  return true;
 }
 
 static bool ChunkRoundTrips(const Chunk *Source, Chunk *Target,
@@ -417,7 +437,7 @@ static bool ChunkRoundTrips(const Chunk *Source, Chunk *Target,
   }
   return Target->ChunkX == Source->ChunkX && Target->ChunkY == Source->ChunkY &&
          Target->ChunkZ == Source->ChunkZ &&
-         memcmp(Target->Data, Source->Data, sizeof(Source->Data)) == 0 &&
+         ChunkCellsEqual(Target, Source) &&
          memcmp(Target->BiomeMap, Source->BiomeMap,
                 sizeof(Source->BiomeMap)) == 0 &&
          Target->SolidBlockCount == CountSolid(Source) && Target->IsGenerated &&
@@ -459,7 +479,7 @@ static bool ChunkRejectsMalformed(const Chunk *Source, Chunk *Target) {
   // must fail payload decoding and leave the target chunk untouched.
   memcpy(GScratchBuf, GPacketBuf, (size_t)Size);
   GScratchBuf[NET_CHUNK_HEADER_BYTES + RLE_RUN_BYTE_OFFSET] = 0U;
-  memset(Target->Data, 0, sizeof(Target->Data));
+  memset(*Target->Blocks, 0, sizeof(DenseBlockBuffer));
   bool Rejected = !NetDecodeChunkData(Target, GScratchBuf, Size);
   if (!Rejected || CountSolid(Target) != 0) {
     return false;
@@ -485,22 +505,86 @@ static bool ChunkRejectsMalformed(const Chunk *Source, Chunk *Target) {
 }
 
 static int EncodeSampleChunk(uint8_t *OutBuf, int Capacity) {
-  Chunk *Source = (Chunk *)calloc(1, sizeof(Chunk));
+  Chunk *Source = ChunkCreateStandalone();
   if (Source == (Chunk *)0) {
     return -1;
   }
   FillLayeredChunk(Source);
   int Size = NetEncodeChunkData(Source, OutBuf, Capacity);
-  free(Source);
+  ChunkFreeStandalone(Source);
   return Size;
 }
 
+// A uniform chunk is encoded without walking its cells; the bytes must match
+// what the cell walk produces for the same blocks, or saves and packets from
+// the two storage forms would differ.
+static bool UniformEncodingMatchesDense(Chunk *Dense) {
+  const BlockID STONE = (BlockID)STONE_BLOCK_ID;
+  BlockID *Flat = &(*Dense->Blocks)[0][0][0];
+  for (int Idx = 0; Idx < (int)CHUNK_VOLUME; Idx++) {
+    Flat[Idx] = STONE;
+  }
+  static uint8_t SDenseBytes[CHUNK_SERIAL_MAX_BYTES];
+  static uint8_t SUniformBytes[CHUNK_SERIAL_MAX_BYTES];
+  bool DenseRaw = true;
+  bool UniformRaw = true;
+  int DenseSize = ChunkSerialize(Dense, SDenseBytes, &DenseRaw);
+
+  Chunk Uniform = *Dense;
+  Uniform.Blocks = (DenseBlockBuffer *)0;
+  Uniform.Pool = (struct DenseBlockPool *)0;
+  Uniform.UniformBlockId = STONE;
+  Uniform.IsUniform = true;
+  int UniformSize = ChunkSerialize(&Uniform, SUniformBytes, &UniformRaw);
+
+  return DenseSize > 0 && DenseSize == UniformSize && !DenseRaw &&
+         !UniformRaw &&
+         memcmp(SDenseBytes, SUniformBytes, (size_t)DenseSize) == 0;
+}
+
+// Decoding into a pooled chunk: a homogeneous stream becomes scalar storage
+// with no lease, a mixed one leases exactly one buffer, and a reset returns it.
+static bool PooledDecodeLeasesOnlyWhenMixed(Chunk *Mixed) {
+  static DenseBlockPool SPool;
+  DensePoolInit(&SPool);
+  Chunk Target = {0};
+  Target.Pool = &SPool;
+  Target.UniformBlockId = BLOCK_ID_AIR;
+  Target.IsUniform = true;
+
+  static uint8_t SBytes[CHUNK_SERIAL_MAX_BYTES];
+  bool IsRaw = false;
+  Chunk Uniform = {0};
+  Uniform.UniformBlockId = (BlockID)STONE_BLOCK_ID;
+  Uniform.IsUniform = true;
+  int Size = ChunkSerialize(&Uniform, SBytes, &IsRaw);
+  DensePoolStats Stats = {0};
+  bool Ok = ChunkDeserialize(&Target, SBytes, Size, IsRaw);
+  DensePoolGetStats(&SPool, &Stats);
+  Ok = Ok && Target.IsUniform && Target.Blocks == (DenseBlockBuffer *)0 &&
+       Target.UniformBlockId == (BlockID)STONE_BLOCK_ID &&
+       Target.SolidBlockCount == (int)CHUNK_VOLUME && Stats.Leased == 0;
+
+  FillLayeredChunk(Mixed);
+  Size = ChunkSerialize(Mixed, SBytes, &IsRaw);
+  Ok = Ok && ChunkDeserialize(&Target, SBytes, Size, IsRaw);
+  DensePoolGetStats(&SPool, &Stats);
+  Ok = Ok && !Target.IsUniform && Target.Blocks != (DenseBlockBuffer *)0 &&
+       Stats.Leased == 1 && ChunkCellsEqual(&Target, Mixed);
+
+  ChunkResetStorage(&Target, BLOCK_ID_AIR);
+  DensePoolGetStats(&SPool, &Stats);
+  Ok = Ok && Stats.Leased == 0;
+  DensePoolDestroy(&SPool);
+  return Ok;
+}
+
 static bool TestChunkData(void) {
-  Chunk *Source = (Chunk *)calloc(1, sizeof(Chunk));
-  Chunk *Target = (Chunk *)calloc(1, sizeof(Chunk));
+  Chunk *Source = ChunkCreateStandalone();
+  Chunk *Target = ChunkCreateStandalone();
   if (Source == (Chunk *)0 || Target == (Chunk *)0) {
-    free(Source);
-    free(Target);
+    ChunkFreeStandalone(Source);
+    ChunkFreeStandalone(Target);
     return Expect(false, "chunk_allocation");
   }
 
@@ -524,9 +608,17 @@ static bool TestChunkData(void) {
                         NET_MAX_PACKET_BYTES,
                 "chunk_data_raw_roundtrip");
   }
+  if (Ok) {
+    Ok = Expect(UniformEncodingMatchesDense(Source),
+                "chunk_data_uniform_encoding_matches_dense");
+  }
+  if (Ok) {
+    Ok = Expect(PooledDecodeLeasesOnlyWhenMixed(Source),
+                "chunk_data_uniform_decode_leases_nothing");
+  }
 
-  free(Source);
-  free(Target);
+  ChunkFreeStandalone(Source);
+  ChunkFreeStandalone(Target);
   return Ok;
 }
 
@@ -792,8 +884,7 @@ static bool ClientChunkMatchesServer(const ClientInbox *Inbox,
                         Inbox->WantChunkZ);
   const Chunk *ClientChunk = Inbox->ClientChunk;
   return ServerChunk != (const Chunk *)0 && Inbox->ChunkDecoded &&
-         memcmp(ClientChunk->Data, ServerChunk->Data,
-                sizeof(ServerChunk->Data)) == 0 &&
+         ChunkCellsEqual(ClientChunk, ServerChunk) &&
          memcmp(ClientChunk->BiomeMap, ServerChunk->BiomeMap,
                 sizeof(ServerChunk->BiomeMap)) == 0 &&
          ClientChunk->SolidBlockCount == CountSolid(ServerChunk);
@@ -1032,11 +1123,11 @@ static bool TestServerHotbarRequest(ServerState *Server, NetLoopback *Channel,
 
 bool RunProtocolServerSelfTest(ServerState *Server) {
   NetLoopback *Channel = NetLoopbackCreate();
-  Chunk *ClientChunk = (Chunk *)calloc(1, sizeof(Chunk));
+  Chunk *ClientChunk = ChunkCreateStandalone();
   if (!Expect(Channel != (NetLoopback *)0 && ClientChunk != (Chunk *)0,
               "server_test_allocation")) {
     NetLoopbackDestroy(Channel);
-    free(ClientChunk);
+    ChunkFreeStandalone(ClientChunk);
     return false;
   }
 
@@ -1059,6 +1150,6 @@ bool RunProtocolServerSelfTest(ServerState *Server) {
 
   ServerBindLoopback(Server, (NetLoopback *)0);
   NetLoopbackDestroy(Channel);
-  free(ClientChunk);
+  ChunkFreeStandalone(ClientChunk);
   return Ok;
 }

@@ -3,27 +3,10 @@
 
 #include "core/vecmath.h"
 #include "world/chunk.h"
+#include "world/dense_pool.h"
+#include "world/world_limits.h"
 #include <stdbool.h>
 
-// The active set is a horizontal disc of columns (dx^2 + dz^2 <= R^2) times a
-// vertical window of at most 2 * VERTICAL_RENDER_RADIUS + 1 layers around the
-// load centre, clamped to the world's generated range. Capacity therefore grows
-// with R^2 rather than R^3.
-#define MIN_RENDER_DISTANCE 2
-#define DEFAULT_RENDER_DISTANCE 8
-#define MAX_RENDER_DISTANCE 16
-#define VERTICAL_RENDER_RADIUS 8
-// Farthest an active layer can lie from the load centre's layer. The window
-// holds 2 * VERTICAL_RENDER_RADIUS + 1 layers and always contains the layer
-// above the centre, so at most 2 * VERTICAL_RENDER_RADIUS - 1 lie below it.
-#define MAX_LOAD_LAYER_REACH ((2 * VERTICAL_RENDER_RADIUS) - 1)
-
-// Lattice points with dx^2 + dz^2 <= MAX_RENDER_DISTANCE^2. A literal because
-// C17 cannot count them at compile time; the column table builder never
-// exceeds it.
-#define MAX_LOADED_COLUMNS 797
-#define MAX_ACTIVE_CHUNKS \
-  (MAX_LOADED_COLUMNS * ((2 * VERTICAL_RENDER_RADIUS) + 1))
 // Open-addressing hash map: ~25% load factor keeps probe chains short
 #define CHUNK_MAP_SIZE (MAX_ACTIVE_CHUNKS * 4)
 
@@ -44,6 +27,10 @@ typedef struct World {
   bool SlotInUse[MAX_ACTIVE_CHUNKS];
   int FreeList[MAX_ACTIVE_CHUNKS];
   int FreeCount;
+
+  // Owns the block buffers of every slot that is not uniform. Slots point back
+  // at it through Chunk.Pool.
+  DenseBlockPool DensePool;
 
   int LastLoadChunkX;
   int LastLoadChunkY;
@@ -69,6 +56,9 @@ typedef struct {
 } RaycastResult;
 
 void InitWorld(World *WorldVal);
+// Returns every leased buffer and frees the pool's slabs. The World itself is
+// the caller's to free.
+void DestroyWorld(World *WorldVal);
 void WorldSetChunkEvictCallback(World *WorldVal, ChunkEvictCallback Callback);
 void WorldSetBlockChangeCallback(World *WorldVal, BlockChangeCallback Callback,
                                  void *UserData);
@@ -78,6 +68,23 @@ int ClampRenderDistance(int RenderDist);
 
 // Number of slots currently holding a chunk.
 int WorldActiveChunkCount(const World *WorldVal);
+
+// Leases a dense block buffer in O(1). Returns NULL when the pool is exhausted.
+// The buffer's contents are unspecified; the caller fills every cell.
+DenseBlockBuffer *WorldAcquireDenseBuffer(World *WorldVal);
+// Returns a buffer obtained from WorldAcquireDenseBuffer to the pool in O(1).
+void WorldReleaseDenseBuffer(World *WorldVal, DenseBlockBuffer *Buffer);
+void WorldGetDensePoolStats(World *WorldVal, DensePoolStats *Out);
+
+typedef struct {
+  int UniformAir;
+  int UniformSolid;
+  int Dense;
+} ChunkStorageCounts;
+
+// Classifies every active chunk by its storage: uniform air, uniform non-air,
+// or dense (holding a buffer, which includes chunks still generating).
+void WorldGetChunkStorageCounts(const World *WorldVal, ChunkStorageCounts *Out);
 
 void UpdateWorld(World *WorldVal, Vec3 PlayerPos, int RenderDist);
 void UpdateNeighborsDirtyFlag(World *WorldVal, int Cx, int Cy, int Cz);

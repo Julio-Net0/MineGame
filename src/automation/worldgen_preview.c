@@ -265,10 +265,10 @@ static void CountCubeClass(const Chunk *Scratch, double Seconds,
   }
 }
 
-static int CountChanged(const Chunk *Before, const Chunk *After) {
+static int CountChanged(const DenseBlockBuffer *Before, const Chunk *After) {
   int Changed = 0;
-  const BlockID *Old = &Before->Data[0][0][0];
-  const BlockID *New = &After->Data[0][0][0];
+  const BlockID *Old = &(*Before)[0][0][0];
+  const BlockID *New = &(*After->Blocks)[0][0][0];
   for (size_t Idx = 0; Idx < CHUNK_VOLUME; Idx++) {
     Changed += (Old[Idx] != New[Idx]) ? 1 : 0;
   }
@@ -290,14 +290,14 @@ static void GenerateScratch(Chunk *Scratch, int ChunkX, int ChunkY, int ChunkZ,
   GenerateChunkTerrain(Scratch, Column);
   double TerrainEnd = PlatformGetTime();
   // Snapshots between passes are taken outside the timed spans.
-  static Chunk SBefore;
-  SBefore = *Scratch;
+  static DenseBlockBuffer SBefore;
+  memcpy(SBefore, *Scratch->Blocks, sizeof(SBefore));
   double FeatureStart = PlatformGetTime();
   ColumnCache *Cache = GetColumnCache(COLUMN_CACHE_MAIN_SLOT);
   PlaceChunkFeatures(Scratch, Cache, true);
   double FeatureEnd = PlatformGetTime();
   Stats->StructureBlocks += CountChanged(&SBefore, Scratch);
-  SBefore = *Scratch;
+  memcpy(SBefore, *Scratch->Blocks, sizeof(SBefore));
   double FloraStart = PlatformGetTime();
   // The structure pass may have reused this column's cache slot.
   Column = ColumnCacheLookup(Cache, ChunkX, ChunkZ, GetWorldSeed());
@@ -337,11 +337,15 @@ static bool WriteSlice(const char *OutDir, const char *Name, int OriginX,
   unsigned char *Pixels =
       (unsigned char *)malloc((size_t)Size * (size_t)Height * RGB_CHANNELS);
   Chunk *Scratch = (Chunk *)calloc(1, sizeof(Chunk));
-  if (Pixels == NULL || Scratch == NULL) {
+  DenseBlockBuffer *ScratchBlocks =
+      (DenseBlockBuffer *)calloc(1, sizeof(DenseBlockBuffer));
+  if (Pixels == NULL || Scratch == NULL || ScratchBlocks == NULL) {
     free(Pixels);
     free(Scratch);
+    free(ScratchBlocks);
     return false;
   }
+  ChunkAttachBuffer(Scratch, ScratchBlocks);
 
   int ChunkZ = FloorDiv(CenterZ, CHUNK_SIZE);
   int LocalZ = CenterZ - (ChunkZ * CHUNK_SIZE);
@@ -374,7 +378,7 @@ static bool WriteSlice(const char *OutDir, const char *Name, int OriginX,
           if (GlobalY < FloorY || GlobalY > CeilingY) {
             continue;
           }
-          int BlockId = (int)Scratch->Data[LocalX][LocalY][LocalZ];
+          int BlockId = (int)(*Scratch->Blocks)[LocalX][LocalY][LocalZ];
           if (GlobalY == FloorY && BlockId != Palette.BedrockId) {
             Stats->BedrockFloorComplete = false;
           }
@@ -410,6 +414,7 @@ static bool WriteSlice(const char *OutDir, const char *Name, int OriginX,
   bool Ok = WritePng(OutDir, Name, "slice", Size, Height, Pixels);
   free(Pixels);
   free(Scratch);
+  free(ScratchBlocks);
   return Ok;
 }
 

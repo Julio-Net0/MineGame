@@ -1061,6 +1061,17 @@ static void ScriptAddChunksJson(cJSON *Root, const ScriptContext *Ctx) {
   cJSON_AddNumberToObject(Node, "rendered", GetLastRenderedChunkCount());
   cJSON_AddBoolToObject(Node, "meshUploadPending", RendererHasPendingMeshWork());
 
+  ChunkStorageCounts Storage = {0};
+  WorldGetChunkStorageCounts(Ctx->WorldVal, &Storage);
+  cJSON_AddNumberToObject(Node, "uniformAir", Storage.UniformAir);
+  cJSON_AddNumberToObject(Node, "uniformSolid", Storage.UniformSolid);
+  cJSON_AddNumberToObject(Node, "dense", Storage.Dense);
+  DensePoolStats Pool = {0};
+  WorldGetDensePoolStats(Ctx->WorldVal, &Pool);
+  cJSON_AddNumberToObject(Node, "densePoolUsed", Pool.Leased);
+  cJSON_AddNumberToObject(Node, "densePoolCapacity", Pool.Capacity);
+  cJSON_AddNumberToObject(Node, "densePoolSlabs", Pool.Slabs);
+
   RenderCullStats Cull = {0};
   GetLastCullStats(&Cull);
   cJSON_AddBoolToObject(Node, "occlusion", Cull.OcclusionEnabled);

@@ -484,11 +484,16 @@ void StampPrefabIntoChunk(struct Chunk *ChunkVal, const Prefab *PrefabVal,
     }
 
     // Air is structurally 0; keep any terrain block already occupying the cell.
-    if (ChunkVal->Data[LocalX][LocalY][LocalZ] != 0) {
+    if (ChunkGetLocal(ChunkVal, LocalX, LocalY, LocalZ) != 0) {
       continue;
     }
+    // A sky cube generated as uniform air takes a buffer only once a structure
+    // from a neighbouring column actually reaches into it.
+    if (!PromoteChunkToDense(ChunkVal)) {
+      return;
+    }
 
-    ChunkVal->Data[LocalX][LocalY][LocalZ] = Cell.BlockId;
+    (*ChunkVal->Blocks)[LocalX][LocalY][LocalZ] = Cell.BlockId;
     ChunkVal->SolidBlockCount++;
   }
 }

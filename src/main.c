@@ -202,6 +202,7 @@ static void CleanupGame(World *WorldVal) {
   }
 
   CloseWorldSave();
+  DestroyWorld(WorldVal);
   free(WorldVal);
   UiShutdown();
   CloseRenderer();

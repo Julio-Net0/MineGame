@@ -145,6 +145,10 @@ static void RunGeneration(Chunk *Target, int WorkerIndex) {
     PROFILE_END(FeaturesStart, PROFILE_GEN_FEATURES);
   }
 
+  // Before IsGenerated is published: readers on the main thread rely on the
+  // storage being final once they observe it.
+  ChunkEndFill(Target);
+
   PROFILE_END(GenerationStart, PROFILE_WORKER_GENERATION);
 
   Target->TerrainJustGenerated = true;

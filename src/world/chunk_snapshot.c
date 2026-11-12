@@ -7,6 +7,7 @@
 #endif
 
 #include <stddef.h>
+#include <string.h>
 
 // CHUNK_SIZE is a power of two, so masking gives the chunk-local coordinate for
 // the margin values too: -1 masks to CHUNK_SIZE-1 (the neighbour's last row) and
@@ -24,6 +25,25 @@ static int NeighbourSlot(int Local) {
     return 2;
   }
   return 1;
+}
+
+static BlockID SampleCell(const Chunk *Source, int Ix, int Iy, int Iz) {
+  // Absent neighbour stores air, which is what GetBlockIDFromWorld returns for
+  // an unloaded chunk.
+  return (Source != NULL) ? ChunkGetLocal(Source, Ix, Iy, Iz) : 0;
+}
+
+// One Z row of a chunk: a single copy from a dense buffer, a broadcast of the
+// id for a uniform chunk.
+static void CopyRow(BlockID *Out, const Chunk *Source, int Ix, int Iy) {
+  if (Source != NULL && Source->Blocks != NULL) {
+    memcpy(Out, &(*Source->Blocks)[Ix][Iy][0], CHUNK_SIZE * sizeof(BlockID));
+    return;
+  }
+  BlockID Id = (Source != NULL) ? Source->UniformBlockId : 0;
+  for (int Iz = 0; Iz < CHUNK_SIZE; Iz++) {
+    Out[Iz] = Id;
+  }
 }
 
 static int BiomeNeighbourSlot(int Local) {
@@ -47,36 +67,48 @@ void CaptureChunkSnapshot(World *WorldVal, const Chunk *ChunkVal,
   Out->ChunkZ = ChunkVal->ChunkZ;
   Out->SolidBlockCount = ChunkVal->SolidBlockCount;
 
+  // An all-air chunk produces no geometry whatever surrounds it, so nothing
+  // around it is gathered.
+  if (ChunkVal->IsUniform && ChunkVal->UniformBlockId == BLOCK_ID_AIR) {
+    memset(Out->Blocks, 0, sizeof(Out->Blocks));
+    memset(Out->BiomeCells, 0, sizeof(Out->BiomeCells));
+    memset(Out->BiomeCellPresent, 0, sizeof(Out->BiomeCellPresent));
+    return;
+  }
+
   // Resolve the 3x3x3 chunk neighbourhood once. The ambient-occlusion offsets
   // reach diagonally past edges and corners, so the diagonal chunks are needed
   // and not just the six sharing a face. Twenty-seven map lookups here replace
   // one per sampled cell.
   const Chunk *Neighbourhood[3][3][3];
+  // A neighbour still generating is read as unloaded, as GetBlockIDFromWorld
+  // reads it: its worker may still swap the block storage underneath.
+  const Chunk *BlockSources[3][3][3];
   for (int Dx = -1; Dx <= 1; Dx++) {
     for (int Dy = -1; Dy <= 1; Dy++) {
       for (int Dz = -1; Dz <= 1; Dz++) {
-        Neighbourhood[Dx + 1][Dy + 1][Dz + 1] =
+        const Chunk *Neighbour =
             GetChunkFromWorld(WorldVal, ChunkVal->ChunkX + Dx,
                               ChunkVal->ChunkY + Dy, ChunkVal->ChunkZ + Dz);
+        Neighbourhood[Dx + 1][Dy + 1][Dz + 1] = Neighbour;
+        BlockSources[Dx + 1][Dy + 1][Dz + 1] =
+            (Neighbour != NULL && Neighbour->IsGenerated) ? Neighbour : NULL;
       }
     }
   }
 
+  // Each (X, Y) row spans three chunks along Z: one margin cell from each Z
+  // neighbour and the CHUNK_SIZE cells between them from the middle chunk.
   for (int LocalX = -1; LocalX <= CHUNK_SIZE; LocalX++) {
     int Sx = NeighbourSlot(LocalX);
     int Ix = LocalX & CHUNK_INDEX_MASK;
     for (int LocalY = -1; LocalY <= CHUNK_SIZE; LocalY++) {
       int Sy = NeighbourSlot(LocalY);
       int Iy = LocalY & CHUNK_INDEX_MASK;
-      for (int LocalZ = -1; LocalZ <= CHUNK_SIZE; LocalZ++) {
-        int Sz = NeighbourSlot(LocalZ);
-        const Chunk *Source = Neighbourhood[Sx][Sy][Sz];
-        // Absent neighbour stores air, which is what GetBlockIDFromWorld
-        // returns for an unloaded chunk.
-        Out->Blocks[LocalX + 1][LocalY + 1][LocalZ + 1] =
-            (Source != NULL) ? Source->Data[Ix][Iy][LocalZ & CHUNK_INDEX_MASK]
-                             : 0;
-      }
+      BlockID *Row = Out->Blocks[LocalX + 1][LocalY + 1];
+      Row[0] = SampleCell(BlockSources[Sx][Sy][0], Ix, Iy, CHUNK_SIZE - 1);
+      CopyRow(&Row[1], BlockSources[Sx][Sy][1], Ix, Iy);
+      Row[CHUNK_SIZE + 1] = SampleCell(BlockSources[Sx][Sy][2], Ix, Iy, 0);
     }
   }
 
@@ -159,7 +191,7 @@ int VerifyChunkSnapshot(World *WorldVal, const Chunk *ChunkVal,
         BlockID FromWorld;
         if (LocalX >= 0 && LocalX < CHUNK_SIZE && LocalY >= 0 &&
             LocalY < CHUNK_SIZE && LocalZ >= 0 && LocalZ < CHUNK_SIZE) {
-          FromWorld = ChunkVal->Data[LocalX][LocalY][LocalZ];
+          FromWorld = ChunkGetLocal(ChunkVal, LocalX, LocalY, LocalZ);
         } else {
           int Gx = (ChunkVal->ChunkX * CHUNK_SIZE) + LocalX;
           int Gy = (ChunkVal->ChunkY * CHUNK_SIZE) + LocalY;

@@ -11,12 +11,14 @@
 #include "world/worldgen_column_cache.h"
 #include "world/stone_filler.h"
 #include "world/worldgen_strata.h"
+#include "world/dense_pool.h"
 #include <math.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdlib.h>
 
-// Air is structurally 0 throughout the engine: an empty Data cell means air, and
+// Air is structurally 0 throughout the engine: an empty block cell means air, and
 // SolidBlockCount counts non-zero entries. The blocks that vary by region come
 // from the biome palette instead; only the few that no biome owns are resolved
 // here, by name, so nothing in generation is a compiled-in block id.
@@ -366,20 +368,25 @@ static void LoadCubeFlood(const Chunk *ChunkVal, uint64_t SeedVal,
 
 
 static int FillCubeSolid(Chunk *ChunkVal, BlockID BlockId);
+static int FillCubeUniform(Chunk *ChunkVal, BlockID BlockId);
 
 // A SOLID cube is filler throughout: every block has at least 8 solid blocks
 // above it, deeper than any palette layer. One fill when the filler is uniform
 // over the cube, otherwise the same per-block decision the per-block path makes.
+// Returns -1 when no block buffer could be leased.
 static int FillCubeFiller(Chunk *ChunkVal, uint64_t SeedVal) {
   FillerCube Filler;
   FillerCubeInit(&Filler, ChunkVal->ChunkX, ChunkVal->ChunkY, ChunkVal->ChunkZ,
                  SeedVal);
   BlockID Uniform = 0;
   if (FillerCubeUniform(&Filler, &Uniform)) {
-    return FillCubeSolid(ChunkVal, Uniform);
+    return FillCubeUniform(ChunkVal, Uniform);
+  }
+  if (!ChunkBeginFill(ChunkVal)) {
+    return -1;
   }
   FillerFillCube(&Filler, ChunkVal->ChunkX * CHUNK_SIZE,
-                 ChunkVal->ChunkZ * CHUNK_SIZE, ChunkVal->Data);
+                 ChunkVal->ChunkZ * CHUNK_SIZE, *ChunkVal->Blocks);
   return (int)CHUNK_VOLUME;
 }
 
@@ -387,10 +394,22 @@ static int FillCubeSolid(Chunk *ChunkVal, BlockID BlockId) {
   for (int IdxX = 0; IdxX < CHUNK_SIZE; IdxX++) {
     for (int IdxY = 0; IdxY < CHUNK_SIZE; IdxY++) {
       for (int IdxZ = 0; IdxZ < CHUNK_SIZE; IdxZ++) {
-        ChunkVal->Data[IdxX][IdxY][IdxZ] = BlockId;
+        (*ChunkVal->Blocks)[IdxX][IdxY][IdxZ] = BlockId;
       }
     }
   }
+  return (BlockId != BLOCK_AIR) ? (int)CHUNK_VOLUME : 0;
+}
+
+// A pooled chunk takes the uniform result as scalar storage and leases nothing.
+// A standalone chunk keeps the buffer its caller attached, so it is filled as
+// before and tests can still compare it cell by cell.
+static int FillCubeUniform(Chunk *ChunkVal, BlockID BlockId) {
+  if (ChunkVal->Pool == (struct DenseBlockPool *)0 &&
+      ChunkVal->Blocks != (DenseBlockBuffer *)0) {
+    return FillCubeSolid(ChunkVal, BlockId);
+  }
+  ChunkResetStorage(ChunkVal, BlockId);
   return (BlockId != BLOCK_AIR) ? (int)CHUNK_VOLUME : 0;
 }
 
@@ -564,7 +583,7 @@ static int FillCubePerBlock(Chunk *ChunkVal, const ColumnEntry *Column,
           break;
         }
 
-        ChunkVal->Data[IdxX][IdxY][IdxZ] = BlockId;
+        (*ChunkVal->Blocks)[IdxX][IdxY][IdxZ] = BlockId;
         if (BlockId != BLOCK_AIR) {
           SolidCount++;
         }
@@ -639,13 +658,23 @@ CubeClass GenerateChunkTerrainEx(Chunk *ChunkVal, const ColumnEntry *Column,
       EvaluateCubeCorners(ChunkVal, Column, SeedVal, &Corners);
       HaveCorners = true;
     }
-    SolidCount =
-        FillCubePerBlock(ChunkVal, Column, HaveCorners ? &Corners : NULL,
-                         Layers, SeedVal, Options->DebugDensity);
+    SolidCount = ChunkBeginFill(ChunkVal)
+                     ? FillCubePerBlock(ChunkVal, Column,
+                                        HaveCorners ? &Corners : NULL, Layers,
+                                        SeedVal, Options->DebugDensity)
+                     : -1;
   } else if (Class == CUBE_CLASS_AIR) {
-    SolidCount = FillCubeSolid(ChunkVal, BLOCK_AIR);
+    // Sky and void cubes: no noise sampled, no cell written, no buffer leased.
+    SolidCount = FillCubeUniform(ChunkVal, BLOCK_AIR);
   } else {
     SolidCount = FillCubeFiller(ChunkVal, SeedVal);
+  }
+
+  if (SolidCount < 0) {
+    LogError("CHUNK: no block buffer to generate (%d, %d, %d) into",
+             ChunkVal->ChunkX, ChunkVal->ChunkY, ChunkVal->ChunkZ);
+    ChunkResetStorage(ChunkVal, BLOCK_AIR);
+    SolidCount = 0;
   }
 
   if (Options->CountClasses) {
@@ -658,6 +687,92 @@ CubeClass GenerateChunkTerrainEx(Chunk *ChunkVal, const ColumnEntry *Column,
   return Class;
 }
 
+void ChunkAttachBuffer(Chunk *ChunkVal, DenseBlockBuffer *Buffer) {
+  ChunkVal->Pool = (struct DenseBlockPool *)0;
+  ChunkVal->Blocks = Buffer;
+  ChunkVal->IsUniform = false;
+}
+
+Chunk *ChunkCreateStandalone(void) {
+  Chunk *ChunkVal = (Chunk *)calloc(1, sizeof(Chunk));
+  DenseBlockBuffer *Buffer =
+      (DenseBlockBuffer *)calloc(1, sizeof(DenseBlockBuffer));
+  if (ChunkVal == (Chunk *)0 || Buffer == (DenseBlockBuffer *)0) {
+    free(ChunkVal);
+    free(Buffer);
+    return (Chunk *)0;
+  }
+  ChunkAttachBuffer(ChunkVal, Buffer);
+  return ChunkVal;
+}
+
+void ChunkFreeStandalone(Chunk *ChunkVal) {
+  if (ChunkVal == (Chunk *)0) {
+    return;
+  }
+  free(ChunkVal->Blocks);
+  free(ChunkVal);
+}
+
+void ChunkResetStorage(Chunk *ChunkVal, BlockID BlockId) {
+  if (ChunkVal->Blocks != (DenseBlockBuffer *)0 &&
+      ChunkVal->Pool != (struct DenseBlockPool *)0) {
+    DensePoolRelease(ChunkVal->Pool, ChunkVal->Blocks);
+  }
+  ChunkVal->Blocks = (DenseBlockBuffer *)0;
+  ChunkVal->UniformBlockId = BlockId;
+  ChunkVal->IsUniform = true;
+}
+
+bool ChunkBeginFill(Chunk *ChunkVal) {
+  if (ChunkVal->Blocks == (DenseBlockBuffer *)0) {
+    if (ChunkVal->Pool == (struct DenseBlockPool *)0) {
+      return false;
+    }
+    ChunkVal->Blocks = DensePoolAcquire(ChunkVal->Pool);
+    if (ChunkVal->Blocks == (DenseBlockBuffer *)0) {
+      return false;
+    }
+  }
+  ChunkVal->IsUniform = false;
+  return true;
+}
+
+void ChunkEndFill(Chunk *ChunkVal) {
+  if (ChunkVal->Blocks == (DenseBlockBuffer *)0 ||
+      ChunkVal->Pool == (struct DenseBlockPool *)0) {
+    return;
+  }
+  const BlockID *Cells = &(*ChunkVal->Blocks)[0][0][0];
+  BlockID First = Cells[0];
+  for (size_t Idx = 1; Idx < CHUNK_VOLUME; Idx++) {
+    if (Cells[Idx] != First) {
+      return;
+    }
+  }
+  ChunkResetStorage(ChunkVal, First);
+}
+
+bool PromoteChunkToDense(Chunk *ChunkVal) {
+  if (ChunkVal->Blocks != (DenseBlockBuffer *)0) {
+    return true;
+  }
+  if (ChunkVal->Pool == (struct DenseBlockPool *)0) {
+    return false;
+  }
+  DenseBlockBuffer *Buffer = DensePoolAcquire(ChunkVal->Pool);
+  if (Buffer == (DenseBlockBuffer *)0) {
+    return false;
+  }
+  BlockID *Cells = &(*Buffer)[0][0][0];
+  for (size_t Idx = 0; Idx < CHUNK_VOLUME; Idx++) {
+    Cells[Idx] = ChunkVal->UniformBlockId;
+  }
+  ChunkVal->Blocks = Buffer;
+  ChunkVal->IsUniform = false;
+  return true;
+}
+
 int GetBlockIdInChunk(Chunk *ChunkVal, Vec3 LocalPos) {
   int IdxX = (int)LocalPos.x;
   int IdxY = (int)LocalPos.y;
@@ -668,7 +783,7 @@ int GetBlockIdInChunk(Chunk *ChunkVal, Vec3 LocalPos) {
     return 0;
   }
 
-  return (int)ChunkVal->Data[IdxX][IdxY][IdxZ];
+  return (int)ChunkGetLocal(ChunkVal, IdxX, IdxY, IdxZ);
 }
 
 void SetBlockInChunk(Chunk *ChunkVal, Vec3 LocalPos, BlockID BlockId) {
@@ -678,16 +793,21 @@ void SetBlockInChunk(Chunk *ChunkVal, Vec3 LocalPos, BlockID BlockId) {
 
   if (IdxX >= 0 && IdxX < CHUNK_SIZE && IdxY >= 0 && IdxY < CHUNK_SIZE && IdxZ >= 0 &&
       IdxZ < CHUNK_SIZE) {
-    BlockID OldId = ChunkVal->Data[IdxX][IdxY][IdxZ];
+    BlockID OldId = ChunkGetLocal(ChunkVal, IdxX, IdxY, IdxZ);
 
     if (OldId != BlockId) {
+      if (!PromoteChunkToDense(ChunkVal)) {
+        LogError("CHUNK: no block buffer to promote (%d, %d, %d); edit dropped",
+                 ChunkVal->ChunkX, ChunkVal->ChunkY, ChunkVal->ChunkZ);
+        return;
+      }
       if (OldId == 0 && BlockId != 0) {
         ChunkVal->SolidBlockCount++;
       } else if (OldId != 0 && BlockId == 0) {
         ChunkVal->SolidBlockCount--;
       }
 
-      ChunkVal->Data[IdxX][IdxY][IdxZ] = BlockId;
+      (*ChunkVal->Blocks)[IdxX][IdxY][IdxZ] = BlockId;
       ChunkVal->IsDirty = true;
       ChunkVal->IsModified = true;
     }

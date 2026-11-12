@@ -76,6 +76,7 @@ set(MINEGAME_SIM_SOURCES
   src/world/chunk.c
   src/world/chunk_worker.c
   src/world/chunk_snapshot.c
+  src/world/dense_pool.c
   src/world/block_system.c
   src/world/biome.c
   src/world/climate.c

@@ -151,7 +151,7 @@ static bool EntriesEqual(const ColumnEntry *Left, const ColumnEntry *Right) {
 
 static bool ChunksMatch(const Chunk *Left, const Chunk *Right) {
   return Left->SolidBlockCount == Right->SolidBlockCount &&
-         memcmp(Left->Data, Right->Data, sizeof(Left->Data)) == 0 &&
+         memcmp(*Left->Blocks, *Right->Blocks, sizeof(DenseBlockBuffer)) == 0 &&
          memcmp(Left->BiomeMap, Right->BiomeMap, sizeof(Left->BiomeMap)) == 0;
 }
 
@@ -221,7 +221,7 @@ static bool CheckFluids(SelfTestScratch *Scratch, int ChunkX, int ChunkY,
     int LocalY = (Index / CHUNK_SIZE) % CHUNK_SIZE;
     int LocalZ = Index % CHUNK_SIZE;
     int Y = (ChunkY * CHUNK_SIZE) + LocalY;
-    BlockID Block = Cube->Data[LocalX][LocalY][LocalZ];
+    BlockID Block = (*Cube->Blocks)[LocalX][LocalY][LocalZ];
     bool IsFluid = Block == 0 || Block == Water || Block == Lava;
     if (!IsFluid || ResolveStratum(Y) != STRATUM_GEN_OVERWORLD ||
         Y >= GetGenerationCeiling() || !(Scratch->Density[Index] <= 0.0F)) {
@@ -252,7 +252,7 @@ static bool CheckFluids(SelfTestScratch *Scratch, int ChunkX, int ChunkY,
           NearZ >= CHUNK_SIZE) {
         continue;
       }
-      if (Cube->Data[NearX][LocalY][NearZ] == 0) {
+      if ((*Cube->Blocks)[NearX][LocalY][NearZ] == 0) {
         LogError("WORLDGEN_TEST: FAIL flooded water at (%d, %d, %d) borders "
                  "dry air",
                  X, Y, Z);
@@ -301,7 +301,7 @@ static bool CheckOrePlacement(SelfTestScratch *Scratch, int ChunkX, int ChunkY,
     int LocalX = Index / (CHUNK_SIZE * CHUNK_SIZE);
     int LocalY = (Index / CHUNK_SIZE) % CHUNK_SIZE;
     int LocalZ = Index % CHUNK_SIZE;
-    if (FillerOreKindOf(Cube->Data[LocalX][LocalY][LocalZ]) < 0) {
+    if (FillerOreKindOf((*Cube->Blocks)[LocalX][LocalY][LocalZ]) < 0) {
       continue;
     }
     int Palette =
@@ -521,7 +521,7 @@ static bool CheckStructureAt(SelfTestScratch *Scratch, int X, int Y, int Z,
   SAnchor = *Anchor;
   (void)GenerateCube(Scratch->Reference, AnchorChunkX, AnchorChunkY,
                      AnchorChunkZ, &SAnchor, true, NULL);
-  BlockID Base = Scratch->Reference->Data[X - (AnchorChunkX * CHUNK_SIZE)]
+  BlockID Base = (*Scratch->Reference->Blocks)[X - (AnchorChunkX * CHUNK_SIZE)]
                                          [Y - (AnchorChunkY * CHUNK_SIZE)]
                                          [Z - (AnchorChunkZ * CHUNK_SIZE)];
   if (Base == 0) {
@@ -638,7 +638,7 @@ static bool CheckFillerRegion(SelfTestScratch *Scratch, uint64_t Seed) {
     int StoneCount = 0;
     int DeepCount = 0;
     for (size_t Idx = 0; Idx < CHUNK_VOLUME; Idx++) {
-      BlockID Block = (&Scratch->Reference->Data[0][0][0])[Idx];
+      BlockID Block = (&(*Scratch->Reference->Blocks)[0][0][0])[Idx];
       StoneCount += (Block == Stone) ? 1 : 0;
       DeepCount += (Block == Deep) ? 1 : 0;
     }
@@ -860,9 +860,9 @@ static bool RunChecks(SelfTestScratch *Scratch) {
 
 bool RunWorldgenSelfTest(void) {
   SelfTestScratch Scratch = {
-      .Reference = (Chunk *)calloc(1, sizeof(Chunk)),
-      .PerBlock = (Chunk *)calloc(1, sizeof(Chunk)),
-      .Uncached = (Chunk *)calloc(1, sizeof(Chunk)),
+      .Reference = ChunkCreateStandalone(),
+      .PerBlock = ChunkCreateStandalone(),
+      .Uncached = ChunkCreateStandalone(),
       .Fresh = (ColumnEntry *)calloc(1, sizeof(ColumnEntry)),
       .Density = (float *)calloc(CHUNK_VOLUME, sizeof(float)),
       .ClassCounts = {0},
@@ -883,9 +883,9 @@ bool RunWorldgenSelfTest(void) {
     Passed = RunChecks(&Scratch);
   }
 
-  free(Scratch.Reference);
-  free(Scratch.PerBlock);
-  free(Scratch.Uncached);
+  ChunkFreeStandalone(Scratch.Reference);
+  ChunkFreeStandalone(Scratch.PerBlock);
+  ChunkFreeStandalone(Scratch.Uncached);
   free(Scratch.Fresh);
   free(Scratch.Density);
   return Passed;

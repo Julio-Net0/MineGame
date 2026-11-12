@@ -22,10 +22,12 @@ EXPECTED_HEIGHT = 720
 EXPECTED_SEED = "16412814131703521744"
 # Number of "PROTOCOL_TEST: ok" lines MineGameServer --test-protocol logs; a
 # mismatch means a check was silently skipped or added without updating this.
-EXPECTED_PROTOCOL_CHECKS = 36
+EXPECTED_PROTOCOL_CHECKS = 38
+# Buffers per dense pool slab; keep in sync with src/world/dense_pool.h.
+DENSE_SLAB_CAPACITY = 512
 
 # Mirror of the engine's chunk loader, used to derive expected active chunk
-# counts. Keep in sync with src/world/world.h (render distance limits,
+# counts. Keep in sync with src/world/world_limits.h (render distance limits,
 # VERTICAL_RENDER_RADIUS) and ComputeLayerWindow / BuildLoadVolume in
 # src/world/world.c. WORLD_LO/HI_CHUNK_Y are the chunk layers holding the
 # bedrock band's lowest Y and the generation ceiling for the default strata;
@@ -179,7 +181,39 @@ def assert_vec3(node: dict[str, Any], x: float, y: float, z: float, label: str, 
 def load_json(path: Path) -> dict[str, Any]:
     require(path.is_file(), f"missing state dump: {path}")
     with path.open("r", encoding="utf-8") as handle:
-        return json.load(handle)
+        state = json.load(handle)
+    if isinstance(state.get("chunks"), dict) and "uniformAir" in state["chunks"]:
+        assert_chunk_storage(state, path.name)
+    return state
+
+
+def assert_chunk_storage(state: dict[str, Any], label: str) -> None:
+    """Storage breakdown invariants of the sparse chunk representation.
+
+    Every active chunk is exactly one of uniform air, uniform non-air or dense,
+    and each dense chunk holds one pool buffer. While generation is in flight a
+    worker may be between leasing a buffer and flagging the chunk dense, so the
+    lease count is compared only once no chunk is generating.
+    """
+    chunks = state["chunks"]
+    active = chunks.get("active")
+    air = chunks.get("uniformAir")
+    solid = chunks.get("uniformSolid")
+    dense = chunks.get("dense")
+    used = chunks.get("densePoolUsed")
+    capacity = chunks.get("densePoolCapacity")
+    slabs = chunks.get("densePoolSlabs")
+    require(
+        air + solid + dense == active,
+        f"{label}: expected uniformAir + uniformSolid + dense == active, got {air} + {solid} + {dense} != {active}",
+    )
+    require(0 <= dense <= active, f"{label}: expected 0 <= dense <= active, got {dense} / {active}")
+    require(
+        capacity == slabs * DENSE_SLAB_CAPACITY and 0 <= used <= capacity,
+        f"{label}: expected densePoolUsed {used} within capacity {capacity} of {slabs} slabs",
+    )
+    if chunks.get("generating") == 0:
+        require(used == dense, f"{label}: expected densePoolUsed == dense, got {used} != {dense}")
 
 
 def assert_png(path: Path, width: int = EXPECTED_WIDTH, height: int = EXPECTED_HEIGHT) -> bytes:

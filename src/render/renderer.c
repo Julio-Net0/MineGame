@@ -1236,12 +1236,68 @@ bool RendererHasMeshJobCapacity(void) {
     return false;
 }
 
+// Along the step axis, the neighbour's layer facing back toward the chunk;
+// along the others, the free coordinate.
+static int TouchingLayerCoord(int Step, int Free) {
+    if (Step > 0) { return 0; }
+    if (Step < 0) { return CHUNK_SIZE - 1; }
+    return Free;
+}
+
+// Whether the layer of the neighbour at (Dx, Dy, Dz) that touches ChunkVal is
+// opaque throughout, so the mesher would hide every face ChunkVal shows it. A
+// neighbour not yet generated reads as air to the snapshot, so it never seals.
+static bool NeighbourSideSealed(World *WorldVal, const Chunk *ChunkVal, int Dx,
+                                int Dy, int Dz) {
+    const Chunk *Neighbour =
+        GetChunkFromWorld(WorldVal, ChunkVal->ChunkX + Dx,
+                          ChunkVal->ChunkY + Dy, ChunkVal->ChunkZ + Dz);
+    if (Neighbour == NULL || !Neighbour->IsGenerated) {
+        return false;
+    }
+    if (Neighbour->IsUniform) {
+        return IsBlockOpaqueForVisibility(Neighbour->UniformBlockId);
+    }
+    for (int IdxA = 0; IdxA < CHUNK_SIZE; IdxA++) {
+        for (int IdxB = 0; IdxB < CHUNK_SIZE; IdxB++) {
+            int X = TouchingLayerCoord(Dx, IdxA);
+            int Y = TouchingLayerCoord(Dy, (Dx != 0) ? IdxA : IdxB);
+            int Z = TouchingLayerCoord(Dz, IdxB);
+            if (!IsBlockOpaqueForVisibility(ChunkGetLocal(Neighbour, X, Y, Z))) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+// A uniform opaque chunk shows a face only toward a neighbour cell that is not
+// opaque. With all six touching layers opaque its mesh is empty and it connects
+// no two faces, which is exactly what a worker would have produced.
+static bool IsSealedUniformSolid(World *WorldVal, const Chunk *ChunkVal) {
+    return ChunkVal->IsUniform &&
+           IsBlockOpaqueForVisibility(ChunkVal->UniformBlockId) &&
+           NeighbourSideSealed(WorldVal, ChunkVal, -1, 0, 0) &&
+           NeighbourSideSealed(WorldVal, ChunkVal, 1, 0, 0) &&
+           NeighbourSideSealed(WorldVal, ChunkVal, 0, -1, 0) &&
+           NeighbourSideSealed(WorldVal, ChunkVal, 0, 1, 0) &&
+           NeighbourSideSealed(WorldVal, ChunkVal, 0, 0, -1) &&
+           NeighbourSideSealed(WorldVal, ChunkVal, 0, 0, 1);
+}
+
 int RendererQueueMeshJob(World *WorldVal, Chunk *ChunkVal) {
     // An empty chunk needs no mesh at all, so it is resolved here rather than
     // occupying a slot and a worker to produce nothing.
     if (ChunkVal->SolidBlockCount == 0) {
         UnloadChunkMesh(ChunkVal);
         SetChunkVisibility(ChunkVal, FACE_VIS_ALL);
+        ChunkVal->IsDirty = false;
+        return -1;
+    }
+
+    if (IsSealedUniformSolid(WorldVal, ChunkVal)) {
+        UnloadChunkMesh(ChunkVal);
+        SetChunkVisibility(ChunkVal, FACE_VIS_NONE);
         ChunkVal->IsDirty = false;
         return -1;
     }

@@ -29,6 +29,7 @@ enum {
   HOTBAR_ICON_SIZE = 16,
   CROSSHAIR_SIZE = 15,
   DEBUG_TEXT_CAPACITY = 96,
+  BYTES_TO_MB_SHIFT = 20,
   // Vanilla F3 layout: lines start two units in from the corner, one font line
   // apart, each on its own translucent grey strip.
   DEBUG_MARGIN = 2,
@@ -465,6 +466,21 @@ static void DrawDebugScreen(UiContext *Ctx, Player *PlayerVal, World *WorldVal,
            "Rendered Chunks: %d / %d (occluded %d%s)", Cull.Rendered,
            MAX_ACTIVE_CHUNKS, Cull.Occluded,
            Cull.OcclusionEnabled ? "" : ", occlusion off");
+  Y = DrawDebugLine(Ctx, DebugText, Y);
+
+  ChunkStorageCounts Storage = {0};
+  WorldGetChunkStorageCounts(WorldVal, &Storage);
+  snprintf(DebugText, sizeof(DebugText),
+           "Chunk Storage: air %d, solid %d, dense %d", Storage.UniformAir,
+           Storage.UniformSolid, Storage.Dense);
+  Y = DrawDebugLine(Ctx, DebugText, Y);
+
+  DensePoolStats Pool = {0};
+  WorldGetDensePoolStats(WorldVal, &Pool);
+  snprintf(DebugText, sizeof(DebugText),
+           "Dense Pool: %d / %d in %d slabs (%zu MB)", Pool.Leased,
+           Pool.Capacity, Pool.Slabs,
+           ((size_t)Pool.Capacity * sizeof(DenseBlockBuffer)) >> BYTES_TO_MB_SHIFT);
   Y = DrawDebugLine(Ctx, DebugText, Y);
   Y = DrawSimulationDebugLine(Ctx, Y);
 
