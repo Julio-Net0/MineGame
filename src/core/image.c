@@ -3,6 +3,7 @@
 #include "core/log.h"
 
 #include <stdlib.h>
+#include <string.h>
 
 // Ceiling on any buffer stb_image grows while inflating. A corrupt or hostile
 // DEFLATE stream (a zip bomb inside a resource pack) fails at this size instead
@@ -95,6 +96,122 @@ void CoreImageFree(CoreImage *Image) {
   Image->Pixels = NULL;
   Image->Width = 0;
   Image->Height = 0;
+}
+
+// Fraction bits of the nearest-neighbour resampler's source step.
+enum {
+  FIXED_SHIFT = 16
+};
+
+static unsigned char *AllocPixels(int Width, int Height) {
+  if (Width <= 0 || Height <= 0) {
+    return NULL;
+  }
+  return (unsigned char *)malloc((size_t)Width * (size_t)Height *
+                                 (size_t)CORE_IMAGE_CHANNELS);
+}
+
+static void StorePixel(unsigned char *Pixel, Color8 Color) {
+  Pixel[0] = Color.R;
+  Pixel[1] = Color.G;
+  Pixel[2] = Color.B;
+  Pixel[3] = Color.A;
+}
+
+// Replaces Image's pixels with Pixels (already sized Width x Height).
+static void AdoptPixels(CoreImage *Image, unsigned char *Pixels, int Width,
+                        int Height) {
+  free(Image->Pixels);
+  Image->Pixels = Pixels;
+  Image->Width = Width;
+  Image->Height = Height;
+}
+
+bool CoreImageCreateFilled(CoreImage *Out, int Width, int Height, Color8 Color) {
+  if (Out == NULL) {
+    return false;
+  }
+  unsigned char *Pixels = AllocPixels(Width, Height);
+  if (Pixels == NULL) {
+    return false;
+  }
+  size_t Count = (size_t)Width * (size_t)Height;
+  for (size_t Idx = 0; Idx < Count; Idx++) {
+    StorePixel(&Pixels[Idx * CORE_IMAGE_CHANNELS], Color);
+  }
+  *Out = (CoreImage){.Width = Width, .Height = Height, .Pixels = Pixels};
+  return true;
+}
+
+bool CoreImageCreateChecked(CoreImage *Out, int Width, int Height,
+                            int CheckWidth, int CheckHeight, Color8 First,
+                            Color8 Second) {
+  if (Out == NULL || CheckWidth <= 0 || CheckHeight <= 0) {
+    return false;
+  }
+  unsigned char *Pixels = AllocPixels(Width, Height);
+  if (Pixels == NULL) {
+    return false;
+  }
+  for (int Y = 0; Y < Height; Y++) {
+    for (int X = 0; X < Width; X++) {
+      bool IsFirst = ((X / CheckWidth) + (Y / CheckHeight)) % 2 == 0;
+      size_t Offset = (((size_t)Y * (size_t)Width) + (size_t)X) *
+                      (size_t)CORE_IMAGE_CHANNELS;
+      StorePixel(&Pixels[Offset], IsFirst ? First : Second);
+    }
+  }
+  *Out = (CoreImage){.Width = Width, .Height = Height, .Pixels = Pixels};
+  return true;
+}
+
+bool CoreImageCrop(CoreImage *Image, int X, int Y, int Width, int Height) {
+  if (Image == NULL || Image->Pixels == NULL || X < 0 || Y < 0 ||
+      X + Width > Image->Width || Y + Height > Image->Height) {
+    return false;
+  }
+  unsigned char *Pixels = AllocPixels(Width, Height);
+  if (Pixels == NULL) {
+    return false;
+  }
+  size_t RowBytes = (size_t)Width * (size_t)CORE_IMAGE_CHANNELS;
+  for (int Row = 0; Row < Height; Row++) {
+    size_t Src = ((((size_t)Y + (size_t)Row) * (size_t)Image->Width) +
+                  (size_t)X) *
+                 (size_t)CORE_IMAGE_CHANNELS;
+    memcpy(&Pixels[(size_t)Row * RowBytes], &Image->Pixels[Src], RowBytes);
+  }
+  AdoptPixels(Image, Pixels, Width, Height);
+  return true;
+}
+
+bool CoreImageResizeNearest(CoreImage *Image, int NewWidth, int NewHeight) {
+  if (Image == NULL || Image->Pixels == NULL || Image->Width <= 0 ||
+      Image->Height <= 0) {
+    return false;
+  }
+  unsigned char *Pixels = AllocPixels(NewWidth, NewHeight);
+  if (Pixels == NULL) {
+    return false;
+  }
+  // 16.16 fixed-point source step. The +1 is Raylib's bias against an early
+  // rounding error; it is kept because it decides which source texel each
+  // output texel lands on, and textures must stay identical.
+  int XRatio = ((int)((unsigned int)Image->Width << FIXED_SHIFT) / NewWidth) + 1;
+  int YRatio = ((int)((unsigned int)Image->Height << FIXED_SHIFT) / NewHeight) + 1;
+  for (int Y = 0; Y < NewHeight; Y++) {
+    int SrcY = (Y * YRatio) >> FIXED_SHIFT;
+    for (int X = 0; X < NewWidth; X++) {
+      int SrcX = (X * XRatio) >> FIXED_SHIFT;
+      size_t Src = (((size_t)SrcY * (size_t)Image->Width) + (size_t)SrcX) *
+                   (size_t)CORE_IMAGE_CHANNELS;
+      size_t Dst = (((size_t)Y * (size_t)NewWidth) + (size_t)X) *
+                   (size_t)CORE_IMAGE_CHANNELS;
+      memcpy(&Pixels[Dst], &Image->Pixels[Src], CORE_IMAGE_CHANNELS);
+    }
+  }
+  AdoptPixels(Image, Pixels, NewWidth, NewHeight);
+  return true;
 }
 
 unsigned char *CoreInflateRaw(const unsigned char *Data, int CompressedLen,

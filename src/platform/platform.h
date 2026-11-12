@@ -35,6 +35,12 @@ void PlatformSetFixedFrameTime(float Seconds);
 void PlatformBeginFrame(void);
 double PlatformGetClientTime(void);
 
+// Shows the frame the render backend just finished: swaps the buffers, pumps
+// the window's event queue (so input queried next frame is current) and
+// advances the frame clock PlatformGetFrameTime reports. The render backend
+// calls it once per frame, after any frame capture.
+void PlatformPresent(void);
+
 // Presentation controls.
 void PlatformToggleFullscreen(void);
 void PlatformSetCursorDisabled(bool Disabled);
@@ -51,6 +57,11 @@ void PlatformSetCursorShape(PlatformCursorShape Shape);
 // Screen dimensions in pixels.
 int PlatformGetScreenWidth(void);
 int PlatformGetScreenHeight(void);
+
+// Size of the drawable framebuffer in pixels, which the viewport, projection
+// aspect and pixel read-back use. Equal to the screen size unless the window
+// is scaled for high DPI.
+void PlatformGetFramebufferSize(int *OutWidth, int *OutHeight);
 
 // System clipboard access.
 const char *PlatformGetClipboardText(void);

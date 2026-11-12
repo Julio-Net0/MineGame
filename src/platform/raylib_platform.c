@@ -13,6 +13,19 @@ void PlatformInit(int Width, int Height, const char *Title) {
   InitWindow(Width, Height, Title);
   // ESC opens the pause menu; the window close button is the quit signal.
   SetExitKey(KEY_NULL);
+  // Raylib measures each frame from BeginDrawing to EndDrawing, so the first
+  // frame is opened here and every present closes one and opens the next.
+  BeginDrawing();
+}
+
+void PlatformPresent(void) {
+  EndDrawing();
+  BeginDrawing();
+}
+
+void PlatformGetFramebufferSize(int *OutWidth, int *OutHeight) {
+  if (OutWidth != (int *)0) { *OutWidth = GetRenderWidth(); }
+  if (OutHeight != (int *)0) { *OutHeight = GetRenderHeight(); }
 }
 
 void PlatformShutdown(void) { CloseWindow(); }

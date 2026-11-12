@@ -114,7 +114,7 @@ add_executable(${PROJECT_NAME}
   src/platform/raylib_platform.c
   src/render/renderer.c
   src/render/chunk_visibility.c
-  src/render/raylib_backend.c
+  src/render/gl_backend.c
   src/render/camera.c
   src/ui/hud.c
   src/ui/ui.c
