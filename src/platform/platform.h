@@ -19,9 +19,21 @@ void PlatformShutdown(void);
 // Quit signal: true once the platform has requested the window to close.
 bool PlatformShouldClose(void);
 
-// Frame clock: last frame's delta time, and a monotonic time since init.
+// Frame clock: last frame's delta time, and a monotonic wall-clock time since
+// init. PlatformGetTime is always the wall clock, so deadlines, timeouts and
+// work budgets keep measuring real time.
 float PlatformGetFrameTime(void);
 double PlatformGetTime(void);
+
+// Client clock, read by fades, toasts and caret blinking. It follows the wall
+// clock unless a fixed frame time is set: then every frame advances it, and
+// PlatformGetFrameTime, by exactly that step, so what a frame shows depends on
+// how many frames ran rather than on how fast the machine ran them. A scripted
+// run sets it to make its screenshots reproducible.
+void PlatformSetFixedFrameTime(float Seconds);
+// Called once at the top of every frame; advances the fixed-step client clock.
+void PlatformBeginFrame(void);
+double PlatformGetClientTime(void);
 
 // Presentation controls.
 void PlatformToggleFullscreen(void);

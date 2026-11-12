@@ -19,9 +19,44 @@ void PlatformShutdown(void) { CloseWindow(); }
 
 bool PlatformShouldClose(void) { return WindowShouldClose(); }
 
-float PlatformGetFrameTime(void) { return GetFrameTime(); }
+typedef struct {
+  float FixedFrameTime;
+  double ClientTime;
+} FixedClockState;
+
+static FixedClockState *GetFixedClockState(void) {
+  static FixedClockState State;
+  return &State;
+}
+
+// Starts above zero so callers that use 0.0 as "never set" (the item-name
+// toast) still tell an event on the first frame apart from no event.
+#define FIXED_CLOCK_START_SECONDS 1.0
+
+void PlatformSetFixedFrameTime(float Seconds) {
+  FixedClockState *State = GetFixedClockState();
+  State->FixedFrameTime = (Seconds > 0.0F) ? Seconds : 0.0F;
+  State->ClientTime = FIXED_CLOCK_START_SECONDS;
+}
+
+void PlatformBeginFrame(void) {
+  FixedClockState *State = GetFixedClockState();
+  if (State->FixedFrameTime > 0.0F) {
+    State->ClientTime += (double)State->FixedFrameTime;
+  }
+}
+
+float PlatformGetFrameTime(void) {
+  const FixedClockState *State = GetFixedClockState();
+  return (State->FixedFrameTime > 0.0F) ? State->FixedFrameTime : GetFrameTime();
+}
 
 double PlatformGetTime(void) { return GetTime(); }
+
+double PlatformGetClientTime(void) {
+  const FixedClockState *State = GetFixedClockState();
+  return (State->FixedFrameTime > 0.0F) ? State->ClientTime : GetTime();
+}
 
 void PlatformToggleFullscreen(void) { ToggleBorderlessWindowed(); }
 

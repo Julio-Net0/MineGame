@@ -97,6 +97,12 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
   // A scripted run ignores the mouse, so capturing the cursor would only take it
   // away from whoever is watching the run.
   PlatformSetCursorDisabled(!ScriptIsActive());
+  // A scripted run steps the client clock by exactly one tick per frame. The
+  // fixed-step loop then consumes the whole frame every time and the render
+  // interpolation factor is always exactly zero, so a screenshot no longer
+  // depends on how the machine's frame times happened to fall between ticks,
+  // and chat fades advance by frames rather than by wall time.
+  if (ScriptIsActive()) { PlatformSetFixedFrameTime(TICK_DT); }
   if (Options->Window.Fullscreen) { PlatformToggleFullscreen(); }
 
   InitBlockRegistry();
@@ -440,6 +446,8 @@ int main(int Argc, char **Argv) {
 
   while (!PlatformShouldClose() && !PauseMenuQuitRequested() &&
          !ScriptRunEnded()) {
+    PlatformBeginFrame();
+
     // Before input is polled, so a statement takes effect on the frame it is
     // reached rather than the next one.
     ScriptStep(&ChatVal, ActiveCamera, &PlayerVal, WorldVal, RenderDistance);

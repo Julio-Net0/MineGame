@@ -41,7 +41,7 @@ void InitChat(ChatState *Chat) {
 void AddChatHistory(ChatState *Chat, const char *Message) {
   if (Chat->HistoryCount < CHAT_MAX_HISTORY) {
     SafeStrncpy(Chat->History[Chat->HistoryCount].Text, Message, CHAT_MAX_INPUT_CHARS);
-    Chat->History[Chat->HistoryCount].TimeCreated = PlatformGetTime();
+    Chat->History[Chat->HistoryCount].TimeCreated = PlatformGetClientTime();
     Chat->History[Chat->HistoryCount].WrapWidth = 0;
     Chat->HistoryCount++;
   } else {
@@ -49,7 +49,7 @@ void AddChatHistory(ChatState *Chat, const char *Message) {
       Chat->History[Idx] = Chat->History[Idx + 1];
     }
     SafeStrncpy(Chat->History[CHAT_MAX_HISTORY - 1].Text, Message, CHAT_MAX_INPUT_CHARS);
-    Chat->History[CHAT_MAX_HISTORY - 1].TimeCreated = PlatformGetTime();
+    Chat->History[CHAT_MAX_HISTORY - 1].TimeCreated = PlatformGetClientTime();
     Chat->History[CHAT_MAX_HISTORY - 1].WrapWidth = 0;
   }
 }
@@ -277,7 +277,7 @@ static void EnsureWrapped(ChatMessage *Message, int Width) {
 }
 
 void DrawChat(UiContext *Ctx, ChatState *Chat) {
-  double CurrentTime = PlatformGetTime();
+  double CurrentTime = PlatformGetClientTime();
   int MaxRows = Chat->IsActive ? CHAT_FOCUSED_LINES : CHAT_UNFOCUSED_LINES;
   int LineWidth = CHAT_LINE_WIDTH;
   if (LineWidth > Ctx->GuiWidth - (CHAT_TEXT_INSET * 2)) {

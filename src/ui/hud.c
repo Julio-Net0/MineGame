@@ -85,7 +85,7 @@ static void DrawItemNameToast(UiContext *Ctx, Player *PlayerVal) {
     Toast->LastSelectedSlot = CurrentSlot;
     Toast->LastBlockId = CurrentBlock;
     if (CurrentBlock != 0) {
-      Toast->ToastStartTime = PlatformGetTime();
+      Toast->ToastStartTime = PlatformGetClientTime();
     } else {
       Toast->ToastStartTime = 0.0;
     }
@@ -99,7 +99,7 @@ static void DrawItemNameToast(UiContext *Ctx, Player *PlayerVal) {
     return;
   }
 
-  double Elapsed = PlatformGetTime() - Toast->ToastStartTime;
+  double Elapsed = PlatformGetClientTime() - Toast->ToastStartTime;
   if (Elapsed < 0.0 || Elapsed >= TOAST_TOTAL_TIME) {
     return;
   }

@@ -851,7 +851,7 @@ void UiTextFieldDraw(UiContext *Ctx, UiRect Rect, const char *Text,
 
   float TextX = (float)Inner.X - (State != NULL ? State->ScrollOffset : 0.0F);
   bool ShowCaret =
-      Focused && ((int)(PlatformGetTime() * CARET_BLINK_RATE)) % 2 == 0;
+      Focused && ((int)(PlatformGetClientTime() * CARET_BLINK_RATE)) % 2 == 0;
 
   UiScissor Previous = Ctx->Scissor;
   UiSetScissor(Ctx, Inner);
