@@ -26,7 +26,7 @@ enum {
   // A freed run stays reserved this many presented frames, so no upload can
   // overwrite vertices a frame still queued on the GPU reads.
   ARENA_RELEASE_DELAY_FRAMES = 3,
-  ARENA_MAX_BLOCKS = 64
+  ARENA_MAX_BLOCKS = 256
 };
 
 // Where a mesh lives: a run of whole pages in one block.

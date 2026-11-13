@@ -881,7 +881,7 @@ void RendererLogVisibilityStats(const World *WorldVal) {
 // while the load centre moves and old chunks wait for eviction, which is why
 // the column pool is not sized by it.
 enum {
-    RENDER_COLUMN_HASH_SIZE = 131072,
+    RENDER_COLUMN_HASH_SIZE = 524288,
     RENDER_COLUMN_HASH_MASK = RENDER_COLUMN_HASH_SIZE - 1
 };
 _Static_assert(RENDER_COLUMN_HASH_SIZE >= 2 * MAX_ACTIVE_CHUNKS,
