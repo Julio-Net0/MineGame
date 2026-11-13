@@ -72,8 +72,18 @@ typedef struct {
 // number of calls differs.
 typedef enum {
   RENDER_TIER_SINGLE = 0,
-  RENDER_TIER_MULTI_DRAW = 1
+  RENDER_TIER_MULTI_DRAW = 1,
+  RENDER_TIER_INDIRECT = 2
 } RenderTier;
+
+// GL's indirect draw record, laid out as glMultiDrawElementsIndirect reads it.
+typedef struct {
+  GLuint Count;
+  GLuint InstanceCount;
+  GLuint FirstIndex;
+  GLint BaseVertex;
+  GLuint BaseInstance;
+} DrawElementsIndirectCommand;
 
 // One chunk mesh added to the pass in progress.
 typedef struct {
@@ -145,6 +155,9 @@ typedef struct {
   int SubmitFirstPages[PASS_CAPACITY];
   // Every draw reads its indices from the start of the shared index buffer.
   const void *SubmitOffsets[PASS_CAPACITY];
+  // Tier 2: the same draws as GPU-side records, uploaded once per pass.
+  DrawElementsIndirectCommand SubmitCommands[PASS_CAPACITY];
+  GLuint IndirectBuffer;
   int BlockDrawCount[ARENA_MAX_BLOCKS];
   int BlockCursor[ARENA_MAX_BLOCKS];
   int BlockOrder[ARENA_MAX_BLOCKS];
@@ -681,20 +694,46 @@ static bool ProbeVertexIdIncludesBase(GLuint SharedIndexBuffer) {
   return Page == PROBE_PAGE;
 }
 
+// Multi-draw indirect is core in 4.3 and an extension before it; the draw
+// indirect buffer it reads is core in 4.0 or comes with ARB_draw_indirect. A 3.3
+// context may still expose both, so the flags are checked, not the version.
+static bool HasMultiDrawIndirect(void) {
+  bool Indirect = GLAD_GL_VERSION_4_0 != 0 || GLAD_GL_ARB_draw_indirect != 0;
+  bool Multi = GLAD_GL_VERSION_4_3 != 0 || GLAD_GL_ARB_multi_draw_indirect != 0;
+  return Indirect && Multi && glMultiDrawElementsIndirect != NULL;
+}
+
+static RenderTier TierFromCap(int Cap) {
+  switch (Cap) {
+  case 0:
+    return RENDER_TIER_SINGLE;
+  case 1:
+    return RENDER_TIER_MULTI_DRAW;
+  default:
+    return RENDER_TIER_INDIRECT;
+  }
+}
+
 // The highest tier the driver supports, lowered to --gl-tier when given.
 static void SelectRenderTier(BackendState *State) {
   State->VertexIdIncludesBase = ProbeVertexIdIncludesBase(State->ChunkSharedEbo);
-  RenderTier Supported = State->VertexIdIncludesBase ? RENDER_TIER_MULTI_DRAW
-                                                     : RENDER_TIER_SINGLE;
+  RenderTier Supported = RENDER_TIER_SINGLE;
+  if (State->VertexIdIncludesBase) {
+    Supported = HasMultiDrawIndirect() ? RENDER_TIER_INDIRECT
+                                       : RENDER_TIER_MULTI_DRAW;
+  }
   RenderTier Tier = Supported;
   int Cap = GetLaunchOptions()->GlTierCap;
   if (Cap != GL_TIER_CAP_NONE && Cap < (int)Supported) {
-    Tier = RENDER_TIER_SINGLE;
+    Tier = TierFromCap(Cap);
   } else if (Cap != GL_TIER_CAP_NONE && Cap > (int)Supported) {
     LogWarn("RENDER: --gl-tier %d requested; this driver supports tier %d",
             Cap, (int)Supported);
   }
   State->Tier = Tier;
+  if (Tier == RENDER_TIER_INDIRECT) {
+    glGenBuffers(1, &State->IndirectBuffer);
+  }
   LogInfo("RENDER: OpenGL %s on %s, render tier %d", RenderGetApiVersion(),
           RenderGetDeviceName(), (int)Tier);
 }
@@ -772,6 +811,10 @@ void RenderBackendShutdown(void) {
     State->MeshSlotUsed[IdxI] = false;
   }
   ArenaShutdown();
+  if (State->IndirectBuffer != 0) {
+    glDeleteBuffers(1, &State->IndirectBuffer);
+    State->IndirectBuffer = 0;
+  }
   if (State->ChunkSharedEbo != 0) {
     glDeleteBuffers(1, &State->ChunkSharedEbo);
     State->ChunkSharedEbo = 0;
@@ -1064,6 +1107,13 @@ static void SubmitBlockGroup(const BackendState *State, int Block, int First,
   glBindTexture(GL_TEXTURE_BUFFER, ArenaBlockOriginTexture(Block));
   glActiveTexture(GL_TEXTURE0 + BLOCK_TEXTURE_UNIT);
 
+  if (State->Tier == RENDER_TIER_INDIRECT) {
+    glMultiDrawElementsIndirect(
+        GL_TRIANGLES, GL_UNSIGNED_SHORT,
+        GlBufferOffset((size_t)First * sizeof(DrawElementsIndirectCommand)),
+        Count, 0);
+    return;
+  }
   if (State->Tier == RENDER_TIER_MULTI_DRAW) {
     glMultiDrawElementsBaseVertex(GL_TRIANGLES, &State->SubmitCounts[First],
                                   GL_UNSIGNED_SHORT, &State->SubmitOffsets[First],
@@ -1081,9 +1131,30 @@ static void SubmitBlockGroup(const BackendState *State, int Block, int First,
 }
 
 static void StageSubmit(BackendState *State, int Slot, const PassDraw *Draw) {
+  GLint BaseVertex = (GLint)Draw->FirstPage * ARENA_PAGE_VERTICES;
   State->SubmitCounts[Slot] = Draw->IndexCount;
-  State->SubmitBaseVertices[Slot] = (GLint)Draw->FirstPage * ARENA_PAGE_VERTICES;
+  State->SubmitBaseVertices[Slot] = BaseVertex;
   State->SubmitFirstPages[Slot] = Draw->FirstPage;
+  State->SubmitCommands[Slot] =
+      (DrawElementsIndirectCommand){.Count = (GLuint)Draw->IndexCount,
+                                    .InstanceCount = 1,
+                                    .FirstIndex = 0,
+                                    .BaseVertex = BaseVertex,
+                                    .BaseInstance = 0};
+}
+
+// Tier 2 reads the pass's draws from GPU memory: all of them are uploaded in
+// one call, sized to the pass, before any group is drawn. Respecifying the
+// store each pass hands the driver fresh memory instead of making it wait for
+// a previous pass still reading the old contents.
+static void UploadIndirectCommands(const BackendState *State, int Count) {
+  if (State->Tier != RENDER_TIER_INDIRECT) {
+    return;
+  }
+  glBindBuffer(GL_DRAW_INDIRECT_BUFFER, State->IndirectBuffer);
+  glBufferData(GL_DRAW_INDIRECT_BUFFER,
+               (GLsizeiptr)((size_t)Count * sizeof(DrawElementsIndirectCommand)),
+               State->SubmitCommands, GL_STREAM_DRAW);
 }
 
 // Translucent meshes blend, so their back-to-front order is kept exactly: runs
@@ -1093,6 +1164,7 @@ static void SubmitOrderedPass(BackendState *State) {
   for (int Idx = 0; Idx < Count; Idx++) {
     StageSubmit(State, Idx, &State->PassDraws[Idx]);
   }
+  UploadIndirectCommands(State, Count);
   int RunStart = 0;
   for (int Idx = 1; Idx <= Count; Idx++) {
     if (Idx == Count ||
@@ -1129,6 +1201,7 @@ static void SubmitGroupedPass(BackendState *State) {
     const PassDraw *Draw = &State->PassDraws[Idx];
     StageSubmit(State, State->BlockCursor[Draw->Block]++, Draw);
   }
+  UploadIndirectCommands(State, Count);
   int First = 0;
   for (int Ord = 0; Ord < OrderCount; Ord++) {
     int Block = State->BlockOrder[Ord];
@@ -1178,6 +1251,9 @@ void RenderEndChunkPass(void) {
   // Released once per pass, so no buffer bound outside a pass (a mesh upload,
   // the debug batch) is recorded into a block's vertex array.
   glBindVertexArray(0);
+  if (State->Tier == RENDER_TIER_INDIRECT) {
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
+  }
   glActiveTexture(GL_TEXTURE0 + PAGE_ORIGIN_TEXTURE_UNIT);
   glBindTexture(GL_TEXTURE_BUFFER, 0);
   glActiveTexture(GL_TEXTURE0 + BLOCK_TEXTURE_UNIT);
