@@ -1526,6 +1526,7 @@ void RenderGetStats(RenderStats *Out) {
                        .UsedPages = Arena.UsedPages,
                        .FreePages = Arena.FreePages,
                        .PendingPages = Arena.PendingPages,
+                       .UsedBytes = Arena.UsedBytes,
                        .SlackBytes = Arena.SlackBytes};
 }
 

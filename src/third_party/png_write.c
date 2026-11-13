@@ -2,9 +2,9 @@
 
 #include <stdlib.h>
 
-// Raylib instantiates stb_image_write in rtextures.c with external linkage for
-// its own ExportImage, so this copy is static and this file is the only place
-// the vendored header may be included.
+// This copy is static, so no other library linking its own stb_image_write
+// can collide with it, and this file is the only place the vendored header may
+// be included.
 #define STBIW_MALLOC(Size) malloc(Size)
 #define STBIW_REALLOC(Ptr, NewSize) realloc(Ptr, NewSize)
 #define STBIW_FREE(Ptr) free(Ptr)

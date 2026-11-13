@@ -4,8 +4,8 @@
 #include <math.h>
 
 // Engine-owned math value types. Renderer-agnostic: this header must never
-// include a Raylib header. Layout matches Raylib's Vector2/Vector3 so the
-// render/input boundary can convert with an explicit field copy.
+// include a windowing or graphics library header. Plain float fields, so any
+// library boundary can convert with an explicit field copy.
 typedef struct {
   float x;
   float y;

@@ -605,6 +605,16 @@ EXPECTED_RENDERED: dict[int, dict[int, dict[str, int]]] = {
             "after_place": 291,  # 970
             "after_jump": 291,  # 996
         },
+        32: {
+            "spawn": 710,
+            "far": 1219,
+            "after_ticks": 1219,
+            "landed": 479,
+            "after_walk": 805,
+            "after_break": 291,
+            "after_place": 291,
+            "after_jump": 291,
+        },
     },
 }
 
@@ -1066,6 +1076,8 @@ EXPECTED_TRANSLUCENT_VERTICES_MAX: dict[int, dict[int, int]] = {
         8: 7260,
         # Nominal 138672; runs report up to 138704 for the same reason as R=8.
         16: 138736,
+        # Recorded after border meshing became deterministic, so exact.
+        32: 1170796,
     },
 }
 

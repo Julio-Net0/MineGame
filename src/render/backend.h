@@ -126,6 +126,7 @@ typedef struct {
   int64_t UsedPages;
   int64_t FreePages;
   int64_t PendingPages;
+  int64_t UsedBytes;
   int64_t SlackBytes;
 } RenderStats;
 void RenderGetStats(RenderStats *Out);

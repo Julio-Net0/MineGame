@@ -5,9 +5,9 @@
 
 // Thin wrapper over the vendored stb_image_write, which is instantiated in its
 // own translation unit (third_party/png_write.c) rather than in the caller's.
-// Two reasons: Raylib instantiates the same library for its ExportImage, so
-// this copy has to be static and therefore confined to one file; and the
-// encoder's own code trips the clang static analyzer, which reports findings in
+// Two reasons: the copy is static so it cannot collide with another library's
+// instance, and is therefore confined to one file; and the encoder's own code
+// trips the clang static analyzer, which reports findings in
 // headers against whichever file includes them regardless of clang-tidy's
 // header filters. Keeping it here leaves the engine's own files clean to check.
 //

@@ -53,7 +53,7 @@ typedef enum {
 } MeshTarget;
 
 // Backend-agnostic mesh-builder scratch for one target. Filled per chunk, then
-// handed to the render backend as MeshData. Holds no renderer (Raylib) types.
+// handed to the render backend as MeshData. Holds no graphics-API types.
 typedef struct {
   ChunkVertex Vertices[MAX_MESH_VERTICES];
   int VCount;

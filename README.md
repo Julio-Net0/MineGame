@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Julio-Net0/MineGame/actions/workflows/ci.yml/badge.svg)](https://github.com/Julio-Net0/MineGame/actions/workflows/ci.yml)
 
-A minimalist Minecraft-inspired voxel engine built from scratch in **C17** using the **Raylib** library. Infinite procedural terrain, biomes, threaded chunk generation and a persistent world, written with a focus on memory management, static-analysis cleanliness and squeezing the most out of the CPU and GPU.
+A minimalist Minecraft-inspired voxel engine built from scratch in **C17** on **GLFW** and **OpenGL**. Infinite procedural terrain, biomes, threaded chunk generation and a persistent world, written with a focus on memory management, static-analysis cleanliness and squeezing the most out of the CPU and GPU.
 
 ## ⬇️ Downloads
 
@@ -31,12 +31,13 @@ Every push to `master` is built for Linux and Windows automatically. Pick a perm
 
 **Interface.** The HUD, chat and menus are drawn with the vanilla GUI sprites and bitmap font, so a resource pack that replaces them reskins the interface too. Nine-slice sprites scale to any size, and an integer GUI scale (automatic, or set with `/guiscale`) keeps every pixel sharp. `ESC` opens the game menu: back to game, GUI scale, field of view, and save and quit. The world keeps running while it is open. The window's close button also saves and quits.
 
-**Architecture.** Simulation runs on a fixed 20 TPS tick with render interpolation, independent of framerate, while four worker threads generate and load chunks in the background and a time-sliced budget caps how many meshes are built per tick. Raylib is confined to four translation units behind platform, input, and render-backend interfaces; the world, physics, persistence and generation code uses engine-owned math types and knows nothing about the renderer — which keeps the door open for a different graphics backend and for a dedicated-server split later.
+**Architecture.** Simulation runs on a fixed 20 TPS tick with render interpolation, independent of framerate, while four worker threads generate and load chunks in the background and a time-sliced budget caps how many meshes are built per tick. GLFW and OpenGL are confined to the platform, input and render-backend translation units behind their interfaces; the world, physics, persistence and generation code uses engine-owned math types and knows nothing about the renderer — which keeps the door open for a different graphics backend and for a dedicated-server split later. Chunk meshes live in a paged GPU arena and each render pass is submitted in a handful of multi-draw calls rather than one draw per chunk.
 
 ## 🤓 Tech Stack
 
 * **Language:** C17
-* **Graphics API:** [Raylib 5.5](https://www.raylib.com/) (OpenGL 3.3)
+* **Graphics API:** OpenGL 3.3 Core minimum, with multi-draw indirect on GL 4.3 or `GL_ARB_multi_draw_indirect` (loaded with [GLAD 2](https://github.com/Dav1dde/glad))
+* **Windowing & Input:** [GLFW 3.4](https://www.glfw.org/)
 * **JSON:** [cJSON 1.7.19](https://github.com/DaveGamble/cJSON)
 * **Noise:** [FastNoiseLite 1.1.1](https://github.com/Auburn/FastNoiseLite)
 * **Image I/O:** [stb_image & stb_image_write](https://github.com/nothings/stb)
@@ -57,7 +58,7 @@ Every push to `master` is built for Linux and Windows automatically. Pick a perm
 [Scoop](https://scoop.sh/) (recommended) to install `gcc`, `cmake` and `ninja`.
 
 #### 🐧 Linux
-GCC or Clang, CMake, Ninja, and the X11/OpenGL/ALSA development headers raylib compiles against.
+GCC or Clang, CMake, Ninja, and the X11 development headers GLFW compiles against (`libx11-dev`, `libxrandr-dev`, `libxi-dev`, `libxcursor-dev`, `libxinerama-dev` on Debian/Ubuntu).
 
 ---
 
@@ -134,6 +135,26 @@ For a capture that outlives the window:
 
 Files land next to the executable as `profile_NNN.csv`, never overwriting a previous capture. A timed capture is the one to compare across changes, since every run then covers the same span. `/fillchat [lines]` fills the chat history with identical lines, 20 by default, so a capture with chat open always draws the same text.
 
+### Render tiers
+
+The renderer needs OpenGL 3.3 Core and picks the fastest way the driver offers to submit chunk geometry, logging its choice at startup and showing it on the **F3** overlay:
+
+| Tier | Requires | Submission per render pass |
+|---|---|---|
+| 2 | GL 4.3 or `GL_ARB_multi_draw_indirect` | one `glMultiDrawElementsIndirect` per 16 MiB mesh block |
+| 1 | GL 3.3 | one `glMultiDrawElementsBaseVertex` per mesh block |
+| 0 | GL 3.3 | one `glDrawElementsBaseVertex` per chunk, sharing one vertex array per block |
+
+All tiers draw identical pixels. `--gl-tier <0|1|2>` caps the tier — never above what the driver supports — to compare them on one machine or to work around a driver problem.
+
+To measure them on a given machine, one command runs `scripts/bench_tier.mgs` on every tier at render distances 8 and 16 and writes a comparison of upload cost, chunk submission, frame time and present time, plus a check that every tier drew the same pixels:
+
+```bash
+python scripts/bench_tiers.py
+```
+
+Results land in `automation_out/bench/` (`report.md`, `summary.json`, and per-run screenshots, state dumps and profiler captures). `--binary`, `--render-distance 8,16,32` and `--tiers default,1,0` adjust the run.
+
 ### Low-spec simulation
 
 Launch flags constrain the process to approximate weaker hardware in a repeatable, per-run way, and can be combined in any order with the optional `<width> <height>` window size:
@@ -179,6 +200,7 @@ The entire script is parsed before the window, OpenGL context or worker threads 
 | `/...` | Any chat command, dispatched verbatim (`/tp 0 90 0`, `/debug wireframe 1`, `/profile start 10`). |
 | `wait loaded` | Blocks until all chunks within the render distance are generated, meshed and uploaded for 8 consecutive frames. |
 | `wait ticks <N>` / `wait frames <N>` | Blocks for `N` simulation ticks (20 TPS) or `N` rendered frames. |
+| `wait profile` | Blocks until a timed `/profile start <seconds>` capture has stopped by itself — the one wall-clock wait, for recording a fixed span of real time. |
 | `look <yaw> <pitch>` | Sets the active camera aim in degrees (`yaw 0` faces `+Z`, pitch clamped like mouse look). |
 | `hold <forward\|back\|left\|right\|ascend\|descend> <ticks>` | Holds a movement axis for `N` ticks through the standard `PlayerInput` path (non-blocking; holds can overlap). |
 | `press <jump\|break\|place>` | Latches an action edge for the next simulation tick. |
@@ -212,7 +234,11 @@ This project is made possible thanks to these amazing open-source projects, arti
 
 ### Open-Source Libraries
 
-* **[raylib](https://github.com/raysan5/raylib)** - A simple and easy-to-use library to enjoy videogames programming.
+* **[GLFW](https://github.com/glfw/glfw)** - Window, OpenGL context and input.
+    * *License:* [zlib/libpng](https://github.com/glfw/glfw/blob/master/LICENSE.md)
+* **[GLAD 2](https://github.com/Dav1dde/glad)** - Generated OpenGL loader (see [`src/third_party/glad/GENERATED.md`](src/third_party/glad/GENERATED.md)).
+    * *License:* WTFPL or CC0-1.0 for the generated loader; Apache-2.0 for `khrplatform.h` and the Khronos specification it is built from.
+* **[raylib](https://github.com/raysan5/raylib)** - The engine's original framework; the renderer's matrix helpers (`src/render/gl_math.h`) are ported from it so images stayed identical through the switch.
     * *License:* [zlib/libpng](https://github.com/raysan5/raylib/blob/master/LICENSE)
 * **[cJSON](https://github.com/DaveGamble/cJSON)** - Ultralightweight JSON parser in ANSI C.
     * *License:* [MIT](https://github.com/DaveGamble/cJSON/blob/master/LICENSE)
@@ -236,4 +262,4 @@ This project is made possible thanks to these amazing open-source projects, arti
 * **Greedy Meshing & Vertex Ambient Occlusion** - Conceptual foundation and voxel ambient occlusion techniques by **Mikola Lysenko** ([0fps.net](https://0fps.net/)).
 * **Fast Voxel Traversal Algorithm (DDA)** - Raycasting traversal technique by **John Amanatides & Andrew Woo (1987)** (*"A Fast Voxel Traversal Algorithm for Ray Tracing"*).
 
-Special thanks to **Ramon Santamaria (@raysan5)** for creating Raylib and the community for the continuous support.
+Special thanks to **Ramon Santamaria (@raysan5)** for creating raylib, which this engine was built on until its native OpenGL backend, and the community for the continuous support.

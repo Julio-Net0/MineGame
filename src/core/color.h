@@ -1,10 +1,10 @@
 #ifndef CORE_COLOR_H
 #define CORE_COLOR_H
 
-// Renderer-agnostic 8-bit RGBA color. This header must never include a Raylib
-// header: 2D drawing expresses color and transparency through Color8 (its alpha
-// channel), and the backend converts Color8 -> the renderer's color type at the
-// boundary. Channel values are plain bytes, matching the MeshData color layout.
+// Renderer-agnostic 8-bit RGBA color. This header must never include a
+// graphics library header: 2D drawing expresses color and transparency through
+// Color8 (its alpha channel), and the backend uploads it to the GPU as plain
+// normalized bytes.
 typedef struct {
   unsigned char R, G, B, A;
 } Color8;

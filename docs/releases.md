@@ -45,10 +45,10 @@ Self-contained. The binary is statically linked against the MinGW runtime, so it
 
 ### Linux
 
-The archive carries raylib inside the binary, but graphics and audio come from the system, as they do for any native Linux game. You need:
+The archive carries GLFW inside the binary, but the OpenGL driver comes from the system, as it does for any native Linux game. You need:
 
 - **glibc 2.39 or newer** — Ubuntu 24.04+, Debian 13+, Fedora 40+, or a rolling distribution. This floor comes from the pinned `ubuntu-24.04` machine the release is built on.
-- **X11 and OpenGL runtime libraries**, which any desktop install already has.
+- **X11 and OpenGL runtime libraries** (`libGL.so.1` and an OpenGL 3.3 Core capable driver), which any desktop install already has. Wayland desktops run it through XWayland.
 
 If the binary refuses to start with a message mentioning `GLIBC_2.39`, your distribution is older than the build machine. Building from source is the way around it.
 
@@ -90,7 +90,7 @@ Nothing is published unless all three build jobs succeed, so **a failed run leav
 
 | Failing job | What it usually means |
 |---|---|
-| **Build (Linux)** | Code that only compiles on Windows, or a missing system development package for raylib. The dependency list lives in the workflow's `Install build dependencies` step. |
+| **Build (Linux)** | Code that only compiles on Windows, or a missing system development package for GLFW. The dependency list lives in the workflow's `Install build dependencies` step. |
 | **Build (Windows)** | A MinGW toolchain problem, or the `Verify no toolchain DLL dependencies` step catching a binary that would need a DLL players do not have. |
 | **Clang-Tidy** | A static-analysis diagnostic in the project's own sources. The log prints only the real diagnostics. `NOLINT` suppressions are not allowed — the finding has to be fixed. |
 | **Publish nightly / Publish tagged release** | Almost always a permissions or tag-state problem rather than a code problem. |

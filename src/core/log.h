@@ -2,7 +2,7 @@
 #define LOG_H
 
 // Renderer-free logging facility: level-tagged messages written to stderr.
-// Standard-C only; no Raylib dependency, so non-render engine code and a
+// Standard-C only; no renderer dependency, so non-render engine code and a
 // future dedicated server can log without a renderer.
 
 #if defined(__GNUC__)

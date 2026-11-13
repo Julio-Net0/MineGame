@@ -1,0 +1,41 @@
+# Render tier benchmark: one run of the renderer on the current machine.
+#
+# Normally launched three times by scripts/bench_tiers.py (tier 0, tier 1 and
+# the driver's choice), which collects the files and builds the comparison.
+# By hand:
+#
+#   build/MineGame.exe --script scripts/bench_tier.mgs --script-out automation_out/bench_manual
+#   build/MineGame.exe --script scripts/bench_tier.mgs --gl-tier 0 --script-out ...
+#
+# Writes surface.png/.json and underground.png/.json to the output directory,
+# and three per-frame profiler captures next to the executable, in this order:
+#   1. the load after the first teleport (mesh building and upload),
+#   2. 10 seconds standing on the settled surface,
+#   3. 10 seconds standing in the settled underground, where the most chunks
+#      are submitted.
+# The 10-second captures are wall-clock, so a slow machine records fewer frames
+# of the same scene rather than the same frames more slowly.
+
+/noclip 1
+
+/profile start
+/tp 500 90 500
+look 0 -20
+wait loaded
+/profile stop
+
+screenshot surface
+state surface
+/profile start 10
+wait profile
+
+/tp 0 -60 0
+look 45 -10
+wait loaded
+
+screenshot underground
+state underground
+/profile start 10
+wait profile
+
+quit

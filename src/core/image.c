@@ -23,10 +23,9 @@ static void *BoundedRealloc(void *Ptr, size_t NewSize) {
 #define STBI_REALLOC(Ptr, NewSize) BoundedRealloc(Ptr, NewSize)
 #define STBI_FREE(Ptr) free(Ptr)
 
-// Raylib instantiates its own stb_image in rtextures.c with external linkage.
 // STB_IMAGE_STATIC makes every function of this copy internal to this file, so
-// the two copies cannot collide at link time. This file is the only place the
-// vendored header may be included.
+// no other library linking its own stb_image can collide with it. This file is
+// the only place the vendored header may be included.
 #define STB_IMAGE_STATIC
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG

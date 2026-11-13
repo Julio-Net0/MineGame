@@ -30,25 +30,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # raylib is compiled from source through FetchContent, so its X11, OpenGL,
-      # ALSA and Wayland headers must exist before CMake configures.
+      # GLFW is compiled from source through FetchContent with only its X11
+      # backend, so the X11 extension headers it needs must exist before CMake
+      # configures. OpenGL itself is loaded at run time through GLAD.
       - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             ninja-build \
-            libasound2-dev \
             libx11-dev \
             libxrandr-dev \
             libxi-dev \
-            libgl1-mesa-dev \
-            libglu1-mesa-dev \
             libxcursor-dev \
             libxinerama-dev \
-            libwayland-dev \
-            libxkbcommon-dev
+            libgl1-mesa-dev
 
-      # Keyed on CMakeLists.txt, which is where the raylib revision is declared.
+      # Keyed on CMakeLists.txt, which is where the GLFW revision is declared.
       # The prefix restore-key keeps the cache useful when only the source list
       # changes; FetchContent re-clones by itself if the pinned tag differs.
       - name: Cache fetched dependencies
@@ -104,16 +101,12 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             ninja-build \
             clang-tidy-19 \
-            libasound2-dev \
             libx11-dev \
             libxrandr-dev \
             libxi-dev \
-            libgl1-mesa-dev \
-            libglu1-mesa-dev \
             libxcursor-dev \
             libxinerama-dev \
-            libwayland-dev \
-            libxkbcommon-dev
+            libgl1-mesa-dev
 
       # Separate key from build-linux: this job only populates the dependency
       # sources, so sharing a key would let a half-built tree poison that cache.
@@ -124,7 +117,7 @@ jobs:
           key: deps-lint-${{ hashFiles('CMakeLists.txt') }}
           restore-keys: deps-lint-
 
-      # Configure alone emits compile_commands.json and populates the raylib
+      # Configure alone emits compile_commands.json and populates the GLFW
       # headers the analysis needs; no compilation step is required.
       - name: Configure
         run: >
@@ -133,14 +126,14 @@ jobs:
           -DCMAKE_C_COMPILER=gcc
           -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
-      # The header filter is anchored at the checkout's own src/ so raylib's
-      # headers, which also live under a directory named src/, stay out of the
-      # report; third-party sources vendored inside src/ are excluded explicitly.
+      # The header filter is anchored at the checkout's own src/ so fetched
+      # dependencies' headers stay out of the report; third-party sources
+      # vendored inside src/ (GLAD, cJSON, stb) are excluded explicitly.
       # The project rules forbid NOLINT, so any diagnostic must be fixed, and
       # every warning is promoted to an error to enforce that.
       # Output is buffered rather than streamed: clang-tidy prints a per-file
       # "N warnings generated" tally that counts diagnostics the header filter
-      # suppressed, so a clean run still scrolls past thousands of raylib
+      # suppressed, so a clean run still scrolls past thousands of dependency
       # warnings that were never reported. Only a failing run prints anything.
       - name: Run Clang-Tidy
         run: |
@@ -237,8 +230,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # xvfb + libgl1-mesa-dri (llvmpipe) provides a software OpenGL 3.3+
-      # rasterizer with occlusion-query support on headless CI runners.
+      # xvfb + libgl1-mesa-dri (llvmpipe) provides a software OpenGL rasterizer
+      # with occlusion queries and multi-draw indirect on headless CI runners.
+      # libgl1 supplies the libGL that GLFW loads at run time.
       - name: Install runtime and test dependencies
         run: |
           sudo apt-get update
@@ -248,7 +242,7 @@ jobs:
             mesa-utils \
             python3 \
             unzip \
-            libasound2t64 \
+            libgl1 \
             libx11-6 \
             libxrandr2 \
             libxi6 \
@@ -267,11 +261,22 @@ jobs:
           chmod +x dist/MineGame-linux-x86_64/MineGame
           chmod +x dist/MineGame-linux-x86_64/MineGameServer
 
-      - name: Run regression suite
+      # Once on the render tier the driver selects (multi-draw indirect on
+      # llvmpipe), and once capped at tier 1, so the baseline multi-draw path
+      # that drivers without draw indirect use is exercised too.
+      - name: Run regression suite (driver-selected tier)
         run: >
           xvfb-run -a -s "-screen 0 1920x1080x24"
           python3 scripts/run_regression.py
           --binary dist/MineGame-linux-x86_64/MineGame
+
+      - name: Run regression suite (tier 1)
+        run: >
+          xvfb-run -a -s "-screen 0 1920x1080x24"
+          python3 scripts/run_regression.py
+          --binary dist/MineGame-linux-x86_64/MineGame
+          --gl-tier 1
+          --out-root automation_out_tier1
 
   # Rolling build of master, published under a fixed tag so its download URLs
   # never change. Marked a prerelease so GitHub keeps pointing "Latest release"

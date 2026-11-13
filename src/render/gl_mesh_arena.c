@@ -316,5 +316,6 @@ void ArenaGetStats(ArenaStats *Out) {
   Out->UsedPages = Used - State->PendingPages;
   Out->PendingPages = State->PendingPages;
   Out->FreePages = Total - Used;
+  Out->UsedBytes = State->LivePageBytes;
   Out->SlackBytes = State->LivePageBytes - State->LiveVertexBytes;
 }

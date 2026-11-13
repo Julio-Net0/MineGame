@@ -482,6 +482,17 @@ static void DrawDebugScreen(UiContext *Ctx, Player *PlayerVal, World *WorldVal,
            Pool.Capacity, Pool.Slabs,
            ((size_t)Pool.Capacity * sizeof(DenseBlockBuffer)) >> BYTES_TO_MB_SHIFT);
   Y = DrawDebugLine(Ctx, DebugText, Y);
+
+  RenderStats Render = {0};
+  RenderGetStats(&Render);
+  snprintf(DebugText, sizeof(DebugText), "Render: tier %d, OpenGL %s",
+           Render.Tier, RenderGetApiVersion());
+  Y = DrawDebugLine(Ctx, DebugText, Y);
+  snprintf(DebugText, sizeof(DebugText),
+           "Mesh Arena: %d blocks, %lld MB used, %lld MB slack", Render.ArenaBlocks,
+           (long long)(Render.UsedBytes >> BYTES_TO_MB_SHIFT),
+           (long long)(Render.SlackBytes >> BYTES_TO_MB_SHIFT));
+  Y = DrawDebugLine(Ctx, DebugText, Y);
   Y = DrawSimulationDebugLine(Ctx, Y);
 
 #ifdef MINEGAME_PROFILE

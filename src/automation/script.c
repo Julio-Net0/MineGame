@@ -78,6 +78,7 @@ typedef enum {
   SCRIPT_OP_WAIT_FRAMES,
   SCRIPT_OP_WAIT_TICKS,
   SCRIPT_OP_WAIT_LOADED,
+  SCRIPT_OP_WAIT_PROFILE,
   SCRIPT_OP_LOOK,
   SCRIPT_OP_HOLD,
   SCRIPT_OP_PRESS,
@@ -151,6 +152,10 @@ typedef enum {
   // has reported itself settled for several frames in a row -- see
   // SETTLED_FRAMES_REQUIRED.
   SCRIPT_WAIT_LOADED,
+  // Waiting for a timed profiler capture (/profile start <seconds>) to stop by
+  // itself. Wall-clock by nature: it exists to record a fixed span of real time
+  // on whatever machine runs the script, not to reach a game state.
+  SCRIPT_WAIT_PROFILE,
   // Waiting for the frame requested by a screenshot statement to come back:
   // the request reaches the backend at the top of a frame and the pixels only
   // exist once that frame has been drawn and read, one frame later.
@@ -591,13 +596,18 @@ static bool ParseStatement(char *Statement, int LineNumber) {
           (ScriptStatement){.Kind = SCRIPT_OP_WAIT_LOADED, .Line = LineNumber},
           "", LineText);
     }
+    if (TokenCount == 2 && CompareString(Tokens[1], "profile") == 0) {
+      return AppendStatement(
+          (ScriptStatement){.Kind = SCRIPT_OP_WAIT_PROFILE, .Line = LineNumber},
+          "", LineText);
+    }
 
     bool IsFrames = (TokenCount == 3) && CompareString(Tokens[1], "frames") == 0;
     bool IsTicks = (TokenCount == 3) && CompareString(Tokens[1], "ticks") == 0;
     if (!IsFrames && !IsTicks) {
       ParseError(LineNumber,
-                 "expected \"wait loaded\", \"wait ticks <count>\" or "
-                 "\"wait frames <count>\"");
+                 "expected \"wait loaded\", \"wait profile\", "
+                 "\"wait ticks <count>\" or \"wait frames <count>\"");
       return false;
     }
     int Count = 0;
@@ -1277,6 +1287,13 @@ static bool ScriptIsWaiting(const ScriptContext *Ctx) {
     ScriptLog("      | world settled after %lld frames and %lld ticks",
               State->Frame, State->Tick);
     break;
+  case SCRIPT_WAIT_PROFILE:
+#ifdef MINEGAME_PROFILE
+    if (ProfilerIsCapturing()) {
+      return true;
+    }
+#endif
+    break;
   case SCRIPT_WAIT_CAPTURE:
     if (!ScriptSaveCapture()) {
       return true;
@@ -1403,6 +1420,10 @@ void ScriptStep(ChatState *Chat, GameCamera *Camera, Player *PlayerVal,
     case SCRIPT_OP_WAIT_LOADED:
       State->Wait = SCRIPT_WAIT_LOADED;
       State->SettledFrames = 0;
+      State->WaitLine = Step->Line;
+      return;
+    case SCRIPT_OP_WAIT_PROFILE:
+      State->Wait = SCRIPT_WAIT_PROFILE;
       State->WaitLine = Step->Line;
       return;
     case SCRIPT_OP_LOOK:

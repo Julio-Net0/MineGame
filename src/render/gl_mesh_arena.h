@@ -41,6 +41,9 @@ typedef struct {
   int64_t UsedPages;
   int64_t FreePages;
   int64_t PendingPages;
+  // Bytes of the pages live meshes occupy, and the part of them that is page
+  // rounding rather than vertex data.
+  int64_t UsedBytes;
   int64_t SlackBytes;
 } ArenaStats;
 

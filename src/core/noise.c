@@ -2,9 +2,8 @@
 #include "core/hash.h"
 #include <string.h>
 
-// This file is the only place the vendored noise header may be included. Its
-// fnl* names do not collide with anything Raylib exports (Raylib vendors
-// stb_perlin, which the engine no longer carries), so no renaming is needed.
+// This file is the only place the vendored noise header may be included, so
+// its fnl* implementation is compiled exactly once.
 #define FNL_IMPL
 #include "third_party/FastNoiseLite.h"
 
