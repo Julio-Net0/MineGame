@@ -21,6 +21,11 @@ typedef struct {
   bool Fullscreen;
 } WindowRequest;
 
+// --gl-tier caps the render tier the backend may select (0, 1 or 2); without
+// the flag the backend picks the highest tier the driver supports.
+#define GL_TIER_CAP_NONE (-1)
+#define GL_TIER_CAP_MAX 2
+
 #define SCRIPT_DEFAULT_OUT_DIR "automation_out"
 #define SCRIPT_DEFAULT_TIMEOUT_SECONDS 120.0
 
@@ -45,6 +50,8 @@ typedef struct {
   const char *ScriptPath;
   const char *ScriptOutDir;
   double ScriptTimeoutSeconds;
+  // GL_TIER_CAP_NONE unless --gl-tier was given.
+  int GlTierCap;
 } LaunchOptions;
 
 void ParseLaunchOptions(int Argc, char **Argv);

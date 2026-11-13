@@ -35,10 +35,13 @@ typedef struct {
 } ChunkVertex;
 
 // Backend-agnostic geometry to upload. Borrowed for the duration of the
-// RenderUploadMesh call (the backend uploads it directly to the GPU).
+// RenderUploadMesh call (the backend uploads it directly to the GPU). Origin is
+// the world-space position the chunk-local vertex coordinates are relative to;
+// it belongs to the mesh, so drawing the mesh later needs only its handle.
 typedef struct {
   const ChunkVertex *Vertices;
   int VertexCount;
+  Vec3 Origin;
 } MeshData;
 
 // Abstract camera for frame setup; the backend derives view/projection.
@@ -57,10 +60,11 @@ void RenderBackendShutdown(void);
 MeshHandle RenderUploadMesh(const MeshData *Data);
 void RenderFreeMesh(MeshHandle Handle);
 
-// Draws one chunk mesh at its world-space origin. Valid only between
-// RenderBeginChunkPass and RenderEndChunkPass, which establish the shader,
-// texture and matrix every chunk shares.
-void RenderDrawMesh(MeshHandle Handle, Vec3 ChunkOrigin);
+// Adds one chunk mesh to the pass in progress. Valid only between
+// RenderBeginChunkPass and RenderEndChunkPass; the pass is drawn when it ends,
+// in as few draw calls as the active render tier allows. Meshes keep the order
+// they were added in wherever that order affects the image.
+void RenderDrawMesh(MeshHandle Handle);
 
 // Which fragment shader a chunk pass binds. The opaque variant omits the alpha
 // test so the hardware keeps early depth rejection; the cutout variant keeps it
@@ -113,6 +117,18 @@ void RenderEndFrame(void);
 // also the answer while the requested frame has not finished yet.
 void RenderRequestCapture(void);
 bool RenderTakeCapture(CoreImage *Out);
+
+// Render tier the backend chose at startup, and the state of the GPU memory
+// chunk meshes live in, for the debug overlay and scripted state dumps.
+typedef struct {
+  int Tier;
+  int ArenaBlocks;
+  int64_t UsedPages;
+  int64_t FreePages;
+  int64_t PendingPages;
+  int64_t SlackBytes;
+} RenderStats;
+void RenderGetStats(RenderStats *Out);
 
 // Translucent pass state (depth-mask off, color blend on, batch flush).
 void RenderBeginTranslucentPass(void);

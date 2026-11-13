@@ -1,8 +1,10 @@
 #include "render/backend.h"
 #include "render/gl_api.h"
 #include "render/gl_math.h"
+#include "render/gl_mesh_arena.h"
 #include "core/fileio.h"
 #include "core/image.h"
+#include "core/launch_options.h"
 #include "core/log.h"
 #include "core/profiler.h"
 #include "core/resource_pack.h"
@@ -32,8 +34,6 @@
 #define MESH_POOL_CAPACITY (MAX_ACTIVE_CHUNKS * 3)
 
 enum {
-  CHUNK_VERTEX_ATTRIB_LOC = 0,
-  CHUNK_VERTEX_WORDS = 2,
   UI_ATTRIB_POSITION = 0,
   UI_ATTRIB_TEXCOORD = 1,
   UI_ATTRIB_COLOR = 2,
@@ -53,19 +53,40 @@ static const Color8 COLOR_DEBUG_SOLID_HIT = {0, 121, 241, 255};
 static const Color8 COLOR_DEBUG_SOLID_MISS = {230, 41, 55, 255};
 static const Color8 COLOR_CLEAR = {102, 191, 255, 255};
 
-// GPU-only chunk mesh record. Vertex data lives only in Vbo; every chunk Vao
-// binds the single shared static EBO populated at startup.
+// GPU-only chunk mesh record: where the vertices sit in the mesh arena. No
+// copy is kept in system memory, and no GL object belongs to the mesh alone.
 typedef struct {
-  GLuint Vao;
-  GLuint Vbo;
+  ArenaRun Run;
   int IndexCount;
+  int VertexCount;
 } ChunkGpuMesh;
 
 typedef struct {
   GLuint Program;
   GLint MvpLoc;
-  GLint ChunkOriginLoc;
+  GLint DrawPageBaseLoc;
 } ChunkProgram;
+
+// How recorded chunk draws reach the GPU. Every tier draws the same meshes with
+// the same programs and state, in the same order where order matters; only the
+// number of calls differs.
+typedef enum {
+  RENDER_TIER_SINGLE = 0,
+  RENDER_TIER_MULTI_DRAW = 1
+} RenderTier;
+
+// One chunk mesh added to the pass in progress.
+typedef struct {
+  int Block;
+  int FirstPage;
+  GLsizei IndexCount;
+} PassDraw;
+
+enum {
+  PASS_CAPACITY = MAX_ACTIVE_CHUNKS,
+  BLOCK_TEXTURE_UNIT = 0,
+  PAGE_ORIGIN_TEXTURE_UNIT = 1
+};
 
 // Immediate-mode debug geometry, batched the way raylib's line batch was: in
 // submission order, one draw per run of the same primitive, flushed at the
@@ -106,7 +127,27 @@ typedef struct {
   ChunkProgram ChunkOpaque;
   ChunkProgram ChunkCutout;
   const ChunkProgram *ActiveChunk;
-  GLuint BoundChunkVao;
+
+  RenderTier Tier;
+  // Whether gl_VertexID includes a draw's base vertex, as the GL spec says it
+  // must. When it does not, every draw passes its first page explicitly.
+  bool VertexIdIncludesBase;
+
+  // The chunk pass in progress: meshes as they were added, then the arrays a
+  // submission hands the driver. Ordered passes (translucent) keep the added
+  // order across blocks; the others are grouped by block.
+  bool InTranslucentPass;
+  bool PassOrdered;
+  PassDraw PassDraws[PASS_CAPACITY];
+  int PassDrawCount;
+  GLsizei SubmitCounts[PASS_CAPACITY];
+  GLint SubmitBaseVertices[PASS_CAPACITY];
+  int SubmitFirstPages[PASS_CAPACITY];
+  // Every draw reads its indices from the start of the shared index buffer.
+  const void *SubmitOffsets[PASS_CAPACITY];
+  int BlockDrawCount[ARENA_MAX_BLOCKS];
+  int BlockCursor[ARENA_MAX_BLOCKS];
+  int BlockOrder[ARENA_MAX_BLOCKS];
 
   GLuint UiProgram;
   GLint UiMvpLoc;
@@ -184,17 +225,22 @@ static void FailShader(const char *What, const char *Path, const char *InfoLog) 
   exit(EXIT_FAILURE);
 }
 
-static GLuint CompileStage(GLenum Stage, const char *Path) {
-  char *Source = ReadTextFile(Path);
-  if (Source == NULL) {
-    FailShader("cannot read shader", Path, NULL);
-    return 0;
-  }
+// Defines every shader can rely on, inserted after its #version line (which
+// GLSL requires to come first).
+#define SHADER_DEFINES_STRINGIFY(Value) #Value
+#define SHADER_DEFINES_EXPAND(Value) SHADER_DEFINES_STRINGIFY(Value)
+static const char SHADER_DEFINES[] =
+    "#define PAGE_SHIFT " SHADER_DEFINES_EXPAND(ARENA_PAGE_SHIFT) "\n";
+
+static GLuint CompileSource(GLenum Stage, const char *Source, const char *Label) {
+  const char *Body = strchr(Source, '\n');
+  Body = (Body != NULL) ? Body + 1 : Source + strlen(Source);
+  const GLchar *Parts[3] = {Source, SHADER_DEFINES, Body};
+  GLint Lengths[3] = {(GLint)(Body - Source), -1, -1};
+
   GLuint Shader = glCreateShader(Stage);
-  const GLchar *Sources[1] = {Source};
-  glShaderSource(Shader, 1, Sources, NULL);
+  glShaderSource(Shader, 3, Parts, Lengths);
   glCompileShader(Shader);
-  free(Source);
 
   GLint Compiled = GL_FALSE;
   glGetShaderiv(Shader, GL_COMPILE_STATUS, &Compiled);
@@ -202,16 +248,25 @@ static GLuint CompileStage(GLenum Stage, const char *Path) {
     char Log[INFO_LOG_CAPACITY];
     glGetShaderInfoLog(Shader, (GLsizei)sizeof(Log), NULL, Log);
     glDeleteShader(Shader);
-    FailShader("failed to compile", Path, Log);
+    FailShader("failed to compile", Label, Log);
     return 0;
   }
   return Shader;
 }
 
-static GLuint LinkProgram(const char *VertexPath, const char *FragmentPath,
-                          const AttribBinding *Bindings, int BindingCount) {
-  GLuint Vertex = CompileStage(GL_VERTEX_SHADER, VertexPath);
-  GLuint Fragment = CompileStage(GL_FRAGMENT_SHADER, FragmentPath);
+static GLuint CompileStage(GLenum Stage, const char *Path) {
+  char *Source = ReadTextFile(Path);
+  if (Source == NULL) {
+    FailShader("cannot read shader", Path, NULL);
+    return 0;
+  }
+  GLuint Shader = CompileSource(Stage, Source, Path);
+  free(Source);
+  return Shader;
+}
+
+static GLuint LinkStages(GLuint Vertex, GLuint Fragment, const char *Label,
+                         const AttribBinding *Bindings, int BindingCount) {
   GLuint Program = glCreateProgram();
   glAttachShader(Program, Vertex);
   glAttachShader(Program, Fragment);
@@ -230,10 +285,17 @@ static GLuint LinkProgram(const char *VertexPath, const char *FragmentPath,
     char Log[INFO_LOG_CAPACITY];
     glGetProgramInfoLog(Program, (GLsizei)sizeof(Log), NULL, Log);
     glDeleteProgram(Program);
-    FailShader("failed to link", FragmentPath, Log);
+    FailShader("failed to link", Label, Log);
     return 0;
   }
   return Program;
+}
+
+static GLuint LinkProgram(const char *VertexPath, const char *FragmentPath,
+                          const AttribBinding *Bindings, int BindingCount) {
+  return LinkStages(CompileStage(GL_VERTEX_SHADER, VertexPath),
+                    CompileStage(GL_FRAGMENT_SHADER, FragmentPath),
+                    FragmentPath, Bindings, BindingCount);
 }
 
 // Uniform values persist on the program, so the sampler unit and the overlay
@@ -242,10 +304,14 @@ static ChunkProgram LoadChunkProgram(const char *FragmentPath) {
   ChunkProgram Result = {0};
   Result.Program = LinkProgram("assets/shaders/chunk.vert", FragmentPath, NULL, 0);
   Result.MvpLoc = glGetUniformLocation(Result.Program, "mvp");
-  Result.ChunkOriginLoc = glGetUniformLocation(Result.Program, "uChunkOrigin");
+  Result.DrawPageBaseLoc = glGetUniformLocation(Result.Program, "uDrawPageBase");
 
   glUseProgram(Result.Program);
-  glUniform1i(glGetUniformLocation(Result.Program, "uBlockArray"), 0);
+  glUniform1i(glGetUniformLocation(Result.Program, "uBlockArray"),
+              BLOCK_TEXTURE_UNIT);
+  glUniform1i(glGetUniformLocation(Result.Program, "uPageOrigin"),
+              PAGE_ORIGIN_TEXTURE_UNIT);
+  glUniform1i(Result.DrawPageBaseLoc, 0);
   glUniform1iv(glGetUniformLocation(Result.Program, "uOverlayLayers"),
                OVERLAY_SLOT_COUNT, GetOverlaySlotLayers());
   glUseProgram(0);
@@ -536,6 +602,103 @@ static void InitDebugBatch(BackendState *State) {
   glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
+// ---------------------------------------------------------------------------
+// Render tier
+// ---------------------------------------------------------------------------
+
+static const char PROBE_VERTEX_SOURCE[] =
+    "#version 330\n"
+    "flat out int vPage;\n"
+    "void main() {\n"
+    "    vPage = gl_VertexID >> PAGE_SHIFT;\n"
+    "    gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n"
+    "}\n";
+
+static const char PROBE_FRAGMENT_SOURCE[] =
+    "#version 330\n"
+    "flat in int vPage;\n"
+    "out int outPage;\n"
+    "void main() {\n"
+    "    outPage = vPage;\n"
+    "}\n";
+
+enum {
+  PROBE_PAGE = 3,
+  PROBE_UNSET = -1
+};
+
+// Draws one point whose base vertex is PROBE_PAGE pages into the arena, and
+// reads back the page the vertex shader derived from gl_VertexID. The GL spec
+// includes the base vertex in gl_VertexID; a driver that does not would make
+// every multi-draw read the wrong chunk origin, so it is checked, not assumed.
+static bool ProbeVertexIdIncludesBase(GLuint SharedIndexBuffer) {
+  GLuint Program =
+      LinkStages(CompileSource(GL_VERTEX_SHADER, PROBE_VERTEX_SOURCE, "probe.vert"),
+                 CompileSource(GL_FRAGMENT_SHADER, PROBE_FRAGMENT_SOURCE, "probe.frag"),
+                 "probe", NULL, 0);
+  GLuint Renderbuffer = 0;
+  GLuint Framebuffer = 0;
+  GLuint VertexArray = 0;
+  glGenRenderbuffers(1, &Renderbuffer);
+  glBindRenderbuffer(GL_RENDERBUFFER, Renderbuffer);
+  glRenderbufferStorage(GL_RENDERBUFFER, GL_R32I, 1, 1);
+  glGenFramebuffers(1, &Framebuffer);
+  glBindFramebuffer(GL_FRAMEBUFFER, Framebuffer);
+  glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                            GL_RENDERBUFFER, Renderbuffer);
+
+  GLint Page = PROBE_UNSET;
+  if (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE) {
+    GLint Clear[4] = {PROBE_UNSET, 0, 0, 0};
+    glViewport(0, 0, 1, 1);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_DEPTH_TEST);
+    glClearBufferiv(GL_COLOR, 0, Clear);
+    glGenVertexArrays(1, &VertexArray);
+    glBindVertexArray(VertexArray);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, SharedIndexBuffer);
+    glUseProgram(Program);
+    glDrawElementsBaseVertex(GL_POINTS, 1, GL_UNSIGNED_SHORT, GlBufferOffset(0),
+                             PROBE_PAGE * ARENA_PAGE_VERTICES);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, 1, 1, GL_RED_INTEGER, GL_INT, &Page);
+    glBindVertexArray(0);
+    glDeleteVertexArrays(1, &VertexArray);
+  }
+
+  glUseProgram(0);
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  glBindRenderbuffer(GL_RENDERBUFFER, 0);
+  glDeleteFramebuffers(1, &Framebuffer);
+  glDeleteRenderbuffers(1, &Renderbuffer);
+  glDeleteProgram(Program);
+
+  if (Page != PROBE_PAGE) {
+    LogWarn("RENDER: gl_VertexID probe read page %d, expected %d; drawing "
+            "chunks one call at a time",
+            (int)Page, PROBE_PAGE);
+  }
+  return Page == PROBE_PAGE;
+}
+
+// The highest tier the driver supports, lowered to --gl-tier when given.
+static void SelectRenderTier(BackendState *State) {
+  State->VertexIdIncludesBase = ProbeVertexIdIncludesBase(State->ChunkSharedEbo);
+  RenderTier Supported = State->VertexIdIncludesBase ? RENDER_TIER_MULTI_DRAW
+                                                     : RENDER_TIER_SINGLE;
+  RenderTier Tier = Supported;
+  int Cap = GetLaunchOptions()->GlTierCap;
+  if (Cap != GL_TIER_CAP_NONE && Cap < (int)Supported) {
+    Tier = RENDER_TIER_SINGLE;
+  } else if (Cap != GL_TIER_CAP_NONE && Cap > (int)Supported) {
+    LogWarn("RENDER: --gl-tier %d requested; this driver supports tier %d",
+            Cap, (int)Supported);
+  }
+  State->Tier = Tier;
+  LogInfo("RENDER: OpenGL %s on %s, render tier %d", RenderGetApiVersion(),
+          RenderGetDeviceName(), (int)Tier);
+}
+
 void RenderBackendInit(void) {
   BackendState *State = GetBackendState();
 
@@ -559,6 +722,11 @@ void RenderBackendInit(void) {
 
   InitDebugBatch(State);
   InitSharedChunkIndexBuffer(State);
+  if (!ArenaInit(State->ChunkSharedEbo)) {
+    LogError("RENDER: the driver cannot hold chunk meshes in texture buffers");
+    exit(EXIT_FAILURE);
+  }
+  SelectRenderTier(State);
 
   State->FreeCount = MESH_POOL_CAPACITY;
   for (int IdxI = 0; IdxI < MESH_POOL_CAPACITY; IdxI++) {
@@ -600,13 +768,10 @@ void RenderBackendShutdown(void) {
   CoreImageFree(&State->Capture);
   State->CaptureRequested = false;
   for (int IdxI = 0; IdxI < MESH_POOL_CAPACITY; IdxI++) {
-    if (State->MeshSlotUsed[IdxI]) {
-      glDeleteVertexArrays(1, &State->MeshPool[IdxI].Vao);
-      glDeleteBuffers(1, &State->MeshPool[IdxI].Vbo);
-      State->MeshPool[IdxI] = (ChunkGpuMesh){0};
-      State->MeshSlotUsed[IdxI] = false;
-    }
+    State->MeshPool[IdxI] = (ChunkGpuMesh){0};
+    State->MeshSlotUsed[IdxI] = false;
   }
+  ArenaShutdown();
   if (State->ChunkSharedEbo != 0) {
     glDeleteBuffers(1, &State->ChunkSharedEbo);
     State->ChunkSharedEbo = 0;
@@ -661,28 +826,18 @@ MeshHandle RenderUploadMesh(const MeshData *Data) {
   // while staying separable.
   PROFILE_BEGIN(UploadStart);
 
+  ArenaRun Run;
+  if (!ArenaUpload(Data->Vertices, Data->VertexCount, Data->Origin, &Run)) {
+    PROFILE_END(UploadStart, PROFILE_MESH_UPLOAD);
+    return MESH_HANDLE_INVALID;
+  }
+
   MeshHandle Handle = State->FreeList[--State->FreeCount];
-  ChunkGpuMesh MeshVal = {0};
   int QuadCount = Data->VertexCount / CHUNK_VERTICES_PER_QUAD;
-  MeshVal.IndexCount = QuadCount * CHUNK_INDICES_PER_QUAD;
-
-  glGenVertexArrays(1, &MeshVal.Vao);
-  glGenBuffers(1, &MeshVal.Vbo);
-
-  glBindVertexArray(MeshVal.Vao);
-  glBindBuffer(GL_ARRAY_BUFFER, MeshVal.Vbo);
-  glBufferData(GL_ARRAY_BUFFER,
-               (GLsizeiptr)((size_t)Data->VertexCount * sizeof(ChunkVertex)),
-               Data->Vertices, GL_STATIC_DRAW);
-  glEnableVertexAttribArray(CHUNK_VERTEX_ATTRIB_LOC);
-  glVertexAttribIPointer(CHUNK_VERTEX_ATTRIB_LOC, CHUNK_VERTEX_WORDS,
-                         GL_UNSIGNED_INT, (GLsizei)sizeof(ChunkVertex),
-                         GlBufferOffset(0));
-  glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, State->ChunkSharedEbo);
-  glBindVertexArray(0);
-  glBindBuffer(GL_ARRAY_BUFFER, 0);
-
-  State->MeshPool[Handle] = MeshVal;
+  State->MeshPool[Handle] = (ChunkGpuMesh){
+      .Run = Run,
+      .IndexCount = QuadCount * CHUNK_INDICES_PER_QUAD,
+      .VertexCount = Data->VertexCount};
   State->MeshSlotUsed[Handle] = true;
 
   PROFILE_END(UploadStart, PROFILE_MESH_UPLOAD);
@@ -697,8 +852,7 @@ void RenderFreeMesh(MeshHandle Handle) {
   if (!State->MeshSlotUsed[Handle]) {
     return;
   }
-  glDeleteVertexArrays(1, &State->MeshPool[Handle].Vao);
-  glDeleteBuffers(1, &State->MeshPool[Handle].Vbo);
+  ArenaRelease(State->MeshPool[Handle].Run, State->MeshPool[Handle].VertexCount);
   State->MeshPool[Handle] = (ChunkGpuMesh){0};
   State->MeshSlotUsed[Handle] = false;
   State->FreeList[State->FreeCount++] = Handle;
@@ -902,8 +1056,89 @@ static void EndSolidOcclusionQuery(BackendState *State) {
 }
 #endif
 
-// Everything shared by the chunks in a pass, bound once. What is left per chunk
-// is the chunk origin uniform, the vertex array, and the draw.
+// Draws the meshes [First, First + Count) of the submit arrays, all from Block.
+static void SubmitBlockGroup(const BackendState *State, int Block, int First,
+                             int Count) {
+  glBindVertexArray(ArenaBlockVertexArray(Block));
+  glActiveTexture(GL_TEXTURE0 + PAGE_ORIGIN_TEXTURE_UNIT);
+  glBindTexture(GL_TEXTURE_BUFFER, ArenaBlockOriginTexture(Block));
+  glActiveTexture(GL_TEXTURE0 + BLOCK_TEXTURE_UNIT);
+
+  if (State->Tier == RENDER_TIER_MULTI_DRAW) {
+    glMultiDrawElementsBaseVertex(GL_TRIANGLES, &State->SubmitCounts[First],
+                                  GL_UNSIGNED_SHORT, &State->SubmitOffsets[First],
+                                  Count, &State->SubmitBaseVertices[First]);
+    return;
+  }
+  for (int Idx = First; Idx < First + Count; Idx++) {
+    if (!State->VertexIdIncludesBase) {
+      glUniform1i(State->ActiveChunk->DrawPageBaseLoc, State->SubmitFirstPages[Idx]);
+    }
+    glDrawElementsBaseVertex(GL_TRIANGLES, State->SubmitCounts[Idx],
+                             GL_UNSIGNED_SHORT, GlBufferOffset(0),
+                             State->SubmitBaseVertices[Idx]);
+  }
+}
+
+static void StageSubmit(BackendState *State, int Slot, const PassDraw *Draw) {
+  State->SubmitCounts[Slot] = Draw->IndexCount;
+  State->SubmitBaseVertices[Slot] = (GLint)Draw->FirstPage * ARENA_PAGE_VERTICES;
+  State->SubmitFirstPages[Slot] = Draw->FirstPage;
+}
+
+// Translucent meshes blend, so their back-to-front order is kept exactly: runs
+// of consecutive meshes from the same block become one draw each.
+static void SubmitOrderedPass(BackendState *State) {
+  int Count = State->PassDrawCount;
+  for (int Idx = 0; Idx < Count; Idx++) {
+    StageSubmit(State, Idx, &State->PassDraws[Idx]);
+  }
+  int RunStart = 0;
+  for (int Idx = 1; Idx <= Count; Idx++) {
+    if (Idx == Count ||
+        State->PassDraws[Idx].Block != State->PassDraws[RunStart].Block) {
+      SubmitBlockGroup(State, State->PassDraws[RunStart].Block, RunStart,
+                       Idx - RunStart);
+      RunStart = Idx;
+    }
+  }
+}
+
+// Opaque and cutout meshes are depth-tested without blending, and no two
+// chunks emit coplanar overlapping faces, so their order changes no pixel; it
+// only feeds early depth rejection. They are grouped by block, keeping their
+// order within each block and visiting blocks in order of first appearance.
+static void SubmitGroupedPass(BackendState *State) {
+  int Count = State->PassDrawCount;
+  int BlockCount = ArenaBlockCount();
+  int OrderCount = 0;
+  memset(State->BlockDrawCount, 0, sizeof(int) * (size_t)BlockCount);
+  for (int Idx = 0; Idx < Count; Idx++) {
+    int Block = State->PassDraws[Idx].Block;
+    if (State->BlockDrawCount[Block]++ == 0) {
+      State->BlockOrder[OrderCount++] = Block;
+    }
+  }
+  int Running = 0;
+  for (int Ord = 0; Ord < OrderCount; Ord++) {
+    int Block = State->BlockOrder[Ord];
+    State->BlockCursor[Block] = Running;
+    Running += State->BlockDrawCount[Block];
+  }
+  for (int Idx = 0; Idx < Count; Idx++) {
+    const PassDraw *Draw = &State->PassDraws[Idx];
+    StageSubmit(State, State->BlockCursor[Draw->Block]++, Draw);
+  }
+  int First = 0;
+  for (int Ord = 0; Ord < OrderCount; Ord++) {
+    int Block = State->BlockOrder[Ord];
+    SubmitBlockGroup(State, Block, First, State->BlockDrawCount[Block]);
+    First += State->BlockDrawCount[Block];
+  }
+}
+
+// Everything shared by the chunks in a pass, bound once. Meshes added to the
+// pass are drawn when it ends.
 void RenderBeginChunkPass(ChunkPassKind Kind) {
   BackendState *State = GetBackendState();
   // Debug geometry queued so far was drawn before this pass under the old
@@ -912,11 +1147,13 @@ void RenderBeginChunkPass(ChunkPassKind Kind) {
 
   State->ActiveChunk =
       (Kind == CHUNK_PASS_CUTOUT) ? &State->ChunkCutout : &State->ChunkOpaque;
-  State->BoundChunkVao = 0;
+  State->PassDrawCount = 0;
+  State->PassOrdered = State->InTranslucentPass;
 
   glUseProgram(State->ActiveChunk->Program);
   glUniformMatrix4fv(State->ActiveChunk->MvpLoc, 1, GL_FALSE, State->Mvp3D);
-  glActiveTexture(GL_TEXTURE0);
+  glUniform1i(State->ActiveChunk->DrawPageBaseLoc, 0);
+  glActiveTexture(GL_TEXTURE0 + BLOCK_TEXTURE_UNIT);
   glBindTexture(GL_TEXTURE_2D_ARRAY, State->BlockArrayTex);
 
 #ifdef MINEGAME_PROFILE
@@ -926,18 +1163,26 @@ void RenderBeginChunkPass(ChunkPassKind Kind) {
 
 void RenderEndChunkPass(void) {
   BackendState *State = GetBackendState();
+  if (State->ActiveChunk != NULL && State->PassDrawCount > 0) {
+    if (State->PassOrdered) {
+      SubmitOrderedPass(State);
+    } else {
+      SubmitGroupedPass(State);
+    }
+  }
+  State->PassDrawCount = 0;
 #ifdef MINEGAME_PROFILE
   EndSolidOcclusionQuery(State);
 #endif
   State->ActiveChunk = NULL;
-  // Released once per pass rather than after every draw, so no buffer bound
-  // outside a pass (a mesh upload, the debug batch) is recorded into a chunk VAO.
-  if (State->BoundChunkVao != 0) {
-    glBindVertexArray(0);
-    State->BoundChunkVao = 0;
-  }
-  glUseProgram(0);
+  // Released once per pass, so no buffer bound outside a pass (a mesh upload,
+  // the debug batch) is recorded into a block's vertex array.
+  glBindVertexArray(0);
+  glActiveTexture(GL_TEXTURE0 + PAGE_ORIGIN_TEXTURE_UNIT);
+  glBindTexture(GL_TEXTURE_BUFFER, 0);
+  glActiveTexture(GL_TEXTURE0 + BLOCK_TEXTURE_UNIT);
   glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+  glUseProgram(0);
 }
 
 bool RenderQuerySolidSamples(uint64_t *OutSamples, float *OutOverdraw) {
@@ -976,29 +1221,23 @@ void RenderGetViewProjection(float OutMatrix[RENDER_MATRIX_ELEMENTS]) {
          sizeof(float) * RENDER_MATRIX_ELEMENTS);
 }
 
-void RenderDrawMesh(MeshHandle Handle, Vec3 ChunkOrigin) {
+void RenderDrawMesh(MeshHandle Handle) {
   BackendState *State = GetBackendState();
   if (Handle == MESH_HANDLE_INVALID || Handle >= (MeshHandle)MESH_POOL_CAPACITY) {
     return;
   }
-  if (!State->MeshSlotUsed[Handle] || State->ActiveChunk == NULL) {
+  if (!State->MeshSlotUsed[Handle] || State->ActiveChunk == NULL ||
+      State->PassDrawCount >= PASS_CAPACITY) {
     return;
   }
   const ChunkGpuMesh *MeshVal = &State->MeshPool[Handle];
-  if (MeshVal->Vao == 0 || MeshVal->IndexCount <= 0) {
+  if (MeshVal->IndexCount <= 0) {
     return;
   }
-
-  if (State->ActiveChunk->ChunkOriginLoc >= 0) {
-    glUniform3f(State->ActiveChunk->ChunkOriginLoc, ChunkOrigin.x,
-                ChunkOrigin.y, ChunkOrigin.z);
-  }
-  if (State->BoundChunkVao != MeshVal->Vao) {
-    glBindVertexArray(MeshVal->Vao);
-    State->BoundChunkVao = MeshVal->Vao;
-  }
-  glDrawElements(GL_TRIANGLES, MeshVal->IndexCount, GL_UNSIGNED_SHORT,
-                 GlBufferOffset(0));
+  State->PassDraws[State->PassDrawCount++] = (PassDraw){
+      .Block = MeshVal->Run.Block,
+      .FirstPage = MeshVal->Run.FirstPage,
+      .IndexCount = (GLsizei)MeshVal->IndexCount};
 }
 
 // ---------------------------------------------------------------------------
@@ -1138,16 +1377,20 @@ void RenderEndFrame(void) {
   PROFILE_BEGIN(PresentStart);
   PlatformPresent();
   PROFILE_END(PresentStart, PROFILE_PRESENT);
+
+  ArenaEndFrame();
 }
 
 void RenderBeginTranslucentPass(void) {
   FlushDebugBatch();
+  GetBackendState()->InTranslucentPass = true;
   glDepthMask(GL_FALSE);
   glEnable(GL_BLEND);
 }
 
 void RenderEndTranslucentPass(void) {
   FlushDebugBatch();
+  GetBackendState()->InTranslucentPass = false;
   glDepthMask(GL_TRUE);
 }
 
@@ -1195,6 +1438,20 @@ void RenderDrawWireBox(Vec3 Center, Vec3 Size, Color8 Color, bool XRay) {
 // ---------------------------------------------------------------------------
 // UI layer
 // ---------------------------------------------------------------------------
+
+void RenderGetStats(RenderStats *Out) {
+  if (Out == NULL) {
+    return;
+  }
+  ArenaStats Arena;
+  ArenaGetStats(&Arena);
+  *Out = (RenderStats){.Tier = (int)GetBackendState()->Tier,
+                       .ArenaBlocks = Arena.Blocks,
+                       .UsedPages = Arena.UsedPages,
+                       .FreePages = Arena.FreePages,
+                       .PendingPages = Arena.PendingPages,
+                       .SlackBytes = Arena.SlackBytes};
+}
 
 int RenderGetMissingBlockTextureCount(void) {
   return GetBackendState()->MissingBlockTextures;

@@ -937,6 +937,18 @@ static void ScriptAddRenderJson(cJSON *Root) {
                           RenderGetMissingBlockTextureCount());
   cJSON_AddStringToObject(Node, "glRenderer", RenderGetDeviceName());
   cJSON_AddStringToObject(Node, "glVersion", RenderGetApiVersion());
+  RenderStats Stats;
+  RenderGetStats(&Stats);
+  cJSON_AddNumberToObject(Node, "tier", Stats.Tier);
+  cJSON *Arena = cJSON_CreateObject();
+  if (Arena != (cJSON *)0) {
+    cJSON_AddNumberToObject(Arena, "blocks", Stats.ArenaBlocks);
+    cJSON_AddNumberToObject(Arena, "usedPages", (double)Stats.UsedPages);
+    cJSON_AddNumberToObject(Arena, "freePages", (double)Stats.FreePages);
+    cJSON_AddNumberToObject(Arena, "pendingPages", (double)Stats.PendingPages);
+    cJSON_AddNumberToObject(Arena, "slackBytes", (double)Stats.SlackBytes);
+    cJSON_AddItemToObject(Node, "arena", Arena);
+  }
   cJSON_AddItemToObject(Root, "render", Node);
 }
 

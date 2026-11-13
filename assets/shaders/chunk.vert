@@ -6,7 +6,13 @@
 layout(location = 0) in uvec2 aPackedVertex;
 
 uniform mat4 mvp;
-uniform vec3 uChunkOrigin;
+// World origin of the chunk owning each arena page. PAGE_SHIFT is defined by
+// the render backend when it compiles this file (vertices per page = 1 << it).
+uniform samplerBuffer uPageOrigin;
+// Added to the page index. Zero whenever gl_VertexID already includes the
+// draw's base vertex, which is the case on every driver the backend found to
+// conform; otherwise the backend sets it to each draw's first page.
+uniform int uDrawPageBase;
 // Overlay slot -> texture array layer. Slot 0 is "no overlay".
 uniform int uOverlayLayers[16];
 
@@ -45,5 +51,7 @@ void main() {
     fragOverlayLayer = (overlaySlot == 0u) ? -1.0
                                            : float(uOverlayLayers[overlaySlot]);
 
-    gl_Position = mvp * vec4(uChunkOrigin + localPos, 1.0);
+    int page = uDrawPageBase + (gl_VertexID >> PAGE_SHIFT);
+    vec3 chunkOrigin = texelFetch(uPageOrigin, page).xyz;
+    gl_Position = mvp * vec4(chunkOrigin + localPos, 1.0);
 }

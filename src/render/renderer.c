@@ -786,13 +786,22 @@ static bool CopyMeshBufferSet(MeshBufferSet *Set, int VertexCount,
     return true;
 }
 
-static MeshHandle UploadMeshBufferSet(const MeshBufferSet *Set) {
+static Vec3 GetChunkWorldOrigin(const Chunk *ChunkVal) {
+    return (Vec3){
+        (float)(ChunkVal->ChunkX * CHUNK_SIZE) - BLOCK_HALF_SIZE,
+        (float)(ChunkVal->ChunkY * CHUNK_SIZE) - BLOCK_HALF_SIZE,
+        (float)(ChunkVal->ChunkZ * CHUNK_SIZE) - BLOCK_HALF_SIZE,
+    };
+}
+
+static MeshHandle UploadMeshBufferSet(const MeshBufferSet *Set, Vec3 Origin) {
     if (Set->VertexCount == 0) {
         return MESH_HANDLE_INVALID;
     }
     MeshData Data = {
         .Vertices = Set->Vertices,
         .VertexCount = Set->VertexCount,
+        .Origin = Origin,
     };
     return RenderUploadMesh(&Data);
 }
@@ -1432,16 +1441,16 @@ bool RendererUploadFinishedMesh(void) {
             UnloadChunkMesh(ChunkVal);
 
             ChunkVal->ChunkMesh =
-                UploadMeshBufferSet(&Job->Sets[MESH_TARGET_OPAQUE]);
+                UploadMeshBufferSet(&Job->Sets[MESH_TARGET_OPAQUE], GetChunkWorldOrigin(ChunkVal));
             ChunkVal->HasMesh = (ChunkVal->ChunkMesh != MESH_HANDLE_INVALID);
 
             ChunkVal->CutoutMesh =
-                UploadMeshBufferSet(&Job->Sets[MESH_TARGET_CUTOUT]);
+                UploadMeshBufferSet(&Job->Sets[MESH_TARGET_CUTOUT], GetChunkWorldOrigin(ChunkVal));
             ChunkVal->HasCutoutMesh =
                 (ChunkVal->CutoutMesh != MESH_HANDLE_INVALID);
 
             ChunkVal->TranslucentMesh =
-                UploadMeshBufferSet(&Job->Sets[MESH_TARGET_TRANSLUCENT]);
+                UploadMeshBufferSet(&Job->Sets[MESH_TARGET_TRANSLUCENT], GetChunkWorldOrigin(ChunkVal));
             ChunkVal->HasTranslucentMesh =
                 (ChunkVal->TranslucentMesh != MESH_HANDLE_INVALID);
             SyncChunkRenderable(ChunkVal);
@@ -1659,14 +1668,6 @@ static int ChunkDistanceBucket(int DeltaX, int DeltaY, int DeltaZ) {
 static int64_t RecordVertexCount(const RenderableSet *Set, const Chunk *ChunkVal,
                                  MeshTarget Target) {
     return Set->Records[ChunkVal->RenderRecord].VertexCounts[Target];
-}
-
-static Vec3 GetChunkWorldOrigin(const Chunk *ChunkVal) {
-    return (Vec3){
-        (float)(ChunkVal->ChunkX * CHUNK_SIZE) - BLOCK_HALF_SIZE,
-        (float)(ChunkVal->ChunkY * CHUNK_SIZE) - BLOCK_HALF_SIZE,
-        (float)(ChunkVal->ChunkZ * CHUNK_SIZE) - BLOCK_HALF_SIZE,
-    };
 }
 
 // ---------------------------------------------------------------------------
@@ -2174,7 +2175,7 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
     for (int IdxI = 0; IdxI < VisibleCount; IdxI++) {
         const Chunk *ChunkVal = SolidOrder[IdxI];
         if (!ChunkVal->HasMesh) { continue; }
-        RenderDrawMesh(ChunkVal->ChunkMesh, GetChunkWorldOrigin(ChunkVal));
+        RenderDrawMesh(ChunkVal->ChunkMesh);
         Stats.SubmittedVertices +=
             RecordVertexCount(Renderable, ChunkVal, MESH_TARGET_OPAQUE);
         Rendered++;
@@ -2189,7 +2190,7 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
     for (int IdxI = 0; IdxI < VisibleCount; IdxI++) {
         const Chunk *ChunkVal = SolidOrder[IdxI];
         if (!ChunkVal->HasCutoutMesh) { continue; }
-        RenderDrawMesh(ChunkVal->CutoutMesh, GetChunkWorldOrigin(ChunkVal));
+        RenderDrawMesh(ChunkVal->CutoutMesh);
         Stats.SubmittedVertices +=
             RecordVertexCount(Renderable, ChunkVal, MESH_TARGET_CUTOUT);
     }
@@ -2226,7 +2227,7 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
     for (int IdxI = VisibleCount - 1; IdxI >= 0; IdxI--) {
         const Chunk *ChunkVal = NearToFar[IdxI];
         if (!ChunkVal->HasTranslucentMesh) { continue; }
-        RenderDrawMesh(ChunkVal->TranslucentMesh, GetChunkWorldOrigin(ChunkVal));
+        RenderDrawMesh(ChunkVal->TranslucentMesh);
         Stats.SubmittedVertices +=
             RecordVertexCount(Renderable, ChunkVal, MESH_TARGET_TRANSLUCENT);
     }

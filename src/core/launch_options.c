@@ -46,6 +46,7 @@ static LaunchOptions *GetMutableLaunchOptions(void) {
       .ScriptPath = (const char *)0,
       .ScriptOutDir = SCRIPT_DEFAULT_OUT_DIR,
       .ScriptTimeoutSeconds = SCRIPT_DEFAULT_TIMEOUT_SECONDS,
+      .GlTierCap = GL_TIER_CAP_NONE,
   };
   return &Options;
 }
@@ -247,6 +248,17 @@ static void ParseRenderDistanceValue(const char *ValueStr,
   Options->RenderDistance = (int)Value;
 }
 
+static void ParseGlTierValue(const char *ValueStr, LaunchOptions *Options) {
+  long Value = 0;
+  if (!ParseStrictLong(ValueStr, &Value) || Value < 0 ||
+      Value > GL_TIER_CAP_MAX) {
+    LogWarn("MAIN: --gl-tier must be an integer in [0, %d]; ignoring \"%s\"",
+            GL_TIER_CAP_MAX, ValueStr);
+    return;
+  }
+  Options->GlTierCap = (int)Value;
+}
+
 static void ParseSeedValue(const char *ValueStr, LaunchOptions *Options) {
   uint64_t Value = 0;
   if (!ParseStrictUint64(ValueStr, &Value)) {
@@ -277,6 +289,7 @@ void ParseLaunchOptions(int Argc, char **Argv) {
       .ScriptPath = (const char *)0,
       .ScriptOutDir = SCRIPT_DEFAULT_OUT_DIR,
       .ScriptTimeoutSeconds = SCRIPT_DEFAULT_TIMEOUT_SECONDS,
+      .GlTierCap = GL_TIER_CAP_NONE,
   };
 
   if (Argc <= 1 || Argv == (char **)0) {
@@ -304,6 +317,7 @@ void ParseLaunchOptions(int Argc, char **Argv) {
                      (strcmp(Arg, "--ram-limit") == 0) ||
                      (strcmp(Arg, "--seed") == 0) ||
                      (strcmp(Arg, "--render-distance") == 0) ||
+                     (strcmp(Arg, "--gl-tier") == 0) ||
                      (strcmp(Arg, "--script") == 0) ||
                      (strcmp(Arg, "--script-out") == 0) ||
                      (strcmp(Arg, "--script-timeout") == 0);
@@ -334,6 +348,8 @@ void ParseLaunchOptions(int Argc, char **Argv) {
       ParseSeedValue(ValueStr, Options);
     } else if (strcmp(Arg, "--render-distance") == 0) {
       ParseRenderDistanceValue(ValueStr, Options);
+    } else if (strcmp(Arg, "--gl-tier") == 0) {
+      ParseGlTierValue(ValueStr, Options);
     } else if (strcmp(Arg, "--script") == 0) {
       Options->ScriptPath = ValueStr;
     } else if (strcmp(Arg, "--script-out") == 0) {
