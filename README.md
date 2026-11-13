@@ -153,7 +153,7 @@ To measure them on a given machine, one command runs `scripts/bench_tier.mgs` on
 python scripts/bench_tiers.py
 ```
 
-Results land in `automation_out/bench/` (`report.md`, `summary.json`, and per-run screenshots, state dumps and profiler captures). `--binary`, `--render-distance 8,16,32` and `--tiers default,1,0` adjust the run.
+Results land in `automation_out/bench/` (`report.md`, `summary.json`, and per-run screenshots, state dumps and profiler captures). `--binary`, `--render-distance 8,16,32` and `--tiers default,1,0` adjust the run. `--hidden` or `--monitor <N>` keep the runs off the screen or on another monitor (see below); a hidden window skips the desktop compositor, so its `Present` and frame times run several times higher than a visible window's, and only runs made in the same window mode compare. `Chunk submit` and `World draw` are unaffected.
 
 ### Low-spec simulation
 
@@ -190,6 +190,8 @@ A plain-text scenario script (`--script`) drives the game inside the normal fram
 | `--script <file>` | — | Parse `<file>` before opening the window and run it in script mode. |
 | `--script-out <dir>` | `automation_out` | Directory where `run.log`, `<name>.png` and `<name>.json` are written (created if missing). |
 | `--script-timeout <seconds>` | `120` (`1` .. `3600`) | Watchdog wall-clock limit for the entire run. |
+| `--hidden` | off | Open an invisible window that never takes keyboard focus. Rendering and screenshots are unchanged; implies windowed. |
+| `--monitor <N>` | primary (`1` .. `16`) | Centre the window on monitor `N` (1-based, clamped to the monitors connected) without taking keyboard focus. |
 
 Script mode opens a `1280x720` window (unless `<width> <height>` is given on the command line), never starts fullscreen, leaves the cursor uncaptured, and ignores physical keyboard and mouse input so moving the mouse cannot perturb the run. The world is switched to **read-only** for the duration of the run — chunk eviction, `/save` and shutdown saves are skipped, leaving `world/` untouched.
 

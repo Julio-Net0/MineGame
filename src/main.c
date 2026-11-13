@@ -93,7 +93,14 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
     return false;
   }
 
-  PlatformInit(Options->Window.Width, Options->Window.Height, "MineGame Beta 4");
+  PlatformWindowDesc WindowDesc = {
+      .Width = Options->Window.Width,
+      .Height = Options->Window.Height,
+      .Title = "MineGame Beta 4",
+      .Hidden = Options->Hidden,
+      .Monitor = Options->Monitor,
+  };
+  PlatformInit(&WindowDesc);
   // A scripted run ignores the mouse, so capturing the cursor would only take it
   // away from whoever is watching the run.
   PlatformSetCursorDisabled(!ScriptIsActive());

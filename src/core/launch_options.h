@@ -26,6 +26,11 @@ typedef struct {
 #define GL_TIER_CAP_NONE (-1)
 #define GL_TIER_CAP_MAX 2
 
+// --monitor is 1-based; 0 means the flag was not given (primary monitor). The
+// platform clamps it to the monitors actually connected.
+#define LAUNCH_MONITOR_DEFAULT 0
+#define LAUNCH_MONITOR_MAX 16
+
 #define SCRIPT_DEFAULT_OUT_DIR "automation_out"
 #define SCRIPT_DEFAULT_TIMEOUT_SECONDS 120.0
 
@@ -52,6 +57,11 @@ typedef struct {
   double ScriptTimeoutSeconds;
   // GL_TIER_CAP_NONE unless --gl-tier was given.
   int GlTierCap;
+  // --hidden: the window is never shown nor focused; rendering and frame
+  // capture work as usual. Implies windowed.
+  bool Hidden;
+  // LAUNCH_MONITOR_DEFAULT unless --monitor was given.
+  int Monitor;
 } LaunchOptions;
 
 void ParseLaunchOptions(int Argc, char **Argv);

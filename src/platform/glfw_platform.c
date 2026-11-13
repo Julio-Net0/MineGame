@@ -59,25 +59,49 @@ static void FailInit(const char *Reason) {
   exit(EXIT_FAILURE);
 }
 
-// Centred on the primary monitor, clamped to its top-left corner.
-static void CentreWindow(GLFWwindow *Window, int Width, int Height) {
-  GLFWmonitor *Monitor = glfwGetPrimaryMonitor();
-  const GLFWvidmode *Mode = (Monitor != NULL) ? glfwGetVideoMode(Monitor) : NULL;
-  if (Mode == NULL) {
-    return;
+// The requested monitor (1-based), or the primary one when none was requested
+// or the index is past the monitors connected.
+static GLFWmonitor *RequestedMonitor(int Index) {
+  int Count = 0;
+  GLFWmonitor **Monitors = glfwGetMonitors(&Count);
+  if (Index <= 0 || Monitors == NULL || Count <= 0) {
+    return glfwGetPrimaryMonitor();
   }
-  int MonitorX = 0;
-  int MonitorY = 0;
-  glfwGetMonitorPos(Monitor, &MonitorX, &MonitorY);
-  int PosX = MonitorX + ((Mode->width - Width) / 2);
-  int PosY = MonitorY + ((Mode->height - Height) / 2);
-  if (PosX < MonitorX) { PosX = MonitorX; }
-  if (PosY < MonitorY) { PosY = MonitorY; }
-  glfwSetWindowPos(Window, PosX, PosY);
+  if (Index > Count) {
+    LogWarn("PLATFORM: monitor %d requested but only %d connected; using %d",
+            Index, Count, Count);
+    Index = Count;
+  }
+  LogInfo("PLATFORM: window on monitor %d of %d", Index, Count);
+  return Monitors[Index - 1];
 }
 
-void PlatformInit(int Width, int Height, const char *Title) {
+// Centred in the monitor's work area, clamped to its top-left corner.
+static void PlaceWindowOnMonitor(GLFWmonitor *Monitor, int Width, int Height) {
+  if (Monitor == NULL) {
+    return;
+  }
+  int AreaX = 0;
+  int AreaY = 0;
+  int AreaW = 0;
+  int AreaH = 0;
+  glfwGetMonitorWorkarea(Monitor, &AreaX, &AreaY, &AreaW, &AreaH);
+  if (AreaW <= 0 || AreaH <= 0) {
+    return;
+  }
+  int PosX = AreaX + ((AreaW - Width) / 2);
+  int PosY = AreaY + ((AreaH - Height) / 2);
+  if (PosX < AreaX) { PosX = AreaX; }
+  if (PosY < AreaY) { PosY = AreaY; }
+  glfwWindowHint(GLFW_POSITION_X, PosX);
+  glfwWindowHint(GLFW_POSITION_Y, PosY);
+}
+
+void PlatformInit(const PlatformWindowDesc *Desc) {
   PlatformState *State = GetPlatformState();
+  int Width = Desc->Width;
+  int Height = Desc->Height;
+  bool TakeFocus = !Desc->Hidden && Desc->Monitor <= 0;
   if (!OsAnchorWorkingDirectoryToExecutable()) {
     LogWarn("PLATFORM: could not change to the executable's directory");
   }
@@ -95,17 +119,20 @@ void PlatformInit(int Width, int Height, const char *Title) {
 #endif
   glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
   glfwWindowHint(GLFW_AUTO_ICONIFY, GLFW_FALSE);
-  glfwWindowHint(GLFW_FOCUSED, GLFW_TRUE);
+  glfwWindowHint(GLFW_VISIBLE, Desc->Hidden ? GLFW_FALSE : GLFW_TRUE);
+  glfwWindowHint(GLFW_FOCUSED, TakeFocus ? GLFW_TRUE : GLFW_FALSE);
+  glfwWindowHint(GLFW_FOCUS_ON_SHOW, TakeFocus ? GLFW_TRUE : GLFW_FALSE);
   glfwWindowHint(GLFW_SCALE_TO_MONITOR, GLFW_FALSE);
   glfwWindowHint(GLFW_SAMPLES, 0);
 
-  State->Window = glfwCreateWindow(Width, Height, (Title != NULL) ? Title : " ",
-                                   NULL, NULL);
+  PlaceWindowOnMonitor(RequestedMonitor(Desc->Monitor), Width, Height);
+
+  State->Window = glfwCreateWindow(
+      Width, Height, (Desc->Title != NULL) ? Desc->Title : " ", NULL, NULL);
   if (State->Window == NULL) {
     FailInit("could not create a window with an OpenGL 3.3 core context; "
              "MineGame requires OpenGL 3.3");
   }
-  CentreWindow(State->Window, Width, Height);
 
   glfwMakeContextCurrent(State->Window);
   int Version = gladLoadGL(glfwGetProcAddress);

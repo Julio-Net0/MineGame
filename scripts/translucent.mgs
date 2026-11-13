@@ -64,6 +64,10 @@ wait loaded
 look 180 -20
 wait frames 2
 wait loaded
+# How many frames "wait loaded" takes varies between runs, and the "Tp to" chat
+# line fades by frame count (3 s shown + 1 s fade = 80 ticks); waiting the full
+# fade keeps a half-faded line out of the screenshot on fast runs.
+wait ticks 80
 screenshot glass_water
 state glass_water
 

@@ -1367,6 +1367,32 @@ def run_server_worldgen_scenario(
     return elapsed
 
 
+def add_window_arguments(parser: argparse.ArgumentParser) -> None:
+    """--hidden and --monitor, forwarded to MineGame so a run does not take the
+    screen or keyboard focus away from whoever is using the machine."""
+    placement = parser.add_mutually_exclusive_group()
+    placement.add_argument(
+        "--hidden",
+        action="store_true",
+        help="Run MineGame with an invisible, unfocused window (screenshots are unaffected).",
+    )
+    placement.add_argument(
+        "--monitor",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Open MineGame's window on monitor N (1-based) without taking keyboard focus.",
+    )
+
+
+def window_flags(args: argparse.Namespace) -> list[str]:
+    if args.hidden:
+        return ["--hidden"]
+    if args.monitor is not None:
+        return ["--monitor", str(args.monitor)]
+    return []
+
+
 def run_scenario(
     binary: Path,
     repo_root: Path,
@@ -1377,6 +1403,7 @@ def run_scenario(
     timeout_seconds: int,
     render_distance_arg: int | None,
     gl_tier: int | None = None,
+    window_flags: list[str] | None = None,
 ) -> float:
     out_dir = out_root / name
     if out_dir.exists():
@@ -1393,6 +1420,7 @@ def run_scenario(
         str(timeout_seconds),
         *render_distance_flag(render_distance_arg),
         *(["--gl-tier", str(gl_tier)] if gl_tier is not None else []),
+        *(window_flags or []),
     ]
 
     start = time.monotonic()
@@ -1491,6 +1519,7 @@ def main() -> int:
         default=None,
         help="Render tier cap forwarded to MineGame as --gl-tier. Omit to let the engine choose.",
     )
+    add_window_arguments(parser)
     args = parser.parse_args()
 
     if args.golden_runs < 2:
@@ -1547,6 +1576,8 @@ def main() -> int:
         return 1
     if args.gl_tier is not None:
         print(f"Render tier capped at {args.gl_tier}")
+    if window_flags(args):
+        print(f"Window: {' '.join(window_flags(args))}")
     total_start = time.monotonic()
 
     sys.stdout.write(f"  -> {'headless_server':<16} ({server_binary.name} --ticks 100) ... ")
@@ -1609,6 +1640,7 @@ def main() -> int:
                 timeout_seconds=max(args.timeout, min_timeout),
                 render_distance_arg=args.render_distance,
                 gl_tier=args.gl_tier,
+                window_flags=window_flags(args),
             )
             note = ""
             if golden_capture is not None:
@@ -1627,6 +1659,7 @@ def main() -> int:
                         timeout_seconds=max(args.timeout, min_timeout),
                         render_distance_arg=args.render_distance,
                         gl_tier=args.gl_tier,
+                        window_flags=window_flags(args),
                     )
                     run_dirs.append(rerun_root / name)
                 images, variants, unstable = golden_capture.record(name, run_dirs)

@@ -47,6 +47,8 @@ static LaunchOptions *GetMutableLaunchOptions(void) {
       .ScriptOutDir = SCRIPT_DEFAULT_OUT_DIR,
       .ScriptTimeoutSeconds = SCRIPT_DEFAULT_TIMEOUT_SECONDS,
       .GlTierCap = GL_TIER_CAP_NONE,
+      .Hidden = false,
+      .Monitor = LAUNCH_MONITOR_DEFAULT,
   };
   return &Options;
 }
@@ -259,6 +261,17 @@ static void ParseGlTierValue(const char *ValueStr, LaunchOptions *Options) {
   Options->GlTierCap = (int)Value;
 }
 
+static void ParseMonitorValue(const char *ValueStr, LaunchOptions *Options) {
+  long Value = 0;
+  if (!ParseStrictLong(ValueStr, &Value) || Value < 1 ||
+      Value > LAUNCH_MONITOR_MAX) {
+    LogWarn("MAIN: --monitor must be an integer in [1, %d]; ignoring \"%s\"",
+            LAUNCH_MONITOR_MAX, ValueStr);
+    return;
+  }
+  Options->Monitor = (int)Value;
+}
+
 static void ParseSeedValue(const char *ValueStr, LaunchOptions *Options) {
   uint64_t Value = 0;
   if (!ParseStrictUint64(ValueStr, &Value)) {
@@ -290,6 +303,8 @@ void ParseLaunchOptions(int Argc, char **Argv) {
       .ScriptOutDir = SCRIPT_DEFAULT_OUT_DIR,
       .ScriptTimeoutSeconds = SCRIPT_DEFAULT_TIMEOUT_SECONDS,
       .GlTierCap = GL_TIER_CAP_NONE,
+      .Hidden = false,
+      .Monitor = LAUNCH_MONITOR_DEFAULT,
   };
 
   if (Argc <= 1 || Argv == (char **)0) {
@@ -303,6 +318,10 @@ void ParseLaunchOptions(int Argc, char **Argv) {
 
   for (int Idx = 1; Idx < Argc; Idx++) {
     const char *Arg = Argv[Idx];
+    if (strcmp(Arg, "--hidden") == 0) {
+      Options->Hidden = true;
+      continue;
+    }
     if (!IsFlagToken(Arg)) {
       if (PositionalCount < MAX_POSITIONAL_ARGS) {
         Positionals[PositionalCount] = Arg;
@@ -318,6 +337,7 @@ void ParseLaunchOptions(int Argc, char **Argv) {
                      (strcmp(Arg, "--seed") == 0) ||
                      (strcmp(Arg, "--render-distance") == 0) ||
                      (strcmp(Arg, "--gl-tier") == 0) ||
+                     (strcmp(Arg, "--monitor") == 0) ||
                      (strcmp(Arg, "--script") == 0) ||
                      (strcmp(Arg, "--script-out") == 0) ||
                      (strcmp(Arg, "--script-timeout") == 0);
@@ -350,6 +370,8 @@ void ParseLaunchOptions(int Argc, char **Argv) {
       ParseRenderDistanceValue(ValueStr, Options);
     } else if (strcmp(Arg, "--gl-tier") == 0) {
       ParseGlTierValue(ValueStr, Options);
+    } else if (strcmp(Arg, "--monitor") == 0) {
+      ParseMonitorValue(ValueStr, Options);
     } else if (strcmp(Arg, "--script") == 0) {
       Options->ScriptPath = ValueStr;
     } else if (strcmp(Arg, "--script-out") == 0) {
@@ -362,6 +384,14 @@ void ParseLaunchOptions(int Argc, char **Argv) {
   }
 
   Options->Window = ParseWindowPositionals(PositionalCount, Positionals);
+
+  // Fullscreen would cover a monitor and take focus, which is exactly what a
+  // hidden window exists to avoid.
+  if (Options->Hidden) {
+    Options->Window.Fullscreen = false;
+    LogInfo("MAIN: hidden window at %dx%d", Options->Window.Width,
+            Options->Window.Height);
+  }
 
   if (Options->ScriptPath == (const char *)0) {
     if (SawScriptOutDir || SawScriptTimeout) {

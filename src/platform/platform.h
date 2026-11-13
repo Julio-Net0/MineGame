@@ -9,11 +9,24 @@
 // platform implementation TU (platform/glfw_platform.c) fulfils them. This
 // header exposes no windowing or graphics library type.
 
+// How the window is opened. Monitor is 1-based (0 = primary) and is clamped to
+// the monitors connected. A window on a non-primary monitor and a hidden window
+// are both opened without taking keyboard focus, so an unattended run does not
+// interrupt whoever is using the machine; a hidden window still renders and
+// still supports frame capture.
+typedef struct {
+  int Width;
+  int Height;
+  const char *Title;
+  bool Hidden;
+  int Monitor;
+} PlatformWindowDesc;
+
 // Window lifecycle. PlatformInit creates the window and the OpenGL 3.3 core
 // context the render backend draws into, so it must run before the render
 // backend is initialized. It ends the process with a logged error when the
 // driver cannot provide that context.
-void PlatformInit(int Width, int Height, const char *Title);
+void PlatformInit(const PlatformWindowDesc *Desc);
 void PlatformShutdown(void);
 
 // Quit signal: true once the platform has requested the window to close.

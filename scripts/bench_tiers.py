@@ -4,6 +4,12 @@ this machine and writes a comparison table.
 
     python scripts/bench_tiers.py
     python scripts/bench_tiers.py --render-distance 8,16,32 --binary path/to/MineGame.exe
+    python scripts/bench_tiers.py --hidden        # no window on screen, focus untouched
+    python scripts/bench_tiers.py --monitor 2     # window on the second monitor
+
+A hidden window is presented without the desktop compositor, so its Present
+and frame times are not the ones a visible window gets; compare runs made in
+the same window mode only. The mode is recorded in the report.
 
 Each run gets its own folder under --out-root (r<distance>/tier_<tier>) with the
 screenshots, state dumps, profiler captures and engine log. report.md and
@@ -32,7 +38,12 @@ from typing import Any
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from run_regression import differing_pixels, find_default_binary  # noqa: E402
+from run_regression import (  # noqa: E402
+    add_window_arguments,
+    differing_pixels,
+    find_default_binary,
+    window_flags,
+)
 
 SCRIPT = Path("scripts") / "bench_tier.mgs"
 CAPTURES = ("load", "surface", "underground")
@@ -106,7 +117,7 @@ def summarise_scene(rows: list[dict[str, int]]) -> dict[str, Any]:
 
 
 def run_variant(binary: Path, repo: Path, out_dir: Path, variant: str,
-                render_distance: int, timeout: int) -> dict[str, Any]:
+                render_distance: int, timeout: int, window: list[str]) -> dict[str, Any]:
     if out_dir.exists():
         shutil.rmtree(out_dir)
     out_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -118,6 +129,7 @@ def run_variant(binary: Path, repo: Path, out_dir: Path, variant: str,
         "--script-out", str(out_dir.resolve()),
         "--script-timeout", str(timeout),
         "--render-distance", str(render_distance),
+        *window,
     ]
     if variant != "default":
         cmd += ["--gl-tier", variant]
@@ -189,7 +201,7 @@ def label(result: dict[str, Any]) -> str:
     return f"--gl-tier {result['variant']}"
 
 
-def build_header(results: list[dict[str, Any]], binary: Path) -> list[str]:
+def build_header(results: list[dict[str, Any]], binary: Path, window: list[str]) -> list[str]:
     ok = [r for r in results if not r["errors"]]
     renderer = ok[0].get("glRenderer", "?") if ok else "?"
     version = ok[0].get("glVersion", "?") if ok else "?"
@@ -201,6 +213,7 @@ def build_header(results: list[dict[str, Any]], binary: Path) -> list[str]:
         f"- GPU: {renderer}",
         f"- OpenGL: {version}",
         f"- Binary: `{binary}`",
+        f"- Window: {' '.join(window) if window else 'visible, primary monitor'}",
         "",
     ]
 
@@ -256,7 +269,9 @@ def main() -> int:
     parser.add_argument("--out-root", type=Path, default=repo / "automation_out" / "bench",
                         help="Folder for the per-run output and the report.")
     parser.add_argument("--timeout", type=int, default=600, help="Per-run script timeout in seconds.")
+    add_window_arguments(parser)
     args = parser.parse_args()
+    window = window_flags(args)
 
     try:
         binary = (args.binary or find_default_binary(repo)).resolve()
@@ -278,7 +293,7 @@ def main() -> int:
             sys.stdout.write(f"  -> R={distance:<2} tier {variant:<8} ... ")
             sys.stdout.flush()
             result = run_variant(binary, repo, distance_root / f"tier_{variant}", variant,
-                                 distance, args.timeout)
+                                 distance, args.timeout, window)
             results.append(result)
             print("FAIL: " + "; ".join(result["errors"]) if result["errors"]
                   else f"ok ({result['seconds']:.1f}s, tier {result.get('tier', '?')})")
@@ -289,7 +304,7 @@ def main() -> int:
         sections.append(build_section(results, problems, distance))
 
     first = next(iter(all_results.values()), [])
-    report = "\n".join(build_header(first, binary)) + "\n" + "\n\n".join(sections)
+    report = "\n".join(build_header(first, binary, window)) + "\n" + "\n\n".join(sections)
     (out_root / "report.md").write_text(report, encoding="utf-8")
     (out_root / "summary.json").write_text(
         json.dumps({str(d): r for d, r in all_results.items()}, indent=2) + "\n", encoding="utf-8")
