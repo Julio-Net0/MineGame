@@ -33,23 +33,57 @@ typedef struct {
 
 enum {
   COLUMN_CANDIDATE_SIDE = (2 * MAX_RENDER_DISTANCE) + 1,
-  MAX_LOAD_LAYERS = (2 * VERTICAL_RENDER_RADIUS) + 1
+  MAX_LOAD_LAYERS = (2 * VERTICAL_RENDER_RADIUS) + 1,
+  // A band never spans more layers than this; the default world spans 74.
+  MAX_BAND_LAYERS = MAX_VERTICAL_LOAD_REACH,
+  MAX_COLUMN_LAYERS = MAX_LOAD_LAYERS + MAX_BAND_LAYERS,
+  // Load volumes kept built: the last load request's, and one for any other
+  // centre a caller asks about.
+  LOAD_VOLUME_CACHE_SLOTS = 2
 };
+
+_Static_assert(((2 * NEAR_LOAD_RADIUS) + 1) * ((2 * NEAR_LOAD_RADIUS) + 1) *
+                       MAX_COLUMN_LAYERS <=
+                   MAX_ACTIVE_CHUNKS,
+               "the near cylinder alone must always fit the slot pool");
 
 typedef struct {
   int Dx;
   int Dz;
 } ColumnOffset;
 
-// Every chunk position the active set covers around one centre: column offsets
-// nearest first, and layers ordered by distance from the centre layer.
+// Every chunk position the active set covers around one centre. Columns are
+// offsets nearest first. The first NearCount carry the vertical window around
+// the centre (Layers, ordered by distance from the centre layer, below first);
+// every column carries its terrain band BandLo..BandHi, empty when
+// BandLo > BandHi. The window's layers inside the world are exactly
+// InWorldLo..InWorldHi (empty when InWorldLo > InWorldHi); the only others are
+// the centre's neighbours outside the world, which no band reaches.
 typedef struct {
+  // Cache key: the request the volume answers.
+  const World *Owner;
   int CenterX;
+  int CenterY;
   int CenterZ;
+  int Radius;
+  uint32_t BoundsKey;
+  uint32_t RaisedVersion;
+  bool Valid;
+
   const ColumnOffset *Columns;
   int ColumnCount;
+  int NearCount;
   int Layers[MAX_LOAD_LAYERS];
   int LayerCount;
+  int WindowLo;
+  int WindowHi;
+  int InWorldLo;
+  int InWorldHi;
+  int16_t BandLo[MAX_LOADED_COLUMNS];
+  int16_t BandHi[MAX_LOADED_COLUMNS];
+  // Positions the volume holds, and far columns the slot budget cut down.
+  int ChunkTotal;
+  int TrimmedColumns;
 } LoadVolume;
 
 static int HashChunkPos(int Cx, int Cy, int Cz){
@@ -129,34 +163,56 @@ static int CompareColumnOffsets(const void *Lhs, const void *Rhs) {
   return 0;
 }
 
-// Disc of column offsets for RenderDist, sorted nearest first. Rebuilt only
-// when the radius changes; the world is driven from one thread.
-static const ColumnOffset *GetColumnOffsets(int RenderDist, int *OutCount) {
-  static ColumnOffset Offsets[COLUMN_CANDIDATE_SIDE * COLUMN_CANDIDATE_SIDE];
-  static int Count = 0;
-  static int CachedRadius = -1;
+// Every column offset of the largest disc, sorted nearest first. Ties break on
+// (Dx, Dz), so the disc of any smaller radius is a prefix of the list:
+// PrefixCount[R] long. IndexAt maps an offset back to its place. Built once;
+// the world is driven from one thread.
+typedef struct {
+  ColumnOffset Offsets[COLUMN_CANDIDATE_SIDE * COLUMN_CANDIDATE_SIDE];
+  int PrefixCount[MAX_RENDER_DISTANCE + 1];
+  int16_t IndexAt[COLUMN_CANDIDATE_SIDE][COLUMN_CANDIDATE_SIDE];
+  bool Built;
+} ColumnOrder;
 
-  if (CachedRadius != RenderDist) {
-    int RadiusSq = RenderDist * RenderDist;
-    Count = 0;
-    for (int Dx = -RenderDist; Dx <= RenderDist; Dx++) {
-      for (int Dz = -RenderDist; Dz <= RenderDist; Dz++) {
-        if ((Dx * Dx) + (Dz * Dz) <= RadiusSq) {
-          Offsets[Count++] = (ColumnOffset){Dx, Dz};
-        }
+static const ColumnOrder *GetColumnOrder(void) {
+  static ColumnOrder Order;
+  if (Order.Built) {
+    return &Order;
+  }
+  int RadiusSq = MAX_RENDER_DISTANCE * MAX_RENDER_DISTANCE;
+  int Count = 0;
+  for (int Dx = -MAX_RENDER_DISTANCE; Dx <= MAX_RENDER_DISTANCE; Dx++) {
+    for (int Dz = -MAX_RENDER_DISTANCE; Dz <= MAX_RENDER_DISTANCE; Dz++) {
+      Order.IndexAt[Dx + MAX_RENDER_DISTANCE][Dz + MAX_RENDER_DISTANCE] = -1;
+      if ((Dx * Dx) + (Dz * Dz) <= RadiusSq) {
+        Order.Offsets[Count++] = (ColumnOffset){Dx, Dz};
       }
     }
-    qsort(Offsets, (size_t)Count, sizeof(Offsets[0]), CompareColumnOffsets);
-    // Unreachable while RenderDist is clamped to MAX_RENDER_DISTANCE; dropping
-    // the farthest columns keeps the slot pool from ever being oversubscribed.
-    if (Count > MAX_LOADED_COLUMNS) {
-      Count = MAX_LOADED_COLUMNS;
-    }
-    CachedRadius = RenderDist;
   }
-
-  *OutCount = Count;
-  return Offsets;
+  qsort(Order.Offsets, (size_t)Count, sizeof(Order.Offsets[0]),
+        CompareColumnOffsets);
+  // Unreachable while the disc is the one MAX_LOADED_COLUMNS counts; dropping
+  // the farthest columns keeps the slot pool from ever being oversubscribed.
+  if (Count > MAX_LOADED_COLUMNS) {
+    Count = MAX_LOADED_COLUMNS;
+  }
+  for (int Idx = 0; Idx < Count; Idx++) {
+    const ColumnOffset *Offset = &Order.Offsets[Idx];
+    Order.IndexAt[Offset->Dx + MAX_RENDER_DISTANCE]
+                 [Offset->Dz + MAX_RENDER_DISTANCE] = (int16_t)Idx;
+  }
+  int Prefix = 0;
+  for (int Radius = 0; Radius <= MAX_RENDER_DISTANCE; Radius++) {
+    while (Prefix < Count &&
+           (Order.Offsets[Prefix].Dx * Order.Offsets[Prefix].Dx) +
+                   (Order.Offsets[Prefix].Dz * Order.Offsets[Prefix].Dz) <=
+               Radius * Radius) {
+      Prefix++;
+    }
+    Order.PrefixCount[Radius] = Prefix;
+  }
+  Order.Built = true;
+  return &Order;
 }
 
 enum {
@@ -207,50 +263,206 @@ static void ComputeLayerWindow(int CenterY, int Vertical, int WorldLo,
   *OutHi = Hi;
 }
 
-// Layers are (the window intersected with the world's range) united with
-// [Cy - 1, Cy + 1], so the chunks around the centre stay loaded even outside
-// the world. Both parts lie inside the window, which bounds the layer count by
-// MAX_LOAD_LAYERS. Layers are listed by distance from the centre, below first.
-static void BuildLoadVolume(const World *WorldVal, Vec3 Center, int RenderDist,
-                            LoadVolume *Out) {
-  int Radius = ClampRenderDistance(RenderDist);
-  int Vertical = (Radius < VERTICAL_RENDER_RADIUS) ? Radius
-                                                   : VERTICAL_RENDER_RADIUS;
-  int CenterY = (int)__builtin_floorf(Center.y / CHUNK_SIZE);
+static int ClampInt(int Value, int Lo, int Hi) {
+  if (Value < Lo) { return Lo; }
+  if (Value > Hi) { return Hi; }
+  return Value;
+}
 
-  Out->CenterX = (int)__builtin_floorf(Center.x / CHUNK_SIZE);
-  Out->CenterZ = (int)__builtin_floorf(Center.z / CHUNK_SIZE);
-  Out->Columns = GetColumnOffsets(Radius, &Out->ColumnCount);
+static bool ColumnIsNear(const LoadVolume *Volume, int Col) {
+  return Col < Volume->NearCount;
+}
 
+// Positions column Col holds: its window layers when near, united with its
+// band. A band lies inside the world, so it meets the window only there.
+static int ColumnChunkCount(const LoadVolume *Volume, int Col) {
+  int BandLo = Volume->BandLo[Col];
+  int BandHi = Volume->BandHi[Col];
+  int Count = (BandHi >= BandLo) ? BandHi - BandLo + 1 : 0;
+  if (ColumnIsNear(Volume, Col)) {
+    Count += Volume->LayerCount;
+    int OverlapLo = (BandLo > Volume->InWorldLo) ? BandLo : Volume->InWorldLo;
+    int OverlapHi = (BandHi < Volume->InWorldHi) ? BandHi : Volume->InWorldHi;
+    if (OverlapHi >= OverlapLo) { Count -= OverlapHi - OverlapLo + 1; }
+  }
+  return Count;
+}
+
+// Column Col's layers in load order: a near column's window by distance from
+// the centre, then the rest of its band from the top down, so the surface a
+// far column shows comes before the rock under it. Out holds at least
+// MAX_COLUMN_LAYERS entries.
+static int ColumnLayers(const LoadVolume *Volume, int Col, int *Out) {
+  int Count = 0;
+  bool Near = ColumnIsNear(Volume, Col);
+  if (Near) {
+    for (int Layer = 0; Layer < Volume->LayerCount; Layer++) {
+      Out[Count++] = Volume->Layers[Layer];
+    }
+  }
+  for (int Y = Volume->BandHi[Col]; Y >= Volume->BandLo[Col]; Y--) {
+    if (Near && Y >= Volume->InWorldLo && Y <= Volume->InWorldHi) {
+      continue;
+    }
+    Out[Count++] = Y;
+  }
+  return Count;
+}
+
+// The slot pool bounds the whole volume. Unreachable with today's terrain
+// (bands hold about 80k positions at the largest radius), but a band is only
+// bounded by the world's height: past the budget, far columns keep just their
+// top layer, the one seen from afar, and then lose their band, farthest first.
+static void TrimToSlotBudget(LoadVolume *Volume) {
+  for (int Pass = 0; Pass < 2 && Volume->ChunkTotal > MAX_ACTIVE_CHUNKS;
+       Pass++) {
+    for (int Col = Volume->ColumnCount - 1;
+         Col >= Volume->NearCount && Volume->ChunkTotal > MAX_ACTIVE_CHUNKS;
+         Col--) {
+      if (Volume->BandHi[Col] < Volume->BandLo[Col]) { continue; }
+      Volume->ChunkTotal -= ColumnChunkCount(Volume, Col);
+      if (Pass == 0) {
+        Volume->BandLo[Col] = Volume->BandHi[Col];
+        Volume->TrimmedColumns++;
+      } else {
+        Volume->BandLo[Col] = (int16_t)(Volume->BandHi[Col] + 1);
+      }
+      Volume->ChunkTotal += ColumnChunkCount(Volume, Col);
+    }
+  }
+}
+
+// The window's layers are (the window intersected with the world's range)
+// united with [Cy - 1, Cy + 1], so the chunks around the centre stay loaded
+// even outside the world. Both parts lie inside the window, which bounds the
+// layer count by MAX_LOAD_LAYERS. Layers are listed by distance from the
+// centre, below first.
+static void BuildWindowLayers(const World *WorldVal, int CenterY, int Vertical,
+                              LoadVolume *Out) {
   int Lo = 0;
   int Hi = 0;
   ComputeLayerWindow(CenterY, Vertical, WorldVal->WorldLoChunkY,
                      WorldVal->WorldHiChunkY, &Lo, &Hi);
   if (Lo < WorldVal->WorldLoChunkY) { Lo = WorldVal->WorldLoChunkY; }
   if (Hi > WorldVal->WorldHiChunkY) { Hi = WorldVal->WorldHiChunkY; }
+  Out->InWorldLo = Lo;
+  Out->InWorldHi = Hi;
 
   Out->LayerCount = 0;
+  Out->WindowLo = CenterY;
+  Out->WindowHi = CenterY;
   for (int Step = 0; Step <= MAX_LOAD_LAYER_REACH; Step++) {
     int Below = CenterY - Step;
     int Above = CenterY + Step;
     if ((Below >= Lo && Below <= Hi) || Step <= 1) {
       Out->Layers[Out->LayerCount++] = Below;
+      Out->WindowLo = Below;
     }
     if (Step > 0 && ((Above >= Lo && Above <= Hi) || Step <= 1)) {
       Out->Layers[Out->LayerCount++] = Above;
+      Out->WindowHi = Above;
     }
   }
 }
 
+// A column's band: from the lowest layer terrain air can reach up to the
+// highest layer holding anything, terrain or player edits, clamped to the
+// world.
+static void ResolveColumnBand(World *WorldVal, int ColumnX, int ColumnZ,
+                              int16_t *OutLo, int16_t *OutHi) {
+  ColumnBoundsTable *Table = &WorldVal->ColumnBounds;
+  int Top = ColumnBoundsTopLayer(Table, ColumnX, ColumnZ);
+  int Bottom = ColumnBoundsBottomLayer(Table, ColumnX, ColumnZ);
+  int Raised = 0;
+  if (RaisedTopsGet(&WorldVal->RaisedTops, ColumnX, ColumnZ, &Raised) &&
+      Raised > Top) {
+    Top = Raised;
+  }
+  Top = ClampInt(Top, WorldVal->WorldLoChunkY, WorldVal->WorldHiChunkY);
+  Bottom = ClampInt(Bottom, WorldVal->WorldLoChunkY, Top);
+  if (Top - Bottom + 1 > MAX_BAND_LAYERS) { Bottom = Top - MAX_BAND_LAYERS + 1; }
+  *OutLo = (int16_t)Bottom;
+  *OutHi = (int16_t)Top;
+}
+
+static void BuildLoadVolume(World *WorldVal, int CenterX, int CenterY,
+                            int CenterZ, int Radius, LoadVolume *Out) {
+  const ColumnOrder *Order = GetColumnOrder();
+  int Vertical = (Radius < VERTICAL_RENDER_RADIUS) ? Radius
+                                                   : VERTICAL_RENDER_RADIUS;
+  int NearRadius = (Radius < NEAR_LOAD_RADIUS) ? Radius : NEAR_LOAD_RADIUS;
+
+  Out->Owner = WorldVal;
+  Out->CenterX = CenterX;
+  Out->CenterY = CenterY;
+  Out->CenterZ = CenterZ;
+  Out->Radius = Radius;
+  Out->BoundsKey = WorldVal->ColumnBounds.LayerKey;
+  Out->RaisedVersion = WorldVal->RaisedTops.Version;
+  Out->Columns = Order->Offsets;
+  Out->ColumnCount = Order->PrefixCount[Radius];
+  Out->NearCount = Order->PrefixCount[NearRadius];
+  BuildWindowLayers(WorldVal, CenterY, Vertical, Out);
+
+  Out->ChunkTotal = 0;
+  Out->TrimmedColumns = 0;
+  for (int Col = 0; Col < Out->ColumnCount; Col++) {
+    ResolveColumnBand(WorldVal, CenterX + Out->Columns[Col].Dx,
+                      CenterZ + Out->Columns[Col].Dz, &Out->BandLo[Col],
+                      &Out->BandHi[Col]);
+    Out->ChunkTotal += ColumnChunkCount(Out, Col);
+  }
+  TrimToSlotBudget(Out);
+  Out->Valid = true;
+}
+
+static bool VolumeAnswers(const LoadVolume *Volume, const World *WorldVal,
+                          int CenterX, int CenterY, int CenterZ, int Radius) {
+  return Volume->Valid && Volume->Owner == WorldVal &&
+         Volume->CenterX == CenterX && Volume->CenterY == CenterY &&
+         Volume->CenterZ == CenterZ && Volume->Radius == Radius &&
+         Volume->BoundsKey == WorldVal->ColumnBounds.LayerKey &&
+         Volume->RaisedVersion == WorldVal->RaisedTops.Version;
+}
+
+// The volume for a centre chunk and render distance, built on demand and kept:
+// the bounds are pure and the raised tops versioned, so a kept volume stays
+// exact until its key changes. The pointer is valid until a call with another
+// key. Main thread only.
+static const LoadVolume *GetLoadVolumeAt(World *WorldVal, int CenterX,
+                                         int CenterY, int CenterZ,
+                                         int RenderDist) {
+  static LoadVolume Cache[LOAD_VOLUME_CACHE_SLOTS];
+  static int NextSlot = 0;
+  int Radius = ClampRenderDistance(RenderDist);
+  for (int Slot = 0; Slot < LOAD_VOLUME_CACHE_SLOTS; Slot++) {
+    if (VolumeAnswers(&Cache[Slot], WorldVal, CenterX, CenterY, CenterZ,
+                      Radius)) {
+      return &Cache[Slot];
+    }
+  }
+  LoadVolume *Volume = &Cache[NextSlot];
+  NextSlot = (NextSlot + 1) % LOAD_VOLUME_CACHE_SLOTS;
+  BuildLoadVolume(WorldVal, CenterX, CenterY, CenterZ, Radius, Volume);
+  return Volume;
+}
+
+static const LoadVolume *GetLoadVolume(World *WorldVal, Vec3 Center,
+                                       int RenderDist) {
+  return GetLoadVolumeAt(WorldVal, (int)__builtin_floorf(Center.x / CHUNK_SIZE),
+                         (int)__builtin_floorf(Center.y / CHUNK_SIZE),
+                         (int)__builtin_floorf(Center.z / CHUNK_SIZE),
+                         RenderDist);
+}
+
 #ifdef MINEGAME_PROFILE
-static bool LoadVolumeIsValid(const LoadVolume *Volume, int CenterY,
-                              int Vertical) {
+static bool WindowIsValid(const LoadVolume *Volume, int Vertical) {
   if (Volume->LayerCount > (2 * Vertical) + 1) { return false; }
   int NearSeen = 0;
   int PrevDistance = 0;
   for (int Idx = 0; Idx < Volume->LayerCount; Idx++) {
     int Layer = Volume->Layers[Idx];
-    int Distance = abs(Layer - CenterY);
+    int Distance = abs(Layer - Volume->CenterY);
     if (Distance > MAX_LOAD_LAYER_REACH || Distance < PrevDistance) {
       return false;
     }
@@ -258,9 +470,46 @@ static bool LoadVolumeIsValid(const LoadVolume *Volume, int CenterY,
     for (int Other = 0; Other < Idx; Other++) {
       if (Volume->Layers[Other] == Layer) { return false; }
     }
+    if (Layer < Volume->WindowLo || Layer > Volume->WindowHi) { return false; }
+    bool InWorld = Layer >= Volume->InWorldLo && Layer <= Volume->InWorldHi;
+    if (!InWorld && Distance > 1) { return false; }
     if (Distance <= 1) { NearSeen++; }
   }
+  // Every in-world layer of the window is listed.
+  for (int Y = Volume->InWorldLo; Y <= Volume->InWorldHi; Y++) {
+    bool Listed = false;
+    for (int Idx = 0; Idx < Volume->LayerCount; Idx++) {
+      Listed = Listed || Volume->Layers[Idx] == Y;
+    }
+    if (!Listed) { return false; }
+  }
   return NearSeen == 3;
+}
+
+// Bands inside the world and within the band limit, each column's layer list
+// free of duplicates and as long as ColumnChunkCount says, and the whole
+// within the slot pool.
+static bool BandsAreValid(const World *WorldVal, const LoadVolume *Volume) {
+  int Layers[MAX_COLUMN_LAYERS];
+  int Total = 0;
+  for (int Col = 0; Col < Volume->ColumnCount; Col++) {
+    int Lo = Volume->BandLo[Col];
+    int Hi = Volume->BandHi[Col];
+    if (Hi >= Lo && (Lo < WorldVal->WorldLoChunkY ||
+                     Hi > WorldVal->WorldHiChunkY ||
+                     Hi - Lo + 1 > MAX_BAND_LAYERS)) {
+      return false;
+    }
+    int Count = ColumnLayers(Volume, Col, Layers);
+    if (Count != ColumnChunkCount(Volume, Col)) { return false; }
+    for (int Idx = 0; Idx < Count; Idx++) {
+      for (int Other = 0; Other < Idx; Other++) {
+        if (Layers[Other] == Layers[Idx]) { return false; }
+      }
+    }
+    Total += Count;
+  }
+  return Total == Volume->ChunkTotal && Total <= MAX_ACTIVE_CHUNKS;
 }
 
 typedef struct {
@@ -269,24 +518,33 @@ typedef struct {
   int Hi;
 } WindowExpectation;
 
-// A point inside chunk (0, CenterY, 0), away from any chunk border.
-static Vec3 PointInChunkLayer(int CenterY) {
-  return (Vec3){BLOCK_HALF_SIZE,
-                ((float)CenterY * CHUNK_SIZE) + BLOCK_HALF_SIZE,
-                BLOCK_HALF_SIZE};
+static bool IsBandCheckRadius(int Radius) {
+  return Radius == MIN_RENDER_DISTANCE || Radius == DEFAULT_RENDER_DISTANCE ||
+         Radius == NEAR_LOAD_RADIUS + 1 || Radius == MAX_RENDER_DISTANCE;
 }
 
-bool WorldCheckLoadVolumes(const World *WorldVal) {
+bool WorldCheckLoadVolumes(World *WorldVal) {
   enum { SWEEP_LO = -40, SWEEP_HI = 70, SPEC_WORLD_LO = -33, SPEC_WORLD_HI = 40 };
   int Failures = 0;
-  LoadVolume Volume;
 
+  // Bands depend on the radius only through how many columns there are, so
+  // they are checked at a few radii; the window at every one.
   for (int Radius = MIN_RENDER_DISTANCE; Radius <= MAX_RENDER_DISTANCE; Radius++) {
     int Vertical = (Radius < VERTICAL_RENDER_RADIUS) ? Radius
                                                      : VERTICAL_RENDER_RADIUS;
+    bool CheckBands = IsBandCheckRadius(Radius);
     for (int CenterY = SWEEP_LO; CenterY <= SWEEP_HI; CenterY++) {
-      BuildLoadVolume(WorldVal, PointInChunkLayer(CenterY), Radius, &Volume);
-      if (!LoadVolumeIsValid(&Volume, CenterY, Vertical)) {
+      // Static: a volume is too large for the stack.
+      static LoadVolume WindowOnly;
+      const LoadVolume *Volume = &WindowOnly;
+      if (CheckBands) {
+        Volume = GetLoadVolumeAt(WorldVal, 0, CenterY, 0, Radius);
+      } else {
+        WindowOnly.CenterY = CenterY;
+        BuildWindowLayers(WorldVal, CenterY, Vertical, &WindowOnly);
+      }
+      if (!WindowIsValid(Volume, Vertical) ||
+          (CheckBands && !BandsAreValid(WorldVal, Volume))) {
         LogError("WORLD: load volume invalid at chunk Y %d, R %d", CenterY,
                  Radius);
         Failures++;
@@ -304,12 +562,12 @@ bool WorldCheckLoadVolumes(const World *WorldVal) {
     };
     for (size_t Idx = 0; Idx < sizeof(EXPECTED) / sizeof(EXPECTED[0]); Idx++) {
       const WindowExpectation *Case = &EXPECTED[Idx];
-      LoadLayerRange Range;
-      WorldGetLoadLayerRange(WorldVal, PointInChunkLayer(Case->CenterY),
-                             DEFAULT_RENDER_DISTANCE, &Range);
-      if (Range.Lo != Case->Lo || Range.Hi != Case->Hi) {
+      const LoadVolume *Volume = GetLoadVolumeAt(
+          WorldVal, 0, Case->CenterY, 0, DEFAULT_RENDER_DISTANCE);
+      if (Volume->WindowLo != Case->Lo || Volume->WindowHi != Case->Hi) {
         LogError("WORLD: chunk Y %d loads %d..%d, expected %d..%d",
-                 Case->CenterY, Range.Lo, Range.Hi, Case->Lo, Case->Hi);
+                 Case->CenterY, Volume->WindowLo, Volume->WindowHi, Case->Lo,
+                 Case->Hi);
         Failures++;
       }
     }
@@ -322,6 +580,12 @@ bool WorldCheckLoadVolumes(const World *WorldVal) {
   return Failures == 0;
 }
 #endif
+
+static void RaiseSavedChunk(void *UserData, int ChunkX, int ChunkY,
+                            int ChunkZ) {
+  World *WorldVal = (World *)UserData;
+  (void)RaisedTopsRaise(&WorldVal->RaisedTops, ChunkX, ChunkZ, ChunkY);
+}
 
 void InitWorld(World *WorldVal){
   WorldVal->ChunkCount = 0;
@@ -361,6 +625,10 @@ void InitWorld(World *WorldVal){
 #endif
   ResolveWorldChunkRange(&WorldVal->WorldLoChunkY, &WorldVal->WorldHiChunkY);
   ColumnBoundsInit(&WorldVal->ColumnBounds);
+  RaisedTopsInit(&WorldVal->RaisedTops);
+  // Saved chunks are the player's edits: a load range must reach them even
+  // where the terrain bounds say the column is empty.
+  WorldSaveForEachSavedChunk(RaiseSavedChunk, WorldVal);
   WorldVal->OnChunkEvict = (ChunkEvictCallback)0;
   WorldVal->OnBlockChange = (BlockChangeCallback)0;
   WorldVal->BlockChangeUserData = NULL;
@@ -373,6 +641,7 @@ void DestroyWorld(World *WorldVal) {
     }
   }
   DensePoolDestroy(&WorldVal->DensePool);
+  RaisedTopsFree(&WorldVal->RaisedTops);
 }
 
 void WorldSetChunkEvictCallback(World *WorldVal, ChunkEvictCallback Callback) {
@@ -467,8 +736,10 @@ static void MarkUsefulChunks(World *WorldVal, const LoadVolume *Volume, bool *Ke
   for(int Col = 0; Col < Volume->ColumnCount; Col++){
     int ChunkX = Volume->CenterX + Volume->Columns[Col].Dx;
     int ChunkZ = Volume->CenterZ + Volume->Columns[Col].Dz;
-    for(int Layer = 0; Layer < Volume->LayerCount; Layer++){
-      Chunk* ChunkVal = GetChunkFromWorld(WorldVal, ChunkX, Volume->Layers[Layer], ChunkZ);
+    int Layers[MAX_COLUMN_LAYERS];
+    int LayerCount = ColumnLayers(Volume, Col, Layers);
+    for(int Layer = 0; Layer < LayerCount; Layer++){
+      Chunk* ChunkVal = GetChunkFromWorld(WorldVal, ChunkX, Layers[Layer], ChunkZ);
       if(ChunkVal != (Chunk *)0){
         KeepChunk[ChunkVal - WorldVal->Chunks] = true;
       }
@@ -735,19 +1006,20 @@ void UpdateWorld(World *WorldVal, Vec3 PlayerPos, int RenderDist){
   static bool KeepChunk[MAX_ACTIVE_CHUNKS];
   memset(KeepChunk, 0, sizeof(KeepChunk));
 
-  LoadVolume Volume;
-  BuildLoadVolume(WorldVal, PlayerPos, RenderDist, &Volume);
+  const LoadVolume *Volume = GetLoadVolume(WorldVal, PlayerPos, RenderDist);
 
-  MarkUsefulChunks(WorldVal, &Volume, KeepChunk);
+  MarkUsefulChunks(WorldVal, Volume, KeepChunk);
   bool EvictionDeferred = EvictUnneededChunks(WorldVal, KeepChunk);
 
   // Volume order is nearest first, so generation is enqueued nearest first.
   bool AllCreated = true;
-  for(int Col = 0; Col < Volume.ColumnCount; Col++){
-    int ChunkX = Volume.CenterX + Volume.Columns[Col].Dx;
-    int ChunkZ = Volume.CenterZ + Volume.Columns[Col].Dz;
-    for(int Layer = 0; Layer < Volume.LayerCount; Layer++){
-      int ChunkY = Volume.Layers[Layer];
+  for(int Col = 0; Col < Volume->ColumnCount; Col++){
+    int ChunkX = Volume->CenterX + Volume->Columns[Col].Dx;
+    int ChunkZ = Volume->CenterZ + Volume->Columns[Col].Dz;
+    int Layers[MAX_COLUMN_LAYERS];
+    int LayerCount = ColumnLayers(Volume, Col, Layers);
+    for(int Layer = 0; Layer < LayerCount; Layer++){
+      int ChunkY = Layers[Layer];
       if(GetChunkFromWorld(WorldVal, ChunkX, ChunkY, ChunkZ) == (Chunk *)0 &&
          !CreateOrRecycleChunk(WorldVal, ChunkX, ChunkY, ChunkZ)){
         AllCreated = false;
@@ -778,6 +1050,24 @@ static Chunk* GetLocalCoords(World *WorldVal, Vec3 GlobalPos, int *LocalX, int *
   return GetChunkFromWorld(WorldVal, ChunkX, ChunkY, ChunkZ);
 }
 
+// An edit above everything the terrain bounds allow for its column (a tower,
+// a pillar) is recorded so the column's load range keeps reaching it from
+// afar. Edits within the bounds are already covered and leave the map alone,
+// which keeps load volumes cached. A recorded raise reopens the load gate: the
+// volume grew while the player stood still.
+static void RaiseEditedColumn(World *WorldVal, const Chunk *ChunkVal) {
+  if (WorldVal->ColumnBounds.LayerKey != 0U &&
+      ChunkVal->ChunkY <= ColumnBoundsTopLayer(&WorldVal->ColumnBounds,
+                                               ChunkVal->ChunkX,
+                                               ChunkVal->ChunkZ)) {
+    return;
+  }
+  if (RaisedTopsRaise(&WorldVal->RaisedTops, ChunkVal->ChunkX,
+                      ChunkVal->ChunkZ, ChunkVal->ChunkY)) {
+    WorldVal->HasLoadedOnce = false;
+  }
+}
+
 void SetBlockInWorld(World *WorldVal, Vec3 Pos, BlockID BlockId){
   Chunk *ChunkVal = GetChunkAtPos(WorldVal, Pos);
   // A worker owns the storage of a chunk until it is generated.
@@ -794,6 +1084,7 @@ void SetBlockInWorld(World *WorldVal, Vec3 Pos, BlockID BlockId){
   BlockID PreviousId = ChunkGetLocal(ChunkVal, LocalX, LocalY, LocalZ);
   SetBlockInChunk(ChunkVal, (Vec3){(float)LocalX, (float)LocalY, (float)LocalZ}, BlockId);
   MarkChunkDirty(WorldVal, ChunkVal);
+  RaiseEditedColumn(WorldVal, ChunkVal);
 
   // A block on a face, edge or corner of its chunk is read by the face, edge
   // and corner neighbours across it: face culling by the first, ambient
@@ -977,33 +1268,99 @@ bool AreNeighborsGenerated(World *WorldVal, Chunk *ChunkVal) {
   return true;
 }
 
-void WorldGetLoadLayerRange(const World *WorldVal, Vec3 Center, int RenderDist,
+void WorldGetLoadLayerRange(World *WorldVal, Vec3 Center, int RenderDist,
                             LoadLayerRange *Out) {
-  LoadVolume Volume;
-  BuildLoadVolume(WorldVal, Center, RenderDist, &Volume);
+  const LoadVolume *Volume = GetLoadVolume(WorldVal, Center, RenderDist);
+  Out->Lo = Volume->WindowLo;
+  Out->Hi = Volume->WindowHi;
+  Out->Count = Volume->LayerCount;
+}
 
-  Out->Lo = Volume.Layers[0];
-  Out->Hi = Volume.Layers[0];
-  for (int Layer = 1; Layer < Volume.LayerCount; Layer++) {
-    if (Volume.Layers[Layer] < Out->Lo) { Out->Lo = Volume.Layers[Layer]; }
-    if (Volume.Layers[Layer] > Out->Hi) { Out->Hi = Volume.Layers[Layer]; }
+void WorldGetLoadVolumeStats(World *WorldVal, Vec3 Center, int RenderDist,
+                             LoadVolumeStats *Out) {
+  const LoadVolume *Volume = GetLoadVolume(WorldVal, Center, RenderDist);
+  LoadVolumeStats Stats = {0};
+  Stats.Columns = Volume->ColumnCount;
+  Stats.NearColumns = Volume->NearCount;
+  Stats.Chunks = Volume->ChunkTotal;
+  Stats.TrimmedColumns = Volume->TrimmedColumns;
+  Stats.RaisedColumns = WorldVal->RaisedTops.Count;
+  for (int Col = 0; Col < Volume->ColumnCount; Col++) {
+    if (Volume->BandHi[Col] < Volume->BandLo[Col]) { continue; }
+    int Hi = Volume->BandHi[Col];
+    if (Stats.BandColumns == 0 || Hi > Stats.MaxLayer) { Stats.MaxLayer = Hi; }
+    Stats.BandColumns++;
   }
-  Out->Count = Volume.LayerCount;
+  *Out = Stats;
+}
+
+bool WorldGetColumnLoadSpan(World *WorldVal, int ColumnX, int ColumnZ,
+                            int *OutLo, int *OutHi) {
+  if (WorldVal->LastLoadRenderDist <= 0) {
+    return false;
+  }
+  const LoadVolume *Volume = GetLoadVolumeAt(
+      WorldVal, WorldVal->LastLoadChunkX, WorldVal->LastLoadChunkY,
+      WorldVal->LastLoadChunkZ, WorldVal->LastLoadRenderDist);
+  int Dx = ColumnX - Volume->CenterX;
+  int Dz = ColumnZ - Volume->CenterZ;
+  if (Dx < -MAX_RENDER_DISTANCE || Dx > MAX_RENDER_DISTANCE ||
+      Dz < -MAX_RENDER_DISTANCE || Dz > MAX_RENDER_DISTANCE) {
+    return false;
+  }
+  int Col = GetColumnOrder()->IndexAt[Dx + MAX_RENDER_DISTANCE]
+                                     [Dz + MAX_RENDER_DISTANCE];
+  if (Col < 0 || Col >= Volume->ColumnCount) {
+    return false;
+  }
+  int Lo = Volume->BandLo[Col];
+  int Hi = Volume->BandHi[Col];
+  if (ColumnIsNear(Volume, Col)) {
+    if (Hi < Lo) {
+      Lo = Volume->WindowLo;
+      Hi = Volume->WindowHi;
+    } else {
+      Lo = (Volume->WindowLo < Lo) ? Volume->WindowLo : Lo;
+      Hi = (Volume->WindowHi > Hi) ? Volume->WindowHi : Hi;
+    }
+  }
+  if (Hi < Lo) {
+    return false;
+  }
+  *OutLo = Lo;
+  *OutHi = Hi;
+  return true;
+}
+
+// Above the generation ceiling nothing is ever generated, so an absent chunk
+// there is air even below a column's highest loaded layer (the window keeps
+// the centre's neighbours when the centre is above the world).
+bool WorldIsUnloadedRock(World *WorldVal, int ChunkX, int ChunkY, int ChunkZ) {
+  int Lo = 0;
+  int Hi = 0;
+  return WorldGetColumnLoadSpan(WorldVal, ChunkX, ChunkZ, &Lo, &Hi) &&
+         ChunkY <= Hi && ChunkY <= WorldVal->WorldHiChunkY;
+}
+
+bool WorldIsUnloadedSky(World *WorldVal, int ChunkX, int ChunkY, int ChunkZ) {
+  int Lo = 0;
+  int Hi = 0;
+  return WorldGetColumnLoadSpan(WorldVal, ChunkX, ChunkZ, &Lo, &Hi) &&
+         (ChunkY > Hi || ChunkY > WorldVal->WorldHiChunkY);
 }
 
 void WorldGetColumnBoundsStats(World *WorldVal, Vec3 Center, int RenderDist,
                                ColumnBoundsStats *Out) {
-  LoadVolume Volume;
-  BuildLoadVolume(WorldVal, Center, RenderDist, &Volume);
-  LoadLayerRange Window;
-  WorldGetLoadLayerRange(WorldVal, Center, RenderDist, &Window);
+  const LoadVolume *Volume = GetLoadVolume(WorldVal, Center, RenderDist);
+  LoadLayerRange Window = {Volume->WindowLo, Volume->WindowHi,
+                           Volume->LayerCount};
   int Span = Window.Hi - Window.Lo + 1;
   ColumnBoundsTable *Table = &WorldVal->ColumnBounds;
 
   ColumnBoundsStats Stats = {0};
-  for (int Col = 0; Col < Volume.ColumnCount; Col++) {
-    int ColumnX = Volume.CenterX + Volume.Columns[Col].Dx;
-    int ColumnZ = Volume.CenterZ + Volume.Columns[Col].Dz;
+  for (int Col = 0; Col < Volume->ColumnCount; Col++) {
+    int ColumnX = Volume->CenterX + Volume->Columns[Col].Dx;
+    int ColumnZ = Volume->CenterZ + Volume->Columns[Col].Dz;
     int Top = ColumnBoundsTopLayer(Table, ColumnX, ColumnZ);
     int Bottom = ColumnBoundsBottomLayer(Table, ColumnX, ColumnZ);
     if (Top > WorldVal->WorldHiChunkY) { Top = WorldVal->WorldHiChunkY; }
@@ -1087,15 +1444,16 @@ static bool LastLoadMatches(const World *WorldVal, Vec3 Center, int RenderDist) 
 #ifdef MINEGAME_PROFILE
 // The volume walk the counters replaced, kept to verify them.
 static bool WalkGenerationSettled(World *WorldVal, Vec3 Center, int RenderDist) {
-  LoadVolume Volume;
-  BuildLoadVolume(WorldVal, Center, RenderDist, &Volume);
+  const LoadVolume *Volume = GetLoadVolume(WorldVal, Center, RenderDist);
 
-  for (int Col = 0; Col < Volume.ColumnCount; Col++) {
-    int ChunkX = Volume.CenterX + Volume.Columns[Col].Dx;
-    int ChunkZ = Volume.CenterZ + Volume.Columns[Col].Dz;
-    for (int Layer = 0; Layer < Volume.LayerCount; Layer++) {
+  for (int Col = 0; Col < Volume->ColumnCount; Col++) {
+    int ChunkX = Volume->CenterX + Volume->Columns[Col].Dx;
+    int ChunkZ = Volume->CenterZ + Volume->Columns[Col].Dz;
+    int Layers[MAX_COLUMN_LAYERS];
+    int LayerCount = ColumnLayers(Volume, Col, Layers);
+    for (int Layer = 0; Layer < LayerCount; Layer++) {
       Chunk *ChunkVal =
-          GetChunkFromWorld(WorldVal, ChunkX, Volume.Layers[Layer], ChunkZ);
+          GetChunkFromWorld(WorldVal, ChunkX, Layers[Layer], ChunkZ);
       if (ChunkVal == (Chunk *)0) {
         return false;
       }
@@ -1179,21 +1537,22 @@ bool WorldIsNearSettled(World *WorldVal, Vec3 Center, int RenderDist,
     return false;
   }
 
-  LoadVolume Volume;
-  BuildLoadVolume(WorldVal, Center, RenderDist, &Volume);
+  const LoadVolume *Volume = GetLoadVolume(WorldVal, Center, RenderDist);
   int RadiusSq = Radius * Radius;
 
   // Columns are sorted nearest first, so the first one beyond Radius ends it.
-  for (int Col = 0; Col < Volume.ColumnCount; Col++) {
-    int Dx = Volume.Columns[Col].Dx;
-    int Dz = Volume.Columns[Col].Dz;
+  for (int Col = 0; Col < Volume->ColumnCount; Col++) {
+    int Dx = Volume->Columns[Col].Dx;
+    int Dz = Volume->Columns[Col].Dz;
     if ((Dx * Dx) + (Dz * Dz) > RadiusSq) {
       break;
     }
-    for (int Layer = 0; Layer < Volume.LayerCount; Layer++) {
+    int Layers[MAX_COLUMN_LAYERS];
+    int LayerCount = ColumnLayers(Volume, Col, Layers);
+    for (int Layer = 0; Layer < LayerCount; Layer++) {
       const Chunk *ChunkVal =
-          GetChunkFromWorld(WorldVal, Volume.CenterX + Dx, Volume.Layers[Layer],
-                            Volume.CenterZ + Dz);
+          GetChunkFromWorld(WorldVal, Volume->CenterX + Dx, Layers[Layer],
+                            Volume->CenterZ + Dz);
       if (ChunkVal == (Chunk *)0 || !ChunkVal->IsGenerated ||
           ChunkVal->IsGenerating || ChunkVal->TerrainJustGenerated ||
           ChunkVal->IsDirty || ChunkVal->IsMeshing) {

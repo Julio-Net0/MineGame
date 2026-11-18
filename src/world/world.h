@@ -16,7 +16,7 @@
 // from the load centre, the vertical offset counting a quarter in squared
 // distance, plus room for chunks a deferred eviction leaves outside the disc.
 #define MESH_CANDIDATE_BUCKETS \
-  (MAX_RENDER_DISTANCE + (MAX_LOAD_LAYER_REACH / 2) + 2)
+  (MAX_RENDER_DISTANCE + (MAX_VERTICAL_LOAD_REACH / 2) + 2)
 
 typedef void (*ChunkEvictCallback)(Chunk *EvictedChunk);
 
@@ -83,6 +83,9 @@ typedef struct World {
   // Density bounds of every column around the load centre, refreshed by
   // UpdateWorld whenever the centre moves. Main thread only.
   ColumnBoundsTable ColumnBounds;
+  // Columns holding player edits above their terrain bounds, seeded from the
+  // save at start-up. Main thread only.
+  RaisedTopMap RaisedTops;
 
   ChunkEvictCallback OnChunkEvict;
   BlockChangeCallback OnBlockChange;
@@ -164,23 +167,60 @@ bool AreNeighborsGenerated(World *WorldVal, Chunk *ChunkVal);
 // no mesher runs to clear IsDirty.
 bool WorldIsGenerationSettled(World *WorldVal, Vec3 Center, int RenderDist);
 
-// Lowest and highest active chunk layer of the load volume UpdateWorld builds
-// for Center and RenderDist, and how many layers it holds. Count can be smaller
-// than Hi - Lo + 1 when the layers around the centre lie outside the world.
+// The vertical window the near columns of the load volume for Center and
+// RenderDist hold around the centre: lowest and highest layer, and how many.
+// Count can be smaller than Hi - Lo + 1 when the layers around the centre lie
+// outside the world.
 typedef struct {
   int Lo;
   int Hi;
   int Count;
 } LoadLayerRange;
 
-void WorldGetLoadLayerRange(const World *WorldVal, Vec3 Center, int RenderDist,
+void WorldGetLoadLayerRange(World *WorldVal, Vec3 Center, int RenderDist,
                             LoadLayerRange *Out);
+
+// Size of the load volume for Center and RenderDist.
+typedef struct {
+  int Columns;
+  int NearColumns;
+  // Columns with a non-empty band, and the highest band layer among them.
+  int BandColumns;
+  int MaxLayer;
+  // Positions the volume holds: what chunks.active settles at.
+  int Chunks;
+  // Far columns the slot budget cut down to their top layer.
+  int TrimmedColumns;
+  // Columns anywhere in the world with player edits recorded above their
+  // terrain bounds.
+  int RaisedColumns;
+} LoadVolumeStats;
+
+void WorldGetLoadVolumeStats(World *WorldVal, Vec3 Center, int RenderDist,
+                             LoadVolumeStats *Out);
+
+// The last load request's loaded layer span for column (ColumnX, ColumnZ):
+// window and band together. False outside that request's disc, before any
+// request, and for a column holding nothing.
+bool WorldGetColumnLoadSpan(World *WorldVal, int ColumnX, int ColumnZ,
+                            int *OutLo, int *OutHi);
+
+// For a chunk position absent from the world: whether the last load request
+// left it out as rock (inside the disc, at or below its column's highest
+// loaded layer and inside the world: below the terrain band, or between band
+// and window) or as sky (above that layer or the world). Outside the disc it
+// is neither. Readers that need what
+// lies there use these instead of assuming air.
+bool WorldIsUnloadedRock(World *WorldVal, int ChunkX, int ChunkY, int ChunkZ);
+bool WorldIsUnloadedSky(World *WorldVal, int ChunkX, int ChunkY, int ChunkZ);
 
 #ifdef MINEGAME_PROFILE
 // Sweeps the load volume over chunk Y -40..70 and every render distance and
-// checks its invariants (layer budget, the centre and its neighbours present,
-// reach, ordering) plus the spec's worked windows. Logs the outcome.
-bool WorldCheckLoadVolumes(const World *WorldVal);
+// checks the window's invariants (layer budget, the centre and its neighbours
+// present, reach, ordering), the bands' at a few radii (inside the world, no
+// duplicate layer, within the slot pool), and the spec's worked windows. Logs
+// the outcome.
+bool WorldCheckLoadVolumes(World *WorldVal);
 #endif
 
 // True when chunk loading around Center has nothing left to do: every position

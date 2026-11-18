@@ -1463,13 +1463,18 @@ static int TouchingLayerCoord(int Step, int Free) {
 
 // Whether the layer of the neighbour at (Dx, Dy, Dz) that touches ChunkVal is
 // opaque throughout, so the mesher would hide every face ChunkVal shows it. A
-// neighbour not yet generated reads as air to the snapshot, so it never seals.
+// neighbour not yet generated reads as air to the snapshot, so it never seals;
+// an absent one the load left out as rock reads as opaque stone, so it does.
 static bool NeighbourSideSealed(World *WorldVal, const Chunk *ChunkVal, int Dx,
                                 int Dy, int Dz) {
-    const Chunk *Neighbour =
-        GetChunkFromWorld(WorldVal, ChunkVal->ChunkX + Dx,
-                          ChunkVal->ChunkY + Dy, ChunkVal->ChunkZ + Dz);
-    if (Neighbour == NULL || !Neighbour->IsGenerated) {
+    int X = ChunkVal->ChunkX + Dx;
+    int Y = ChunkVal->ChunkY + Dy;
+    int Z = ChunkVal->ChunkZ + Dz;
+    const Chunk *Neighbour = GetChunkFromWorld(WorldVal, X, Y, Z);
+    if (Neighbour == NULL) {
+        return WorldIsUnloadedRock(WorldVal, X, Y, Z);
+    }
+    if (!Neighbour->IsGenerated) {
         return false;
     }
     if (Neighbour->IsUniform) {
@@ -1862,20 +1867,21 @@ void GetLastCullStats(RenderCullStats *Out) { *Out = *GetCullStatsState(); }
 // visible chunk ordered.
 //
 // The bucket count is the largest key the loaded set can produce. Loaded chunks
-// lie in a cylinder around the load centre: dx^2 + dz^2 <= R^2, and the vertical
-// window, which slides below the centre underground, keeps |dy| within
-// MAX_LOAD_LAYER_REACH. The key therefore never exceeds MAX_RENDER_DISTANCE^2 +
-// MAX_LOAD_LAYER_REACH^2 and every distance stays exact. The camera can sit away
-// from the load centre (freecam), and those keys clamp into the last bucket: the
-// far chunks then draw in arbitrary order relative to each other, which is
-// degradation rather than breakage.
+// lie in a cylinder around the load centre: dx^2 + dz^2 <= R^2, and with the
+// centre inside the world every loaded layer, window or terrain band, keeps
+// |dy| within MAX_VERTICAL_LOAD_REACH. The key therefore never exceeds
+// MAX_RENDER_DISTANCE^2 + MAX_VERTICAL_LOAD_REACH^2 and every distance stays
+// exact. The camera can sit away from the load centre (freecam, or a centre
+// outside the world), and those keys clamp into the last bucket: the far chunks
+// then draw in arbitrary order relative to each other, which is degradation
+// rather than breakage.
 enum {
     CHUNK_DISTANCE_BUCKETS = (MAX_RENDER_DISTANCE * MAX_RENDER_DISTANCE) +
-                             (MAX_LOAD_LAYER_REACH * MAX_LOAD_LAYER_REACH) +
+                             (MAX_VERTICAL_LOAD_REACH * MAX_VERTICAL_LOAD_REACH) +
                              1
 };
-_Static_assert(MAX_LOAD_LAYER_REACH >= VERTICAL_RENDER_RADIUS,
-               "distance buckets must cover the symmetric window too");
+_Static_assert(MAX_VERTICAL_LOAD_REACH >= MAX_LOAD_LAYER_REACH,
+               "distance buckets must cover the window too");
 
 typedef struct {
     Chunk *ChunkVal;
@@ -1993,6 +1999,10 @@ typedef struct {
     int Count;
     int Reachable;
     int Nodes;
+    // A sight line left the loaded chunks into air the load did not keep
+    // (above a column's highest loaded layer). Nothing is known past it, so the
+    // frame falls back to frustum culling.
+    bool TouchedSky;
 } OcclusionState;
 
 static OcclusionState *GetOcclusionState(void) {
@@ -2121,7 +2131,10 @@ static int ResolveNeighbor(World *WorldVal, const TraversalFrustum *Frustum,
 
     if (!IsChunkBoxInTraversalFrustum(Frustum, X, Y, Z)) { return -1; }
     const Chunk *Found = GetChunkFromWorld(WorldVal, X, Y, Z);
-    if (Found == NULL) { return -1; }
+    if (Found == NULL) {
+        if (WorldIsUnloadedSky(WorldVal, X, Y, Z)) { State->TouchedSky = true; }
+        return -1;
+    }
     Next = (int)(Found - WorldVal->Chunks);
     *Link = (OcclusionLink){Next + 1, State->Slots[Next].Epoch};
     State->Slots[Next].FrustumStamp = State->Frame;
@@ -2169,54 +2182,7 @@ static void BeginOcclusionFrame(OcclusionState *State) {
     State->Count = 0;
     State->Reachable = 0;
     State->Nodes = 0;
-}
-
-// The camera is above or below the loaded layers of its column: every loaded
-// chunk of the boundary layer facing it is entered from the camera's side.
-static bool SeedFromBoundaryLayer(World *WorldVal, const TraversalFrustum *Frustum,
-                                  OcclusionState *State, int CameraChunkY) {
-    int Radius = WorldVal->LastLoadRenderDist;
-    Vec3 Center = {
-        ((float)WorldVal->LastLoadChunkX * CHUNK_SIZE) + CHUNK_HALF_SIZE,
-        ((float)WorldVal->LastLoadChunkY * CHUNK_SIZE) + CHUNK_HALF_SIZE,
-        ((float)WorldVal->LastLoadChunkZ * CHUNK_SIZE) + CHUNK_HALF_SIZE,
-    };
-    LoadLayerRange Window;
-    WorldGetLoadLayerRange(WorldVal, Center, Radius, &Window);
-
-    int Layer = 0;
-    int EntryFace = 0;
-    unsigned Dirs = 0;
-    if (CameraChunkY > Window.Hi) {
-        Layer = Window.Hi;
-        EntryFace = CHUNK_FACE_POS_Y;
-        Dirs = 1U << CHUNK_FACE_NEG_Y;
-    } else if (CameraChunkY < Window.Lo) {
-        Layer = Window.Lo;
-        EntryFace = CHUNK_FACE_NEG_Y;
-        Dirs = 1U << CHUNK_FACE_POS_Y;
-    } else {
-        // Inside the window but not loaded yet: nothing sound to start from.
-        return false;
-    }
-
-    for (int Dx = -Radius; Dx <= Radius; Dx++) {
-        for (int Dz = -Radius; Dz <= Radius; Dz++) {
-            if ((Dx * Dx) + (Dz * Dz) > Radius * Radius) { continue; }
-            Chunk *Seed = GetChunkFromWorld(WorldVal, WorldVal->LastLoadChunkX + Dx,
-                                            Layer, WorldVal->LastLoadChunkZ + Dz);
-            if (Seed == NULL ||
-                !IsChunkBoxInTraversalFrustum(Frustum, Seed->ChunkX, Seed->ChunkY,
-                                              Seed->ChunkZ)) {
-                continue;
-            }
-            int Pos[3] = {WorldVal->LastLoadChunkX + Dx, Layer,
-                          WorldVal->LastLoadChunkZ + Dz};
-            ArriveAt(State, (int)(Seed - WorldVal->Chunks), Pos,
-                     1U << (unsigned)EntryFace, Dirs);
-        }
-    }
-    return true;
+    State->TouchedSky = false;
 }
 
 // Half-width of the box around the camera checked for opaque blocks. Covers
@@ -2265,18 +2231,14 @@ static bool RunOcclusionTraversal(World *WorldVal, const RenderFrustum *Frustum,
         ArriveAt(State, (int)(Start - WorldVal->Chunks), Pos,
                  OCCLUSION_START_ENTRY, 0);
     } else {
-        int Dx = CameraX - WorldVal->LastLoadChunkX;
-        int Dz = CameraZ - WorldVal->LastLoadChunkZ;
-        int Radius = WorldVal->LastLoadRenderDist;
-        if (!WorldVal->HasLoadedOnce || (Dx * Dx) + (Dz * Dz) > Radius * Radius) {
-            return false;
-        }
-        if (!SeedFromBoundaryLayer(WorldVal, &Planes, State, CameraY)) {
-            return false;
-        }
+        // Outside its column's loaded layers (above the band, in rock below
+        // it) or outside the disc: no loaded chunk to start from that is known
+        // to see what the camera sees.
+        return false;
     }
 
     while (State->Count > 0) {
+        if (State->TouchedSky) { return false; }
         int Slot = State->Queue[State->Head];
         State->Head++;
         if (State->Head == OCCLUSION_QUEUE_CAPACITY) { State->Head = 0; }
@@ -2286,7 +2248,7 @@ static bool RunOcclusionTraversal(World *WorldVal, const RenderFrustum *Frustum,
         State->Slots[Slot].Queued = false;
         ExpandChunk(WorldVal, &Planes, State, Slot);
     }
-    return true;
+    return !State->TouchedSky;
 }
 
 static bool WasChunkReached(const World *WorldVal, const Chunk *ChunkVal) {
@@ -2308,7 +2270,11 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
     static Chunk *NearToFar[MAX_ACTIVE_CHUNKS];
     static Chunk *SetOrder[MAX_ACTIVE_CHUNKS];
 
-    int BucketCounts[CHUNK_DISTANCE_BUCKETS] = {0};
+    // Static: two arrays of CHUNK_DISTANCE_BUCKETS ints are too large for the
+    // stack, and only the render thread draws.
+    static int BucketCounts[CHUNK_DISTANCE_BUCKETS];
+    static int Offsets[CHUNK_DISTANCE_BUCKETS];
+    memset(BucketCounts, 0, sizeof(BucketCounts));
     int VisibleCount = 0;
     RenderableSet *Renderable = GetRenderableSet();
     RenderCullStats Stats = {
@@ -2388,7 +2354,6 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
 
     // Counting sort walked from the near bucket up, so the output runs nearest
     // to farthest. The translucent pass reads the same array backwards.
-    int Offsets[CHUNK_DISTANCE_BUCKETS];
     int Running = 0;
     for (int B = 0; B < CHUNK_DISTANCE_BUCKETS; B++) {
         Offsets[B] = Running;

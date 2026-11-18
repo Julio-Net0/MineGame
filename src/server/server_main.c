@@ -316,13 +316,17 @@ int main(int Argc, char **Argv) {
                      &Meshing);
   bool Settled = WorldIsGenerationSettled(
       Server.WorldVal, Server.PlayerVal.Position, Server.RenderDistance);
+  LoadVolumeStats Volume = {0};
+  WorldGetLoadVolumeStats(Server.WorldVal, Server.PlayerVal.Position,
+                          Server.RenderDistance, &Volume);
 
   LogInfo("SERVER: summary ticks=%llu seed=%llu settled=%s active=%d "
-          "generated=%d generating=%d meshing=%d pos=(%.1f, %.1f, %.1f) "
-          "vel=(%.1f, %.1f, %.1f) grounded=%s",
+          "volume=%d generated=%d generating=%d meshing=%d "
+          "pos=(%.1f, %.1f, %.1f) vel=(%.1f, %.1f, %.1f) grounded=%s",
           (unsigned long long)Server.TickCount,
           (unsigned long long)GetWorldSeed(), Settled ? "true" : "false",
-          WorldActiveChunkCount(Server.WorldVal), Generated, Generating, Meshing,
+          WorldActiveChunkCount(Server.WorldVal), Volume.Chunks, Generated,
+          Generating, Meshing,
           (double)Server.PlayerVal.Position.x,
           (double)Server.PlayerVal.Position.y,
           (double)Server.PlayerVal.Position.z,

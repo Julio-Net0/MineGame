@@ -14,7 +14,8 @@
 // Raw bounds live in a toroidal table one slot per column, wide enough for the
 // largest load disc plus a margin, so a column is evaluated once while it stays
 // in range. The layer queries combine a column with its neighbours (a structure
-// anchored next door can overhang it) and evaluate any column not held yet.
+// anchored next door can overhang it), evaluate any column not held yet, and
+// keep their answer in the column's slot.
 
 enum {
   // Columns kept beyond the load disc on every side: the structure reach the
@@ -29,6 +30,10 @@ typedef struct {
   // floor() of the column's BoundHigh and BoundLow, in blocks.
   int16_t HighBlock;
   int16_t LowBlock;
+  // The layer queries' answers, valid while LayerKey equals the table's.
+  int16_t TopLayer;
+  int16_t BottomLayer;
+  uint32_t LayerKey;
   bool Valid;
 } ColumnBoundsEntry;
 
@@ -39,9 +44,10 @@ typedef struct {
   uint64_t Computed;
   // Structure reach the layer queries apply, refreshed by every
   // ColumnBoundsEnsure: neighbour columns on each side and blocks above the
-  // anchor.
+  // anchor. LayerKey changes with them, which drops every cached answer.
   int ReachColumns;
   int ReachAbove;
+  uint32_t LayerKey;
 } ColumnBoundsTable;
 
 void ColumnBoundsInit(ColumnBoundsTable *Table);
@@ -59,5 +65,33 @@ int ColumnBoundsTopLayer(ColumnBoundsTable *Table, int ColumnX, int ColumnZ);
 // Lowest chunk layer that can hold terrain air. Every layer below it is solid
 // rock apart from caves and buried structure foundations.
 int ColumnBoundsBottomLayer(ColumnBoundsTable *Table, int ColumnX, int ColumnZ);
+
+// Highest chunk layer the player has modified, per column: content the terrain
+// bounds know nothing about. Grows only, so a load range that includes it never
+// has to shrink back. An open-addressing map, empty until the first entry.
+typedef struct {
+  int ColumnX;
+  int ColumnZ;
+  int TopLayer;
+  bool Used;
+} RaisedTopEntry;
+
+typedef struct {
+  RaisedTopEntry *Slots;
+  int Capacity;
+  int Count;
+  // Bumped by every raise, so cached load volumes can tell they went stale.
+  uint32_t Version;
+} RaisedTopMap;
+
+void RaisedTopsInit(RaisedTopMap *Map);
+void RaisedTopsFree(RaisedTopMap *Map);
+// Records that the column holds modified content at Layer. Returns true when
+// that raised the column's recorded top. Allocation failure leaves the map
+// unchanged and returns false.
+bool RaisedTopsRaise(RaisedTopMap *Map, int ColumnX, int ColumnZ, int Layer);
+// The column's recorded top, when it has one.
+bool RaisedTopsGet(const RaisedTopMap *Map, int ColumnX, int ColumnZ,
+                   int *OutLayer);
 
 #endif

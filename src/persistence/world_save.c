@@ -3,7 +3,10 @@
 #include "platform/os_time.h"
 #include "world/chunk.h"
 #include "persistence/chunk_serial.h"
+#include <dirent.h>
+#include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <errno.h>
@@ -67,6 +70,7 @@ typedef struct {
 #define LEVEL_MAGIC            "MGWL"
 #define MAX_BACKUP_SUFFIX      100
 #define REGION_PATH_BUF_SIZE   256
+#define REGION_NAME_BASE       10
 #define REGION_COORD_BITS      20
 #define REGION_COORD_MASK      0xFFFFF
 #define REGION_COORD_SHIFT_MID 20
@@ -483,4 +487,84 @@ bool LoadChunkFromDisk(Chunk *ChunkVal) {
     ChunkVal->IsModified = false;
   }
   return Success;
+}
+
+// One "<int>." field of a region file name; advances *Cursor past the dot.
+static bool ParseRegionCoord(const char **Cursor, int *Out) {
+  char *End = (char *)0;
+  errno = 0;
+  long Value = strtol(*Cursor, &End, REGION_NAME_BASE);
+  if (End == *Cursor || *End != '.' || errno != 0 || Value < INT_MIN ||
+      Value > INT_MAX) {
+    return false;
+  }
+  *Out = (int)Value;
+  *Cursor = End + 1;
+  return true;
+}
+
+// "r.<x>.<y>.<z>.bin", as SaveChunkToDisk names region files.
+static bool ParseRegionFileName(const char *Name, int *OutRx, int *OutRy,
+                                int *OutRz) {
+  if (strncmp(Name, "r.", 2) != 0) {
+    return false;
+  }
+  const char *Cursor = Name + 2;
+  return ParseRegionCoord(&Cursor, OutRx) && ParseRegionCoord(&Cursor, OutRy) &&
+         ParseRegionCoord(&Cursor, OutRz) && strcmp(Cursor, "bin") == 0;
+}
+
+void WorldSaveForEachSavedChunk(SavedChunkVisitor Visitor, void *UserData) {
+  if (GetWorldSaveState()->ReadOnly || Visitor == (SavedChunkVisitor)0) {
+    return;
+  }
+  DIR *Dir = opendir("world");
+  if (Dir == (DIR *)0) {
+    return;
+  }
+
+  int Regions = 0;
+  int Chunks = 0;
+  for (struct dirent *Entry = readdir(Dir); Entry != (struct dirent *)0;
+       Entry = readdir(Dir)) {
+    int Rx = 0;
+    int Ry = 0;
+    int Rz = 0;
+    if (!ParseRegionFileName(Entry->d_name, &Rx, &Ry, &Rz)) {
+      continue;
+    }
+
+    char Path[REGION_PATH_BUF_SIZE];
+    snprintf(Path, sizeof(Path), "world/r.%d.%d.%d.bin", Rx, Ry, Rz);
+    pthread_mutex_t *RegionMutex = GetRegionMutex(Rx, Ry, Rz);
+    pthread_mutex_lock(RegionMutex);
+    uint8_t Header[REGION_HEADER_SIZE];
+    FILE *FileVal = OpenFileWithRetry(Path, "rb");
+    size_t Read = 0;
+    if (FileVal != (FILE *)0) {
+      Read = fread(Header, 1, sizeof(Header), FileVal);
+      fclose(FileVal);
+    }
+    pthread_mutex_unlock(RegionMutex);
+    if (Read != sizeof(Header)) {
+      continue;
+    }
+
+    Regions++;
+    for (int Idx = 0; Idx < REGION_TOTAL_CHUNKS; Idx++) {
+      if ((Header[(size_t)Idx * REGION_HEADER_ENTRY_BYTES] & 1U) == 0U) {
+        continue;
+      }
+      int LocalX = Idx / REGION_LOCAL_SLICE;
+      int LocalY = (Idx / REGION_AXIS_SIZE) % REGION_AXIS_SIZE;
+      int LocalZ = Idx % REGION_AXIS_SIZE;
+      Visitor(UserData, (Rx * REGION_AXIS_SIZE) + LocalX,
+              (Ry * REGION_AXIS_SIZE) + LocalY,
+              (Rz * REGION_AXIS_SIZE) + LocalZ);
+      Chunks++;
+    }
+  }
+  closedir(Dir);
+  LogInfo("WORLD_SAVE: indexed %d saved chunks in %d region files", Chunks,
+          Regions);
 }

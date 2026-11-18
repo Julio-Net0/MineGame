@@ -123,6 +123,9 @@ typedef struct Chunk {
 // before the chunk workers start.
 void InitTerrainGeneration(void);
 
+// The terrain's base stone, resolved by InitTerrainGeneration.
+BlockID TerrainStoneBlockId(void);
+
 struct ColumnEntry;
 struct CornerRowRing;
 

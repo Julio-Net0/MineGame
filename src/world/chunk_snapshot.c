@@ -58,6 +58,17 @@ static void CopyRow(BlockID *Out, const Chunk *Source, int Ix, int Iy) {
   }
 }
 
+// Stands in for an absent neighbour the load left out as rock: below the
+// terrain band, the column is stone (caves aside), and reading it as air would
+// put faces on every band's floor and on every step between columns' bands.
+// Uniform storage only; the snapshot never reads its flags.
+static const Chunk *UnloadedRockChunk(void) {
+  static Chunk Rock;
+  Rock.IsUniform = true;
+  Rock.UniformBlockId = TerrainStoneBlockId();
+  return &Rock;
+}
+
 static int BiomeNeighbourSlot(int Local) {
   if (Local < 0) {
     return 0;
@@ -99,12 +110,17 @@ void CaptureChunkSnapshot(World *WorldVal, const Chunk *ChunkVal,
   for (int Dx = -1; Dx <= 1; Dx++) {
     for (int Dy = -1; Dy <= 1; Dy++) {
       for (int Dz = -1; Dz <= 1; Dz++) {
-        const Chunk *Neighbour =
-            GetChunkFromWorld(WorldVal, ChunkVal->ChunkX + Dx,
-                              ChunkVal->ChunkY + Dy, ChunkVal->ChunkZ + Dz);
+        int X = ChunkVal->ChunkX + Dx;
+        int Y = ChunkVal->ChunkY + Dy;
+        int Z = ChunkVal->ChunkZ + Dz;
+        const Chunk *Neighbour = GetChunkFromWorld(WorldVal, X, Y, Z);
         Neighbourhood[Dx + 1][Dy + 1][Dz + 1] = Neighbour;
-        BlockSources[Dx + 1][Dy + 1][Dz + 1] =
+        const Chunk *Source =
             (Neighbour != NULL && Neighbour->IsGenerated) ? Neighbour : NULL;
+        if (Neighbour == NULL && WorldIsUnloadedRock(WorldVal, X, Y, Z)) {
+          Source = UnloadedRockChunk();
+        }
+        BlockSources[Dx + 1][Dy + 1][Dz + 1] = Source;
       }
     }
   }

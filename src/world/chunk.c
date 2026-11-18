@@ -65,6 +65,8 @@ void InitTerrainGeneration(void) {
   Base->IceId = ResolveBaseBlock("ice");
 }
 
+BlockID TerrainStoneBlockId(void) { return GetTerrainBaseBlocks()->StoneId; }
+
 static int ClampCell(int Cell) {
   if (Cell < 0) {
     return 0;

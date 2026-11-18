@@ -1191,6 +1191,21 @@ static void ScriptAddChunksJson(cJSON *Root, const ScriptContext *Ctx) {
     cJSON_AddNumberToObject(BoundsNode, "computed", (double)Bounds.Computed);
     cJSON_AddItemToObject(Root, "columnBounds", BoundsNode);
   }
+
+  LoadVolumeStats Volume = {0};
+  WorldGetLoadVolumeStats(Ctx->WorldVal, ScriptLoadCenter(Ctx),
+                          Ctx->RenderDistance, &Volume);
+  cJSON *VolumeNode = cJSON_CreateObject();
+  if (VolumeNode != (cJSON *)0) {
+    cJSON_AddNumberToObject(VolumeNode, "columns", Volume.Columns);
+    cJSON_AddNumberToObject(VolumeNode, "nearColumns", Volume.NearColumns);
+    cJSON_AddNumberToObject(VolumeNode, "bandColumns", Volume.BandColumns);
+    cJSON_AddNumberToObject(VolumeNode, "maxLayer", Volume.MaxLayer);
+    cJSON_AddNumberToObject(VolumeNode, "chunks", Volume.Chunks);
+    cJSON_AddNumberToObject(VolumeNode, "trimmedColumns", Volume.TrimmedColumns);
+    cJSON_AddNumberToObject(VolumeNode, "raisedColumns", Volume.RaisedColumns);
+    cJSON_AddItemToObject(Root, "loadVolume", VolumeNode);
+  }
 }
 
 #ifdef MINEGAME_PROFILE

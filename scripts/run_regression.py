@@ -26,10 +26,12 @@ EXPECTED_PROTOCOL_CHECKS = 38
 # Buffers per dense pool slab; keep in sync with src/world/dense_pool.h.
 DENSE_SLAB_CAPACITY = 512
 
-# Mirror of the engine's chunk loader, used to derive expected active chunk
-# counts. Keep in sync with src/world/world_limits.h (render distance limits,
-# VERTICAL_RENDER_RADIUS) and ComputeLayerWindow / BuildLoadVolume in
-# src/world/world.c. WORLD_LO/HI_CHUNK_Y are the chunk layers holding the
+# Mirror of the engine's vertical load window, used to check the loadWindow the
+# state dumps report. Keep in sync with src/world/world_limits.h (render
+# distance limits, VERTICAL_RENDER_RADIUS) and ComputeLayerWindow /
+# BuildWindowLayers in src/world/world.c. The active set itself also holds each
+# column's terrain band, which depends on the terrain, so its size is checked
+# against the engine's own loadVolume count instead of mirrored here. WORLD_LO/HI_CHUNK_Y are the chunk layers holding the
 # bedrock band's lowest Y and the generation ceiling for the default strata;
 # SEA_CHUNK_Y is the chunk layer holding SEA_LEVEL.
 CHUNK_SIZE = 16
@@ -42,6 +44,9 @@ MIN_UP_LAYERS = 2
 SEA_CHUNK_Y = 0
 WORLD_LO_CHUNK_Y = -33
 WORLD_HI_CHUNK_Y = 40
+NEAR_LOAD_RADIUS = 16
+MAX_LOADED_COLUMNS = 12853
+MAX_ACTIVE_CHUNKS = MAX_LOADED_COLUMNS * (2 * VERTICAL_RENDER_RADIUS + 1)
 
 
 def disc_columns(render_distance: int) -> int:
@@ -84,8 +89,29 @@ def load_window(center_y: int, render_distance: int) -> tuple[int, int, int]:
     return layers[0], layers[-1], len(layers)
 
 
-def expected_active(position_y: float, render_distance: int) -> int:
-    return disc_columns(render_distance) * len(load_layers(chunk_layer(position_y), render_distance))
+def assert_load_volume(state: dict[str, Any], label: str, render_distance: int) -> int:
+    """Shape checks of the engine-reported load volume; returns its chunk count.
+
+    Every disc column carries a band, the near columns also carry the window,
+    and the total fits the slot pool."""
+    volume = state.get("loadVolume")
+    require(volume is not None, f"{label}: missing loadVolume")
+    columns = disc_columns(render_distance)
+    near = disc_columns(min(render_distance, NEAR_LOAD_RADIUS))
+    require(volume.get("columns") == columns, f"{label}: expected loadVolume.columns == {columns}, got {volume.get('columns')}")
+    require(volume.get("nearColumns") == near, f"{label}: expected loadVolume.nearColumns == {near}, got {volume.get('nearColumns')}")
+    require(
+        volume.get("bandColumns") == columns,
+        f"{label}: expected every column to carry a band, got {volume.get('bandColumns')} of {columns}",
+    )
+    require(volume.get("trimmedColumns") == 0, f"{label}: expected no trimmed columns, got {volume.get('trimmedColumns')}")
+    chunks = volume.get("chunks")
+    window_layers = state.get("loadWindow", {}).get("layers", 0)
+    require(
+        near * window_layers <= chunks <= MAX_ACTIVE_CHUNKS,
+        f"{label}: expected {near * window_layers} <= loadVolume.chunks <= {MAX_ACTIVE_CHUNKS}, got {chunks}",
+    )
+    return chunks
 
 
 def effective_render_distance(render_distance_arg: int | None) -> int:
@@ -582,44 +608,45 @@ class GoldenComparison:
 # default). They depend on the generated terrain, on the loaded cylinder and on
 # which chunks are reachable from the camera, so they are recorded per generator
 # version (worldgen.generatorVersion in the dumps) and then per render distance;
-# a missing entry fails instead of comparing against other numbers. The
-# frustum-only counts the same poses had before occlusion culling are kept in
-# the trailing comments for reference. A scripted run steps one tick per frame,
+# a missing entry fails instead of comparing against other numbers. A scripted run steps one tick per frame,
 # so the camera sits exactly on the last tick's position and the counts are
 # exact: there is no frame-timing variation left to tolerate.
 EXPECTED_RENDERED: dict[int, dict[int, dict[str, int]]] = {
     # Only the current generator's counts are kept: every terrain change
     # replaces them, and an older version's numbers could only mislead.
+    # Calibrated with per-column terrain bands: a frame whose sight lines reach
+    # air the load left out (above a column's band) falls back to frustum
+    # culling until sky-aware occlusion lands, which most R=32 poses do.
     6: {
         8: {
-            "spawn": 394,  # 618 frustum-only
-            "far": 205,  # 380
-            "after_ticks": 205,  # 380
-            "landed": 269,  # 594
-            "after_walk": 221,  # 577
-            "after_break": 212,  # 803
-            "after_place": 212,  # 792
-            "after_jump": 212,  # 805
+            "spawn": 414,
+            "far": 205,
+            "after_ticks": 205,
+            "landed": 292,
+            "after_walk": 222,
+            "after_break": 235,
+            "after_place": 235,
+            "after_jump": 235,
         },
         16: {
-            "spawn": 464,  # 690 frustum-only
-            "far": 505,  # 982
-            "after_ticks": 505,  # 982
-            "landed": 416,  # 764
-            "after_walk": 296,  # 750
-            "after_break": 291,  # 994
-            "after_place": 291,  # 970
-            "after_jump": 291,  # 996
+            "spawn": 957,
+            "far": 607,
+            "after_ticks": 607,
+            "landed": 892,
+            "after_walk": 1141,
+            "after_break": 682,
+            "after_place": 682,
+            "after_jump": 682,
         },
         32: {
-            "spawn": 710,
-            "far": 1219,
-            "after_ticks": 1219,
-            "landed": 479,
-            "after_walk": 805,
-            "after_break": 291,
-            "after_place": 291,
-            "after_jump": 291,
+            "spawn": 3308,
+            "far": 1747,
+            "after_ticks": 1747,
+            "landed": 3584,
+            "after_walk": 2991,
+            "after_break": 3012,
+            "after_place": 3012,
+            "after_jump": 3021,
         },
     },
 }
@@ -677,7 +704,7 @@ def assert_settled_chunks(
         state.get("renderDistance") == render_distance,
         f"{label}: expected renderDistance == {render_distance}, got {state.get('renderDistance')}",
     )
-    active = expected_active(state["player"]["position"]["y"], render_distance)
+    active = assert_load_volume(state, label, render_distance)
     chunks = state.get("chunks", {})
     require(
         chunks.get("active") == active,
@@ -1073,17 +1100,18 @@ def verify_worldgen(out_dir: Path, _run_log: str, render_distance: int) -> None:
 # stopped merging.
 EXPECTED_TRANSLUCENT_VERTICES_MAX: dict[int, dict[int, int]] = {
     6: {
-        # Known engine non-determinism: the nominal count is 7208, but runs
-        # occasionally report 7220 or 7240 (+3 to +8 quads). The cause is
-        # the asynchronous order in which neighbours at the cylinder's outer edge
-        # are evicted and remeshed after the /tp. The ceiling admits these small
-        # timing-dependent boundary variations; a real loss of translucent merging
+        # Calibrated with per-column terrain bands, which load the ocean down to
+        # its floor: the disc's edge shows taller water walls at R=16 and 32,
+        # and rock left unloaded under a band hides the faces it used to show
+        # at R=8. Runs used to report a few extra quads at the cylinder's outer
+        # edge depending on eviction order after the /tp, so R=8 and R=16 keep
+        # the same small slack as before; a real loss of translucent merging
         # jumps to >300,000 vertices.
-        8: 7260,
-        # Nominal 138672; runs report up to 138704 for the same reason as R=8.
-        16: 138736,
-        # Recorded after border meshing became deterministic, so exact.
-        32: 1170796,
+        8: 6396,
+        # Nominal 140424.
+        16: 140488,
+        # Exact.
+        32: 1244744,
     },
 }
 
@@ -1130,6 +1158,11 @@ OCCLUSION_POSES = ("surface", "sky", "hillside", "cave_80", "cave_150", "buried"
 OCCLUSION_CAVE_POSES = ("cave_80", "cave_150")
 # The buried camera sees out through back faces, so occlusion must stand down.
 OCCLUSION_FALLBACK_POSES = ("buried",)
+# Poses whose sight lines reach air the load leaves out above a column's terrain
+# band. The traversal knows nothing past it, so those frames fall back to
+# frustum culling until sky-aware occlusion lands; either outcome passes there,
+# and the on/off parity checks still apply.
+OCCLUSION_SKY_POSES = ("surface", "sky", "hillside")
 # A chunk occlusion removes can show through a rasterisation crack between two
 # nearer quads (a T-junction of greedy faces); those few isolated pixels are the
 # only difference occlusion is allowed to make.
@@ -1177,7 +1210,7 @@ def verify_occlusion(out_dir: Path, _run_log: str, render_distance: int) -> None
         fallback = on_chunks["cull"].get("occlusionFallback")
         expect_fallback = pose in OCCLUSION_FALLBACK_POSES
         require(
-            fallback is expect_fallback,
+            fallback is expect_fallback or (pose in OCCLUSION_SKY_POSES and isinstance(fallback, bool)),
             f"{pose}_on.json: expected occlusionFallback == {expect_fallback}, got {fallback}",
         )
         if pose in OCCLUSION_CAVE_POSES:
@@ -1284,10 +1317,17 @@ def run_headless_server_scenario(
     spawn_match = re.search(r"SERVER: spawn column \((-?\d+), (-?\d+)\) surface (-?\d+)", combined_log)
     require(spawn_match is not None, "headless_server: missing 'SERVER: spawn column' line in server.log")
     spawn_x, spawn_z, spawn_surface = (int(value) for value in spawn_match.groups())
-    active = expected_active(spawn_surface + 0.5, render_distance)
+    volume_match = re.search(r"SERVER: summary .* active=(\d+) volume=(\d+) ", combined_log)
+    require(volume_match is not None, "headless_server: missing 'active=... volume=...' in the summary")
+    active, volume = (int(value) for value in volume_match.groups())
+    columns = disc_columns(render_distance)
+    require(
+        active == volume and columns <= volume <= MAX_ACTIVE_CHUNKS,
+        f"headless_server: expected active == volume within [{columns}, {MAX_ACTIVE_CHUNKS}], got {active} and {volume}",
+    )
     expected_summary = (
         f"SERVER: summary ticks=100 seed={EXPECTED_SEED} settled=true "
-        f"active={active} generated={active} "
+        f"active={active} volume={active} generated={active} "
         f"generating=0 meshing=0 pos=({spawn_x:.1f}, {spawn_surface + 0.5:.1f}, {spawn_z:.1f}) "
         f"vel=(0.0, 0.0, 0.0) grounded=true"
     )

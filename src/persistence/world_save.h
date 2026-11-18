@@ -23,4 +23,11 @@ bool WorldSaveIsReadOnly(void);
 void SaveChunkToDisk(Chunk *ChunkVal);
 bool LoadChunkFromDisk(Chunk *ChunkVal);
 
+// Calls Visitor for every chunk position the save holds, read from the region
+// headers alone. Does nothing in read-only mode. Meant for start-up, before the
+// chunk workers read regions.
+typedef void (*SavedChunkVisitor)(void *UserData, int ChunkX, int ChunkY,
+                                  int ChunkZ);
+void WorldSaveForEachSavedChunk(SavedChunkVisitor Visitor, void *UserData);
+
 #endif // WORLD_SAVE_H
