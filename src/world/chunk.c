@@ -12,6 +12,7 @@
 #include "world/stone_filler.h"
 #include "world/worldgen_strata.h"
 #include "world/dense_pool.h"
+#include <emmintrin.h>
 #include <math.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -248,40 +249,6 @@ static int EvaluateCubeCorners(const Chunk *ChunkVal,
   return Reused;
 }
 
-// Interpolated density down one block column, padding rows included.
-//
-// TrilinearDensity blends along X first, then Y, then Z. Within a block column
-// X and Z are fixed, so the X blends of every corner row are computed once here
-// and each block only performs the Y and Z steps. The operations, operands, and
-// their order are exactly TrilinearDensity's, so the result is bit-identical to
-// SampleTerrainDensity (the worldgen self-test checks it).
-static void InterpolateColumnDensity(const CubeCorners *Corners, int LocalX,
-                                     int LocalZ, float Out[]) {
-  int CellX = LocalX / DENSITY_CELL_XZ;
-  int CellZ = LocalZ / DENSITY_CELL_XZ;
-  float Fx = (float)(LocalX % DENSITY_CELL_XZ) / (float)DENSITY_CELL_XZ;
-  float Fz = (float)(LocalZ % DENSITY_CELL_XZ) / (float)DENSITY_CELL_XZ;
-
-  float NearZ[DENSITY_CORNERS_Y];
-  float FarZ[DENSITY_CORNERS_Y];
-  for (int Row = 0; Row < DENSITY_CORNERS_Y; Row++) {
-    float C0 = Corners->Values[CellX][Row][CellZ];
-    float C1 = Corners->Values[CellX + 1][Row][CellZ];
-    float C4 = Corners->Values[CellX][Row][CellZ + 1];
-    float C5 = Corners->Values[CellX + 1][Row][CellZ + 1];
-    NearZ[Row] = C0 + ((C1 - C0) * Fx);
-    FarZ[Row] = C4 + ((C5 - C4) * Fx);
-  }
-
-  for (int LocalY = 0; LocalY < CHUNK_SIZE + DENSITY_TOP_PADDING; LocalY++) {
-    int CellY = LocalY / DENSITY_CELL_Y;
-    float Fy = (float)(LocalY % DENSITY_CELL_Y) / (float)DENSITY_CELL_Y;
-    float Y0 = NearZ[CellY] + ((NearZ[CellY + 1] - NearZ[CellY]) * Fy);
-    float Y1 = FarZ[CellY] + ((FarZ[CellY + 1] - FarZ[CellY]) * Fy);
-    Out[LocalY] = Y0 + ((Y1 - Y0) * Fz);
-  }
-}
-
 // Tier 2: the column's density bounds alone, no 3D noise. Returns MIXED when
 // they cannot decide.
 static CubeClass ClassifyByBounds(int BaseY, const ColumnEntry *Column,
@@ -442,36 +409,108 @@ static int FillCubeUniform(Chunk *ChunkVal, BlockID BlockId) {
 }
 
 enum {
-  PADDED_ROWS = CHUNK_SIZE + DENSITY_TOP_PADDING
+  PADDED_ROWS = CHUNK_SIZE + DENSITY_TOP_PADDING,
+  SIMD_LANES = 4,
+  CELLS_PER_SLICE = CHUNK_SIZE / DENSITY_CELL_XZ
 };
 
-// One block column of a cube being filled.
+// The slice routines give each vector lane one density cell along Z, and fill
+// a cell's block columns from one lane, so both counts must match the lanes.
+_Static_assert(DENSITY_CELL_XZ == SIMD_LANES,
+               "a density cell must span one vector of block columns");
+_Static_assert(CELLS_PER_SLICE == SIMD_LANES,
+               "a cube slice must span one vector of density cells");
+
+// Every block column of one X slice of a cube, indexed [Row][LocalZ].
+typedef struct {
+  _Alignas(__m128) float Density[PADDED_ROWS][CHUNK_SIZE];
+  _Alignas(__m128i) int Depths[PADDED_ROWS][CHUNK_SIZE];
+  bool Flooded[PADDED_ROWS][CHUNK_SIZE];
+} ColumnSlice;
+
+// One X slice of a cube being filled.
 typedef struct {
   const CubeCorners *Corners;
   CubeFlood *Flood;
   const Chunk *ChunkVal;
+  const ColumnEntry *Column;
   uint64_t SeedVal;
   int LocalX;
-  int LocalZ;
-  int Surface;
-  float *DebugColumn;
-} ColumnFill;
+  int BaseY;
+  int Ceiling;
+} SliceFill;
+
+// Interpolated density of every block column of an X slice, padding rows
+// included.
+//
+// TrilinearDensity blends along X first, then Y, then Z. Within a slice X is
+// fixed, so the X blends of every corner row are computed once, one lane per Z
+// cell; each row then performs the Y step once per cell and the Z step once per
+// block. The operations, operands, and their order are exactly
+// TrilinearDensity's, and SSE2 rounds each lane as scalar code does (nothing is
+// contracted into an FMA), so the result is bit-identical to
+// SampleTerrainDensity (the worldgen self-test checks it).
+static void InterpolateSliceDensity(const CubeCorners *Corners, int LocalX,
+                                    float Out[PADDED_ROWS][CHUNK_SIZE]) {
+  int CellX = LocalX / DENSITY_CELL_XZ;
+  __m128 Fx = _mm_set1_ps((float)(LocalX % DENSITY_CELL_XZ) /
+                          (float)DENSITY_CELL_XZ);
+  float FzLanes[SIMD_LANES];
+  for (int Lane = 0; Lane < SIMD_LANES; Lane++) {
+    FzLanes[Lane] = (float)Lane / (float)DENSITY_CELL_XZ;
+  }
+  __m128 Fz = _mm_loadu_ps(FzLanes);
+
+  __m128 NearZ[DENSITY_CORNERS_Y];
+  __m128 FarZ[DENSITY_CORNERS_Y];
+  for (int Row = 0; Row < DENSITY_CORNERS_Y; Row++) {
+    const float *Low = Corners->Values[CellX][Row];
+    const float *High = Corners->Values[CellX + 1][Row];
+    __m128 C0 = _mm_loadu_ps(Low);
+    __m128 C1 = _mm_loadu_ps(High);
+    __m128 C4 = _mm_loadu_ps(Low + 1);
+    __m128 C5 = _mm_loadu_ps(High + 1);
+    NearZ[Row] = _mm_add_ps(C0, _mm_mul_ps(_mm_sub_ps(C1, C0), Fx));
+    FarZ[Row] = _mm_add_ps(C4, _mm_mul_ps(_mm_sub_ps(C5, C4), Fx));
+  }
+
+  for (int LocalY = 0; LocalY < PADDED_ROWS; LocalY++) {
+    int CellY = LocalY / DENSITY_CELL_Y;
+    __m128 Fy = _mm_set1_ps((float)(LocalY % DENSITY_CELL_Y) /
+                            (float)DENSITY_CELL_Y);
+    __m128 Y0 = _mm_add_ps(
+        NearZ[CellY],
+        _mm_mul_ps(_mm_sub_ps(NearZ[CellY + 1], NearZ[CellY]), Fy));
+    __m128 Y1 = _mm_add_ps(
+        FarZ[CellY], _mm_mul_ps(_mm_sub_ps(FarZ[CellY + 1], FarZ[CellY]), Fy));
+    _Alignas(__m128) float Start[SIMD_LANES];
+    _Alignas(__m128) float Span[SIMD_LANES];
+    _mm_store_ps(Start, Y0);
+    _mm_store_ps(Span, _mm_sub_ps(Y1, Y0));
+    for (int Cell = 0; Cell < CELLS_PER_SLICE; Cell++) {
+      __m128 Blend = _mm_add_ps(_mm_set1_ps(Start[Cell]),
+                                _mm_mul_ps(_mm_set1_ps(Span[Cell]), Fz));
+      _mm_store_ps(&Out[LocalY][(size_t)Cell * DENSITY_CELL_XZ], Blend);
+    }
+  }
+}
 
 // Open rows in the flood zone become barrier rock near the flood threshold and
 // are flagged flooded above it. Flooded must arrive all false.
 //
 // The flood value is the trilinear blend of the cube's flood lattice, written
-// out like InterpolateColumnDensity: the X blends of each lattice row are done
+// out like InterpolateSliceDensity: the X blends of each lattice row are done
 // once per column, then each row performs the Y and Z steps. Operations and
 // their order are TrilinearDensity's, so the probe gets the same float.
-static void ApplyFloodBarrier(const ColumnFill *Fill, int BaseY,
-                              float Density[PADDED_ROWS],
-                              bool Flooded[PADDED_ROWS]) {
+static void ApplyFloodBarrier(const SliceFill *Fill, int LocalZ,
+                              ColumnSlice *Slice) {
   int Lowest = 0;
   int Highest = 0;
-  if (!CaveFloodRows(Fill->Surface, &Lowest, &Highest)) {
+  if (!CaveFloodRows(Fill->Column->Surface[Fill->LocalX][LocalZ], &Lowest,
+                     &Highest)) {
     return;
   }
+  int BaseY = Fill->BaseY;
   int First = (Lowest > BaseY) ? Lowest - BaseY : 0;
   int Last = (Highest < BaseY + PADDED_ROWS - 1) ? Highest - BaseY
                                                   : PADDED_ROWS - 1;
@@ -480,7 +519,7 @@ static void ApplyFloodBarrier(const ColumnFill *Fill, int BaseY,
   float FarZ[3];
   float Threshold = GetCaveParams()->FloodThreshold;
   for (int Row = First; Row <= Last; Row++) {
-    if (Density[Row] > 0.0F) {
+    if (Slice->Density[Row][LocalZ] > 0.0F) {
       continue;
     }
     if (!Blended) {
@@ -497,45 +536,64 @@ static void ApplyFloodBarrier(const ColumnFill *Fill, int BaseY,
     }
     int CellY = Row / CAVE_FLOOD_CELL;
     float Fy = (float)(Row % CAVE_FLOOD_CELL) / (float)CAVE_FLOOD_CELL;
-    float Fz = (float)Fill->LocalZ / (float)CAVE_FLOOD_CELL;
+    float Fz = (float)LocalZ / (float)CAVE_FLOOD_CELL;
     float Y0 = NearZ[CellY] + ((NearZ[CellY + 1] - NearZ[CellY]) * Fy);
     float Y1 = FarZ[CellY] + ((FarZ[CellY + 1] - FarZ[CellY]) * Fy);
     float Flood = Y0 + ((Y1 - Y0) * Fz);
     float Barrier = CaveBarrierDensity(Flood);
     if (Barrier > 0.0F) {
-      Density[Row] = Barrier;
+      Slice->Density[Row][LocalZ] = Barrier;
     } else {
-      Flooded[Row] = Flood > Threshold;
+      Slice->Flooded[Row][LocalZ] = Flood > Threshold;
     }
   }
 }
 
-// Solid depth of every row of one block column, padding included. The row above
-// the last padding row is unknown and treated as non-solid; that can only
-// shorten a depth to 8 or more, which every biome already renders as stone.
-static void ComputeColumnDepths(const ColumnFill *Fill, int BaseY, int Ceiling,
-                                int Depths[PADDED_ROWS],
-                                bool Flooded[PADDED_ROWS]) {
-  bool Solid[PADDED_ROWS];
-  float Density[PADDED_ROWS];
-  InterpolateColumnDensity(Fill->Corners, Fill->LocalX, Fill->LocalZ, Density);
-  ApplyFloodBarrier(Fill, BaseY, Density, Flooded);
-  float *DebugColumn = Fill->DebugColumn;
-  for (int Row = 0; Row < PADDED_ROWS; Row++) {
-    Solid[Row] = (Density[Row] > 0.0F) && (BaseY + Row < Ceiling);
-    if (DebugColumn != NULL && Row < CHUNK_SIZE) {
-      DebugColumn[(size_t)Row * CHUNK_SIZE] = Density[Row];
+// Solid depth of every row of an X slice, padding included, one vector of block
+// columns at a time. The row above the last padding row is unknown and treated
+// as non-solid; that can only shorten a depth to 8 or more, which every biome
+// already renders as stone.
+//
+// Per lane, depth = solid ? (solid above ? depth above + 1 : 0) : -1, computed
+// without branches as ((depth above + 1) & solid above) | ~solid.
+static void ComputeSliceDepths(const SliceFill *Fill, ColumnSlice *Slice) {
+  const __m128 ZERO = _mm_setzero_ps();
+  const __m128i ONE = _mm_set1_epi32(1);
+  const __m128i ALL_SET = _mm_set1_epi32(-1);
+  for (int Group = 0; Group < CHUNK_SIZE; Group += SIMD_LANES) {
+    __m128i AboveSolid = _mm_setzero_si128();
+    __m128i AboveDepth = _mm_setzero_si128();
+    for (int Row = PADDED_ROWS - 1; Row >= 0; Row--) {
+      __m128i Solid = _mm_setzero_si128();
+      if (Fill->BaseY + Row < Fill->Ceiling) {
+        Solid = _mm_castps_si128(
+            _mm_cmpgt_ps(_mm_load_ps(&Slice->Density[Row][Group]), ZERO));
+      }
+      __m128i Deeper = _mm_and_si128(_mm_add_epi32(AboveDepth, ONE), AboveSolid);
+      __m128i Depth = _mm_or_si128(Deeper, _mm_andnot_si128(Solid, ALL_SET));
+      _mm_store_si128((__m128i *)&Slice->Depths[Row][Group], Depth);
+      AboveSolid = Solid;
+      AboveDepth = Depth;
     }
   }
+}
 
-  Depths[PADDED_ROWS - 1] = Solid[PADDED_ROWS - 1] ? 0 : -1;
-  for (int Row = PADDED_ROWS - 2; Row >= 0; Row--) {
-    if (!Solid[Row]) {
-      Depths[Row] = -1;
-    } else {
-      Depths[Row] = Solid[Row + 1] ? Depths[Row + 1] + 1 : 0;
-    }
+// Density, flooding, and solid depth of every block column of an X slice. The
+// debug density, when requested, takes the cube's rows after the flood barrier.
+static void ComputeSliceColumns(const SliceFill *Fill, ColumnSlice *Slice,
+                                float *DebugDensity) {
+  InterpolateSliceDensity(Fill->Corners, Fill->LocalX, Slice->Density);
+  memset(Slice->Flooded, 0, sizeof(Slice->Flooded));
+  for (int LocalZ = 0; LocalZ < CHUNK_SIZE; LocalZ++) {
+    ApplyFloodBarrier(Fill, LocalZ, Slice);
   }
+  if (DebugDensity != NULL) {
+    // DebugDensity is [X][Y][Z], so the slice's first CHUNK_SIZE rows are one
+    // contiguous block of it.
+    memcpy(&DebugDensity[(size_t)Fill->LocalX * CHUNK_SIZE * CHUNK_SIZE],
+           Slice->Density, sizeof(float) * CHUNK_SIZE * CHUNK_SIZE);
+  }
+  ComputeSliceDepths(Fill, Slice);
 }
 
 // Corners is NULL when the cube has no overworld layer.
@@ -550,30 +608,28 @@ static int FillCubePerBlock(Chunk *ChunkVal, const ColumnEntry *Column,
   // Built on the first block deeper than the palette layers.
   FillerCube Filler;
   bool HaveFiller = false;
+  ColumnSlice Slice;
+  if (Corners == NULL) {
+    memset(Slice.Depths, 0, sizeof(Slice.Depths));
+    memset(Slice.Flooded, 0, sizeof(Slice.Flooded));
+  }
 
   for (int IdxX = 0; IdxX < CHUNK_SIZE; IdxX++) {
+    if (Corners != NULL) {
+      SliceFill Fill = {.Corners = Corners,
+                        .Flood = &Flood,
+                        .ChunkVal = ChunkVal,
+                        .Column = Column,
+                        .SeedVal = SeedVal,
+                        .LocalX = IdxX,
+                        .BaseY = BaseY,
+                        .Ceiling = Ceiling};
+      ComputeSliceColumns(&Fill, &Slice, DebugDensity);
+    }
+
     for (int IdxZ = 0; IdxZ < CHUNK_SIZE; IdxZ++) {
       int GlobalX = (ChunkVal->ChunkX * CHUNK_SIZE) + IdxX;
       int GlobalZ = (ChunkVal->ChunkZ * CHUNK_SIZE) + IdxZ;
-
-      int Depths[PADDED_ROWS] = {0};
-      bool Flooded[PADDED_ROWS] = {false};
-      if (Corners != NULL) {
-        ColumnFill Fill = {
-            .Corners = Corners,
-            .Flood = &Flood,
-            .ChunkVal = ChunkVal,
-            .SeedVal = SeedVal,
-            .LocalX = IdxX,
-            .LocalZ = IdxZ,
-            .Surface = Column->Surface[IdxX][IdxZ],
-            .DebugColumn =
-                (DebugDensity != NULL)
-                    ? &DebugDensity[((size_t)IdxX * CHUNK_SIZE * CHUNK_SIZE) +
-                                    (size_t)IdxZ]
-                    : NULL};
-        ComputeColumnDepths(&Fill, BaseY, Ceiling, Depths, Flooded);
-      }
 
       for (int IdxY = 0; IdxY < CHUNK_SIZE; IdxY++) {
         int GlobalY = BaseY + IdxY;
@@ -583,7 +639,7 @@ static int FillCubePerBlock(Chunk *ChunkVal, const ColumnEntry *Column,
         case STRATUM_GEN_OVERWORLD: {
           const BiomeType *Biome =
               GetBiomeDef(GetChunkBiomeAtLocal(ChunkVal, IdxX, IdxY, IdxZ));
-          int Depth = Depths[IdxY];
+          int Depth = Slice.Depths[IdxY][IdxZ];
           if (Depth >= Biome->SubsurfaceDepth) {
             if (!HaveFiller) {
               FillerCubeInit(&Filler, ChunkVal->ChunkX, ChunkVal->ChunkY,
@@ -598,7 +654,7 @@ static int FillCubePerBlock(Chunk *ChunkVal, const ColumnEntry *Column,
                        IsSteepAt(Corners, IdxX, IdxY, IdxZ);
           BlockId = DeterminePaletteBlock(Biome, Depth, GlobalY,
                                           Column->Surface[IdxX][IdxZ],
-                                          Flooded[IdxY], Steep);
+                                          Slice.Flooded[IdxY][IdxZ], Steep);
           break;
         }
         case STRATUM_GEN_BEDROCK_BAND:
