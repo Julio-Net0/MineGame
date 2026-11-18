@@ -749,11 +749,15 @@ static void BuildCrossPass(const ChunkSnapshot *Snap, MesherState *State) {
 //
 // Sized so the workers stay busy for a whole loading frame: at the maximum
 // render distance a frame lasts several milliseconds against ~0.27 ms per mesh,
-// and 24 slots let the pool go idle after a few hundred microseconds. Each slot
-// carries a ~12 KB snapshot, so 128 of them cost ~1.5 MB.
+// and 24 slots let the pool go idle after a few hundred microseconds. The slot
+// count also caps the uploads of one frame, since only finished slots upload:
+// at R=64 a teleport settled in 1308 frames with 128 slots and in 510 with 256,
+// while 512 tripled the frame p99 for little more. Each slot carries a ~12 KB
+// snapshot, so 256 of them cost ~3 MB. Keep MAX_MESHES_PER_FRAME (main.c) equal
+// to this: a higher ceiling there can never be reached.
 
 enum {
-  MESH_JOB_SLOT_COUNT = 128,
+  MESH_JOB_SLOT_COUNT = 256,
 
   MESH_JOB_FREE = 0,
   MESH_JOB_QUEUED = 1,

@@ -74,7 +74,11 @@
 // reset. On fast hardware many uploads fit inside a few milliseconds, so the
 // time budget alone would leave that hazard open. Mesh building stops at
 // whichever limit is reached first.
-#define MAX_MESHES_PER_FRAME 96
+//
+// Measured at R=64, an upload costs ~2 us per GPU mesh, so 256 chunks fit well
+// inside the time budget. Matches MESH_JOB_SLOT_COUNT (renderer.c): only
+// finished job slots upload, so a ceiling above the slot count is never reached.
+#define MAX_MESHES_PER_FRAME 256
 
 // Through the renderer rather than freeing the handles here, so the slot also
 // leaves the renderer's renderable set before it is reused.
