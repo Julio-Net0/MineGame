@@ -172,7 +172,8 @@ static CubeClass GenerateCube(Chunk *Out, int ChunkX, int ChunkY, int ChunkZ,
 
   const TerrainGenOptions OPTIONS = {.AllowClassification = Classify,
                                      .CountClasses = false,
-                                     .DebugDensity = Density};
+                                     .DebugDensity = Density,
+                                     .CornerRows = (CornerRowRing *)0};
   FillChunkBiomeMap(Out, &SLocal);
   CubeClass Class = GenerateChunkTerrainEx(Out, &SLocal, &OPTIONS);
   PlaceChunkFeatures(Out, GetColumnCache(COLUMN_CACHE_MAIN_SLOT), Classify);
@@ -794,6 +795,144 @@ static bool CheckModifierRegions(SelfTestScratch *Scratch, uint64_t Seed) {
   return true;
 }
 
+// Bit patterns, not values: NAN marks unevaluated density and must match too.
+static bool FloatsIdentical(const float *Left, const float *Right,
+                            size_t Count) {
+  for (size_t Idx = 0; Idx < Count; Idx++) {
+    uint32_t LeftBits = 0;
+    uint32_t RightBits = 0;
+    memcpy(&LeftBits, &Left[Idx], sizeof(LeftBits));
+    memcpy(&RightBits, &Right[Idx], sizeof(RightBits));
+    if (LeftBits != RightBits) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// The ring keeps a plane under its exact Y only: a lookup at another Y of the
+// same row misses, and a reset forgets every plane.
+static bool CheckCornerRingBasics(CornerRowRing *Ring) {
+  const int PLANE_Y = -8;
+  const float VALUE_OFFSET = 0.5F;
+  const int ALIASED_Y = PLANE_Y + (CORNER_ROW_RING * DENSITY_CELL_Y);
+  float Stored[COLUMN_SHAPE_CORNERS][COLUMN_SHAPE_CORNERS];
+  float Loaded[COLUMN_SHAPE_CORNERS][COLUMN_SHAPE_CORNERS];
+  for (int CornerX = 0; CornerX < COLUMN_SHAPE_CORNERS; CornerX++) {
+    for (int CornerZ = 0; CornerZ < COLUMN_SHAPE_CORNERS; CornerZ++) {
+      Stored[CornerX][CornerZ] =
+          (float)((CornerX * COLUMN_SHAPE_CORNERS) + CornerZ) - VALUE_OFFSET;
+    }
+  }
+  CornerRowRingReset(Ring);
+  bool EmptyMisses = !CornerRowRingLoad(Ring, PLANE_Y, Loaded);
+  CornerRowRingStore(Ring, PLANE_Y, Stored);
+  bool StoredHits = CornerRowRingLoad(Ring, PLANE_Y, Loaded) &&
+                    FloatsIdentical(&Loaded[0][0], &Stored[0][0],
+                                    sizeof(Stored) / sizeof(float));
+  bool AliasMisses = !CornerRowRingLoad(Ring, ALIASED_Y, Loaded);
+  CornerRowRingReset(Ring);
+  bool ResetMisses = !CornerRowRingLoad(Ring, PLANE_Y, Loaded);
+  if (!EmptyMisses || !StoredHits || !AliasMisses || !ResetMisses) {
+    LogError("WORLDGEN_TEST: FAIL corner ring (empty miss %d, stored hit %d, "
+             "aliased miss %d, reset miss %d)",
+             (int)EmptyMisses, (int)StoredHits, (int)AliasMisses,
+             (int)ResetMisses);
+    return false;
+  }
+  return true;
+}
+
+// Per-block run of one cube, with or without the column's corner ring.
+static void GenerateCubeTerrain(Chunk *Out, int ChunkX, int ChunkY, int ChunkZ,
+                                const ColumnEntry *Column, CornerRowRing *Ring,
+                                float *Density) {
+  Out->ChunkX = ChunkX;
+  Out->ChunkY = ChunkY;
+  Out->ChunkZ = ChunkZ;
+  const TerrainGenOptions OPTIONS = {.AllowClassification = false,
+                                     .CountClasses = false,
+                                     .DebugDensity = Density,
+                                     .CornerRows = Ring};
+  FillChunkBiomeMap(Out, Column);
+  (void)GenerateChunkTerrainEx(Out, Column, &OPTIONS);
+}
+
+// A stack of cubes through a column's surface, walked upward and then downward
+// with an emptied ring each way, so planes are reused both from the cube below
+// and from the cube above. Every cube must match the run without a ring in
+// blocks and, bit for bit, in interpolated density.
+static bool CheckCornerStack(SelfTestScratch *Scratch, CornerRowRing *Ring,
+                             float *RingDensity, int ColumnX, int ColumnZ,
+                             uint64_t Seed, int *OutReused) {
+  enum { STACK_BELOW = 4, STACK_ABOVE = 2 };
+  ColumnEntryFill(Scratch->Fresh, ColumnX, ColumnZ, Seed);
+  const ColumnEntry *Column = Scratch->Fresh;
+  int Lowest = FloorDivChunk(Column->MinSurface) - STACK_BELOW;
+  int Highest = FloorDivChunk(Column->MaxSurface) + STACK_ABOVE;
+  float Probe[COLUMN_SHAPE_CORNERS][COLUMN_SHAPE_CORNERS];
+  for (int Pass = 0; Pass < 2; Pass++) {
+    CornerRowRingReset(Ring);
+    for (int Step = 0; Step <= Highest - Lowest; Step++) {
+      int ChunkY = (Pass == 0) ? Lowest + Step : Highest - Step;
+      // The two planes this cube shares with the previous one of the walk.
+      int SharedY = (ChunkY * CHUNK_SIZE) + ((Pass == 0) ? 0 : CHUNK_SIZE);
+      int Present = 0;
+      for (int Plane = 0; Plane < 2; Plane++) {
+        Present += CornerRowRingLoad(Ring, SharedY + (Plane * DENSITY_CELL_Y),
+                                     Probe)
+                       ? 1
+                       : 0;
+      }
+      if (Present != ((Step > 0) ? 2 : 0)) {
+        LogError("WORLDGEN_TEST: FAIL cube (%d, %d, %d) found %d of its shared "
+                 "corner planes in the ring",
+                 ColumnX, ChunkY, ColumnZ, Present);
+        return false;
+      }
+      *OutReused += Present;
+      GenerateCubeTerrain(Scratch->PerBlock, ColumnX, ChunkY, ColumnZ, Column,
+                          Ring, RingDensity);
+      GenerateCubeTerrain(Scratch->Uncached, ColumnX, ChunkY, ColumnZ, Column,
+                          (CornerRowRing *)0, Scratch->Density);
+      if (!ChunksMatch(Scratch->PerBlock, Scratch->Uncached) ||
+          !FloatsIdentical(RingDensity, Scratch->Density, CHUNK_VOLUME)) {
+        LogError("WORLDGEN_TEST: FAIL cube (%d, %d, %d) differs when its "
+                 "corner planes come from the column ring (%s walk)",
+                 ColumnX, ChunkY, ColumnZ, (Pass == 0) ? "upward" : "downward");
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+static bool CheckCornerPlaneReuse(SelfTestScratch *Scratch, uint64_t Seed) {
+  CornerRowRing *Ring = (CornerRowRing *)calloc(1, sizeof(CornerRowRing));
+  float *RingDensity = (float *)calloc(CHUNK_VOLUME, sizeof(float));
+  bool Passed = Ring != (CornerRowRing *)0 && RingDensity != (float *)0;
+  if (!Passed) {
+    LogError("WORLDGEN_TEST: FAIL out of memory allocating the corner ring");
+  }
+  Passed = Passed && CheckCornerRingBasics(Ring);
+  int Reused = 0;
+  for (int Index = 0; Passed && Index < TEST_COLUMN_COUNT; Index++) {
+    int ColumnX = 0;
+    int ColumnZ = 0;
+    GetTestColumn(Index, &ColumnX, &ColumnZ);
+    Passed = CheckCornerStack(Scratch, Ring, RingDensity, ColumnX, ColumnZ,
+                              Seed, &Reused);
+  }
+  free(Ring);
+  free(RingDensity);
+  if (Passed) {
+    LogInfo("WORLDGEN_TEST: ok %d corner planes reused from the column ring; "
+            "every cube equals the ring-free run in blocks and density",
+            Reused);
+  }
+  return Passed;
+}
+
 static bool RunChecks(SelfTestScratch *Scratch) {
   enum { PREPARED_SAMPLES = 512 };
   if (!CheckSplines() || !CheckShapeModifiers(GetWorldSeed())) {
@@ -820,7 +959,8 @@ static bool RunChecks(SelfTestScratch *Scratch) {
 
   if (!CheckStructureRegion(Scratch, Seed) ||
       !CheckFloodRegion(Scratch, Seed) || !CheckFillerRegion(Scratch, Seed) ||
-      !CheckModifierRegions(Scratch, Seed)) {
+      !CheckModifierRegions(Scratch, Seed) ||
+      !CheckCornerPlaneReuse(Scratch, Seed)) {
     return false;
   }
 

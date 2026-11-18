@@ -162,8 +162,11 @@ static void RunGeneration(Chunk *Target, int WorkerIndex) {
   // generation path, never after a disk load, so player edits (a chopped
   // tree) survive and the save format stays untouched.
   if (!LoadChunkFromDisk(Target)) {
-    const TerrainGenOptions OPTIONS = {.AllowClassification = true,
-                                       .CountClasses = true};
+    const TerrainGenOptions OPTIONS = {
+        .AllowClassification = true,
+        .CountClasses = true,
+        .DebugDensity = (float *)0,
+        .CornerRows = ColumnHandleCornerRows(&Handle)};
     PROFILE_BEGIN(TerrainStart);
     (void)GenerateChunkTerrainEx(Target, Column, &OPTIONS);
     PROFILE_END(TerrainStart, PROFILE_GEN_TERRAIN);

@@ -1072,6 +1072,16 @@ static void ScriptAddWorldgenJson(cJSON *Root, const ScriptContext *Ctx) {
     cJSON_AddItemToObject(Node, "columnCache", CacheNode);
   }
 
+  uint64_t ReusedPlanes = 0;
+  uint64_t EvaluatedPlanes = 0;
+  GetCornerPlaneCounts(&ReusedPlanes, &EvaluatedPlanes);
+  cJSON *PlaneNode = cJSON_CreateObject();
+  if (PlaneNode != (cJSON *)0) {
+    cJSON_AddNumberToObject(PlaneNode, "reused", (double)ReusedPlanes);
+    cJSON_AddNumberToObject(PlaneNode, "evaluated", (double)EvaluatedPlanes);
+    cJSON_AddItemToObject(Node, "cornerPlanes", PlaneNode);
+  }
+
   cJSON_AddNumberToObject(Node, "generatorVersion", WORLDGEN_VERSION);
   cJSON_AddNumberToObject(Node, "surfaceY", SurfaceY);
   cJSON_AddNumberToObject(Node, "preliminarySurfaceY", PreliminaryY);

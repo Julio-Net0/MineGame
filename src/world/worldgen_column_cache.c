@@ -3,9 +3,11 @@
 #include "core/profiler.h"
 #include "world/biome.h"
 #include "world/surface.h"
+#include "world/terrain_density.h"
 #include "world/terrain_shape.h"
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
 
 // A slot's state and its readers share one word, so pinning a READY slot and
 // claiming an idle one are single compare-exchanges that cannot interleave.
@@ -15,9 +17,15 @@
 #define SLOT_READY 0x80000000U
 #define SLOT_STATE_MASK 0xC0000000U
 
+#define ROW_EMPTY 0x00000000U
+#define ROW_FILLING 0x40000000U
+#define ROW_READY 0x80000000U
+#define ROW_STATE_MASK 0xC0000000U
+
 struct SharedColumnSlot {
   atomic_uint Word;
   ColumnEntry Entry;
+  CornerRowRing CornerRows;
 };
 
 typedef struct {
@@ -277,6 +285,9 @@ static const ColumnEntry *SharedAcquire(ColumnCache *Cache,
   }
   // FILLING turns every other thread away, so this thread alone writes the
   // entry and the word until the release below publishes it, still pinned.
+  // The ring is emptied with it: a plane of the column that held the slot
+  // before must never be read back as this column's at the same Y.
+  CornerRowRingReset(&Slot->CornerRows);
   FillCounted(Cache, &Slot->Entry, ColumnX, ColumnZ, Seed);
   atomic_store_explicit(&Slot->Word, SLOT_READY | 1U, memory_order_release);
   return &Slot->Entry;
@@ -308,6 +319,64 @@ void ColumnCacheRelease(ColumnHandle *Handle) {
     atomic_fetch_sub_explicit(&Handle->Slot->Word, 1U, memory_order_release);
     Handle->Slot = (struct SharedColumnSlot *)0;
   }
+}
+
+CornerRowRing *ColumnHandleCornerRows(const ColumnHandle *Handle) {
+  return (Handle->Slot != (struct SharedColumnSlot *)0)
+             ? &Handle->Slot->CornerRows
+             : (CornerRowRing *)0;
+}
+
+void CornerRowRingReset(CornerRowRing *Ring) {
+  for (int Idx = 0; Idx < CORNER_ROW_RING; Idx++) {
+    atomic_store_explicit(&Ring->Rows[Idx].State, ROW_EMPTY,
+                          memory_order_relaxed);
+  }
+}
+
+static CornerRow *RingRow(CornerRowRing *Ring, int PlaneY) {
+  return &Ring->Rows[Wrap(PlaneY / DENSITY_CELL_Y, CORNER_ROW_RING)];
+}
+
+bool CornerRowRingLoad(CornerRowRing *Ring, int PlaneY,
+                       float Out[COLUMN_SHAPE_CORNERS][COLUMN_SHAPE_CORNERS]) {
+  CornerRow *Row = RingRow(Ring, PlaneY);
+  unsigned int Word = atomic_load_explicit(&Row->State, memory_order_relaxed);
+  while ((Word & ROW_STATE_MASK) == ROW_READY) {
+    // Acquire pairs with the release that published READY: the plane is read
+    // only after the store that wrote it, and stays put while pinned.
+    if (atomic_compare_exchange_weak_explicit(&Row->State, &Word, Word + 1U,
+                                              memory_order_acquire,
+                                              memory_order_relaxed)) {
+      bool Holds = Row->PlaneY == PlaneY;
+      if (Holds) {
+        memcpy(Out, Row->Values, sizeof(Row->Values));
+      }
+      atomic_fetch_sub_explicit(&Row->State, 1U, memory_order_release);
+      return Holds;
+    }
+  }
+  return false;
+}
+
+void CornerRowRingStore(
+    CornerRowRing *Ring, int PlaneY,
+    const float Values[COLUMN_SHAPE_CORNERS][COLUMN_SHAPE_CORNERS]) {
+  CornerRow *Row = RingRow(Ring, PlaneY);
+  // Claimed only while idle: empty, or READY with no reader left. Acquire pairs
+  // with the last readers' release, so their copies finish before the rewrite.
+  unsigned int Word = atomic_load_explicit(&Row->State, memory_order_relaxed);
+  if (Word != ROW_EMPTY && Word != ROW_READY) {
+    return;
+  }
+  if (!atomic_compare_exchange_strong_explicit(&Row->State, &Word, ROW_FILLING,
+                                               memory_order_acquire,
+                                               memory_order_relaxed)) {
+    return;
+  }
+  Row->PlaneY = PlaneY;
+  memcpy(Row->Values, Values, sizeof(Row->Values));
+  atomic_store_explicit(&Row->State, ROW_READY, memory_order_release);
 }
 
 void ColumnCacheGetTotals(uint64_t *OutHits, uint64_t *OutMisses) {

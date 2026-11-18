@@ -32,7 +32,10 @@ enum {
   COLUMN_SHAPE_CORNERS = (CHUNK_SIZE / 4) + 1,
   // Columns the shared table covers beyond the render distance on each side:
   // the load ring past it and the structure pass's neighbour reach.
-  COLUMN_TABLE_MARGIN = 3
+  COLUMN_TABLE_MARGIN = 3,
+  // Corner planes a shared column slot keeps, indexed by plane Y modulo the
+  // count: 8 planes span 64 blocks, the 4 planes of a cube plus its neighbours'.
+  CORNER_ROW_RING = 8
 };
 
 typedef struct ColumnEntry {
@@ -110,6 +113,40 @@ const ColumnEntry *ColumnCacheAcquire(ColumnCache *Cache, int ColumnX,
                                       int ColumnZ, uint64_t Seed,
                                       ColumnHandle *Handle);
 void ColumnCacheRelease(ColumnHandle *Handle);
+
+// One horizontal plane of a column's density corners, at block Y PlaneY. The
+// top two planes a cube evaluates are the bottom two of the cube above it, so
+// a plane kept here is evaluated once for both. Values are what the pure corner
+// function returns, so a reused plane is bit-identical to a recomputed one.
+//
+// State is ROW_EMPTY, ROW_FILLING, or ROW_READY plus a reader count, the same
+// scheme as the slot word: a reader pins a READY row while it copies, and a
+// writer claims only an idle row. Contention never waits; the caller computes
+// the plane itself instead.
+typedef struct {
+  atomic_uint State;
+  int PlaneY;
+  float Values[COLUMN_SHAPE_CORNERS][COLUMN_SHAPE_CORNERS];
+} CornerRow;
+
+typedef struct CornerRowRing {
+  CornerRow Rows[CORNER_ROW_RING];
+} CornerRowRing;
+
+// The ring of the shared slot Handle pins, or NULL for a private entry, whose
+// cubes evaluate every plane themselves.
+CornerRowRing *ColumnHandleCornerRows(const ColumnHandle *Handle);
+// Only while no other thread can reach the ring.
+void CornerRowRingReset(CornerRowRing *Ring);
+// Copies the plane at PlaneY into Out; false when the ring does not hold it or
+// its row is being written.
+bool CornerRowRingLoad(CornerRowRing *Ring, int PlaneY,
+                       float Out[COLUMN_SHAPE_CORNERS][COLUMN_SHAPE_CORNERS]);
+// Keeps the plane at PlaneY, replacing whatever its row held; skipped when the
+// row is being read or written.
+void CornerRowRingStore(
+    CornerRowRing *Ring, int PlaneY,
+    const float Values[COLUMN_SHAPE_CORNERS][COLUMN_SHAPE_CORNERS]);
 
 // Fills Entry from the pure samplers, bypassing any cache. Lookups use it on a
 // miss; the self-test uses it to produce the uncached reference.

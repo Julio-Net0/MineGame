@@ -187,6 +187,18 @@ static atomic_uint_fast64_t *GetCubeClassCounters(void) {
   return SCounters;
 }
 
+static atomic_uint_fast64_t *GetCornerPlaneCounters(void) {
+  // Reused, then evaluated.
+  static atomic_uint_fast64_t SCounters[2];
+  return SCounters;
+}
+
+void GetCornerPlaneCounts(uint64_t *OutReused, uint64_t *OutEvaluated) {
+  atomic_uint_fast64_t *Counters = GetCornerPlaneCounters();
+  *OutReused = atomic_load_explicit(&Counters[0], memory_order_relaxed);
+  *OutEvaluated = atomic_load_explicit(&Counters[1], memory_order_relaxed);
+}
+
 void GetCubeClassCounts(uint64_t Counts[CUBE_CLASS_COUNT]) {
   atomic_uint_fast64_t *Counters = GetCubeClassCounters();
   for (int Idx = 0; Idx < CUBE_CLASS_COUNT; Idx++) {
@@ -200,25 +212,40 @@ typedef struct {
   float Values[DENSITY_CORNERS_XZ][DENSITY_CORNERS_Y][DENSITY_CORNERS_XZ];
 } CubeCorners;
 
-static void EvaluateCubeCorners(const Chunk *ChunkVal,
-                                const ColumnEntry *Column, uint64_t SeedVal,
-                                CubeCorners *Out) {
+// Plane by plane: a plane in Rows is copied, any other is evaluated and kept
+// there for the cubes above and below. Returns how many planes were copied.
+static int EvaluateCubeCorners(const Chunk *ChunkVal,
+                               const ColumnEntry *Column, uint64_t SeedVal,
+                               CornerRowRing *Rows, CubeCorners *Out) {
   int OriginX = ChunkVal->ChunkX * CHUNK_SIZE;
   int OriginY = ChunkVal->ChunkY * CHUNK_SIZE;
   int OriginZ = ChunkVal->ChunkZ * CHUNK_SIZE;
-  for (int CornerX = 0; CornerX < DENSITY_CORNERS_XZ; CornerX++) {
-    for (int CornerZ = 0; CornerZ < DENSITY_CORNERS_XZ; CornerZ++) {
-      float Base = Column->CornerBase[CornerX][CornerZ];
-      float Variation = Column->CornerVariation[CornerX][CornerZ];
-      float Shell = Column->CornerShell[CornerX][CornerZ];
-      for (int CornerY = 0; CornerY < DENSITY_CORNERS_Y; CornerY++) {
-        Out->Values[CornerX][CornerY][CornerZ] = TerrainCornerDensity(
-            Base, Variation, Shell, OriginX + (CornerX * DENSITY_CELL_XZ),
-            OriginY + (CornerY * DENSITY_CELL_Y),
-            OriginZ + (CornerZ * DENSITY_CELL_XZ), SeedVal);
+  int Reused = 0;
+  for (int CornerY = 0; CornerY < DENSITY_CORNERS_Y; CornerY++) {
+    int PlaneY = OriginY + (CornerY * DENSITY_CELL_Y);
+    float Plane[DENSITY_CORNERS_XZ][DENSITY_CORNERS_XZ];
+    bool Copied = Rows != (CornerRowRing *)0 &&
+                  CornerRowRingLoad(Rows, PlaneY, Plane);
+    for (int CornerX = 0; CornerX < DENSITY_CORNERS_XZ; CornerX++) {
+      for (int CornerZ = 0; CornerZ < DENSITY_CORNERS_XZ; CornerZ++) {
+        if (!Copied) {
+          Plane[CornerX][CornerZ] = TerrainCornerDensity(
+              Column->CornerBase[CornerX][CornerZ],
+              Column->CornerVariation[CornerX][CornerZ],
+              Column->CornerShell[CornerX][CornerZ],
+              OriginX + (CornerX * DENSITY_CELL_XZ), PlaneY,
+              OriginZ + (CornerZ * DENSITY_CELL_XZ), SeedVal);
+        }
+        Out->Values[CornerX][CornerY][CornerZ] = Plane[CornerX][CornerZ];
       }
     }
+    if (Copied) {
+      Reused++;
+    } else if (Rows != (CornerRowRing *)0) {
+      CornerRowRingStore(Rows, PlaneY, Plane);
+    }
   }
+  return Reused;
 }
 
 // Interpolated density down one block column, padding rows included.
@@ -606,7 +633,8 @@ static void ClearDebugDensity(float *DebugDensity) {
 void GenerateChunkTerrain(Chunk *ChunkVal, const ColumnEntry *Column) {
   const TerrainGenOptions DEFAULT_OPTIONS = {.AllowClassification = true,
                                              .CountClasses = false,
-                                             .DebugDensity = NULL};
+                                             .DebugDensity = NULL,
+                                             .CornerRows = NULL};
   (void)GenerateChunkTerrainEx(ChunkVal, Column, &DEFAULT_OPTIONS);
 }
 
@@ -640,13 +668,15 @@ CubeClass GenerateChunkTerrainEx(Chunk *ChunkVal, const ColumnEntry *Column,
 
   CubeCorners Corners;
   bool HaveCorners = false;
+  int ReusedPlanes = 0;
   CubeClass Class = CUBE_CLASS_MIXED;
   if (AllVoid) {
     Class = CUBE_CLASS_AIR;
   } else if (AllOverworld) {
     Class = ClassifyByBounds(BaseY, Column, Ceiling);
     if (Class == CUBE_CLASS_MIXED) {
-      EvaluateCubeCorners(ChunkVal, Column, SeedVal, &Corners);
+      ReusedPlanes = EvaluateCubeCorners(ChunkVal, Column, SeedVal,
+                                         Options->CornerRows, &Corners);
       HaveCorners = true;
       Class = ClassifyByCorners(BaseY, &Corners, Ceiling);
     }
@@ -656,7 +686,8 @@ CubeClass GenerateChunkTerrainEx(Chunk *ChunkVal, const ColumnEntry *Column,
   int SolidCount = 0;
   if (!Options->AllowClassification || Class == CUBE_CLASS_MIXED) {
     if (AnyOverworld && !HaveCorners) {
-      EvaluateCubeCorners(ChunkVal, Column, SeedVal, &Corners);
+      ReusedPlanes = EvaluateCubeCorners(ChunkVal, Column, SeedVal,
+                                         Options->CornerRows, &Corners);
       HaveCorners = true;
     }
     SolidCount = ChunkBeginFill(ChunkVal)
@@ -681,6 +712,14 @@ CubeClass GenerateChunkTerrainEx(Chunk *ChunkVal, const ColumnEntry *Column,
   if (Options->CountClasses) {
     atomic_fetch_add_explicit(&GetCubeClassCounters()[Class], 1,
                               memory_order_relaxed);
+    if (HaveCorners) {
+      atomic_uint_fast64_t *Planes = GetCornerPlaneCounters();
+      atomic_fetch_add_explicit(&Planes[0], (uint_fast64_t)ReusedPlanes,
+                                memory_order_relaxed);
+      atomic_fetch_add_explicit(
+          &Planes[1], (uint_fast64_t)(DENSITY_CORNERS_Y - ReusedPlanes),
+          memory_order_relaxed);
+    }
   }
 
   ChunkVal->SolidBlockCount = SolidCount;
