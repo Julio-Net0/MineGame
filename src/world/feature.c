@@ -103,17 +103,7 @@ static int PickOrientation(const Prefab *PrefabVal, uint64_t Hash) {
   return Code;
 }
 
-// Reach of every loaded prefab around its anchor column: horizontally the widest
-// footprint, vertically how far it extends below and above the cell it is
-// stamped at. A candidate's prefab is unknown until its biome resolves, so these
-// are upper bounds over all prefabs.
-typedef struct {
-  int Footprint;
-  int Below;
-  int Above;
-} PrefabReach;
-
-static PrefabReach MaxPrefabReach(void) {
+PrefabReach MaxPrefabReach(void) {
   PrefabReach Reach = {0, 0, 0};
   int Count = GetLoadedPrefabsCount();
   for (int Idx = 0; Idx < Count; Idx++) {

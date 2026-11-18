@@ -1169,6 +1169,28 @@ static void ScriptAddChunksJson(cJSON *Root, const ScriptContext *Ctx) {
     cJSON_AddNumberToObject(WindowNode, "layers", Window.Count);
     cJSON_AddItemToObject(Root, "loadWindow", WindowNode);
   }
+
+  ColumnBoundsStats Bounds = {0};
+  WorldGetColumnBoundsStats(Ctx->WorldVal, ScriptLoadCenter(Ctx),
+                            Ctx->RenderDistance, &Bounds);
+  cJSON *BoundsNode = cJSON_CreateObject();
+  if (BoundsNode != (cJSON *)0) {
+    cJSON_AddNumberToObject(BoundsNode, "columns", Bounds.Columns);
+    cJSON_AddNumberToObject(BoundsNode, "windowChunks", Bounds.WindowChunks);
+    cJSON_AddNumberToObject(BoundsNode, "bandChunks", Bounds.BandChunks);
+    cJSON_AddNumberToObject(BoundsNode, "slicedColumns", Bounds.SlicedColumns);
+    cJSON_AddNumberToObject(BoundsNode, "slicedLayers", Bounds.SlicedLayers);
+    cJSON_AddNumberToObject(BoundsNode, "uncoveredBelowColumns",
+                            Bounds.UncoveredBelowColumns);
+    cJSON_AddNumberToObject(BoundsNode, "airWindowChunks",
+                            Bounds.AirWindowChunks);
+    cJSON_AddNumberToObject(BoundsNode, "maxTopLayer", Bounds.MaxTopLayer);
+    cJSON_AddNumberToObject(BoundsNode, "minBottomLayer", Bounds.MinBottomLayer);
+    cJSON_AddNumberToObject(BoundsNode, "reachColumns", Bounds.ReachColumns);
+    cJSON_AddNumberToObject(BoundsNode, "reachAbove", Bounds.ReachAbove);
+    cJSON_AddNumberToObject(BoundsNode, "computed", (double)Bounds.Computed);
+    cJSON_AddItemToObject(Root, "columnBounds", BoundsNode);
+  }
 }
 
 #ifdef MINEGAME_PROFILE

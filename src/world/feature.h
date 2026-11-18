@@ -20,6 +20,18 @@
 // Candidate surfaces come from Cache (the generating thread's column cache).
 // AllowSkip lets the pass return early for a cube no candidate can reach; only
 // the self-test turns it off, to prove skipping changes nothing.
+// Reach of every loaded prefab around its anchor column: horizontally the widest
+// footprint, vertically how far it extends below and above the cell it is
+// stamped at. A candidate's prefab is unknown until its biome resolves, so these
+// are upper bounds over all prefabs.
+typedef struct {
+  int Footprint;
+  int Below;
+  int Above;
+} PrefabReach;
+
+PrefabReach MaxPrefabReach(void);
+
 struct ColumnCache;
 void PlaceChunkFeatures(Chunk *ChunkVal, struct ColumnCache *Cache,
                         bool AllowSkip);

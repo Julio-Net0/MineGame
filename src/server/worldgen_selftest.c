@@ -407,6 +407,15 @@ static bool CheckColumn(SelfTestScratch *Scratch, int ColumnX, int ColumnZ,
              ColumnX, ColumnZ);
     return false;
   }
+  float High = 0.0F;
+  float Low = 0.0F;
+  ColumnDensityBounds(ColumnX, ColumnZ, Seed, &High, &Low);
+  if (High != Scratch->Fresh->BoundHigh || Low != Scratch->Fresh->BoundLow) {
+    LogError("WORLDGEN_TEST: FAIL column (%d, %d) density bounds differ from "
+             "the cache entry's",
+             ColumnX, ColumnZ);
+    return false;
+  }
 
   for (size_t Idx = 0; Idx < sizeof(TEST_CHUNK_YS) / sizeof(TEST_CHUNK_YS[0]);
        Idx++) {

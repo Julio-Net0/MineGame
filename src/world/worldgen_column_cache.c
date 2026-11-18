@@ -96,6 +96,33 @@ ColumnCache *GetColumnCache(int Slot) {
   return GetMainColumnCache();
 }
 
+// Widens [Low, High] to Base +- TERRAIN_NOISE_BOUND * Variation of one corner.
+// Shared by both bound producers so they cannot diverge.
+static void AccumulateShapeBounds(const ColumnShape *Shape, bool First,
+                                  float *High, float *Low) {
+  float Reach = TERRAIN_NOISE_BOUND * Shape->Variation;
+  *High = (First || Shape->Base + Reach > *High) ? Shape->Base + Reach : *High;
+  *Low = (First || Shape->Base - Reach < *Low) ? Shape->Base - Reach : *Low;
+}
+
+void ColumnDensityBounds(int ColumnX, int ColumnZ, uint64_t Seed,
+                         float *OutHigh, float *OutLow) {
+  int OriginX = ColumnX * CHUNK_SIZE;
+  int OriginZ = ColumnZ * CHUNK_SIZE;
+  float High = 0.0F;
+  float Low = 0.0F;
+  for (int CornerX = 0; CornerX < COLUMN_SHAPE_CORNERS; CornerX++) {
+    for (int CornerZ = 0; CornerZ < COLUMN_SHAPE_CORNERS; CornerZ++) {
+      ColumnShape Shape =
+          EvaluateColumnShape(OriginX + (CornerX * SHAPE_LATTICE_STEP),
+                              OriginZ + (CornerZ * SHAPE_LATTICE_STEP), Seed);
+      AccumulateShapeBounds(&Shape, CornerX == 0 && CornerZ == 0, &High, &Low);
+    }
+  }
+  *OutHigh = High;
+  *OutLow = Low;
+}
+
 void ColumnEntryFill(ColumnEntry *Entry, int ColumnX, int ColumnZ,
                      uint64_t Seed) {
   const int CELL_CENTER = BIOME_CELL_SIZE / 2;
@@ -116,12 +143,8 @@ void ColumnEntryFill(ColumnEntry *Entry, int ColumnX, int ColumnZ,
       Entry->CornerBase[CornerX][CornerZ] = Shape.Base;
       Entry->CornerVariation[CornerX][CornerZ] = Shape.Variation;
       Entry->CornerShell[CornerX][CornerZ] = Shape.ShellDepth;
-      float Reach = TERRAIN_NOISE_BOUND * Shape.Variation;
-      bool First = (CornerX == 0 && CornerZ == 0);
-      BoundHigh = (First || Shape.Base + Reach > BoundHigh) ? Shape.Base + Reach
-                                                            : BoundHigh;
-      BoundLow = (First || Shape.Base - Reach < BoundLow) ? Shape.Base - Reach
-                                                          : BoundLow;
+      AccumulateShapeBounds(&Shape, CornerX == 0 && CornerZ == 0, &BoundHigh,
+                            &BoundLow);
     }
   }
   Entry->BoundHigh = BoundHigh;

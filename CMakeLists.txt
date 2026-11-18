@@ -98,6 +98,7 @@ set(MINEGAME_SIM_SOURCES
   src/world/stone_filler.c
   src/world/worldgen_strata.c
   src/world/worldgen_column_cache.c
+  src/world/column_bounds.c
   src/persistence/world_save.c
   src/persistence/chunk_serial.c
   src/player/player.c

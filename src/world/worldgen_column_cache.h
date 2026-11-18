@@ -153,6 +153,11 @@ void CornerRowRingStore(
 void ColumnEntryFill(ColumnEntry *Entry, int ColumnX, int ColumnZ,
                      uint64_t Seed);
 
+// The column's BoundHigh and BoundLow alone, bit-identical to what
+// ColumnEntryFill stores, without the surface and climate work.
+void ColumnDensityBounds(int ColumnX, int ColumnZ, uint64_t Seed,
+                         float *OutHigh, float *OutLow);
+
 // Totals across every slot. A miss is a column fill, in the shared table or a
 // private cache.
 void ColumnCacheGetTotals(uint64_t *OutHits, uint64_t *OutMisses);

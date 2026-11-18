@@ -3,6 +3,7 @@
 
 #include "core/vecmath.h"
 #include "world/chunk.h"
+#include "world/column_bounds.h"
 #include "world/dense_pool.h"
 #include "world/world_limits.h"
 #include <stdbool.h>
@@ -78,6 +79,10 @@ typedef struct World {
   // generation ceiling), resolved from the strata table in InitWorld.
   int WorldLoChunkY;
   int WorldHiChunkY;
+
+  // Density bounds of every column around the load centre, refreshed by
+  // UpdateWorld whenever the centre moves. Main thread only.
+  ColumnBoundsTable ColumnBounds;
 
   ChunkEvictCallback OnChunkEvict;
   BlockChangeCallback OnBlockChange;
@@ -190,6 +195,32 @@ bool WorldIsSettled(World *WorldVal, Vec3 Center, int RenderDist);
 // within Radius, not to the whole volume.
 bool WorldIsNearSettled(World *WorldVal, Vec3 Center, int RenderDist,
                         int Radius);
+
+// The load disc's terrain-guided vertical extent against the current window:
+// what a per-column load range would hold, and what the uniform window cuts.
+// Columns outside the disc are not counted. Layers are clamped to the world.
+typedef struct {
+  int Columns;
+  // Columns times the window's layer span.
+  int WindowChunks;
+  // Sum over columns of TopLayer - BottomLayer + 1.
+  int BandChunks;
+  // Columns whose top lies above the window, and the layers they lose there.
+  int SlicedColumns;
+  int SlicedLayers;
+  // Columns whose terrain air reaches below the window.
+  int UncoveredBelowColumns;
+  // Window layers above a column's top: provably air.
+  int AirWindowChunks;
+  int MaxTopLayer;
+  int MinBottomLayer;
+  int ReachColumns;
+  int ReachAbove;
+  uint64_t Computed;
+} ColumnBoundsStats;
+
+void WorldGetColumnBoundsStats(World *WorldVal, Vec3 Center, int RenderDist,
+                               ColumnBoundsStats *Out);
 
 // How many active chunks are generated, and how many of those are still waiting
 // on generation or meshing. Any out parameter may be null.

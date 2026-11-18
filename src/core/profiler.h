@@ -28,7 +28,8 @@
 // that remainder lie. The exceptions are flagged by IsProfileScopeNested: the
 // generation sub-scopes split "Worker gen" by stage, and "Occlusion" and
 // "Chunk submit" split the traversal and the chunk-pass submission out of
-// "World draw", and "Mesh snap" splits snapshot capture out of "Mesh queue".
+// "World draw", "Mesh snap" splits snapshot capture out of "Mesh queue", and
+// "Col bounds" splits the column bound refresh out of "World update".
 // They are breakdowns of their parent, excluded
 // from the remainder, and not CPU-bound so --cpu-slowdown does not stretch the
 // same time twice.
@@ -58,6 +59,7 @@ typedef enum {
   PROFILE_CHUNK_EVENTS,
   PROFILE_MESH_QUEUE,
   PROFILE_SCRIPT_WAIT,
+  PROFILE_COLUMN_BOUNDS,
   PROFILE_SCOPE_COUNT
 } ProfileScope;
 

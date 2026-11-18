@@ -360,6 +360,7 @@ void InitWorld(World *WorldVal){
   WorldVal->LastSettled = false;
 #endif
   ResolveWorldChunkRange(&WorldVal->WorldLoChunkY, &WorldVal->WorldHiChunkY);
+  ColumnBoundsInit(&WorldVal->ColumnBounds);
   WorldVal->OnChunkEvict = (ChunkEvictCallback)0;
   WorldVal->OnBlockChange = (BlockChangeCallback)0;
   WorldVal->BlockChangeUserData = NULL;
@@ -724,6 +725,11 @@ void UpdateWorld(World *WorldVal, Vec3 PlayerPos, int RenderDist){
 
   RebucketMeshCandidates(WorldVal, PChunkX, PChunkY, PChunkZ);
 
+  PROFILE_BEGIN(BoundsStart);
+  (void)ColumnBoundsEnsure(&WorldVal->ColumnBounds, PChunkX, PChunkZ,
+                           RenderDist, GetWorldSeed());
+  PROFILE_END(BoundsStart, PROFILE_COLUMN_BOUNDS);
+
   // Static: at MAX_ACTIVE_CHUNKS entries it is too large to want on the stack,
   // and UpdateWorld only runs on the thread driving the world.
   static bool KeepChunk[MAX_ACTIVE_CHUNKS];
@@ -983,6 +989,48 @@ void WorldGetLoadLayerRange(const World *WorldVal, Vec3 Center, int RenderDist,
     if (Volume.Layers[Layer] > Out->Hi) { Out->Hi = Volume.Layers[Layer]; }
   }
   Out->Count = Volume.LayerCount;
+}
+
+void WorldGetColumnBoundsStats(World *WorldVal, Vec3 Center, int RenderDist,
+                               ColumnBoundsStats *Out) {
+  LoadVolume Volume;
+  BuildLoadVolume(WorldVal, Center, RenderDist, &Volume);
+  LoadLayerRange Window;
+  WorldGetLoadLayerRange(WorldVal, Center, RenderDist, &Window);
+  int Span = Window.Hi - Window.Lo + 1;
+  ColumnBoundsTable *Table = &WorldVal->ColumnBounds;
+
+  ColumnBoundsStats Stats = {0};
+  for (int Col = 0; Col < Volume.ColumnCount; Col++) {
+    int ColumnX = Volume.CenterX + Volume.Columns[Col].Dx;
+    int ColumnZ = Volume.CenterZ + Volume.Columns[Col].Dz;
+    int Top = ColumnBoundsTopLayer(Table, ColumnX, ColumnZ);
+    int Bottom = ColumnBoundsBottomLayer(Table, ColumnX, ColumnZ);
+    if (Top > WorldVal->WorldHiChunkY) { Top = WorldVal->WorldHiChunkY; }
+    if (Bottom < WorldVal->WorldLoChunkY) { Bottom = WorldVal->WorldLoChunkY; }
+    if (Bottom > Top) { Bottom = Top; }
+
+    if (Stats.Columns == 0 || Top > Stats.MaxTopLayer) { Stats.MaxTopLayer = Top; }
+    if (Stats.Columns == 0 || Bottom < Stats.MinBottomLayer) {
+      Stats.MinBottomLayer = Bottom;
+    }
+    Stats.Columns++;
+    Stats.WindowChunks += Span;
+    Stats.BandChunks += Top - Bottom + 1;
+    if (Top > Window.Hi) {
+      Stats.SlicedColumns++;
+      Stats.SlicedLayers += Top - Window.Hi;
+    }
+    if (Bottom < Window.Lo) { Stats.UncoveredBelowColumns++; }
+    if (Window.Hi > Top) {
+      int AirFrom = (Top >= Window.Lo) ? Top + 1 : Window.Lo;
+      Stats.AirWindowChunks += Window.Hi - AirFrom + 1;
+    }
+  }
+  Stats.ReachColumns = Table->ReachColumns;
+  Stats.ReachAbove = Table->ReachAbove;
+  Stats.Computed = Table->Computed;
+  *Out = Stats;
 }
 
 // Neighbour-dirty reaction to one finished chunk, shared by the drain and its
