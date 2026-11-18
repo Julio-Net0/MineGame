@@ -59,6 +59,23 @@ typedef struct {
   int VCount;
 } MeshScratch;
 
+// Face-culling classes of every snapshot cell, packed as bit columns so the
+// mesher finds a slice's visible faces with a few word operations instead of a
+// block lookup per cell. Bit k of a column is snapshot index k along its axis
+// (chunk-local k - 1), so the one-block margin sits in bits 0 and
+// SNAPSHOT_BLOCK_SPAN - 1. Only the Z and Y axes are kept: every face direction
+// lays its slice rows along one of them.
+typedef struct {
+  // Indexed [x][y], bits along z.
+  uint32_t EmitsZ[SNAPSHOT_BLOCK_SPAN][SNAPSHOT_BLOCK_SPAN];
+  uint32_t PassesZ[SNAPSHOT_BLOCK_SPAN][SNAPSHOT_BLOCK_SPAN];
+  uint32_t TransparentZ[SNAPSHOT_BLOCK_SPAN][SNAPSHOT_BLOCK_SPAN];
+  // Indexed [x][z], bits along y.
+  uint32_t EmitsY[SNAPSHOT_BLOCK_SPAN][SNAPSHOT_BLOCK_SPAN];
+  uint32_t PassesY[SNAPSHOT_BLOCK_SPAN][SNAPSHOT_BLOCK_SPAN];
+  uint32_t TransparentY[SNAPSHOT_BLOCK_SPAN][SNAPSHOT_BLOCK_SPAN];
+} CullColumns;
+
 typedef struct {
   // All three sized alike. The cutout set will hold far less than the others in
   // practice, but a shared size keeps every emit path identical and removes a
@@ -70,6 +87,8 @@ typedef struct {
   ChunkSnapshot Snapshot;
 
   FaceVisScratch Visibility;
+
+  CullColumns Cull;
 } MesherState;
 
 // One per mesh worker, indexed by worker. Allocated for the actual worker
@@ -125,9 +144,68 @@ static bool MesherHasRoom(const MesherState *State, MeshTarget Target) {
   return (State->Sets[Target].VCount + VERTICES_PER_FACE) <= MAX_MESH_VERTICES;
 }
 
+// ---------------------------------------------------------------------------
+// Face-culling classes
+// ---------------------------------------------------------------------------
+//
+// A face of block P toward neighbour N is drawn when P emits cube faces, N lets
+// faces through, and P is not a transparent block facing its own id (water
+// against water). Air is decided by id: it emits nothing and passes every face.
+
+enum {
+    CULL_EMITS = 1U,
+    CULL_PASSES = 2U,
+    CULL_TRANSPARENT = 4U,
+
+    CULL_PASSES_SHIFT = 1U,
+    CULL_TRANSPARENT_SHIFT = 2U
+};
+
+// Resolved once from the registry, which is final before the renderer starts:
+// the workers then classify a cell with a table read instead of a definition
+// fetch.
+typedef struct {
+    uint8_t ById[BLOCK_REGISTRY_SIZE];
+    // What GetBlockDef resolves an id past the registry to.
+    uint8_t Unregistered;
+} CullClassTable;
+
+static CullClassTable *GetCullClassTable(void) {
+    static CullClassTable Table;
+    return &Table;
+}
+
+static uint8_t ClassifyBlockDef(const BlockType *Def) {
+    uint8_t Class = 0;
+    if (Def->IsTransparent) {
+        Class |= (uint8_t)(CULL_PASSES | CULL_TRANSPARENT);
+    }
+    // Cross billboards are emitted by their own pass, not as cube faces.
+    if (!Def->IsTransparent || Def->RenderType != BLOCK_RENDER_CROSS) {
+        Class |= (uint8_t)CULL_EMITS;
+    }
+    return Class;
+}
+
+static void InitCullClassTable(void) {
+    CullClassTable *Table = GetCullClassTable();
+    for (int Id = 0; Id < BLOCK_REGISTRY_SIZE; Id++) {
+        Table->ById[Id] = ClassifyBlockDef(GetBlockDef(Id));
+    }
+    // Air is decided by id, never by its definition: it emits nothing and
+    // shows every face behind it.
+    Table->ById[BLOCK_ID_AIR] = (uint8_t)CULL_PASSES;
+    Table->Unregistered = ClassifyBlockDef(GetBlockDef(BLOCK_REGISTRY_SIZE));
+}
+
+static uint32_t CullClassOf(const CullClassTable *Table, BlockID Id) {
+    return (Id < BLOCK_REGISTRY_SIZE) ? Table->ById[Id] : Table->Unregistered;
+}
+
 void InitRenderer(void) {
     RenderBackendInit();
     InitChunkVisibility();
+    InitCullClassTable();
 }
 
 static void ResetRenderableSet(void);
@@ -242,15 +320,6 @@ static Color8 GetFaceTint(const ChunkSnapshot *Snap, int Wx, int Wy,
 // ---------------------------------------------------------------------------
 // AO helpers
 // ---------------------------------------------------------------------------
-
-static bool IsNeighbourTransparent(const ChunkSnapshot *Snap,
-                                   int LocalX, int LocalY, int LocalZ,
-                                   BlockID SelfId) {
-    BlockID Id = SnapshotBlockAt(Snap, LocalX, LocalY, LocalZ);
-    if (Id == 0) { return true; }
-    if (Id == SelfId && GetBlockDef(SelfId)->IsTransparent) { return false; }
-    return GetBlockDef(Id)->IsTransparent;
-}
 
 static bool IsSolidForAO(const ChunkSnapshot *Snap, int LocalX, int LocalY, int LocalZ) {
     BlockID Id = SnapshotBlockAt(Snap, LocalX, LocalY, LocalZ);
@@ -478,13 +547,14 @@ static void AddGreedyFaceToMeshBuilder(MesherState *State, MeshTarget Target,
 // FaceMask and greedy scan
 // ---------------------------------------------------------------------------
 
+// Valid only where the slice's row bitmask has the bit set: cells without a
+// face are never read, so the mask is not cleared between slices.
 typedef struct {
     BlockID BlockId;
     uint16_t TexIndex;
     uint16_t Tint565;
     int Ao[4];
     bool FlipQuad;
-    bool Used;
 } FaceMaskData;
 
 typedef struct {
@@ -520,14 +590,103 @@ static int GetFaceOverlay(const BlockType *Def, BlockFace Face) {
     return Def->SideOverlaySlot;
 }
 
+enum {
+    // Snapshot bits 1..CHUNK_SIZE: the chunk itself, without the margin.
+    CULL_INTERIOR_BITS = ((1U << CHUNK_SIZE) - 1U) << 1U,
+    // A face column's bits, shifted down to chunk-local indices.
+    CULL_LOCAL_BITS = (1U << CHUNK_SIZE) - 1U
+};
+
+// Classify every snapshot cell once and pack the classes into bit columns along
+// Z and Y.
+static void BuildCullColumns(const ChunkSnapshot *Snap, CullColumns *Cols) {
+    const CullClassTable *Table = GetCullClassTable();
+    memset(Cols->EmitsY, 0, sizeof(Cols->EmitsY));
+    memset(Cols->PassesY, 0, sizeof(Cols->PassesY));
+    memset(Cols->TransparentY, 0, sizeof(Cols->TransparentY));
+
+    for (int X = 0; X < SNAPSHOT_BLOCK_SPAN; X++) {
+        for (int Y = 0; Y < SNAPSHOT_BLOCK_SPAN; Y++) {
+            const BlockID *Row = Snap->Blocks[X][Y];
+            uint32_t Emits = 0;
+            uint32_t Passes = 0;
+            uint32_t Transparent = 0;
+            for (int Z = 0; Z < SNAPSHOT_BLOCK_SPAN; Z++) {
+                uint32_t Class = CullClassOf(Table, Row[Z]);
+                uint32_t IsEmits = Class & CULL_EMITS;
+                uint32_t IsPasses = (Class >> CULL_PASSES_SHIFT) & 1U;
+                uint32_t IsTransparent = (Class >> CULL_TRANSPARENT_SHIFT) & 1U;
+                Emits |= IsEmits << (uint32_t)Z;
+                Passes |= IsPasses << (uint32_t)Z;
+                Transparent |= IsTransparent << (uint32_t)Z;
+                Cols->EmitsY[X][Z] |= IsEmits << (uint32_t)Y;
+                Cols->PassesY[X][Z] |= IsPasses << (uint32_t)Y;
+                Cols->TransparentY[X][Z] |= IsTransparent << (uint32_t)Y;
+            }
+            Cols->EmitsZ[X][Y] = Emits;
+            Cols->PassesZ[X][Y] = Passes;
+            Cols->TransparentZ[X][Y] = Transparent;
+        }
+    }
+}
+
+// The visible faces of one slice row as chunk-local bits along V. Each normal
+// axis fixes its U and V axes in FACE_DIRS: Y faces run U=X, V=Z; X faces U=Z,
+// V=Y; Z faces U=X, V=Y. Column bits are snapshot indices, so a chunk-local
+// coordinate c is snapshot index c + 1.
+static uint32_t FaceRowBits(const ChunkSnapshot *Snap, const CullColumns *Cols,
+                            const FaceDir *Fd, int Slice, int U) {
+    int Self = Slice + 1;
+    int Next = Self + Fd->NormalDir;
+    int Across = U + 1;
+
+    uint32_t Faces;
+    uint32_t SameIdCandidates;
+    if (Fd->NormalAxis == 1) {
+        Faces = Cols->EmitsZ[Across][Self] & Cols->PassesZ[Across][Next] &
+                CULL_INTERIOR_BITS;
+        SameIdCandidates = Faces & Cols->TransparentZ[Across][Self];
+        while (SameIdCandidates != 0U) {
+            int Bit = __builtin_ctz(SameIdCandidates);
+            SameIdCandidates &= SameIdCandidates - 1U;
+            if (Snap->Blocks[Across][Self][Bit] == Snap->Blocks[Across][Next][Bit]) {
+                Faces &= ~(1U << (uint32_t)Bit);
+            }
+        }
+    } else if (Fd->NormalAxis == 2) {
+        Faces = Cols->EmitsY[Across][Self] & Cols->PassesY[Across][Next] &
+                CULL_INTERIOR_BITS;
+        SameIdCandidates = Faces & Cols->TransparentY[Across][Self];
+        while (SameIdCandidates != 0U) {
+            int Bit = __builtin_ctz(SameIdCandidates);
+            SameIdCandidates &= SameIdCandidates - 1U;
+            if (Snap->Blocks[Across][Bit][Self] == Snap->Blocks[Across][Bit][Next]) {
+                Faces &= ~(1U << (uint32_t)Bit);
+            }
+        }
+    } else {
+        Faces = Cols->EmitsY[Self][Across] & Cols->PassesY[Next][Across] &
+                CULL_INTERIOR_BITS;
+        SameIdCandidates = Faces & Cols->TransparentY[Self][Across];
+        while (SameIdCandidates != 0U) {
+            int Bit = __builtin_ctz(SameIdCandidates);
+            SameIdCandidates &= SameIdCandidates - 1U;
+            if (Snap->Blocks[Self][Bit][Across] == Snap->Blocks[Next][Bit][Across]) {
+                Faces &= ~(1U << (uint32_t)Bit);
+            }
+        }
+    }
+    return (Faces >> 1U) & CULL_LOCAL_BITS;
+}
+
+// Merging compares only face data: whether a cell holds an unused face at all
+// is the row bitmask's business.
 static bool MasksCompatible(const FaceMaskData *A, const FaceMaskData *B) {
-    if (A->BlockId == 0 || B->BlockId == 0) { return false; }
-    if (A->Used || B->Used) { return false; }
     if (A->BlockId != B->BlockId) { return false; }
     if (A->TexIndex != B->TexIndex) { return false; }
     if (A->FlipQuad != B->FlipQuad) { return false; }
     // A merged quad carries one tint, so two faces may only merge when they
-    // already agree on it Ã¢â‚¬â€ otherwise the rectangle would take one block's
+    // already agree on it -- otherwise the rectangle would take one block's
     // colour and paint it across the whole span.
     if (A->Tint565 != B->Tint565) { return false; }
     for (int IdxI = 0; IdxI < VERTICES_PER_FACE; IdxI++) { if (A->Ao[IdxI] != B->Ao[IdxI]) { return false; } }
@@ -537,14 +696,19 @@ static bool MasksCompatible(const FaceMaskData *A, const FaceMaskData *B) {
 // One mask per slice holds the faces of both cube targets. Opaque and
 // translucent blocks never share a block id, and merging requires equal ids, so
 // a rectangle never mixes the two; its target follows from its block id at emit
-// time. Returns how many faces the slice holds.
-static int BuildSliceMask(const ChunkSnapshot *Snap, const FaceDir *Fd,
-                          int Slice, FaceMaskData Mask[CHUNK_SIZE][CHUNK_SIZE]) {
+// time. Rows[U] receives the slice's faces as bits along V. Returns how many
+// faces the slice holds.
+static int BuildSliceMask(const ChunkSnapshot *Snap, const CullColumns *Cols,
+                          const FaceDir *Fd, int Slice,
+                          FaceMaskData Mask[CHUNK_SIZE][CHUNK_SIZE],
+                          uint16_t Rows[CHUNK_SIZE]) {
     int FaceCount = 0;
     for (int U = 0; U < CHUNK_SIZE; U++) {
-        for (int V = 0; V < CHUNK_SIZE; V++) {
-            Mask[U][V].BlockId = 0;
-            Mask[U][V].Used = false;
+        uint32_t Bits = FaceRowBits(Snap, Cols, Fd, Slice, U);
+        Rows[U] = (uint16_t)Bits;
+        while (Bits != 0U) {
+            int V = __builtin_ctz(Bits);
+            Bits &= Bits - 1U;
 
             int Lpos[3];
             Lpos[Fd->NormalAxis] = Slice;
@@ -554,18 +718,9 @@ static int BuildSliceMask(const ChunkSnapshot *Snap, const FaceDir *Fd,
             int Ly = Lpos[1];
             int Lz = Lpos[2];
 
-            BlockID Id = SnapshotBlockAt(Snap, Lx, Ly, Lz);
-            if (Id == 0) { continue; }
-
+            BlockID Id = Snap->Blocks[Lx + 1][Ly + 1][Lz + 1];
             BlockType *Def = GetBlockDef(Id);
             bool Translucent = Def->IsTransparent;
-            // Cross blocks are billboards, not cubes: the cross pass emits them.
-            if (Translucent && Def->RenderType == BLOCK_RENDER_CROSS) { continue; }
-
-            int Nlpos[3] = { Lpos[0], Lpos[1], Lpos[2] };
-            Nlpos[Fd->NormalAxis] += Fd->NormalDir;
-            if (!IsNeighbourTransparent(Snap,
-                                        Nlpos[0], Nlpos[1], Nlpos[2], Id)) { continue; }
 
             FaceMaskData *Cell = &Mask[U][V];
             Cell->BlockId  = Id;
@@ -588,17 +743,28 @@ static int BuildSliceMask(const ChunkSnapshot *Snap, const FaceDir *Fd,
     return FaceCount;
 }
 
+// Whether the face at (U, V) is still unmerged and can join Origin's rectangle.
+static bool CellMerges(const FaceMaskData *Origin,
+                       FaceMaskData Mask[CHUNK_SIZE][CHUNK_SIZE],
+                       const uint16_t Avail[CHUNK_SIZE], int U, int V) {
+    if ((((uint32_t)Avail[U] >> (uint32_t)V) & 1U) == 0U) { return false; }
+    return MasksCompatible(Origin, &Mask[U][V]);
+}
+
+// Origins are taken in the order a full U-then-V walk would visit them: the
+// lowest unmerged bit of a row is the next cell that walk would reach, since a
+// rectangle only ever consumes cells at or past its own origin's V.
 static void ScanGreedyMask(FaceMaskData Mask[CHUNK_SIZE][CHUNK_SIZE],
+                           uint16_t Avail[CHUNK_SIZE],
                            const FaceDir *Fd, int Slice, MesherState *State) {
     for (int U0 = 0; U0 < CHUNK_SIZE; U0++) {
-        for (int V0 = 0; V0 < CHUNK_SIZE; V0++) {
-            FaceMaskData *Origin = &Mask[U0][V0];
-            if (Origin->BlockId == 0 || Origin->Used) { continue; }
+        while (Avail[U0] != 0U) {
+            int V0 = __builtin_ctz(Avail[U0]);
+            const FaceMaskData *Origin = &Mask[U0][V0];
 
             // Expand width (u direction)
             int W = 1;
-            while (U0 + W < CHUNK_SIZE &&
-                   MasksCompatible(Origin, &Mask[U0 + W][V0])) {
+            while (U0 + W < CHUNK_SIZE && CellMerges(Origin, Mask, Avail, U0 + W, V0)) {
                 W++;
             }
 
@@ -607,7 +773,7 @@ static void ScanGreedyMask(FaceMaskData Mask[CHUNK_SIZE][CHUNK_SIZE],
             bool CanExpand = true;
             while (V0 + H < CHUNK_SIZE && CanExpand) {
                 for (int Ku = 0; Ku < W; Ku++) {
-                    if (!MasksCompatible(Origin, &Mask[U0 + Ku][V0 + H])) {
+                    if (!CellMerges(Origin, Mask, Avail, U0 + Ku, V0 + H)) {
                         CanExpand = false;
                         break;
                     }
@@ -638,10 +804,9 @@ static void ScanGreedyMask(FaceMaskData Mask[CHUNK_SIZE][CHUNK_SIZE],
                                        Origin->Ao, Origin->Tint565,
                                        Origin->FlipQuad);
 
+            uint32_t Span = ((1U << (uint32_t)H) - 1U) << (uint32_t)V0;
             for (int Ku = 0; Ku < W; Ku++) {
-                for (int Kv = 0; Kv < H; Kv++) {
-                    Mask[U0 + Ku][V0 + Kv].Used = true;
-                }
+                Avail[U0 + Ku] = (uint16_t)((uint32_t)Avail[U0 + Ku] & ~Span);
             }
         }
     }
@@ -650,11 +815,13 @@ static void ScanGreedyMask(FaceMaskData Mask[CHUNK_SIZE][CHUNK_SIZE],
 // Greedy merging for both cube targets. Translucent faces merge under the same
 // rules as opaque ones; the translucent pass draws whole chunks back to front
 // and never ordered the faces inside one, so merging changes no ordering.
-static void BuildGreedyFacePass(const ChunkSnapshot *Snap, const FaceDir *Fd, MesherState *State) {
+static void BuildGreedyFacePass(const ChunkSnapshot *Snap, const CullColumns *Cols,
+                                const FaceDir *Fd, MesherState *State) {
     FaceMaskData Mask[CHUNK_SIZE][CHUNK_SIZE];
+    uint16_t Rows[CHUNK_SIZE];
     for (int Slice = 0; Slice < CHUNK_SIZE; Slice++) {
-        if (BuildSliceMask(Snap, Fd, Slice, Mask) > 0) {
-            ScanGreedyMask(Mask, Fd, Slice, State);
+        if (BuildSliceMask(Snap, Cols, Fd, Slice, Mask, Rows) > 0) {
+            ScanGreedyMask(Mask, Rows, Fd, Slice, State);
         }
     }
 }
@@ -1443,9 +1610,10 @@ void RendererBuildMeshJob(int JobId, int MesherSlot) {
         State->Sets[Target].VCount = 0;
     }
 
+    BuildCullColumns(Snap, &State->Cull);
     static const int FACE_DIRS_COUNT = (int)(sizeof(FACE_DIRS) / sizeof(FACE_DIRS[0]));
     for (int Fd = 0; Fd < FACE_DIRS_COUNT; Fd++) {
-        BuildGreedyFacePass(Snap, &FACE_DIRS[Fd], State);
+        BuildGreedyFacePass(Snap, &State->Cull, &FACE_DIRS[Fd], State);
     }
     BuildCrossPass(Snap, State);
 
