@@ -471,8 +471,9 @@ static void DrawDebugScreen(UiContext *Ctx, Player *PlayerVal, World *WorldVal,
   ChunkStorageCounts Storage = {0};
   WorldGetChunkStorageCounts(WorldVal, &Storage);
   snprintf(DebugText, sizeof(DebugText),
-           "Chunk Storage: air %d, solid %d, dense %d", Storage.UniformAir,
-           Storage.UniformSolid, Storage.Dense);
+           "Chunk Storage: air %d, solid %d, packed %d, dense %d",
+           Storage.UniformAir, Storage.UniformSolid, Storage.Packed,
+           Storage.Dense);
   Y = DrawDebugLine(Ctx, DebugText, Y);
 
   DensePoolStats Pool = {0};
@@ -481,6 +482,12 @@ static void DrawDebugScreen(UiContext *Ctx, Player *PlayerVal, World *WorldVal,
            "Dense Pool: %d / %d in %d slabs (%zu MB)", Pool.Leased,
            Pool.Capacity, Pool.Slabs,
            ((size_t)Pool.Capacity * sizeof(DenseBlockBuffer)) >> BYTES_TO_MB_SHIFT);
+  Y = DrawDebugLine(Ctx, DebugText, Y);
+  snprintf(DebugText, sizeof(DebugText),
+           "Packed Pool: %d / %d in %d slabs (%zu MB)", Pool.PackedLeased,
+           Pool.PackedCapacity, Pool.PackedSlabs,
+           ((size_t)Pool.PackedCapacity * sizeof(PackedBlockBuffer)) >>
+               BYTES_TO_MB_SHIFT);
   Y = DrawDebugLine(Ctx, DebugText, Y);
 
   RenderStats Render = {0};

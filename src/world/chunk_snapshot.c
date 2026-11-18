@@ -33,11 +33,23 @@ static BlockID SampleCell(const Chunk *Source, int Ix, int Iy, int Iz) {
   return (Source != NULL) ? ChunkGetLocal(Source, Ix, Iy, Iz) : 0;
 }
 
-// One Z row of a chunk: a single copy from a dense buffer, a broadcast of the
-// id for a uniform chunk.
+// One Z row of a chunk: a single copy from a dense buffer, a palette decode of
+// CHUNK_SIZE / 2 sequential bytes from a packed one, a broadcast of the id for
+// a uniform chunk.
 static void CopyRow(BlockID *Out, const Chunk *Source, int Ix, int Iy) {
   if (Source != NULL && Source->Blocks != NULL) {
     memcpy(Out, &(*Source->Blocks)[Ix][Iy][0], CHUNK_SIZE * sizeof(BlockID));
+    return;
+  }
+  if (Source != NULL && Source->Packed != NULL) {
+    const uint8_t *Row = Source->Packed->Indices[Ix][Iy];
+    const BlockID *Palette = Source->Packed->Palette;
+    for (size_t Byte = 0; Byte < (size_t)CHUNK_SIZE / PACKED_CELLS_PER_BYTE;
+         Byte++) {
+      unsigned Value = Row[Byte];
+      Out[Byte * 2] = Palette[Value & PACKED_INDEX_MASK];
+      Out[(Byte * 2) + 1] = Palette[Value >> PACKED_INDEX_BITS];
+    }
     return;
   }
   BlockID Id = (Source != NULL) ? Source->UniformBlockId : 0;

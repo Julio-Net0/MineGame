@@ -17,6 +17,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 // Air is structurally 0 throughout the engine: an empty block cell means air, and
 // SolidBlockCount counts non-zero entries. The blocks that vary by region come
@@ -690,6 +691,7 @@ CubeClass GenerateChunkTerrainEx(Chunk *ChunkVal, const ColumnEntry *Column,
 void ChunkAttachBuffer(Chunk *ChunkVal, DenseBlockBuffer *Buffer) {
   ChunkVal->Pool = (struct DenseBlockPool *)0;
   ChunkVal->Blocks = Buffer;
+  ChunkVal->Packed = (PackedBlockBuffer *)0;
   ChunkVal->IsUniform = false;
 }
 
@@ -715,16 +717,72 @@ void ChunkFreeStandalone(Chunk *ChunkVal) {
 }
 
 void ChunkResetStorage(Chunk *ChunkVal, BlockID BlockId) {
-  if (ChunkVal->Blocks != (DenseBlockBuffer *)0 &&
-      ChunkVal->Pool != (struct DenseBlockPool *)0) {
+  if (ChunkVal->Pool != (struct DenseBlockPool *)0) {
     DensePoolRelease(ChunkVal->Pool, ChunkVal->Blocks);
+    PackedPoolRelease(ChunkVal->Pool, ChunkVal->Packed);
   }
   ChunkVal->Blocks = (DenseBlockBuffer *)0;
+  ChunkVal->Packed = (PackedBlockBuffer *)0;
   ChunkVal->UniformBlockId = BlockId;
   ChunkVal->IsUniform = true;
 }
 
+// Slot of Id in the palette, appending it when absent. -1 when the palette is
+// full and Id is not in it.
+static int PackedPaletteSlot(PackedBlockBuffer *Packed, BlockID Id) {
+  for (int Slot = 0; Slot < Packed->PaletteCount; Slot++) {
+    if (Packed->Palette[Slot] == Id) {
+      return Slot;
+    }
+  }
+  if (Packed->PaletteCount >= PACKED_PALETTE_CAPACITY) {
+    return -1;
+  }
+  Packed->Palette[Packed->PaletteCount] = Id;
+  return Packed->PaletteCount++;
+}
+
+// Flat cell order is [x][y][z] with z innermost, so a cell's parity is its Z
+// parity and the flat byte index is the cell index halved.
+static void PackedWriteFlat(PackedBlockBuffer *Packed, size_t Cell, int Slot) {
+  uint8_t *Bytes = &Packed->Indices[0][0][0];
+  unsigned Shift = (unsigned)(Cell & 1U) * PACKED_INDEX_BITS;
+  unsigned Keep = ~((unsigned)PACKED_INDEX_MASK << Shift);
+  Bytes[Cell >> 1] =
+      (uint8_t)(((unsigned)Bytes[Cell >> 1] & Keep) | ((unsigned)Slot << Shift));
+}
+
+// Packs dense cells into Out. False when they hold more ids than a palette can.
+static bool PackCells(const BlockID *Cells, PackedBlockBuffer *Out) {
+  memset(Out, 0, sizeof(*Out));
+  BlockID LastId = Cells[0];
+  int LastSlot = PackedPaletteSlot(Out, LastId);
+  for (size_t Cell = 0; Cell < CHUNK_VOLUME; Cell++) {
+    if (Cells[Cell] != LastId) {
+      LastId = Cells[Cell];
+      LastSlot = PackedPaletteSlot(Out, LastId);
+      if (LastSlot < 0) {
+        return false;
+      }
+    }
+    PackedWriteFlat(Out, Cell, LastSlot);
+  }
+  return true;
+}
+
+static void UnpackCells(const PackedBlockBuffer *Packed, BlockID *Cells) {
+  const uint8_t *Bytes = &Packed->Indices[0][0][0];
+  for (size_t Byte = 0; Byte < CHUNK_VOLUME / PACKED_CELLS_PER_BYTE; Byte++) {
+    unsigned Value = Bytes[Byte];
+    Cells[Byte * 2] = Packed->Palette[Value & PACKED_INDEX_MASK];
+    Cells[(Byte * 2) + 1] = Packed->Palette[Value >> PACKED_INDEX_BITS];
+  }
+}
+
 bool ChunkBeginFill(Chunk *ChunkVal) {
+  if (ChunkVal->Packed != (PackedBlockBuffer *)0) {
+    return PromoteChunkToDense(ChunkVal);
+  }
   if (ChunkVal->Blocks == (DenseBlockBuffer *)0) {
     if (ChunkVal->Pool == (struct DenseBlockPool *)0) {
       return false;
@@ -738,19 +796,29 @@ bool ChunkBeginFill(Chunk *ChunkVal) {
   return true;
 }
 
+// A chunk whose packed buffer cannot be leased simply stays dense.
 void ChunkEndFill(Chunk *ChunkVal) {
   if (ChunkVal->Blocks == (DenseBlockBuffer *)0 ||
       ChunkVal->Pool == (struct DenseBlockPool *)0) {
     return;
   }
-  const BlockID *Cells = &(*ChunkVal->Blocks)[0][0][0];
-  BlockID First = Cells[0];
-  for (size_t Idx = 1; Idx < CHUNK_VOLUME; Idx++) {
-    if (Cells[Idx] != First) {
-      return;
-    }
+  PackedBlockBuffer Scratch;
+  if (!PackCells(&(*ChunkVal->Blocks)[0][0][0], &Scratch)) {
+    return;
   }
-  ChunkResetStorage(ChunkVal, First);
+  if (Scratch.PaletteCount == 1) {
+    ChunkResetStorage(ChunkVal, Scratch.Palette[0]);
+    return;
+  }
+  PackedBlockBuffer *Packed = PackedPoolAcquire(ChunkVal->Pool);
+  if (Packed == (PackedBlockBuffer *)0) {
+    return;
+  }
+  *Packed = Scratch;
+  DensePoolRelease(ChunkVal->Pool, ChunkVal->Blocks);
+  ChunkVal->Blocks = (DenseBlockBuffer *)0;
+  ChunkVal->Packed = Packed;
+  ChunkVal->IsUniform = false;
 }
 
 bool PromoteChunkToDense(Chunk *ChunkVal) {
@@ -765,8 +833,14 @@ bool PromoteChunkToDense(Chunk *ChunkVal) {
     return false;
   }
   BlockID *Cells = &(*Buffer)[0][0][0];
-  for (size_t Idx = 0; Idx < CHUNK_VOLUME; Idx++) {
-    Cells[Idx] = ChunkVal->UniformBlockId;
+  if (ChunkVal->Packed != (PackedBlockBuffer *)0) {
+    UnpackCells(ChunkVal->Packed, Cells);
+    PackedPoolRelease(ChunkVal->Pool, ChunkVal->Packed);
+    ChunkVal->Packed = (PackedBlockBuffer *)0;
+  } else {
+    for (size_t Idx = 0; Idx < CHUNK_VOLUME; Idx++) {
+      Cells[Idx] = ChunkVal->UniformBlockId;
+    }
   }
   ChunkVal->Blocks = Buffer;
   ChunkVal->IsUniform = false;
@@ -796,7 +870,12 @@ void SetBlockInChunk(Chunk *ChunkVal, Vec3 LocalPos, BlockID BlockId) {
     BlockID OldId = ChunkGetLocal(ChunkVal, IdxX, IdxY, IdxZ);
 
     if (OldId != BlockId) {
-      if (!PromoteChunkToDense(ChunkVal)) {
+      // A packed chunk stays packed while its palette can take the id; only
+      // the edit that would need a seventeenth id promotes it.
+      int Slot = (ChunkVal->Packed != (PackedBlockBuffer *)0)
+                     ? PackedPaletteSlot(ChunkVal->Packed, BlockId)
+                     : -1;
+      if (Slot < 0 && !PromoteChunkToDense(ChunkVal)) {
         LogError("CHUNK: no block buffer to promote (%d, %d, %d); edit dropped",
                  ChunkVal->ChunkX, ChunkVal->ChunkY, ChunkVal->ChunkZ);
         return;
@@ -807,7 +886,13 @@ void SetBlockInChunk(Chunk *ChunkVal, Vec3 LocalPos, BlockID BlockId) {
         ChunkVal->SolidBlockCount--;
       }
 
-      (*ChunkVal->Blocks)[IdxX][IdxY][IdxZ] = BlockId;
+      if (Slot >= 0) {
+        size_t Cell = ((((size_t)IdxX * CHUNK_SIZE) + (size_t)IdxY) * CHUNK_SIZE) +
+                      (size_t)IdxZ;
+        PackedWriteFlat(ChunkVal->Packed, Cell, Slot);
+      } else {
+        (*ChunkVal->Blocks)[IdxX][IdxY][IdxZ] = BlockId;
+      }
       ChunkVal->IsDirty = true;
       ChunkVal->IsModified = true;
     }

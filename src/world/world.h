@@ -115,11 +115,13 @@ void WorldGetDensePoolStats(World *WorldVal, DensePoolStats *Out);
 typedef struct {
   int UniformAir;
   int UniformSolid;
+  int Packed;
   int Dense;
 } ChunkStorageCounts;
 
 // Classifies every active chunk by its storage: uniform air, uniform non-air,
-// or dense (holding a buffer, which includes chunks still generating).
+// packed (a palette of at most 16 ids), or dense (a full buffer, which includes
+// chunks still generating).
 void WorldGetChunkStorageCounts(const World *WorldVal, ChunkStorageCounts *Out);
 
 void UpdateWorld(World *WorldVal, Vec3 PlayerPos, int RenderDist);

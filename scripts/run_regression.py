@@ -192,30 +192,35 @@ def load_json(path: Path) -> dict[str, Any]:
 def assert_chunk_storage(state: dict[str, Any], label: str) -> None:
     """Storage breakdown invariants of the sparse chunk representation.
 
-    Every active chunk is exactly one of uniform air, uniform non-air or dense,
-    and each dense chunk holds one pool buffer. While generation is in flight a
-    worker may be between leasing a buffer and flagging the chunk dense, so the
-    lease count is compared only once no chunk is generating.
+    Every active chunk is exactly one of uniform air, uniform non-air, packed or
+    dense, and each packed or dense chunk holds one buffer of its pool class.
+    While generation is in flight a worker may be between leasing a buffer and
+    flagging the chunk, so the lease counts are compared only once no chunk is
+    generating.
     """
     chunks = state["chunks"]
     active = chunks.get("active")
     air = chunks.get("uniformAir")
     solid = chunks.get("uniformSolid")
+    packed = chunks.get("packed")
     dense = chunks.get("dense")
-    used = chunks.get("densePoolUsed")
-    capacity = chunks.get("densePoolCapacity")
-    slabs = chunks.get("densePoolSlabs")
     require(
-        air + solid + dense == active,
-        f"{label}: expected uniformAir + uniformSolid + dense == active, got {air} + {solid} + {dense} != {active}",
+        air + solid + packed + dense == active,
+        f"{label}: expected uniformAir + uniformSolid + packed + dense == active, "
+        f"got {air} + {solid} + {packed} + {dense} != {active}",
     )
     require(0 <= dense <= active, f"{label}: expected 0 <= dense <= active, got {dense} / {active}")
-    require(
-        capacity == slabs * DENSE_SLAB_CAPACITY and 0 <= used <= capacity,
-        f"{label}: expected densePoolUsed {used} within capacity {capacity} of {slabs} slabs",
-    )
-    if chunks.get("generating") == 0:
-        require(used == dense, f"{label}: expected densePoolUsed == dense, got {used} != {dense}")
+    require(0 <= packed <= active, f"{label}: expected 0 <= packed <= active, got {packed} / {active}")
+    for prefix, count in (("densePool", dense), ("packedPool", packed)):
+        used = chunks.get(f"{prefix}Used")
+        capacity = chunks.get(f"{prefix}Capacity")
+        slabs = chunks.get(f"{prefix}Slabs")
+        require(
+            capacity == slabs * DENSE_SLAB_CAPACITY and 0 <= used <= capacity,
+            f"{label}: expected {prefix}Used {used} within capacity {capacity} of {slabs} slabs",
+        )
+        if chunks.get("generating") == 0:
+            require(used == count, f"{label}: expected {prefix}Used == chunk count, got {used} != {count}")
 
 
 def assert_png(path: Path, width: int = EXPECTED_WIDTH, height: int = EXPECTED_HEIGHT) -> bytes:

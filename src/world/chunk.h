@@ -34,6 +34,22 @@ enum {
 
 typedef BlockID DenseBlockBuffer[CHUNK_SIZE][CHUNK_SIZE][CHUNK_SIZE];
 
+enum {
+  PACKED_PALETTE_CAPACITY = 16,
+  PACKED_INDEX_BITS = 4,
+  PACKED_INDEX_MASK = 0xF,
+  PACKED_CELLS_PER_BYTE = 2
+};
+
+// A chunk holding at most PACKED_PALETTE_CAPACITY distinct ids: a 4-bit index
+// per cell into Palette. Z stays the contiguous axis, two cells per byte with
+// the even Z in the low nibble, so a Z row is CHUNK_SIZE / 2 sequential bytes.
+typedef struct {
+  uint8_t Indices[CHUNK_SIZE][CHUNK_SIZE][CHUNK_SIZE / PACKED_CELLS_PER_BYTE];
+  BlockID Palette[PACKED_PALETTE_CAPACITY];
+  int PaletteCount;
+} PackedBlockBuffer;
+
 struct DenseBlockPool;
 
 typedef struct Chunk {
@@ -52,11 +68,14 @@ typedef struct Chunk {
   // slots therefore start outside the set.
   int RenderRecord;
 
-  // A chunk whose cells all hold one block keeps only that id and no buffer.
-  // Blocks is NULL exactly when IsUniform is set.
+  // Storage is exactly one of: uniform (only UniformBlockId, IsUniform set),
+  // packed (Packed, a palette of at most 16 ids), or dense (Blocks). Whole-chunk
+  // writers fill Blocks; ChunkEndFill then compacts it to the smallest form.
   DenseBlockBuffer *Blocks;
-  // Owner of Blocks, and where promotion leases from. NULL for a standalone
-  // chunk (tests, previews) whose buffer the caller attached and owns.
+  PackedBlockBuffer *Packed;
+  // Owner of Blocks and Packed, and where promotion leases from. NULL for a
+  // standalone chunk (tests, previews) whose dense buffer the caller attached
+  // and owns; such a chunk is never compacted, so it is never packed.
   struct DenseBlockPool *Pool;
   BlockID UniformBlockId;
   bool IsUniform;
@@ -148,9 +167,16 @@ unsigned char GetChunkBiomeAtLocal(const Chunk *ChunkVal, int LocalX,
 // Unchecked read of a chunk-local cell.
 static inline BlockID ChunkGetLocal(const Chunk *ChunkVal, int LocalX,
                                     int LocalY, int LocalZ) {
-  return (ChunkVal->Blocks != (DenseBlockBuffer *)0)
-             ? (*ChunkVal->Blocks)[LocalX][LocalY][LocalZ]
-             : ChunkVal->UniformBlockId;
+  if (ChunkVal->Blocks != (DenseBlockBuffer *)0) {
+    return (*ChunkVal->Blocks)[LocalX][LocalY][LocalZ];
+  }
+  const PackedBlockBuffer *Packed = ChunkVal->Packed;
+  if (Packed != (PackedBlockBuffer *)0) {
+    unsigned Byte = Packed->Indices[LocalX][LocalY][LocalZ >> 1];
+    unsigned Shift = ((unsigned)LocalZ & 1U) * PACKED_INDEX_BITS;
+    return Packed->Palette[(Byte >> Shift) & PACKED_INDEX_MASK];
+  }
+  return ChunkVal->UniformBlockId;
 }
 
 // Gives a standalone chunk a caller-owned buffer; it is never compacted.
@@ -166,13 +192,13 @@ void ChunkResetStorage(Chunk *ChunkVal, BlockID BlockId);
 
 // Whole-chunk writers (generation, deserialization) bracket their writes with
 // these. Begin guarantees Blocks is writable, leasing a buffer if needed, and
-// fails only when the pool cannot grow. End releases the buffer again when the
-// result turned out uniform.
+// fails only when the pool cannot grow. End compacts a pooled chunk to uniform
+// or packed storage when its cells allow it, releasing the dense buffer.
 bool ChunkBeginFill(Chunk *ChunkVal);
 void ChunkEndFill(Chunk *ChunkVal);
 
-// Leases a buffer for a uniform chunk and fills it with UniformBlockId. True
-// when the chunk is dense afterwards.
+// Leases a dense buffer for a uniform or packed chunk and fills it with the
+// cells it held. True when the chunk is dense afterwards.
 bool PromoteChunkToDense(Chunk *ChunkVal);
 
 void SetBlockInChunk(Chunk *ChunkVal, Vec3 Pos, BlockID BlockId);

@@ -542,9 +542,36 @@ static bool UniformEncodingMatchesDense(Chunk *Dense) {
          memcmp(SDenseBytes, SUniformBytes, (size_t)DenseSize) == 0;
 }
 
-// Decoding into a pooled chunk: a homogeneous stream becomes scalar storage
-// with no lease, a mixed one leases exactly one buffer, and a reset returns it.
-static bool PooledDecodeLeasesOnlyWhenMixed(Chunk *Mixed) {
+// A packed chunk takes edits in place until its palette is full; the edit that
+// needs a seventeenth id promotes it to dense with every cell kept.
+static bool PackedEditsPromoteOnPaletteOverflow(Chunk *Target,
+                                                const DenseBlockPool *Pool) {
+  int NewIds = PACKED_PALETTE_CAPACITY - Target->Packed->PaletteCount;
+  for (int Step = 0; Step < NewIds; Step++) {
+    SetBlockInChunk(Target, (Vec3){(float)Step, (float)(CHUNK_SIZE - 1), 0.0F},
+                    (BlockID)(WIDE_BLOCK_ID + 1 + Step));
+  }
+  bool Ok = Target->Packed != (PackedBlockBuffer *)0 &&
+            Target->Blocks == (DenseBlockBuffer *)0 &&
+            Target->Packed->PaletteCount == PACKED_PALETTE_CAPACITY &&
+            Pool->Dense.Leased == 0;
+
+  const BlockID OVERFLOW_ID = (BlockID)(WIDE_BLOCK_ID + 1 + PACKED_PALETTE_CAPACITY);
+  SetBlockInChunk(Target, (Vec3){0.0F, 0.0F, 1.0F}, OVERFLOW_ID);
+  Ok = Ok && Target->Packed == (PackedBlockBuffer *)0 &&
+       Target->Blocks != (DenseBlockBuffer *)0 && Pool->Dense.Leased == 1 &&
+       Pool->Packed.Leased == 0 && ChunkGetLocal(Target, 0, 0, 1) == OVERFLOW_ID;
+  for (int Step = 0; Step < NewIds; Step++) {
+    Ok = Ok && ChunkGetLocal(Target, Step, CHUNK_SIZE - 1, 0) ==
+                   (BlockID)(WIDE_BLOCK_ID + 1 + Step);
+  }
+  return Ok && Target->SolidBlockCount == CountSolid(Target);
+}
+
+// Decoding into a pooled chunk picks the smallest storage: a homogeneous stream
+// becomes scalar storage with no lease, one with at most 16 ids leases one
+// packed buffer, a noisier one leases one dense buffer, and a reset returns it.
+static bool PooledDecodePicksSmallestStorage(Chunk *Mixed) {
   static DenseBlockPool SPool;
   DensePoolInit(&SPool);
   Chunk Target = {0};
@@ -562,19 +589,39 @@ static bool PooledDecodeLeasesOnlyWhenMixed(Chunk *Mixed) {
   bool Ok = ChunkDeserialize(&Target, SBytes, Size, IsRaw);
   DensePoolGetStats(&SPool, &Stats);
   Ok = Ok && Target.IsUniform && Target.Blocks == (DenseBlockBuffer *)0 &&
+       Target.Packed == (PackedBlockBuffer *)0 &&
        Target.UniformBlockId == (BlockID)STONE_BLOCK_ID &&
-       Target.SolidBlockCount == (int)CHUNK_VOLUME && Stats.Leased == 0;
+       Target.SolidBlockCount == (int)CHUNK_VOLUME && Stats.Leased == 0 &&
+       Stats.PackedLeased == 0;
 
   FillLayeredChunk(Mixed);
   Size = ChunkSerialize(Mixed, SBytes, &IsRaw);
   Ok = Ok && ChunkDeserialize(&Target, SBytes, Size, IsRaw);
   DensePoolGetStats(&SPool, &Stats);
+  Ok = Ok && !Target.IsUniform && Target.Blocks == (DenseBlockBuffer *)0 &&
+       Target.Packed != (PackedBlockBuffer *)0 && Stats.Leased == 0 &&
+       Stats.PackedLeased == 1 && ChunkCellsEqual(&Target, Mixed);
+
+  // Serializing the packed chunk must give the bytes the dense source gave.
+  static uint8_t SPackedBytes[CHUNK_SERIAL_MAX_BYTES];
+  bool PackedRaw = true;
+  int PackedSize = ChunkSerialize(&Target, SPackedBytes, &PackedRaw);
+  Ok = Ok && PackedSize == Size && PackedRaw == IsRaw &&
+       memcmp(SPackedBytes, SBytes, (size_t)Size) == 0;
+
+  Ok = Ok && PackedEditsPromoteOnPaletteOverflow(&Target, &SPool);
+
+  FillNoisyChunk(Mixed);
+  Size = ChunkSerialize(Mixed, SBytes, &IsRaw);
+  Ok = Ok && ChunkDeserialize(&Target, SBytes, Size, IsRaw);
+  DensePoolGetStats(&SPool, &Stats);
   Ok = Ok && !Target.IsUniform && Target.Blocks != (DenseBlockBuffer *)0 &&
-       Stats.Leased == 1 && ChunkCellsEqual(&Target, Mixed);
+       Target.Packed == (PackedBlockBuffer *)0 && Stats.Leased == 1 &&
+       Stats.PackedLeased == 0 && ChunkCellsEqual(&Target, Mixed);
 
   ChunkResetStorage(&Target, BLOCK_ID_AIR);
   DensePoolGetStats(&SPool, &Stats);
-  Ok = Ok && Stats.Leased == 0;
+  Ok = Ok && Stats.Leased == 0 && Stats.PackedLeased == 0;
   DensePoolDestroy(&SPool);
   return Ok;
 }
@@ -613,8 +660,8 @@ static bool TestChunkData(void) {
                 "chunk_data_uniform_encoding_matches_dense");
   }
   if (Ok) {
-    Ok = Expect(PooledDecodeLeasesOnlyWhenMixed(Source),
-                "chunk_data_uniform_decode_leases_nothing");
+    Ok = Expect(PooledDecodePicksSmallestStorage(Source),
+                "chunk_data_pooled_decode_picks_smallest_storage");
   }
 
   ChunkFreeStandalone(Source);

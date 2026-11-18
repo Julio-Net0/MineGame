@@ -51,7 +51,8 @@ static int WriteUniformRuns(BlockID BlockId, uint8_t *OutBuffer) {
 }
 
 int ChunkSerialize(const Chunk *ChunkVal, uint8_t *OutBuffer, bool *IsRaw) {
-  if (ChunkVal->Blocks == (DenseBlockBuffer *)0) {
+  if (ChunkVal->Blocks == (DenseBlockBuffer *)0 &&
+      ChunkVal->Packed == (PackedBlockBuffer *)0) {
     *IsRaw = false;
     return WriteUniformRuns(ChunkVal->UniformBlockId, OutBuffer);
   }
@@ -139,9 +140,13 @@ bool ChunkDeserialize(Chunk *ChunkVal, const uint8_t *InBuffer, int DataSize,
   }
 
   // A pooled chunk loads a homogeneous stream as scalar storage, leasing
-  // nothing; a standalone chunk keeps its attached buffer and is filled.
-  if (Uniform && ChunkVal->Pool != (struct DenseBlockPool *)0) {
+  // nothing, and any other stream as the smallest storage that holds it; a
+  // standalone chunk keeps its attached buffer and is filled.
+  bool Pooled = ChunkVal->Pool != (struct DenseBlockPool *)0;
+  if (Pooled) {
     ChunkResetStorage(ChunkVal, FlatData[0]);
+  }
+  if (Uniform && Pooled) {
     ChunkVal->SolidBlockCount = SolidCount;
     ChunkVal->IsDirty = true;
     return true;
@@ -153,6 +158,7 @@ bool ChunkDeserialize(Chunk *ChunkVal, const uint8_t *InBuffer, int DataSize,
   for (int IdxI = 0; IdxI < (int)CHUNK_VOLUME; IdxI++) {
     DestFlat[IdxI] = FlatData[IdxI];
   }
+  ChunkEndFill(ChunkVal);
   ChunkVal->SolidBlockCount = SolidCount;
   ChunkVal->IsDirty = true;
   return true;

@@ -11,71 +11,100 @@ static void UnlockPool(DenseBlockPool *Pool) {
   atomic_flag_clear_explicit(&Pool->Lock, memory_order_release);
 }
 
-void DensePoolInit(DenseBlockPool *Pool) {
-  Pool->SlabCount = 0;
-  Pool->FreeCount = 0;
-  Pool->Leased = 0;
-  atomic_flag_clear(&Pool->Lock);
+static void ClassInit(BlockBufferClass *Class) {
+  Class->SlabCount = 0;
+  Class->FreeCount = 0;
+  Class->Leased = 0;
 }
 
-void DensePoolDestroy(DenseBlockPool *Pool) {
-  for (int Idx = 0; Idx < Pool->SlabCount; Idx++) {
-    free(Pool->Slabs[Idx]);
-    Pool->Slabs[Idx] = (DenseBlockBuffer *)0;
+static void ClassDestroy(BlockBufferClass *Class) {
+  for (int Idx = 0; Idx < Class->SlabCount; Idx++) {
+    free(Class->Slabs[Idx]);
+    Class->Slabs[Idx] = NULL;
   }
-  Pool->SlabCount = 0;
-  Pool->FreeCount = 0;
-  Pool->Leased = 0;
+  ClassInit(Class);
 }
 
 // Caller holds Lock. Pushed in reverse so the slab's first buffer pops first.
-static bool GrowPool(DenseBlockPool *Pool) {
-  if (Pool->SlabCount >= DENSE_MAX_SLABS) {
+static bool GrowClass(BlockBufferClass *Class, size_t BufferBytes) {
+  if (Class->SlabCount >= DENSE_MAX_SLABS) {
     return false;
   }
-  DenseBlockBuffer *Slab =
-      (DenseBlockBuffer *)malloc(sizeof(DenseBlockBuffer) * DENSE_SLAB_CAPACITY);
-  if (Slab == (DenseBlockBuffer *)0) {
-    LogError("DENSE_POOL: out of memory allocating slab %d", Pool->SlabCount);
+  unsigned char *Slab = (unsigned char *)malloc(BufferBytes * DENSE_SLAB_CAPACITY);
+  if (Slab == NULL) {
+    LogError("DENSE_POOL: out of memory allocating slab %d", Class->SlabCount);
     return false;
   }
-  Pool->Slabs[Pool->SlabCount++] = Slab;
+  Class->Slabs[Class->SlabCount++] = Slab;
   for (int Idx = DENSE_SLAB_CAPACITY - 1; Idx >= 0; Idx--) {
-    Pool->FreeList[Pool->FreeCount++] = &Slab[Idx];
+    Class->FreeList[Class->FreeCount++] = &Slab[(size_t)Idx * BufferBytes];
   }
   return true;
 }
 
-DenseBlockBuffer *DensePoolAcquire(DenseBlockPool *Pool) {
-  DenseBlockBuffer *Buffer = (DenseBlockBuffer *)0;
+static void *ClassAcquire(DenseBlockPool *Pool, BlockBufferClass *Class,
+                          size_t BufferBytes) {
+  void *Buffer = NULL;
   LockPool(Pool);
-  if (Pool->FreeCount > 0 || GrowPool(Pool)) {
-    Buffer = Pool->FreeList[--Pool->FreeCount];
-    Pool->Leased++;
+  if (Class->FreeCount > 0 || GrowClass(Class, BufferBytes)) {
+    Buffer = Class->FreeList[--Class->FreeCount];
+    Class->Leased++;
   }
   UnlockPool(Pool);
   return Buffer;
 }
 
-void DensePoolRelease(DenseBlockPool *Pool, DenseBlockBuffer *Buffer) {
-  if (Buffer == (DenseBlockBuffer *)0) {
+static void ClassRelease(DenseBlockPool *Pool, BlockBufferClass *Class,
+                         void *Buffer) {
+  if (Buffer == NULL) {
     return;
   }
   LockPool(Pool);
-  if (Pool->FreeCount < Pool->SlabCount * DENSE_SLAB_CAPACITY) {
-    Pool->FreeList[Pool->FreeCount++] = Buffer;
-    Pool->Leased--;
+  if (Class->FreeCount < Class->SlabCount * DENSE_SLAB_CAPACITY) {
+    Class->FreeList[Class->FreeCount++] = Buffer;
+    Class->Leased--;
   } else {
-    LogError("DENSE_POOL: release of %p with every buffer already free",
-             (void *)Buffer);
+    LogError("DENSE_POOL: release of %p with every buffer already free", Buffer);
   }
   UnlockPool(Pool);
 }
 
+void DensePoolInit(DenseBlockPool *Pool) {
+  ClassInit(&Pool->Dense);
+  ClassInit(&Pool->Packed);
+  atomic_flag_clear(&Pool->Lock);
+}
+
+void DensePoolDestroy(DenseBlockPool *Pool) {
+  ClassDestroy(&Pool->Dense);
+  ClassDestroy(&Pool->Packed);
+}
+
+DenseBlockBuffer *DensePoolAcquire(DenseBlockPool *Pool) {
+  return (DenseBlockBuffer *)ClassAcquire(Pool, &Pool->Dense,
+                                          sizeof(DenseBlockBuffer));
+}
+
+void DensePoolRelease(DenseBlockPool *Pool, DenseBlockBuffer *Buffer) {
+  ClassRelease(Pool, &Pool->Dense, Buffer);
+}
+
+PackedBlockBuffer *PackedPoolAcquire(DenseBlockPool *Pool) {
+  return (PackedBlockBuffer *)ClassAcquire(Pool, &Pool->Packed,
+                                           sizeof(PackedBlockBuffer));
+}
+
+void PackedPoolRelease(DenseBlockPool *Pool, PackedBlockBuffer *Buffer) {
+  ClassRelease(Pool, &Pool->Packed, Buffer);
+}
+
 void DensePoolGetStats(DenseBlockPool *Pool, DensePoolStats *Out) {
   LockPool(Pool);
-  Out->Leased = Pool->Leased;
-  Out->Slabs = Pool->SlabCount;
-  Out->Capacity = Pool->SlabCount * DENSE_SLAB_CAPACITY;
+  Out->Leased = Pool->Dense.Leased;
+  Out->Slabs = Pool->Dense.SlabCount;
+  Out->Capacity = Pool->Dense.SlabCount * DENSE_SLAB_CAPACITY;
+  Out->PackedLeased = Pool->Packed.Leased;
+  Out->PackedSlabs = Pool->Packed.SlabCount;
+  Out->PackedCapacity = Pool->Packed.SlabCount * DENSE_SLAB_CAPACITY;
   UnlockPool(Pool);
 }

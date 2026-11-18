@@ -105,7 +105,9 @@ void WorldGetChunkStorageCounts(const World *WorldVal, ChunkStorageCounts *Out) 
       continue;
     }
     const Chunk *ChunkVal = &WorldVal->Chunks[IdxI];
-    if (!ChunkVal->IsUniform) {
+    if (ChunkVal->Packed != (PackedBlockBuffer *)0) {
+      Counts.Packed++;
+    } else if (!ChunkVal->IsUniform) {
       Counts.Dense++;
     } else if (ChunkVal->UniformBlockId == BLOCK_ID_AIR) {
       Counts.UniformAir++;
@@ -681,6 +683,7 @@ static bool CreateOrRecycleChunk(World *WorldVal, int ChunkX, int ChunkY, int Ch
   // Eviction already returned any buffer; a fresh slot has none to return.
   WorldVal->Chunks[IdxI].Pool = &WorldVal->DensePool;
   WorldVal->Chunks[IdxI].Blocks = (DenseBlockBuffer *)0;
+  WorldVal->Chunks[IdxI].Packed = (PackedBlockBuffer *)0;
   WorldVal->Chunks[IdxI].UniformBlockId = BLOCK_ID_AIR;
   WorldVal->Chunks[IdxI].IsUniform = true;
 
