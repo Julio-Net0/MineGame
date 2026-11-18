@@ -826,6 +826,68 @@ static void BuildGreedyFacePass(const ChunkSnapshot *Snap, const CullColumns *Co
     }
 }
 
+// The faces unloaded rock beside the chunk shows toward its open cells: a cave
+// running out of the band's floor, or a cliff where a neighbour's band stops
+// higher than this column's air. They lie on the chunk's boundary plane, as the
+// rock's own chunk would have drawn them, and merge like any other face.
+static void BuildRockCapPass(const ChunkSnapshot *Snap, const CullColumns *Cols,
+                             MesherState *State) {
+    if (Snap->RockFaces == 0U) { return; }
+    BlockID Stone = TerrainStoneBlockId();
+    BlockType *Def = GetBlockDef(Stone);
+    FaceMaskData Mask[CHUNK_SIZE][CHUNK_SIZE];
+    uint16_t Rows[CHUNK_SIZE];
+
+    for (int Side = 0; Side < CHUNK_FACE_COUNT; Side++) {
+        if ((Snap->RockFaces & (1U << (unsigned)Side)) == 0U) { continue; }
+        int Axis = Side / 2;
+        bool Positive = (Side % 2) == 1;
+        // The rock's face toward the chunk points back along the axis.
+        int NormalDir = Positive ? -1 : 1;
+        const FaceDir *Fd = NULL;
+        for (int Idx = 0; Idx < (int)(sizeof(FACE_DIRS) / sizeof(FACE_DIRS[0])); Idx++) {
+            if (FACE_DIRS[Idx].NormalAxis == Axis && FACE_DIRS[Idx].NormalDir == NormalDir) {
+                Fd = &FACE_DIRS[Idx];
+            }
+        }
+        if (Fd == NULL) { continue; }
+        int RockSlice = Positive ? CHUNK_SIZE : -1;
+        int Inner = Positive ? CHUNK_SIZE : 1;
+
+        for (int U = 0; U < CHUNK_SIZE; U++) {
+            uint32_t Bits = 0;
+            if (Axis == 1) {
+                Bits = Cols->PassesZ[U + 1][Inner];
+            } else if (Axis == 0) {
+                Bits = Cols->PassesY[Inner][U + 1];
+            } else {
+                Bits = Cols->PassesY[U + 1][Inner];
+            }
+            Bits = (Bits >> 1U) & CULL_LOCAL_BITS;
+            Rows[U] = (uint16_t)Bits;
+            while (Bits != 0U) {
+                int V = __builtin_ctz(Bits);
+                Bits &= Bits - 1U;
+                int Lpos[3];
+                Lpos[Axis] = RockSlice;
+                Lpos[Fd->UAxis] = U;
+                Lpos[Fd->VAxis] = V;
+                FaceMaskData *Cell = &Mask[U][V];
+                Cell->BlockId = Stone;
+                Cell->TexIndex = (uint16_t)GetFaceTex(Def, Fd->Face);
+                Cell->FlipQuad = ComputeFaceAO(Snap, Lpos[0], Lpos[1], Lpos[2],
+                                               Fd->Face, Cell->Ao);
+                Color8 Tint = GetFaceTint(Snap, (Snap->ChunkX * CHUNK_SIZE) + Lpos[0],
+                                          (Snap->ChunkY * CHUNK_SIZE) + Lpos[1],
+                                          (Snap->ChunkZ * CHUNK_SIZE) + Lpos[2],
+                                          Def, Fd->Face);
+                Cell->Tint565 = ColorToRgb565(Tint);
+            }
+        }
+        ScanGreedyMask(Mask, Rows, Fd, RockSlice, State);
+    }
+}
+
 // One flat quad of a cross billboard: four chunk-local integer corner
 // positions, full-tile UVs, the block's tint in RGB565 and full brightness in
 // AO (cross blocks carry no AO).
@@ -1507,8 +1569,11 @@ static bool IsSealedUniformSolid(World *WorldVal, const Chunk *ChunkVal) {
            NeighbourSideSealed(WorldVal, ChunkVal, 0, 0, 1);
 }
 
-bool RendererResolveEmptyChunk(Chunk *ChunkVal) {
-    if (ChunkVal->SolidBlockCount != 0) {
+bool RendererResolveEmptyChunk(World *WorldVal, Chunk *ChunkVal) {
+    // Unloaded rock beside an empty chunk still shows faces into it.
+    if (ChunkVal->SolidBlockCount != 0 ||
+        WorldUnloadedRockFaces(WorldVal, ChunkVal->ChunkX, ChunkVal->ChunkY,
+                               ChunkVal->ChunkZ) != 0U) {
         return false;
     }
     UnloadChunkMesh(ChunkVal);
@@ -1520,7 +1585,7 @@ bool RendererResolveEmptyChunk(Chunk *ChunkVal) {
 int RendererQueueMeshJob(World *WorldVal, Chunk *ChunkVal) {
     // An empty chunk needs no mesh at all, so it is resolved here rather than
     // occupying a slot and a worker to produce nothing.
-    if (RendererResolveEmptyChunk(ChunkVal)) {
+    if (RendererResolveEmptyChunk(WorldVal, ChunkVal)) {
         return -1;
     }
 
@@ -1620,6 +1685,7 @@ void RendererBuildMeshJob(int JobId, int MesherSlot) {
     for (int Fd = 0; Fd < FACE_DIRS_COUNT; Fd++) {
         BuildGreedyFacePass(Snap, &State->Cull, &FACE_DIRS[Fd], State);
     }
+    BuildRockCapPass(Snap, &State->Cull, State);
     BuildCrossPass(Snap, State);
 
     PROFILE_END(MeshBuildStart, PROFILE_MESH_BUILD);
@@ -2000,8 +2066,9 @@ typedef struct {
     int Reachable;
     int Nodes;
     // A sight line left the loaded chunks into air the load did not keep
-    // (above a column's highest loaded layer). Nothing is known past it, so the
-    // frame falls back to frustum culling.
+    // (above a column's highest loaded layer). From the open sky nearly every
+    // loaded surface is in view, so tracing on would cost far more than the
+    // little it could still cull: the frame falls back to frustum culling.
     bool TouchedSky;
 } OcclusionState;
 
@@ -2132,7 +2199,9 @@ static int ResolveNeighbor(World *WorldVal, const TraversalFrustum *Frustum,
     if (!IsChunkBoxInTraversalFrustum(Frustum, X, Y, Z)) { return -1; }
     const Chunk *Found = GetChunkFromWorld(WorldVal, X, Y, Z);
     if (Found == NULL) {
-        if (WorldIsUnloadedSky(WorldVal, X, Y, Z)) { State->TouchedSky = true; }
+        if (!State->TouchedSky && WorldIsUnloadedSky(WorldVal, X, Y, Z)) {
+            State->TouchedSky = true;
+        }
         return -1;
     }
     Next = (int)(Found - WorldVal->Chunks);
@@ -2231,14 +2300,15 @@ static bool RunOcclusionTraversal(World *WorldVal, const RenderFrustum *Frustum,
         ArriveAt(State, (int)(Start - WorldVal->Chunks), Pos,
                  OCCLUSION_START_ENTRY, 0);
     } else {
-        // Outside its column's loaded layers (above the band, in rock below
-        // it) or outside the disc: no loaded chunk to start from that is known
-        // to see what the camera sees.
+        // In the open sky above its column, in rock left unloaded under a band,
+        // or over a column holding nothing: no loaded chunk to start from that
+        // is known to see what the camera sees.
         return false;
     }
 
     while (State->Count > 0) {
         if (State->TouchedSky) { return false; }
+
         int Slot = State->Queue[State->Head];
         State->Head++;
         if (State->Head == OCCLUSION_QUEUE_CAPACITY) { State->Head = 0; }

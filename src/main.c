@@ -332,7 +332,7 @@ static void QueueMeshWork(World *WorldVal) {
 
     // Ahead of the neighbour check: an empty chunk's result reads no neighbour,
     // and empty chunks are most of the candidates during a load.
-    if (RendererResolveEmptyChunk(ChunkVal)) {
+    if (RendererResolveEmptyChunk(WorldVal, ChunkVal)) {
       WorldRemoveMeshCandidate(WorldVal, Slot);
       Slot = Next;
       continue;

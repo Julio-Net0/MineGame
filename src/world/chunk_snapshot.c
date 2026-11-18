@@ -89,10 +89,13 @@ void CaptureChunkSnapshot(World *WorldVal, const Chunk *ChunkVal,
   Out->ChunkY = ChunkVal->ChunkY;
   Out->ChunkZ = ChunkVal->ChunkZ;
   Out->SolidBlockCount = ChunkVal->SolidBlockCount;
+  Out->RockFaces = WorldUnloadedRockFaces(WorldVal, ChunkVal->ChunkX,
+                                          ChunkVal->ChunkY, ChunkVal->ChunkZ);
 
-  // An all-air chunk produces no geometry whatever surrounds it, so nothing
-  // around it is gathered.
-  if (ChunkVal->IsUniform && ChunkVal->UniformBlockId == BLOCK_ID_AIR) {
+  // An all-air chunk produces no geometry of its own, so unless unloaded rock
+  // borders it nothing around it is gathered.
+  if (ChunkVal->IsUniform && ChunkVal->UniformBlockId == BLOCK_ID_AIR &&
+      Out->RockFaces == 0) {
     memset(Out->Blocks, 0, sizeof(Out->Blocks));
     memset(Out->BiomeCells, 0, sizeof(Out->BiomeCells));
     memset(Out->BiomeCellPresent, 0, sizeof(Out->BiomeCellPresent));

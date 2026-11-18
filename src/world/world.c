@@ -165,12 +165,10 @@ static int CompareColumnOffsets(const void *Lhs, const void *Rhs) {
 
 // Every column offset of the largest disc, sorted nearest first. Ties break on
 // (Dx, Dz), so the disc of any smaller radius is a prefix of the list:
-// PrefixCount[R] long. IndexAt maps an offset back to its place. Built once;
-// the world is driven from one thread.
+// PrefixCount[R] long. Built once; the world is driven from one thread.
 typedef struct {
   ColumnOffset Offsets[COLUMN_CANDIDATE_SIDE * COLUMN_CANDIDATE_SIDE];
   int PrefixCount[MAX_RENDER_DISTANCE + 1];
-  int16_t IndexAt[COLUMN_CANDIDATE_SIDE][COLUMN_CANDIDATE_SIDE];
   bool Built;
 } ColumnOrder;
 
@@ -183,7 +181,6 @@ static const ColumnOrder *GetColumnOrder(void) {
   int Count = 0;
   for (int Dx = -MAX_RENDER_DISTANCE; Dx <= MAX_RENDER_DISTANCE; Dx++) {
     for (int Dz = -MAX_RENDER_DISTANCE; Dz <= MAX_RENDER_DISTANCE; Dz++) {
-      Order.IndexAt[Dx + MAX_RENDER_DISTANCE][Dz + MAX_RENDER_DISTANCE] = -1;
       if ((Dx * Dx) + (Dz * Dz) <= RadiusSq) {
         Order.Offsets[Count++] = (ColumnOffset){Dx, Dz};
       }
@@ -195,11 +192,6 @@ static const ColumnOrder *GetColumnOrder(void) {
   // the farthest columns keeps the slot pool from ever being oversubscribed.
   if (Count > MAX_LOADED_COLUMNS) {
     Count = MAX_LOADED_COLUMNS;
-  }
-  for (int Idx = 0; Idx < Count; Idx++) {
-    const ColumnOffset *Offset = &Order.Offsets[Idx];
-    Order.IndexAt[Offset->Dx + MAX_RENDER_DISTANCE]
-                 [Offset->Dz + MAX_RENDER_DISTANCE] = (int16_t)Idx;
   }
   int Prefix = 0;
   for (int Radius = 0; Radius <= MAX_RENDER_DISTANCE; Radius++) {
@@ -404,12 +396,30 @@ static void BuildLoadVolume(World *WorldVal, int CenterX, int CenterY,
   Out->NearCount = Order->PrefixCount[NearRadius];
   BuildWindowLayers(WorldVal, CenterY, Vertical, Out);
 
+  // A window above a near column's band leaves air between them: the band
+  // stops at the highest layer that can hold anything. Absent chunks inside a
+  // column read as rock, so the band is extended up to the window instead, or
+  // to the world's top when the window lies above the world. A window below
+  // the band (underground) leaves rock between them, which may stay absent.
+  int FillTo = INT_MIN;
+  if (Out->InWorldLo <= Out->InWorldHi) {
+    FillTo = Out->InWorldLo - 1;
+  } else if (Out->WindowLo > WorldVal->WorldHiChunkY) {
+    FillTo = WorldVal->WorldHiChunkY;
+  }
+
   Out->ChunkTotal = 0;
   Out->TrimmedColumns = 0;
   for (int Col = 0; Col < Out->ColumnCount; Col++) {
     ResolveColumnBand(WorldVal, CenterX + Out->Columns[Col].Dx,
                       CenterZ + Out->Columns[Col].Dz, &Out->BandLo[Col],
                       &Out->BandHi[Col]);
+    if (ColumnIsNear(Out, Col) && FillTo > Out->BandHi[Col]) {
+      Out->BandHi[Col] = (int16_t)FillTo;
+      if (Out->BandHi[Col] - Out->BandLo[Col] + 1 > MAX_BAND_LAYERS) {
+        Out->BandLo[Col] = (int16_t)(Out->BandHi[Col] - MAX_BAND_LAYERS + 1);
+      }
+    }
     Out->ChunkTotal += ColumnChunkCount(Out, Col);
   }
   TrimToSlotBudget(Out);
@@ -625,6 +635,9 @@ void InitWorld(World *WorldVal){
 #endif
   ResolveWorldChunkRange(&WorldVal->WorldLoChunkY, &WorldVal->WorldHiChunkY);
   ColumnBoundsInit(&WorldVal->ColumnBounds);
+  for (int Slot = 0; Slot < LOADED_COLUMN_HASH_SIZE; Slot++) {
+    WorldVal->LoadedColumns[Slot].Used = false;
+  }
   RaisedTopsInit(&WorldVal->RaisedTops);
   // Saved chunks are the player's edits: a load range must reach them even
   // where the terrain bounds say the column is empty.
@@ -671,6 +684,110 @@ static int ProbeDistance(int From, int To) {
   return (To - From + CHUNK_MAP_SIZE) % CHUNK_MAP_SIZE;
 }
 
+// ---------------------------------------------------------------------------
+// Loaded columns
+// ---------------------------------------------------------------------------
+
+enum {
+  // Spatial-hash primes and the fold that brings the high bits down.
+  LOADED_COLUMN_PRIME_X = 73856093,
+  LOADED_COLUMN_PRIME_Z = 19349663,
+  LOADED_COLUMN_FOLD_SHIFT = 15
+};
+
+static int LoadedColumnHome(int ColumnX, int ColumnZ) {
+  unsigned int Hash = ((unsigned int)ColumnX * (unsigned int)LOADED_COLUMN_PRIME_X) ^
+                      ((unsigned int)ColumnZ * (unsigned int)LOADED_COLUMN_PRIME_Z);
+  Hash ^= Hash >> (unsigned int)LOADED_COLUMN_FOLD_SHIFT;
+  return (int)(Hash & (unsigned int)LOADED_COLUMN_HASH_MASK);
+}
+
+// The column's slot, or -1 when it holds nothing.
+static int FindLoadedColumn(const World *WorldVal, int ColumnX, int ColumnZ) {
+  int Slot = LoadedColumnHome(ColumnX, ColumnZ);
+  while (WorldVal->LoadedColumns[Slot].Used) {
+    const LoadedColumn *Entry = &WorldVal->LoadedColumns[Slot];
+    if (Entry->ColumnX == ColumnX && Entry->ColumnZ == ColumnZ) {
+      return Slot;
+    }
+    Slot = (Slot + 1) & LOADED_COLUMN_HASH_MASK;
+  }
+  return -1;
+}
+
+static void LoadedColumnAdd(World *WorldVal, int ChunkX, int ChunkY, int ChunkZ) {
+  int Slot = LoadedColumnHome(ChunkX, ChunkZ);
+  while (WorldVal->LoadedColumns[Slot].Used) {
+    LoadedColumn *Entry = &WorldVal->LoadedColumns[Slot];
+    if (Entry->ColumnX == ChunkX && Entry->ColumnZ == ChunkZ) {
+      Entry->Count++;
+      // A stale top is only ever too high, so a layer above it is the new top
+      // whatever the rescan would have found.
+      if (ChunkY > Entry->Top) {
+        Entry->Top = (int16_t)ChunkY;
+        Entry->TopStale = false;
+      }
+      return;
+    }
+    Slot = (Slot + 1) & LOADED_COLUMN_HASH_MASK;
+  }
+  WorldVal->LoadedColumns[Slot] = (LoadedColumn){.ColumnX = ChunkX,
+                                                 .ColumnZ = ChunkZ,
+                                                 .Top = (int16_t)ChunkY,
+                                                 .Count = 1,
+                                                 .Used = true};
+}
+
+// Backward-shift deletion, as the chunk map does.
+static void DeleteLoadedColumn(World *WorldVal, int Hole) {
+  WorldVal->LoadedColumns[Hole].Used = false;
+  int Current = (Hole + 1) & LOADED_COLUMN_HASH_MASK;
+  while (WorldVal->LoadedColumns[Current].Used) {
+    const LoadedColumn *Moving = &WorldVal->LoadedColumns[Current];
+    int Home = LoadedColumnHome(Moving->ColumnX, Moving->ColumnZ);
+    int FromHome = (Current - Home) & LOADED_COLUMN_HASH_MASK;
+    int FromHole = (Current - Hole) & LOADED_COLUMN_HASH_MASK;
+    if (FromHome >= FromHole) {
+      WorldVal->LoadedColumns[Hole] = *Moving;
+      WorldVal->LoadedColumns[Current].Used = false;
+      Hole = Current;
+    }
+    Current = (Current + 1) & LOADED_COLUMN_HASH_MASK;
+  }
+}
+
+static void LoadedColumnRemove(World *WorldVal, int ChunkX, int ChunkY,
+                               int ChunkZ) {
+  int Slot = FindLoadedColumn(WorldVal, ChunkX, ChunkZ);
+  if (Slot < 0) { return; }
+  LoadedColumn *Entry = &WorldVal->LoadedColumns[Slot];
+  Entry->Count--;
+  if (Entry->Count == 0) {
+    DeleteLoadedColumn(WorldVal, Slot);
+  } else if (ChunkY >= Entry->Top) {
+    Entry->TopStale = true;
+  }
+}
+
+bool WorldGetLoadedColumnTop(World *WorldVal, int ColumnX, int ColumnZ,
+                             int *OutTop) {
+  int Slot = FindLoadedColumn(WorldVal, ColumnX, ColumnZ);
+  if (Slot < 0) { return false; }
+  LoadedColumn *Entry = &WorldVal->LoadedColumns[Slot];
+  // Every remaining chunk of the column lies below a stale top, and Count says
+  // one does, so the downward scan ends.
+  if (Entry->TopStale) {
+    int Y = Entry->Top - 1;
+    while (GetChunkFromWorld(WorldVal, ColumnX, Y, ColumnZ) == (Chunk *)0) {
+      Y--;
+    }
+    Entry->Top = (int16_t)Y;
+    Entry->TopStale = false;
+  }
+  *OutTop = Entry->Top;
+  return true;
+}
+
 // The map is at most 25% full (CHUNK_MAP_SIZE = 4 * MAX_ACTIVE_CHUNKS), so
 // every probe sequence reaches an empty slot and these loops terminate.
 static void InsertChunkIntoMap(World *WorldVal, int ChunkIndex) {
@@ -680,6 +797,8 @@ static void InsertChunkIntoMap(World *WorldVal, int ChunkIndex) {
     Hash = (Hash + 1) % CHUNK_MAP_SIZE;
   }
   WorldVal->ChunkHashMap[Hash] = ChunkIndex;
+  const Chunk *ChunkVal = &WorldVal->Chunks[ChunkIndex];
+  LoadedColumnAdd(WorldVal, ChunkVal->ChunkX, ChunkVal->ChunkY, ChunkVal->ChunkZ);
 }
 
 // Backward-shift deletion: rather than leaving a tombstone, entries after the
@@ -709,6 +828,7 @@ static void RemoveChunkFromMap(World *WorldVal, int ChunkX, int ChunkY, int Chun
     Next = (Next + 1) % CHUNK_MAP_SIZE;
   }
   WorldVal->ChunkHashMap[Hole] = HASH_EMPTY;
+  LoadedColumnRemove(WorldVal, ChunkX, ChunkY, ChunkZ);
 }
 
 Chunk* GetChunkFromWorld(World *WorldVal, int ChunkX, int ChunkY, int ChunkZ){
@@ -1294,59 +1414,38 @@ void WorldGetLoadVolumeStats(World *WorldVal, Vec3 Center, int RenderDist,
   *Out = Stats;
 }
 
-bool WorldGetColumnLoadSpan(World *WorldVal, int ColumnX, int ColumnZ,
-                            int *OutLo, int *OutHi) {
-  if (WorldVal->LastLoadRenderDist <= 0) {
-    return false;
-  }
-  const LoadVolume *Volume = GetLoadVolumeAt(
-      WorldVal, WorldVal->LastLoadChunkX, WorldVal->LastLoadChunkY,
-      WorldVal->LastLoadChunkZ, WorldVal->LastLoadRenderDist);
-  int Dx = ColumnX - Volume->CenterX;
-  int Dz = ColumnZ - Volume->CenterZ;
-  if (Dx < -MAX_RENDER_DISTANCE || Dx > MAX_RENDER_DISTANCE ||
-      Dz < -MAX_RENDER_DISTANCE || Dz > MAX_RENDER_DISTANCE) {
-    return false;
-  }
-  int Col = GetColumnOrder()->IndexAt[Dx + MAX_RENDER_DISTANCE]
-                                     [Dz + MAX_RENDER_DISTANCE];
-  if (Col < 0 || Col >= Volume->ColumnCount) {
-    return false;
-  }
-  int Lo = Volume->BandLo[Col];
-  int Hi = Volume->BandHi[Col];
-  if (ColumnIsNear(Volume, Col)) {
-    if (Hi < Lo) {
-      Lo = Volume->WindowLo;
-      Hi = Volume->WindowHi;
-    } else {
-      Lo = (Volume->WindowLo < Lo) ? Volume->WindowLo : Lo;
-      Hi = (Volume->WindowHi > Hi) ? Volume->WindowHi : Hi;
-    }
-  }
-  if (Hi < Lo) {
-    return false;
-  }
-  *OutLo = Lo;
-  *OutHi = Hi;
-  return true;
-}
-
 // Above the generation ceiling nothing is ever generated, so an absent chunk
 // there is air even below a column's highest loaded layer (the window keeps
 // the centre's neighbours when the centre is above the world).
 bool WorldIsUnloadedRock(World *WorldVal, int ChunkX, int ChunkY, int ChunkZ) {
-  int Lo = 0;
-  int Hi = 0;
-  return WorldGetColumnLoadSpan(WorldVal, ChunkX, ChunkZ, &Lo, &Hi) &&
-         ChunkY <= Hi && ChunkY <= WorldVal->WorldHiChunkY;
+  int Top = 0;
+  return WorldGetLoadedColumnTop(WorldVal, ChunkX, ChunkZ, &Top) &&
+         ChunkY <= Top && ChunkY <= WorldVal->WorldHiChunkY;
+}
+
+unsigned WorldUnloadedRockFaces(World *WorldVal, int ChunkX, int ChunkY,
+                                int ChunkZ) {
+  enum { FACE_NEIGHBOURS = 6 };
+  static const int STEP[FACE_NEIGHBOURS][3] = {{-1, 0, 0}, {1, 0, 0},
+                                               {0, -1, 0}, {0, 1, 0},
+                                               {0, 0, -1}, {0, 0, 1}};
+  unsigned Faces = 0;
+  for (int Face = 0; Face < FACE_NEIGHBOURS; Face++) {
+    int X = ChunkX + STEP[Face][0];
+    int Y = ChunkY + STEP[Face][1];
+    int Z = ChunkZ + STEP[Face][2];
+    if (GetChunkFromWorld(WorldVal, X, Y, Z) == (Chunk *)0 &&
+        WorldIsUnloadedRock(WorldVal, X, Y, Z)) {
+      Faces |= 1U << (unsigned)Face;
+    }
+  }
+  return Faces;
 }
 
 bool WorldIsUnloadedSky(World *WorldVal, int ChunkX, int ChunkY, int ChunkZ) {
-  int Lo = 0;
-  int Hi = 0;
-  return WorldGetColumnLoadSpan(WorldVal, ChunkX, ChunkZ, &Lo, &Hi) &&
-         (ChunkY > Hi || ChunkY > WorldVal->WorldHiChunkY);
+  int Top = 0;
+  return WorldGetLoadedColumnTop(WorldVal, ChunkX, ChunkZ, &Top) &&
+         (ChunkY > Top || ChunkY > WorldVal->WorldHiChunkY);
 }
 
 void WorldGetColumnBoundsStats(World *WorldVal, Vec3 Center, int RenderDist,

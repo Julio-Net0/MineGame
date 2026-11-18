@@ -40,11 +40,12 @@ bool RendererUploadFinishedMesh(void);
 // Release a claimed slot that never reached the work queue.
 void RendererAbandonMeshJob(int JobId);
 
-// Main thread: resolves a chunk with no solid blocks to no mesh with every face
-// visible, clearing its dirty flag, and returns true. That result reads no
-// neighbour, so it needs no neighbour-readiness check first. Returns false and
-// does nothing for any other chunk.
-bool RendererResolveEmptyChunk(Chunk *ChunkVal);
+// Main thread: resolves a chunk with no solid blocks and no unloaded rock beside
+// it to no mesh with every face visible, clearing its dirty flag, and returns
+// true. That result reads no loaded neighbour, so it needs no
+// neighbour-readiness check first. Returns false and does nothing for any
+// other chunk.
+bool RendererResolveEmptyChunk(World *WorldVal, Chunk *ChunkVal);
 
 // Number of mesh job slots free to be claimed. Only the main thread claims
 // slots, so for that thread the count can only grow until it claims one.
@@ -82,8 +83,9 @@ int GetLastRenderedChunkCount(void);
 //
 // Occluded is how many of the Visible chunks the occlusion traversal rejected;
 // OcclusionNodes and OcclusionReachable are the traversal's work and reach, and
-// OcclusionFallback is set when the camera stood outside the loaded set and the
-// frame fell back to frustum culling alone. SubmittedVertices sums every mesh
+// OcclusionFallback is set when the frame fell back to frustum culling alone:
+// the camera stood outside the loaded set or inside rock, or a sight line
+// reached the open sky above the loaded columns. SubmittedVertices sums every mesh
 // the passes actually drew -- a machine-independent proxy for GPU load.
 typedef struct {
   int Renderable;

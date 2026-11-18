@@ -614,9 +614,9 @@ class GoldenComparison:
 EXPECTED_RENDERED: dict[int, dict[int, dict[str, int]]] = {
     # Only the current generator's counts are kept: every terrain change
     # replaces them, and an older version's numbers could only mislead.
-    # Calibrated with per-column terrain bands: a frame whose sight lines reach
-    # air the load left out (above a column's band) falls back to frustum
-    # culling until sky-aware occlusion lands, which most R=32 poses do.
+    # Calibrated with per-column terrain bands, stone caps where unloaded rock
+    # borders open cells, and frustum fallback for frames whose sight lines
+    # reach the open sky above the loaded columns (most R=32 poses).
     6: {
         8: {
             "spawn": 414,
@@ -639,14 +639,14 @@ EXPECTED_RENDERED: dict[int, dict[int, dict[str, int]]] = {
             "after_jump": 682,
         },
         32: {
-            "spawn": 3308,
-            "far": 1747,
-            "after_ticks": 1747,
-            "landed": 3584,
-            "after_walk": 2991,
-            "after_break": 3012,
-            "after_place": 3012,
-            "after_jump": 3021,
+            "spawn": 3309,
+            "far": 1749,
+            "after_ticks": 1749,
+            "landed": 3585,
+            "after_walk": 2992,
+            "after_break": 3014,
+            "after_place": 3014,
+            "after_jump": 3023,
         },
     },
 }
@@ -1157,11 +1157,16 @@ def verify_deep(out_dir: Path, _run_log: str, render_distance: int) -> None:
 OCCLUSION_POSES = ("surface", "sky", "hillside", "cave_80", "cave_150", "buried")
 OCCLUSION_CAVE_POSES = ("cave_80", "cave_150")
 # The buried camera sees out through back faces, so occlusion must stand down.
-OCCLUSION_FALLBACK_POSES = ("buried",)
-# Poses whose sight lines reach air the load leaves out above a column's terrain
-# band. The traversal knows nothing past it, so those frames fall back to
-# frustum culling until sky-aware occlusion lands; either outcome passes there,
-# and the on/off parity checks still apply.
+# So must every frame whose sight lines reach the open sky above the loaded
+# columns: from there nearly every loaded surface is in view, and the frame is
+# cheaper with frustum culling alone. Which surface poses reach the sky depends
+# on how far the band-only columns start, so it is recorded per render
+# distance; at others only the buried and cave poses are checked.
+OCCLUSION_FALLBACK_POSES: dict[int, tuple[str, ...]] = {
+    8: ("buried",),
+    16: ("surface", "hillside", "buried"),
+    32: ("surface", "sky", "hillside", "buried"),
+}
 OCCLUSION_SKY_POSES = ("surface", "sky", "hillside")
 # A chunk occlusion removes can show through a rasterisation crack between two
 # nearer quads (a T-junction of greedy faces); those few isolated pixels are the
@@ -1208,11 +1213,13 @@ def verify_occlusion(out_dir: Path, _run_log: str, render_distance: int) -> None
         )
 
         fallback = on_chunks["cull"].get("occlusionFallback")
-        expect_fallback = pose in OCCLUSION_FALLBACK_POSES
-        require(
-            fallback is expect_fallback or (pose in OCCLUSION_SKY_POSES and isinstance(fallback, bool)),
-            f"{pose}_on.json: expected occlusionFallback == {expect_fallback}, got {fallback}",
-        )
+        recorded = OCCLUSION_FALLBACK_POSES.get(render_distance)
+        if recorded is not None or pose not in OCCLUSION_SKY_POSES:
+            expect_fallback = pose in (recorded or ("buried",))
+            require(
+                fallback is expect_fallback,
+                f"{pose}_on.json: expected occlusionFallback == {expect_fallback}, got {fallback}",
+            )
         if pose in OCCLUSION_CAVE_POSES:
             require(
                 on_chunks["occluded"] > 0,

@@ -34,6 +34,10 @@ typedef struct {
   int ChunkY;
   int ChunkZ;
   int SolidBlockCount;
+  // Face neighbours left unloaded as rock (WorldUnloadedRockFaces bits). Their
+  // margin cells hold stone, and the mesher draws the faces that rock shows
+  // toward the chunk's open cells.
+  unsigned RockFaces;
 
   // Indexed [LocalX + 1][LocalY + 1][LocalZ + 1]. An absent neighbour stores 0,
   // which is what the live lookup returns for an unloaded chunk, so an

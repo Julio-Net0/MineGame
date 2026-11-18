@@ -20,6 +20,25 @@
 
 typedef void (*ChunkEvictCallback)(Chunk *EvictedChunk);
 
+// Open-addressing table of the columns holding loaded chunks. Never more
+// columns than chunks, so the table stays at most MAX_ACTIVE_CHUNKS / SIZE full.
+#define LOADED_COLUMN_HASH_SIZE 262144
+#define LOADED_COLUMN_HASH_MASK (LOADED_COLUMN_HASH_SIZE - 1)
+
+// One column with loaded chunks, kept from the chunk map alone (insertions and
+// removals), so a client holding only the chunks it was sent derives the same
+// thing as the world that loaded them.
+typedef struct {
+  int ColumnX;
+  int ColumnZ;
+  // Highest loaded layer, exact unless TopStale (then only ever too high, and
+  // rescanned on the next read).
+  int16_t Top;
+  int16_t Count;
+  bool Used;
+  bool TopStale;
+} LoadedColumn;
+
 // Invoked by SetBlockInWorld after a loaded block's ID actually changes.
 // Terrain generation writes chunks directly and never triggers it.
 typedef void (*BlockChangeCallback)(void *UserData, int BlockX, int BlockY,
@@ -83,6 +102,7 @@ typedef struct World {
   // Density bounds of every column around the load centre, refreshed by
   // UpdateWorld whenever the centre moves. Main thread only.
   ColumnBoundsTable ColumnBounds;
+  LoadedColumn LoadedColumns[LOADED_COLUMN_HASH_SIZE];
   // Columns holding player edits above their terrain bounds, seeded from the
   // save at start-up. Main thread only.
   RaisedTopMap RaisedTops;
@@ -199,20 +219,26 @@ typedef struct {
 void WorldGetLoadVolumeStats(World *WorldVal, Vec3 Center, int RenderDist,
                              LoadVolumeStats *Out);
 
-// The last load request's loaded layer span for column (ColumnX, ColumnZ):
-// window and band together. False outside that request's disc, before any
-// request, and for a column holding nothing.
-bool WorldGetColumnLoadSpan(World *WorldVal, int ColumnX, int ColumnZ,
-                            int *OutLo, int *OutHi);
+// The highest loaded layer of column (ColumnX, ColumnZ); false when the
+// column holds no loaded chunk.
+bool WorldGetLoadedColumnTop(World *WorldVal, int ColumnX, int ColumnZ,
+                             int *OutTop);
 
-// For a chunk position absent from the world: whether the last load request
-// left it out as rock (inside the disc, at or below its column's highest
-// loaded layer and inside the world: below the terrain band, or between band
-// and window) or as sky (above that layer or the world). Outside the disc it
-// is neither. Readers that need what
-// lies there use these instead of assuming air.
+// For a chunk position absent from the world, in a column holding loaded
+// chunks: rock when it lies below the column's highest loaded layer and inside
+// the world (below the terrain band, or between band and window), sky when it
+// lies above that layer or the world. In a column holding nothing it is
+// neither. Read from the loaded chunks alone, never from the seed. Readers
+// that need what lies there use these instead of assuming air.
 bool WorldIsUnloadedRock(World *WorldVal, int ChunkX, int ChunkY, int ChunkZ);
 bool WorldIsUnloadedSky(World *WorldVal, int ChunkX, int ChunkY, int ChunkZ);
+
+// Which of the six face neighbours of chunk position (ChunkX, ChunkY, ChunkZ)
+// are absent and unloaded rock: bit 2 * axis + (1 for the positive side), axes
+// X, Y, Z. The rock there has faces toward any open cell beside it, which no
+// loaded chunk draws.
+unsigned WorldUnloadedRockFaces(World *WorldVal, int ChunkX, int ChunkY,
+                                int ChunkZ);
 
 #ifdef MINEGAME_PROFILE
 // Sweeps the load volume over chunk Y -40..70 and every render distance and
