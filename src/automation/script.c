@@ -58,8 +58,23 @@ enum {
   // between nothing is in flight and the world looks done. Requiring the quiet
   // state to hold for several consecutive frames is what tells a real finish
   // from one of those gaps.
-  SETTLED_FRAMES_REQUIRED = 8
+  SETTLED_FRAMES_REQUIRED = 8,
+
+  // Vicinity radii, in chunks, whose meshing a "wait loaded" times.
+  MILESTONE_NEAR_RADIUS = 2,
+  MILESTONE_CYLINDER_RADIUS = 16
 };
+
+#define SCRIPT_MS_PER_SECOND 1000.0
+
+// Loading stages a "wait loaded" logs the first time each holds: the player's
+// vicinity, the near cylinder, and the surface of every column.
+typedef enum {
+  SCRIPT_MILESTONE_NEAR,
+  SCRIPT_MILESTONE_CYLINDER,
+  SCRIPT_MILESTONE_SURFACE,
+  SCRIPT_MILESTONE_COUNT
+} ScriptMilestone;
 
 #define SCRIPT_LOG_NAME "run.log"
 
@@ -180,6 +195,10 @@ typedef struct {
   long long WaitTarget;
   int WaitLine;
   int SettledFrames;
+  // Wall clock at the start of the current "wait loaded", and which loading
+  // milestones it has logged so far.
+  double WaitStart;
+  bool MilestoneSeen[SCRIPT_MILESTONE_COUNT];
   char WaitName[SCRIPT_MAX_NAME];
 
   long long Frame;
@@ -1324,6 +1343,44 @@ static bool ScriptSaveCapture(void) {
   return true;
 }
 
+static double ScriptWaitElapsedMs(const ScriptState *State) {
+  return (PlatformGetTime() - State->WaitStart) * SCRIPT_MS_PER_SECOND;
+}
+
+// Logs each loading milestone the first time it holds during a "wait loaded",
+// with the wall-clock time since the wait began. Observation only: the load
+// does not depend on it, so the log times how loading is ordered. A milestone
+// can lapse again (a neighbour arriving dirties a meshed chunk); the first time
+// it held is what is logged.
+static void ScriptTrackLoadMilestones(const ScriptContext *Ctx,
+                                      ScriptState *State) {
+  static const char *const NAMES[SCRIPT_MILESTONE_COUNT] = {
+      "near R<=2", "near R<=16", "surface"};
+  PROFILE_BEGIN(MilestoneStart);
+  Vec3 Center = ScriptLoadCenter(Ctx);
+  for (int Idx = 0; Idx < SCRIPT_MILESTONE_COUNT; Idx++) {
+    if (State->MilestoneSeen[Idx]) {
+      continue;
+    }
+    bool Reached = false;
+    if (Idx == SCRIPT_MILESTONE_SURFACE) {
+      Reached = WorldIsSurfaceSettled(Ctx->WorldVal, Center,
+                                      Ctx->RenderDistance);
+    } else {
+      int Radius = (Idx == SCRIPT_MILESTONE_NEAR) ? MILESTONE_NEAR_RADIUS
+                                                  : MILESTONE_CYLINDER_RADIUS;
+      Reached = WorldIsNearSettled(Ctx->WorldVal, Center, Ctx->RenderDistance,
+                                   Radius);
+    }
+    if (Reached) {
+      State->MilestoneSeen[Idx] = true;
+      ScriptLog("      | milestone %s meshed after %lld frames, %.1f ms",
+                NAMES[Idx], State->Frame, ScriptWaitElapsedMs(State));
+    }
+  }
+  PROFILE_END(MilestoneStart, PROFILE_SCRIPT_WAIT);
+}
+
 // True while the current wait is unsatisfied. Clears the wait once it is.
 static bool ScriptIsWaiting(const ScriptContext *Ctx) {
   ScriptState *State = GetScriptState();
@@ -1341,8 +1398,11 @@ static bool ScriptIsWaiting(const ScriptContext *Ctx) {
     }
     break;
   case SCRIPT_WAIT_LOADED:
+    ScriptTrackLoadMilestones(Ctx, State);
     State->SettledFrames = ScriptWorldSettled(Ctx) ? State->SettledFrames + 1 : 0;
     if (State->SettledFrames == 1) {
+      ScriptLog("      | milestone settled after %lld frames, %.1f ms",
+                State->Frame, ScriptWaitElapsedMs(State));
       // Discard the loading spike at the start of the quiet streak so the
       // window holds only settled frames once the wait releases.
       ProfilerResetWindow();
@@ -1498,6 +1558,8 @@ void ScriptStep(ChatState *Chat, GameCamera *Camera, Player *PlayerVal,
     case SCRIPT_OP_WAIT_LOADED:
       State->Wait = SCRIPT_WAIT_LOADED;
       State->SettledFrames = 0;
+      State->WaitStart = PlatformGetTime();
+      memset(State->MilestoneSeen, 0, sizeof(State->MilestoneSeen));
       State->WaitLine = Step->Line;
       return;
     case SCRIPT_OP_WAIT_NEAR:

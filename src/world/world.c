@@ -1628,6 +1628,13 @@ bool WorldIsSettled(World *WorldVal, Vec3 Center, int RenderDist) {
   return Settled;
 }
 
+// Present, generated, and neither dirty nor meshing.
+static bool ChunkIsSettled(const Chunk *ChunkVal) {
+  return ChunkVal != (Chunk *)0 && ChunkVal->IsGenerated &&
+         !ChunkVal->IsGenerating && !ChunkVal->TerrainJustGenerated &&
+         !ChunkVal->IsDirty && !ChunkVal->IsMeshing;
+}
+
 bool WorldIsNearSettled(World *WorldVal, Vec3 Center, int RenderDist,
                         int Radius) {
   // Until the load for this centre has been requested, the chunks around it
@@ -1649,12 +1656,30 @@ bool WorldIsNearSettled(World *WorldVal, Vec3 Center, int RenderDist,
     int Layers[MAX_COLUMN_LAYERS];
     int LayerCount = ColumnLayers(Volume, Col, Layers);
     for (int Layer = 0; Layer < LayerCount; Layer++) {
-      const Chunk *ChunkVal =
-          GetChunkFromWorld(WorldVal, Volume->CenterX + Dx, Layers[Layer],
-                            Volume->CenterZ + Dz);
-      if (ChunkVal == (Chunk *)0 || !ChunkVal->IsGenerated ||
-          ChunkVal->IsGenerating || ChunkVal->TerrainJustGenerated ||
-          ChunkVal->IsDirty || ChunkVal->IsMeshing) {
+      if (!ChunkIsSettled(GetChunkFromWorld(WorldVal, Volume->CenterX + Dx,
+                                            Layers[Layer],
+                                            Volume->CenterZ + Dz))) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+bool WorldIsSurfaceSettled(World *WorldVal, Vec3 Center, int RenderDist) {
+  if (!LastLoadMatches(WorldVal, Center, RenderDist)) {
+    return false;
+  }
+
+  const LoadVolume *Volume = GetLoadVolume(WorldVal, Center, RenderDist);
+  for (int Col = 0; Col < Volume->ColumnCount; Col++) {
+    int ChunkX = Volume->CenterX + Volume->Columns[Col].Dx;
+    int ChunkZ = Volume->CenterZ + Volume->Columns[Col].Dz;
+    int Hi = Volume->BandHi[Col];
+    int Lo = Hi - WORLD_SURFACE_SETTLE_LAYERS + 1;
+    if (Lo < Volume->BandLo[Col]) { Lo = Volume->BandLo[Col]; }
+    for (int Y = Hi; Y >= Lo; Y--) {
+      if (!ChunkIsSettled(GetChunkFromWorld(WorldVal, ChunkX, Y, ChunkZ))) {
         return false;
       }
     }

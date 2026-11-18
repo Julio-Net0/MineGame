@@ -262,6 +262,13 @@ bool WorldIsSettled(World *WorldVal, Vec3 Center, int RenderDist);
 bool WorldIsNearSettled(World *WorldVal, Vec3 Center, int RenderDist,
                         int Radius);
 
+// True when the top WORLD_SURFACE_SETTLE_LAYERS layers of every column's band,
+// the terrain surface and horizon seen from afar, are present, generated, and
+// neither dirty nor meshing, for the load request made at Center and
+// RenderDist. Costs one lookup per checked layer of every loaded column.
+#define WORLD_SURFACE_SETTLE_LAYERS 2
+bool WorldIsSurfaceSettled(World *WorldVal, Vec3 Center, int RenderDist);
+
 // The load disc's terrain-guided vertical extent against the current window:
 // what a per-column load range would hold, and what the uniform window cuts.
 // Columns outside the disc are not counted. Layers are clamped to the world.
