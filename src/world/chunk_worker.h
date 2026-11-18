@@ -22,7 +22,8 @@ int ChunkWorkerThreadCount(void);
 // thing that knows what a mesh job contains, and the workers only carry its id.
 typedef void (*MeshJobRunner)(int JobId, int MesherSlot);
 
-void InitChunkWorker(int ThreadCount);
+// RenderDistance sizes the shared column table; see ColumnCacheInitWorkers.
+void InitChunkWorker(int ThreadCount, int RenderDistance);
 void CloseChunkWorker(void);
 
 // Wire the mesher in before any mesh job is queued.

@@ -134,15 +134,19 @@ static PrefabReach MaxPrefabReach(void) {
 
 // Preliminary surface of any column, read from its cache entry. The entry holds
 // exactly what GetPreliminarySurface returns, so this is the same value without
-// re-evaluating the terrain shape. The entry pointer is used immediately: the
-// next lookup may reuse its slot.
+// re-evaluating the terrain shape. The entry is released before returning: a
+// private one may be reused by the next lookup.
 static int CachedSurface(ColumnCache *Cache, int WorldX, int WorldZ,
                          uint64_t Seed) {
   int ColumnX = FloorDiv(WorldX, CHUNK_SIZE);
   int ColumnZ = FloorDiv(WorldZ, CHUNK_SIZE);
-  const ColumnEntry *Entry = ColumnCacheLookup(Cache, ColumnX, ColumnZ, Seed);
-  return Entry->Surface[WorldX - (ColumnX * CHUNK_SIZE)]
-                       [WorldZ - (ColumnZ * CHUNK_SIZE)];
+  ColumnHandle Handle;
+  const ColumnEntry *Entry =
+      ColumnCacheAcquire(Cache, ColumnX, ColumnZ, Seed, &Handle);
+  int Surface = Entry->Surface[WorldX - (ColumnX * CHUNK_SIZE)]
+                              [WorldZ - (ColumnZ * CHUNK_SIZE)];
+  ColumnCacheRelease(&Handle);
+  return Surface;
 }
 
 // The biome SampleBiomeAt gives at (WorldX, Y, WorldZ), read from the column's
@@ -153,14 +157,19 @@ static int CachedBiome(ColumnCache *Cache, int WorldX, int Y, int WorldZ,
                        uint64_t Seed) {
   int ColumnX = FloorDiv(WorldX, CHUNK_SIZE);
   int ColumnZ = FloorDiv(WorldZ, CHUNK_SIZE);
-  const ColumnEntry *Entry = ColumnCacheLookup(Cache, ColumnX, ColumnZ, Seed);
+  ColumnHandle Handle;
+  const ColumnEntry *Entry =
+      ColumnCacheAcquire(Cache, ColumnX, ColumnZ, Seed, &Handle);
   int CellX = (WorldX - (ColumnX * CHUNK_SIZE)) / BIOME_CELL_SIZE;
   int CellZ = (WorldZ - (ColumnZ * CHUNK_SIZE)) / BIOME_CELL_SIZE;
   int Depth = Entry->CellFloor[CellX][CellZ] - BiomeCellCenter(Y);
-  if (BiomeInSurfaceBand(Depth)) {
-    return Entry->SurfaceBiome[CellX][CellZ];
-  }
+  bool InBand = BiomeInSurfaceBand(Depth);
+  int SurfaceBiome = Entry->SurfaceBiome[CellX][CellZ];
   BiomeClimate Climate = Entry->Climate[CellX][CellZ];
+  ColumnCacheRelease(&Handle);
+  if (InBand) {
+    return SurfaceBiome;
+  }
   Climate.Depth = (float)Depth;
   return ResolveBiome(&Climate);
 }
@@ -178,11 +187,13 @@ static bool CubeOutOfReach(const Chunk *ChunkVal, ColumnCache *Cache,
        ColumnX <= FloorDiv(MaxX, CHUNK_SIZE); ColumnX++) {
     for (int ColumnZ = FloorDiv(MinZ, CHUNK_SIZE);
          ColumnZ <= FloorDiv(MaxZ, CHUNK_SIZE); ColumnZ++) {
+      ColumnHandle Handle;
       const ColumnEntry *Entry =
-          ColumnCacheLookup(Cache, ColumnX, ColumnZ, Seed);
-      HighestBound = (First || Entry->BoundHigh > HighestBound)
-                         ? Entry->BoundHigh
-                         : HighestBound;
+          ColumnCacheAcquire(Cache, ColumnX, ColumnZ, Seed, &Handle);
+      float BoundHigh = Entry->BoundHigh;
+      ColumnCacheRelease(&Handle);
+      HighestBound = (First || BoundHigh > HighestBound) ? BoundHigh
+                                                         : HighestBound;
       First = false;
     }
   }

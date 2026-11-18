@@ -1067,6 +1067,8 @@ static void ScriptAddWorldgenJson(cJSON *Root, const ScriptContext *Ctx) {
   if (CacheNode != (cJSON *)0) {
     cJSON_AddNumberToObject(CacheNode, "hits", (double)Hits);
     cJSON_AddNumberToObject(CacheNode, "misses", (double)Misses);
+    cJSON_AddNumberToObject(CacheNode, "fallbacks",
+                            (double)ColumnCacheGetFallbacks());
     cJSON_AddItemToObject(Node, "columnCache", CacheNode);
   }
 

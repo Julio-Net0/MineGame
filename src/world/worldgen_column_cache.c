@@ -7,13 +7,31 @@
 #include <math.h>
 #include <stdlib.h>
 
+// A slot's state and its readers share one word, so pinning a READY slot and
+// claiming an idle one are single compare-exchanges that cannot interleave.
+// Macros, not an enum: READY and the mask do not fit in an int.
+#define SLOT_EMPTY 0x00000000U
+#define SLOT_FILLING 0x40000000U
+#define SLOT_READY 0x80000000U
+#define SLOT_STATE_MASK 0xC0000000U
+
+struct SharedColumnSlot {
+  atomic_uint Word;
+  ColumnEntry Entry;
+};
+
 typedef struct {
   ColumnCache *Workers;
   int WorkerCount;
+  struct SharedColumnSlot *Table;
+  int TableWidth;
 } WorkerCaches;
 
 static WorkerCaches *GetWorkerCaches(void) {
-  static WorkerCaches Caches = {.Workers = (ColumnCache *)0, .WorkerCount = 0};
+  static WorkerCaches Caches = {.Workers = (ColumnCache *)0,
+                                .WorkerCount = 0,
+                                .Table = (struct SharedColumnSlot *)0,
+                                .TableWidth = 0};
   return &Caches;
 }
 
@@ -24,14 +42,26 @@ static ColumnCache *GetMainColumnCache(void) {
   return &MainCache;
 }
 
-int ColumnCacheInitWorkers(int Count) {
+int ColumnCacheInitWorkers(int Count, int RenderDistance) {
   WorkerCaches *Caches = GetWorkerCaches();
   ColumnCacheFreeWorkers();
+
+  // Sized for the launch render distance. A larger one later only makes columns
+  // closer together share slots, which costs fills, never correctness.
+  int Width = (2 * (RenderDistance + COLUMN_TABLE_MARGIN)) + 1;
+  Caches->Table = (struct SharedColumnSlot *)calloc(
+      (size_t)Width * (size_t)Width, sizeof(struct SharedColumnSlot));
+  Caches->TableWidth =
+      (Caches->Table != (struct SharedColumnSlot *)0) ? Width : 0;
+
   // Halved on failure: fewer workers with a cache each beats none starting.
   for (int Want = Count; Want > 0; Want /= 2) {
     ColumnCache *Workers =
         (ColumnCache *)calloc((size_t)Want, sizeof(ColumnCache));
     if (Workers != (ColumnCache *)0) {
+      for (int Idx = 0; Idx < Want; Idx++) {
+        Workers[Idx].UseSharedTable = Caches->TableWidth > 0;
+      }
       Caches->Workers = Workers;
       Caches->WorkerCount = Want;
       return Want;
@@ -45,6 +75,9 @@ void ColumnCacheFreeWorkers(void) {
   free(Caches->Workers);
   Caches->Workers = (ColumnCache *)0;
   Caches->WorkerCount = 0;
+  free(Caches->Table);
+  Caches->Table = (struct SharedColumnSlot *)0;
+  Caches->TableWidth = 0;
 }
 
 ColumnCache *GetColumnCache(int Slot) {
@@ -149,6 +182,14 @@ void ColumnEntryFill(ColumnEntry *Entry, int ColumnX, int ColumnZ,
   Entry->Valid = true;
 }
 
+static void FillCounted(ColumnCache *Cache, ColumnEntry *Entry, int ColumnX,
+                        int ColumnZ, uint64_t Seed) {
+  atomic_fetch_add_explicit(&Cache->Misses, 1, memory_order_relaxed);
+  PROFILE_BEGIN(FillStart);
+  ColumnEntryFill(Entry, ColumnX, ColumnZ, Seed);
+  PROFILE_END(FillStart, PROFILE_GEN_COLUMN);
+}
+
 // First entry of the set a column maps to.
 static int SetBase(int ColumnX, int ColumnZ) {
   const unsigned int HALF_BITS = 32U;
@@ -184,13 +225,89 @@ const ColumnEntry *ColumnCacheLookup(ColumnCache *Cache, int ColumnX,
     }
   }
 
-  atomic_fetch_add_explicit(&Cache->Misses, 1, memory_order_relaxed);
   ColumnEntry *Entry = &Cache->Entries[Victim];
-  PROFILE_BEGIN(FillStart);
-  ColumnEntryFill(Entry, ColumnX, ColumnZ, Seed);
-  PROFILE_END(FillStart, PROFILE_GEN_COLUMN);
+  FillCounted(Cache, Entry, ColumnX, ColumnZ, Seed);
   Cache->LastUse[Victim] = Cache->Clock;
   return Entry;
+}
+
+static int Wrap(int Value, int Width) {
+  int Rem = Value % Width;
+  return (Rem < 0) ? Rem + Width : Rem;
+}
+
+static bool EntryHolds(const ColumnEntry *Entry, int ColumnX, int ColumnZ,
+                       uint64_t Seed) {
+  return Entry->ColumnX == ColumnX && Entry->ColumnZ == ColumnZ &&
+         Entry->Seed == Seed;
+}
+
+// Returns the slot's entry for the column, pinned, or NULL when the slot is
+// being filled or another column in it is still being read.
+static const ColumnEntry *SharedAcquire(ColumnCache *Cache,
+                                        struct SharedColumnSlot *Slot,
+                                        int ColumnX, int ColumnZ,
+                                        uint64_t Seed) {
+  unsigned int Word = atomic_load_explicit(&Slot->Word, memory_order_relaxed);
+  while ((Word & SLOT_STATE_MASK) == SLOT_READY) {
+    // Acquire pairs with the release that published READY, so the entry is
+    // read only after the fill that wrote it.
+    if (atomic_compare_exchange_weak_explicit(&Slot->Word, &Word, Word + 1U,
+                                              memory_order_acquire,
+                                              memory_order_relaxed)) {
+      if (EntryHolds(&Slot->Entry, ColumnX, ColumnZ, Seed)) {
+        atomic_fetch_add_explicit(&Cache->Hits, 1, memory_order_relaxed);
+        return &Slot->Entry;
+      }
+      Word = atomic_fetch_sub_explicit(&Slot->Word, 1U, memory_order_release) -
+             1U;
+      break;
+    }
+  }
+
+  // Claimed only while idle: empty, or READY with no reader left. Acquire pairs
+  // with the last readers' release, so their reads finish before the refill.
+  if (Word != SLOT_EMPTY && Word != SLOT_READY) {
+    return (const ColumnEntry *)0;
+  }
+  if (!atomic_compare_exchange_strong_explicit(
+          &Slot->Word, &Word, SLOT_FILLING | 1U, memory_order_acquire,
+          memory_order_relaxed)) {
+    return (const ColumnEntry *)0;
+  }
+  // FILLING turns every other thread away, so this thread alone writes the
+  // entry and the word until the release below publishes it, still pinned.
+  FillCounted(Cache, &Slot->Entry, ColumnX, ColumnZ, Seed);
+  atomic_store_explicit(&Slot->Word, SLOT_READY | 1U, memory_order_release);
+  return &Slot->Entry;
+}
+
+const ColumnEntry *ColumnCacheAcquire(ColumnCache *Cache, int ColumnX,
+                                      int ColumnZ, uint64_t Seed,
+                                      ColumnHandle *Handle) {
+  Handle->Slot = (struct SharedColumnSlot *)0;
+  WorkerCaches *Caches = GetWorkerCaches();
+  if (Cache->UseSharedTable && Caches->TableWidth > 0) {
+    int Width = Caches->TableWidth;
+    struct SharedColumnSlot *Slot =
+        &Caches->Table[((size_t)Wrap(ColumnX, Width) * (size_t)Width) +
+                       (size_t)Wrap(ColumnZ, Width)];
+    const ColumnEntry *Entry =
+        SharedAcquire(Cache, Slot, ColumnX, ColumnZ, Seed);
+    if (Entry != (const ColumnEntry *)0) {
+      Handle->Slot = Slot;
+      return Entry;
+    }
+    atomic_fetch_add_explicit(&Cache->Fallbacks, 1, memory_order_relaxed);
+  }
+  return ColumnCacheLookup(Cache, ColumnX, ColumnZ, Seed);
+}
+
+void ColumnCacheRelease(ColumnHandle *Handle) {
+  if (Handle->Slot != (struct SharedColumnSlot *)0) {
+    atomic_fetch_sub_explicit(&Handle->Slot->Word, 1U, memory_order_release);
+    Handle->Slot = (struct SharedColumnSlot *)0;
+  }
 }
 
 void ColumnCacheGetTotals(uint64_t *OutHits, uint64_t *OutMisses) {
@@ -206,4 +323,14 @@ void ColumnCacheGetTotals(uint64_t *OutHits, uint64_t *OutMisses) {
   }
   *OutHits = Hits;
   *OutMisses = Misses;
+}
+
+uint64_t ColumnCacheGetFallbacks(void) {
+  WorkerCaches *Caches = GetWorkerCaches();
+  uint64_t Fallbacks = 0;
+  for (int Slot = 0; Slot < Caches->WorkerCount; Slot++) {
+    Fallbacks += atomic_load_explicit(&Caches->Workers[Slot].Fallbacks,
+                                      memory_order_relaxed);
+  }
+  return Fallbacks;
 }

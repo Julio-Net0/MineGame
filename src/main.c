@@ -88,7 +88,7 @@ static void FreeEvictedChunkMeshes(Chunk *Evicted) { RendererForgetChunk(Evicted
 // case, so the caller has nothing to tear down.
 static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCamera,
                      ChatState *ChatVal, GameCamera *FreeCamera,
-                     const LaunchOptions *Options) {
+                     const LaunchOptions *Options, int RenderDistance) {
   // First, before the window and the registries: a failure here then costs no
   // teardown of a live GL context and no unloading of already-parsed assets.
   *WorldVal = (World *)malloc(sizeof(World));
@@ -207,7 +207,7 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
     WorkerCount = MesherSlots;
   }
   SetChunkWorkerMeshRunner(RendererBuildMeshJob);
-  InitChunkWorker(WorkerCount);
+  InitChunkWorker(WorkerCount, RenderDistance);
 
   SpawnPoint Spawn = FindSpawnColumn(GetWorldSeed());
   LogInfo("MAIN: spawn column (%d, %d) surface %d", Spawn.X, Spawn.Z,
@@ -491,7 +491,7 @@ int main(int Argc, char **Argv) {
   }
 
   if (!InitGame(&WorldVal, &PlayerVal, &PlayerCamera, &ChatVal, &FreeCamera,
-                Options)) {
+                Options, RenderDistance)) {
     ScriptShutdown();
     return EXIT_FAILURE;
   }

@@ -146,10 +146,12 @@ static void RunGeneration(Chunk *Target, int WorkerIndex) {
   PROFILE_BEGIN(GenerationStart);
 
   // Every cube of a column shares this entry, so its 2D noise is sampled once
-  // per column on this worker rather than once per cube.
-  const ColumnEntry *Column =
-      ColumnCacheLookup(GetColumnCache(WorkerIndex), Target->ChunkX,
-                        Target->ChunkZ, GetWorldSeed());
+  // per column for all workers rather than once per cube. Held until flora is
+  // placed: a shared entry pinned by the handle stays valid throughout.
+  ColumnCache *Cache = GetColumnCache(WorkerIndex);
+  ColumnHandle Handle;
+  const ColumnEntry *Column = ColumnCacheAcquire(
+      Cache, Target->ChunkX, Target->ChunkZ, GetWorldSeed(), &Handle);
 
   // Before the branch, not after it: generation reads the biome map to choose
   // its blocks, and a chunk read back from disk needs one just the same. A
@@ -167,15 +169,17 @@ static void RunGeneration(Chunk *Target, int WorkerIndex) {
     PROFILE_END(TerrainStart, PROFILE_GEN_TERRAIN);
 
     PROFILE_BEGIN(FeaturesStart);
-    ColumnCache *Cache = GetColumnCache(WorkerIndex);
     PlaceChunkFeatures(Target, Cache, true);
-    // The structure pass looks up neighbouring columns, which may have reused
-    // this column's slot, so the entry is looked up again for flora.
-    Column = ColumnCacheLookup(Cache, Target->ChunkX, Target->ChunkZ,
-                               GetWorldSeed());
+    // A private entry is not pinned: the structure pass looks up neighbouring
+    // columns, which may have reused its slot, so it is looked up again.
+    if (Handle.Slot == (struct SharedColumnSlot *)0) {
+      Column = ColumnCacheLookup(Cache, Target->ChunkX, Target->ChunkZ,
+                                 GetWorldSeed());
+    }
     PlaceChunkFlora(Target, Column);
     PROFILE_END(FeaturesStart, PROFILE_GEN_FEATURES);
   }
+  ColumnCacheRelease(&Handle);
 
   // Before IsGenerated is published: readers on the main thread rely on the
   // storage being final once they observe it.
@@ -258,7 +262,7 @@ int ChunkWorkerDefaultThreadCount(void) {
 
 int ChunkWorkerThreadCount(void) { return GetWorkerState()->ThreadCount; }
 
-void InitChunkWorker(int ThreadCount) {
+void InitChunkWorker(int ThreadCount, int RenderDistance) {
   ChunkWorkerState *State = GetWorkerState();
   int ClampedCount = ThreadCount;
   if (ClampedCount < 1) {
@@ -269,7 +273,7 @@ void InitChunkWorker(int ThreadCount) {
 
   // Each worker needs a column cache of its own; with fewer caches than asked
   // for, fewer workers start rather than two sharing one.
-  int CacheCount = ColumnCacheInitWorkers(ClampedCount);
+  int CacheCount = ColumnCacheInitWorkers(ClampedCount, RenderDistance);
   if (CacheCount < ClampedCount) {
     LogWarn("WORKER: column caches for %d of %d workers; starting %d",
             CacheCount, ClampedCount, CacheCount);

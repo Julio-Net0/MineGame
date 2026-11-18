@@ -290,7 +290,7 @@ bool ServerInit(ServerState *Server, const ServerConfig *Config) {
                         : ChunkWorkerDefaultThreadCount();
   LogInfo("SERVER: %d chunk workers", WorkerCount);
   SetChunkWorkerMeshRunner((MeshJobRunner)0);
-  InitChunkWorker(WorkerCount);
+  InitChunkWorker(WorkerCount, Server->RenderDistance);
 
   SpawnPoint Spawn = FindSpawnColumn(GetWorldSeed());
   LogInfo("SERVER: spawn column (%d, %d) surface %d", Spawn.X, Spawn.Z,
