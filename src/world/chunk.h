@@ -92,6 +92,11 @@ typedef struct Chunk {
   // flight is then stale, so completion leaves the chunk dirty and it is queued
   // again rather than the edit staying invisible.
   atomic_bool DirtiedWhileMeshing;
+
+  // Owned by the chunk workers, under their queue lock: the next chunk in the
+  // generation queue this one waits in. A chunk waits in at most one queue at a
+  // time, so a link per chunk replaces a ring per worker sized for every chunk.
+  struct Chunk *GenNext;
 } Chunk;
 
 // Resolve the base blocks that are not part of any biome palette (stone, water)

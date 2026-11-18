@@ -20,10 +20,9 @@
 enum {
   COLUMN_CACHE_ENTRIES = 256,
   COLUMN_CACHE_WAYS = 4,
-  // Slots 0..CHUNK_WORKER_MAX_THREADS-1 belong to the workers; the last one to
-  // the main thread (preview statement, self-tests).
+  // Slots 0..ThreadCount-1 belong to the workers; any other slot, this one
+  // included, to the main thread (preview statement, self-tests).
   COLUMN_CACHE_MAIN_SLOT = CHUNK_WORKER_MAX_THREADS,
-  COLUMN_CACHE_SLOTS = CHUNK_WORKER_MAX_THREADS + 1,
   COLUMN_SHAPE_CORNERS = (CHUNK_SIZE / 4) + 1
 };
 
@@ -63,6 +62,14 @@ typedef struct ColumnCache {
   atomic_uint_fast64_t Hits;
   atomic_uint_fast64_t Misses;
 } ColumnCache;
+
+// Allocates one empty cache per worker, once, before the workers start. A
+// cache is a few hundred kilobytes, so the maximum worker count is not paid for
+// on machines that run fewer. Returns how many were allocated, at most Count;
+// fewer only when memory ran out.
+int ColumnCacheInitWorkers(int Count);
+// Frees the worker caches once the workers have stopped.
+void ColumnCacheFreeWorkers(void);
 
 ColumnCache *GetColumnCache(int Slot);
 

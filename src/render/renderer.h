@@ -19,6 +19,12 @@ typedef enum {
 
 void InitRenderer(void);
 void CloseRenderer(void);
+
+// Allocates the mesher scratch of Count mesh workers, once, before they start.
+// Returns how many slots were allocated, at most Count; fewer only when memory
+// ran out, in which case only that many workers may be started.
+int RendererInitMesherSlots(int Count);
+void RendererFreeMesherSlots(void);
 // Main thread: capture the chunk's snapshot into a free job slot and return its
 // id, or -1 when the chunk needs no mesh or no slot is free.
 int RendererQueueMeshJob(World *WorldVal, Chunk *ChunkVal);
@@ -34,7 +40,15 @@ bool RendererUploadFinishedMesh(void);
 // Release a claimed slot that never reached the work queue.
 void RendererAbandonMeshJob(int JobId);
 
-bool RendererHasMeshJobCapacity(void);
+// Main thread: resolves a chunk with no solid blocks to no mesh with every face
+// visible, clearing its dirty flag, and returns true. That result reads no
+// neighbour, so it needs no neighbour-readiness check first. Returns false and
+// does nothing for any other chunk.
+bool RendererResolveEmptyChunk(Chunk *ChunkVal);
+
+// Number of mesh job slots free to be claimed. Only the main thread claims
+// slots, so for that thread the count can only grow until it claims one.
+int RendererCountFreeMeshJobs(void);
 
 // True while any mesh job slot is still occupied: queued, being built by a
 // worker, or finished and waiting for this thread to upload it. A caller asking

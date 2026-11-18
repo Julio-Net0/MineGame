@@ -10,6 +10,9 @@
 /tp 500 90 500
 
 wait loaded
+# Lets the "Tp to" chat line finish fading (3 s shown + 1 s fade = 80 ticks):
+# a load that settles sooner would otherwise put it in the screenshot.
+wait ticks 80
 
 screenshot far
 state far

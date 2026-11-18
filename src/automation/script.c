@@ -78,6 +78,7 @@ typedef enum {
   SCRIPT_OP_WAIT_FRAMES,
   SCRIPT_OP_WAIT_TICKS,
   SCRIPT_OP_WAIT_LOADED,
+  SCRIPT_OP_WAIT_NEAR,
   SCRIPT_OP_WAIT_PROFILE,
   SCRIPT_OP_LOOK,
   SCRIPT_OP_HOLD,
@@ -152,6 +153,10 @@ typedef enum {
   // has reported itself settled for several frames in a row -- see
   // SETTLED_FRAMES_REQUIRED.
   SCRIPT_WAIT_LOADED,
+  // Waiting for the chunks within WaitTarget columns of the load centre to be
+  // meshed. Released on the first frame it holds and leaves the profiler window
+  // alone, so a following "wait loaded" can time the rest of the load.
+  SCRIPT_WAIT_NEAR,
   // Waiting for a timed profiler capture (/profile start <seconds>) to stop by
   // itself. Wall-clock by nature: it exists to record a fixed span of real time
   // on whatever machine runs the script, not to reach a game state.
@@ -604,10 +609,12 @@ static bool ParseStatement(char *Statement, int LineNumber) {
 
     bool IsFrames = (TokenCount == 3) && CompareString(Tokens[1], "frames") == 0;
     bool IsTicks = (TokenCount == 3) && CompareString(Tokens[1], "ticks") == 0;
-    if (!IsFrames && !IsTicks) {
+    bool IsNear = (TokenCount == 3) && CompareString(Tokens[1], "near") == 0;
+    if (!IsFrames && !IsTicks && !IsNear) {
       ParseError(LineNumber,
                  "expected \"wait loaded\", \"wait profile\", "
-                 "\"wait ticks <count>\" or \"wait frames <count>\"");
+                 "\"wait near <chunks>\", \"wait ticks <count>\" or "
+                 "\"wait frames <count>\"");
       return false;
     }
     int Count = 0;
@@ -615,12 +622,15 @@ static bool ParseStatement(char *Statement, int LineNumber) {
       ParseError(LineNumber, "wait count must be a positive integer");
       return false;
     }
-    return AppendStatement((ScriptStatement){.Kind = IsFrames
-                                                 ? SCRIPT_OP_WAIT_FRAMES
-                                                 : SCRIPT_OP_WAIT_TICKS,
-                                             .Line = LineNumber,
-                                             .Count = Count},
-                           "", LineText);
+    ScriptOpKind Kind = SCRIPT_OP_WAIT_TICKS;
+    if (IsFrames) {
+      Kind = SCRIPT_OP_WAIT_FRAMES;
+    } else if (IsNear) {
+      Kind = SCRIPT_OP_WAIT_NEAR;
+    }
+    return AppendStatement(
+        (ScriptStatement){.Kind = Kind, .Line = LineNumber, .Count = Count}, "",
+        LineText);
   }
 
   if (CompareString(Tokens[0], "look") == 0) {
@@ -897,12 +907,15 @@ static Vec3 ScriptLoadCenter(const ScriptContext *Ctx) {
 
 // Settled means the world has nothing left in flight AND the meshes it produced
 // have all reached the GPU; a chunk stops being dirty when its job is queued,
-// so the chunk flags alone would call a world with 24 meshes still uploading
-// finished.
+// so the chunk flags alone would call a world with a full pool of meshes still
+// uploading finished.
 static bool ScriptWorldSettled(const ScriptContext *Ctx) {
-  return WorldIsSettled(Ctx->WorldVal, ScriptLoadCenter(Ctx),
-                        Ctx->RenderDistance) &&
-         !RendererHasPendingMeshWork();
+  PROFILE_BEGIN(SettleStart);
+  bool Settled = WorldIsSettled(Ctx->WorldVal, ScriptLoadCenter(Ctx),
+                                Ctx->RenderDistance) &&
+                 !RendererHasPendingMeshWork();
+  PROFILE_END(SettleStart, PROFILE_SCRIPT_WAIT);
+  return Settled;
 }
 
 static cJSON *ScriptVec3Json(Vec3 Value) {
@@ -1287,6 +1300,18 @@ static bool ScriptIsWaiting(const ScriptContext *Ctx) {
     ScriptLog("      | world settled after %lld frames and %lld ticks",
               State->Frame, State->Tick);
     break;
+  case SCRIPT_WAIT_NEAR: {
+    PROFILE_BEGIN(NearStart);
+    bool Near = WorldIsNearSettled(Ctx->WorldVal, ScriptLoadCenter(Ctx),
+                                   Ctx->RenderDistance, (int)State->WaitTarget);
+    PROFILE_END(NearStart, PROFILE_SCRIPT_WAIT);
+    if (!Near) {
+      return true;
+    }
+    ScriptLog("      | vicinity R<=%lld meshed after %lld frames and %lld ticks",
+              State->WaitTarget, State->Frame, State->Tick);
+    break;
+  }
   case SCRIPT_WAIT_PROFILE:
 #ifdef MINEGAME_PROFILE
     if (ProfilerIsCapturing()) {
@@ -1420,6 +1445,11 @@ void ScriptStep(ChatState *Chat, GameCamera *Camera, Player *PlayerVal,
     case SCRIPT_OP_WAIT_LOADED:
       State->Wait = SCRIPT_WAIT_LOADED;
       State->SettledFrames = 0;
+      State->WaitLine = Step->Line;
+      return;
+    case SCRIPT_OP_WAIT_NEAR:
+      State->Wait = SCRIPT_WAIT_NEAR;
+      State->WaitTarget = Step->Count;
       State->WaitLine = Step->Line;
       return;
     case SCRIPT_OP_WAIT_PROFILE:

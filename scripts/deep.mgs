@@ -6,23 +6,30 @@
 # loadWindow block of each dump (lo, hi, layers) is the active chunk-layer range
 # around the player; chunks.active and the profiler show what that window costs.
 # Writes automation_out/deep_60.png, deep_120.png, deep_500.png and .json dumps.
+#
+# Each "wait ticks 80" lets the "Tp to" chat line finish fading (3 s shown + 1 s
+# fade at 20 Hz): a load fast enough to settle inside that time would otherwise
+# put the line in the screenshot.
 
 /noclip 1
 
 /tp 0 -60 0
 look 0 -60
 wait loaded
+wait ticks 80
 screenshot deep_60
 state deep_60
 
 /tp 0 -120 0
 wait loaded
+wait ticks 80
 screenshot deep_120
 state deep_120
 
 # Just above the bedrock band (cave floor is Y -508).
 /tp 0 -500 0
 wait loaded
+wait ticks 80
 screenshot deep_500
 state deep_500
 

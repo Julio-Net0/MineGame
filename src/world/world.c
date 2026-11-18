@@ -6,6 +6,7 @@
 #include "core/log.h"
 #include "world/worldgen_strata.h"
 #include <limits.h>
+#include <math.h>
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -333,7 +334,15 @@ void InitWorld(World *WorldVal){
   for(int IdxI = 0; IdxI < MAX_ACTIVE_CHUNKS; IdxI++){
     WorldVal->FreeList[IdxI] = MAX_ACTIVE_CHUNKS - 1 - IdxI;
     WorldVal->SlotInUse[IdxI] = false;
+    WorldVal->CandBucket[IdxI] = -1;
   }
+  for (int Bucket = 0; Bucket < MESH_CANDIDATE_BUCKETS; Bucket++) {
+    WorldVal->CandHead[Bucket] = -1;
+  }
+  WorldVal->CandidateCount = 0;
+  WorldVal->CandCenterX = 0;
+  WorldVal->CandCenterY = 0;
+  WorldVal->CandCenterZ = 0;
 
   DensePoolInit(&WorldVal->DensePool);
 
@@ -342,6 +351,12 @@ void InitWorld(World *WorldVal){
   WorldVal->LastLoadChunkZ = 0;
   WorldVal->LastLoadRenderDist = 0;
   WorldVal->HasLoadedOnce = false;
+  WorldVal->LastLoadAllCreated = false;
+  WorldVal->PendingGeneration = 0;
+#ifdef MINEGAME_PROFILE
+  WorldVal->LastGenerationSettled = false;
+  WorldVal->LastSettled = false;
+#endif
   ResolveWorldChunkRange(&WorldVal->WorldLoChunkY, &WorldVal->WorldHiChunkY);
   WorldVal->OnChunkEvict = (ChunkEvictCallback)0;
   WorldVal->OnBlockChange = (BlockChangeCallback)0;
@@ -458,16 +473,122 @@ static void MarkUsefulChunks(World *WorldVal, const LoadVolume *Volume, bool *Ke
   }
 }
 
+static int MeshCandidateBucket(const World *WorldVal, const Chunk *ChunkVal) {
+  int Dx = ChunkVal->ChunkX - WorldVal->CandCenterX;
+  int Dy = ChunkVal->ChunkY - WorldVal->CandCenterY;
+  int Dz = ChunkVal->ChunkZ - WorldVal->CandCenterZ;
+  // A quarter weight on the vertical keeps every loaded layer of the nearest
+  // columns ahead of the horizon, while nearer layers still go first.
+  int DistanceSq = (Dx * Dx) + (Dz * Dz) + ((Dy * Dy) / 4);
+  int Bucket = (int)sqrtf((float)DistanceSq);
+  return (Bucket < MESH_CANDIDATE_BUCKETS) ? Bucket : MESH_CANDIDATE_BUCKETS - 1;
+}
+
+static void LinkMeshCandidate(World *WorldVal, int Slot, int Bucket) {
+  int Head = WorldVal->CandHead[Bucket];
+  WorldVal->CandBucket[Slot] = (int16_t)Bucket;
+  WorldVal->CandPrev[Slot] = -1;
+  WorldVal->CandNext[Slot] = Head;
+  if (Head >= 0) {
+    WorldVal->CandPrev[Head] = Slot;
+  }
+  WorldVal->CandHead[Bucket] = Slot;
+}
+
+static void UnlinkMeshCandidate(World *WorldVal, int Slot) {
+  int Prev = WorldVal->CandPrev[Slot];
+  int Next = WorldVal->CandNext[Slot];
+  if (Prev >= 0) {
+    WorldVal->CandNext[Prev] = Next;
+  } else {
+    WorldVal->CandHead[WorldVal->CandBucket[Slot]] = Next;
+  }
+  if (Next >= 0) {
+    WorldVal->CandPrev[Next] = Prev;
+  }
+  WorldVal->CandBucket[Slot] = -1;
+}
+
+// A chunk still generating is left out: its completion adds it, so the
+// queueing pass never revisits chunks that cannot be meshed yet.
+static void AddMeshCandidate(World *WorldVal, Chunk *ChunkVal) {
+  int Slot = (int)(ChunkVal - WorldVal->Chunks);
+  if (!ChunkVal->IsGenerated || WorldVal->CandBucket[Slot] >= 0) {
+    return;
+  }
+  LinkMeshCandidate(WorldVal, Slot, MeshCandidateBucket(WorldVal, ChunkVal));
+  WorldVal->CandidateCount++;
+}
+
+void WorldRemoveMeshCandidate(World *WorldVal, int Slot) {
+  if (WorldVal->CandBucket[Slot] < 0) {
+    return;
+  }
+  UnlinkMeshCandidate(WorldVal, Slot);
+  WorldVal->CandidateCount--;
+}
+
+int WorldNextMeshCandidate(const World *WorldVal, int Slot) {
+  int Bucket = 0;
+  if (Slot >= 0) {
+    if (WorldVal->CandNext[Slot] >= 0) {
+      return WorldVal->CandNext[Slot];
+    }
+    Bucket = WorldVal->CandBucket[Slot] + 1;
+  }
+  for (; Bucket < MESH_CANDIDATE_BUCKETS; Bucket++) {
+    if (WorldVal->CandHead[Bucket] >= 0) {
+      return WorldVal->CandHead[Bucket];
+    }
+  }
+  return -1;
+}
+
+int WorldMeshCandidateCount(const World *WorldVal) {
+  return WorldVal->CandidateCount;
+}
+
+// Buckets are distances from the load centre, so they go stale when it moves.
+// Recomputed here, once per centre change, rather than sorted every frame.
+static void RebucketMeshCandidates(World *WorldVal, int CenterX, int CenterY,
+                                   int CenterZ) {
+  if (WorldVal->CandCenterX == CenterX && WorldVal->CandCenterY == CenterY &&
+      WorldVal->CandCenterZ == CenterZ) {
+    return;
+  }
+  WorldVal->CandCenterX = CenterX;
+  WorldVal->CandCenterY = CenterY;
+  WorldVal->CandCenterZ = CenterZ;
+
+  // Static: one entry per active chunk is too large for the stack, and the
+  // world is driven from one thread.
+  static int Slots[MAX_ACTIVE_CHUNKS];
+  int Count = 0;
+  for (int Bucket = 0; Bucket < MESH_CANDIDATE_BUCKETS; Bucket++) {
+    for (int Slot = WorldVal->CandHead[Bucket]; Slot >= 0;
+         Slot = WorldVal->CandNext[Slot]) {
+      Slots[Count++] = Slot;
+    }
+    WorldVal->CandHead[Bucket] = -1;
+  }
+  for (int Idx = 0; Idx < Count; Idx++) {
+    int Slot = Slots[Idx];
+    LinkMeshCandidate(WorldVal, Slot,
+                      MeshCandidateBucket(WorldVal, &WorldVal->Chunks[Slot]));
+  }
+}
+
 // A mesh already in flight was built from a snapshot taken before this change,
 // so it is stale. Completion clears IsDirty only when DirtiedWhileMeshing is
 // unset; setting IsDirty alone would be overwritten and the chunk would keep a
 // mesh built against a neighbour that has since arrived, left or changed.
-static void MarkChunkDirty(Chunk *ChunkVal) {
+static void MarkChunkDirty(World *WorldVal, Chunk *ChunkVal) {
   if (ChunkVal == (Chunk *)0) {
     return;
   }
   ChunkVal->IsDirty = true;
   if (ChunkVal->IsMeshing) { ChunkVal->DirtiedWhileMeshing = true; }
+  AddMeshCandidate(WorldVal, ChunkVal);
 }
 
 // The mesh snapshot reads all 26 surrounding chunks, not only the six sharing a
@@ -480,7 +601,8 @@ void UpdateNeighborsDirtyFlag(World *WorldVal, int Cx, int Cy, int Cz){
     for (int Dy = -1; Dy <= 1; Dy++) {
       for (int Dz = -1; Dz <= 1; Dz++) {
         if (Dx != 0 || Dy != 0 || Dz != 0) {
-          MarkChunkDirty(GetChunkFromWorld(WorldVal, Cx + Dx, Cy + Dy, Cz + Dz));
+          MarkChunkDirty(WorldVal,
+                         GetChunkFromWorld(WorldVal, Cx + Dx, Cy + Dy, Cz + Dz));
         }
       }
     }
@@ -519,6 +641,15 @@ static bool EvictUnneededChunks(World *WorldVal, const bool *KeepChunk){
     }
 
     Chunk *Evicted = &WorldVal->Chunks[IdxI];
+
+    // Still counted as pending: its completion is waiting in the drain (or, if
+    // it never generated, it never will). Clearing the flag also turns that
+    // waiting completion entry into a stale one the drain skips.
+    if (!Evicted->IsGenerated || Evicted->TerrainJustGenerated) {
+      WorldVal->PendingGeneration--;
+      Evicted->TerrainJustGenerated = false;
+    }
+    WorldRemoveMeshCandidate(WorldVal, IdxI);
     if(WorldVal->OnChunkEvict != (ChunkEvictCallback)0){
       WorldVal->OnChunkEvict(Evicted);
     }
@@ -557,6 +688,7 @@ static bool CreateOrRecycleChunk(World *WorldVal, int ChunkX, int ChunkY, int Ch
   WorldVal->Chunks[IdxI].ChunkY = ChunkY;
   WorldVal->Chunks[IdxI].ChunkZ = ChunkZ;
 
+  WorldVal->PendingGeneration++;
   EnqueueChunkGeneration(&WorldVal->Chunks[IdxI]);
   InsertChunkIntoMap(WorldVal, IdxI);
 
@@ -587,6 +719,8 @@ void UpdateWorld(World *WorldVal, Vec3 PlayerPos, int RenderDist){
     return;
   }
 
+  RebucketMeshCandidates(WorldVal, PChunkX, PChunkY, PChunkZ);
+
   // Static: at MAX_ACTIVE_CHUNKS entries it is too large to want on the stack,
   // and UpdateWorld only runs on the thread driving the world.
   static bool KeepChunk[MAX_ACTIVE_CHUNKS];
@@ -616,6 +750,7 @@ void UpdateWorld(World *WorldVal, Vec3 PlayerPos, int RenderDist){
   WorldVal->LastLoadChunkY = PChunkY;
   WorldVal->LastLoadChunkZ = PChunkZ;
   WorldVal->LastLoadRenderDist = RenderDist;
+  WorldVal->LastLoadAllCreated = AllCreated;
   // The gate above only opens again when the player changes chunk, so a load
   // that left chunks uncreated or unevicted keeps it shut off until it is done.
   WorldVal->HasLoadedOnce = AllCreated && !EvictionDeferred;
@@ -649,7 +784,7 @@ void SetBlockInWorld(World *WorldVal, Vec3 Pos, BlockID BlockId){
 
   BlockID PreviousId = ChunkGetLocal(ChunkVal, LocalX, LocalY, LocalZ);
   SetBlockInChunk(ChunkVal, (Vec3){(float)LocalX, (float)LocalY, (float)LocalZ}, BlockId);
-  MarkChunkDirty(ChunkVal);
+  MarkChunkDirty(WorldVal, ChunkVal);
 
   // A block on a face, edge or corner of its chunk is read by the face, edge
   // and corner neighbours across it: face culling by the first, ambient
@@ -666,7 +801,7 @@ void SetBlockInWorld(World *WorldVal, Vec3 Pos, BlockID BlockId){
         if ((Dz != 0 && Dz != StepZ) || (Dx == 0 && Dy == 0 && Dz == 0)) {
           continue;
         }
-        MarkChunkDirty(GetChunkFromWorld(WorldVal, ChunkVal->ChunkX + Dx,
+        MarkChunkDirty(WorldVal, GetChunkFromWorld(WorldVal, ChunkVal->ChunkX + Dx,
                                          ChunkVal->ChunkY + Dy,
                                          ChunkVal->ChunkZ + Dz));
       }
@@ -847,7 +982,60 @@ void WorldGetLoadLayerRange(const World *WorldVal, Vec3 Center, int RenderDist,
   Out->Count = Volume.LayerCount;
 }
 
-bool WorldIsGenerationSettled(World *WorldVal, Vec3 Center, int RenderDist) {
+// Neighbour-dirty reaction to one finished chunk, shared by the drain and its
+// overflow fallback.
+static void HandleGenerationEvent(World *WorldVal, Chunk *ChunkVal) {
+  UpdateNeighborsDirtyFlag(WorldVal, ChunkVal->ChunkX, ChunkVal->ChunkY,
+                           ChunkVal->ChunkZ);
+  ChunkVal->TerrainJustGenerated = false;
+  WorldVal->PendingGeneration--;
+  // Generation left the chunk itself dirty, and it was not a candidate while
+  // generating.
+  AddMeshCandidate(WorldVal, ChunkVal);
+}
+
+void WorldProcessGenerationEvents(World *WorldVal) {
+  // Static: sized for every active chunk, far too large for the stack, and only
+  // the thread driving the world calls this.
+  static Chunk *Drained[MAX_ACTIVE_CHUNKS];
+  bool Overflowed = false;
+  int Count = DrainChunkCompletions(Drained, MAX_ACTIVE_CHUNKS, &Overflowed);
+
+  // An entry outlives nothing it refers to: its slot may have been evicted, or
+  // reused and not yet regenerated, or already handled through a duplicate
+  // entry. The flags tell all three apart from a live completion.
+  for (int Idx = 0; Idx < Count; Idx++) {
+    Chunk *ChunkVal = Drained[Idx];
+    if (WorldVal->SlotInUse[ChunkVal - WorldVal->Chunks] &&
+        ChunkVal->IsGenerated && ChunkVal->TerrainJustGenerated) {
+      HandleGenerationEvent(WorldVal, ChunkVal);
+    }
+  }
+
+  if (Overflowed) {
+    for (int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++) {
+      Chunk *ChunkVal = &WorldVal->Chunks[IdxI];
+      if (WorldVal->SlotInUse[IdxI] && ChunkVal->IsGenerated &&
+          ChunkVal->TerrainJustGenerated) {
+        HandleGenerationEvent(WorldVal, ChunkVal);
+      }
+    }
+  }
+}
+
+// Whether the last load request was made for the volume a caller asks about.
+// The counters describe that request only: right after a teleport, before
+// UpdateWorld has run, they still describe the old position.
+static bool LastLoadMatches(const World *WorldVal, Vec3 Center, int RenderDist) {
+  return WorldVal->LastLoadChunkX == (int)__builtin_floorf(Center.x / CHUNK_SIZE) &&
+         WorldVal->LastLoadChunkY == (int)__builtin_floorf(Center.y / CHUNK_SIZE) &&
+         WorldVal->LastLoadChunkZ == (int)__builtin_floorf(Center.z / CHUNK_SIZE) &&
+         WorldVal->LastLoadRenderDist == ClampRenderDistance(RenderDist);
+}
+
+#ifdef MINEGAME_PROFILE
+// The volume walk the counters replaced, kept to verify them.
+static bool WalkGenerationSettled(World *WorldVal, Vec3 Center, int RenderDist) {
   LoadVolume Volume;
   BuildLoadVolume(WorldVal, Center, RenderDist, &Volume);
 
@@ -868,6 +1056,29 @@ bool WorldIsGenerationSettled(World *WorldVal, Vec3 Center, int RenderDist) {
   }
   return true;
 }
+#endif
+
+// The counter counts every chunk not yet through the drain, inside the volume or
+// left outside it by a deferred eviction, so this can only be stricter than the
+// volume walk it replaced, never looser.
+bool WorldIsGenerationSettled(World *WorldVal, Vec3 Center, int RenderDist) {
+  bool Settled = LastLoadMatches(WorldVal, Center, RenderDist) &&
+                 WorldVal->LastLoadAllCreated &&
+                 WorldVal->PendingGeneration == 0;
+
+#ifdef MINEGAME_PROFILE
+  if (Settled && !WorldVal->LastGenerationSettled) {
+    if (WalkGenerationSettled(WorldVal, Center, RenderDist)) {
+      LogInfo("WORLD: generation settle counters agree with the volume walk");
+    } else {
+      LogError("WORLD: generation settle counters report settled, the volume "
+               "walk does not");
+    }
+  }
+  WorldVal->LastGenerationSettled = Settled;
+#endif
+  return Settled;
+}
 
 bool WorldIsSettled(World *WorldVal, Vec3 Center, int RenderDist) {
   // A load still owes evictions while this is false. A chunk left outside the
@@ -880,18 +1091,61 @@ bool WorldIsSettled(World *WorldVal, Vec3 Center, int RenderDist) {
     return false;
   }
 
-  // The same volume UpdateWorld loads, so this asks about exactly the set that
-  // was asked for.
+  // Every generated chunk that is dirty or meshing is a candidate, and with the
+  // load complete and no eviction deferred the slots in use are exactly the
+  // volume. Membership drops lazily, so this reads settled one queueing pass
+  // after the last chunk went clean.
+  bool Settled = WorldVal->CandidateCount == 0;
+
+#ifdef MINEGAME_PROFILE
+  if (Settled && !WorldVal->LastSettled) {
+    int Missed = 0;
+    for (int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++) {
+      const Chunk *ChunkVal = &WorldVal->Chunks[IdxI];
+      if (WorldVal->SlotInUse[IdxI] &&
+          (ChunkVal->IsDirty || ChunkVal->IsMeshing)) {
+        Missed++;
+      }
+    }
+    if (Missed == 0) {
+      LogInfo("WORLD: mesh candidate set agrees with the slot walk");
+    } else {
+      LogError("WORLD: %d dirty or meshing chunks are missing from the mesh "
+               "candidate set",
+               Missed);
+    }
+  }
+  WorldVal->LastSettled = Settled;
+#endif
+  return Settled;
+}
+
+bool WorldIsNearSettled(World *WorldVal, Vec3 Center, int RenderDist,
+                        int Radius) {
+  // Until the load for this centre has been requested, the chunks around it
+  // are the old position's, or absent.
+  if (!LastLoadMatches(WorldVal, Center, RenderDist)) {
+    return false;
+  }
+
   LoadVolume Volume;
   BuildLoadVolume(WorldVal, Center, RenderDist, &Volume);
+  int RadiusSq = Radius * Radius;
 
+  // Columns are sorted nearest first, so the first one beyond Radius ends it.
   for (int Col = 0; Col < Volume.ColumnCount; Col++) {
-    int ChunkX = Volume.CenterX + Volume.Columns[Col].Dx;
-    int ChunkZ = Volume.CenterZ + Volume.Columns[Col].Dz;
+    int Dx = Volume.Columns[Col].Dx;
+    int Dz = Volume.Columns[Col].Dz;
+    if ((Dx * Dx) + (Dz * Dz) > RadiusSq) {
+      break;
+    }
     for (int Layer = 0; Layer < Volume.LayerCount; Layer++) {
-      Chunk *ChunkVal =
-          GetChunkFromWorld(WorldVal, ChunkX, Volume.Layers[Layer], ChunkZ);
-      if (ChunkVal == (Chunk *)0 || ChunkVal->IsDirty || ChunkVal->IsMeshing) {
+      const Chunk *ChunkVal =
+          GetChunkFromWorld(WorldVal, Volume.CenterX + Dx, Volume.Layers[Layer],
+                            Volume.CenterZ + Dz);
+      if (ChunkVal == (Chunk *)0 || !ChunkVal->IsGenerated ||
+          ChunkVal->IsGenerating || ChunkVal->TerrainJustGenerated ||
+          ChunkVal->IsDirty || ChunkVal->IsMeshing) {
         return false;
       }
     }

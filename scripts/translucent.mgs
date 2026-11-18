@@ -14,6 +14,9 @@
 /tp 304 40 160
 look 0 -60
 wait loaded
+# Lets the "Tp to" chat line finish fading (80 ticks) on loads that settle
+# before it has; see the glass_water note below.
+wait ticks 80
 
 screenshot ocean_down
 state ocean_down

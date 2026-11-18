@@ -85,6 +85,13 @@ typedef enum {
 void RenderBeginChunkPass(ChunkPassKind Kind);
 void RenderEndChunkPass(void);
 
+// Opaque and cutout passes are normally regrouped by GPU memory block, and
+// which block a mesh lands in depends on when it was uploaded. Their order
+// changes no filled pixel, but it does change wireframe lines and the odd seam
+// pixel, so a run that compares screenshots asks for every pass to keep the
+// order meshes were added in, at the cost of more draw calls.
+void RenderSetExactChunkOrder(bool Exact);
+
 // Most recent completed occlusion query for the solid chunk pass: how many
 // fragments passed the depth test, and that count divided by the current
 // framebuffer's pixel count. Read from an earlier frame so the query never

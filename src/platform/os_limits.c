@@ -150,6 +150,27 @@ bool OsLimitPhysicalCores(int CoreCount, int *OutApplied) {
   return true;
 }
 
+int OsGetUsableLogicalProcessors(void) {
+  DWORD_PTR ProcessMask = 0;
+  DWORD_PTR SystemMask = 0;
+  int Count = 0;
+  if (GetProcessAffinityMask(GetCurrentProcess(), &ProcessMask, &SystemMask)) {
+    for (DWORD_PTR Remaining = ProcessMask; Remaining != 0;
+         Remaining &= Remaining - 1) {
+      Count++;
+    }
+  }
+
+  // The affinity mask only describes the process's primary processor group.
+  // Unrestricted on a machine with several groups, threads may run on all of
+  // them, so the whole machine is what is usable.
+  if (Count == 0 ||
+      (ProcessMask == SystemMask && GetActiveProcessorGroupCount() > 1)) {
+    Count = (int)GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+  }
+  return (Count > 0) ? Count : 1;
+}
+
 bool OsLimitProcessMemory(size_t Bytes) {
   if (Bytes == 0) {
     return false;
@@ -208,6 +229,7 @@ const char *OsGetPeakProcessMemoryKind(void) { return "committed"; }
 #include <sched.h>
 #include <stdio.h>
 #include <sys/resource.h>
+#include <unistd.h>
 
 #define BYTES_PER_KILOBYTE 1024U
 
@@ -356,6 +378,19 @@ bool OsLimitPhysicalCores(int CoreCount, int *OutApplied) {
     *OutApplied = Applied;
   }
   return true;
+}
+
+int OsGetUsableLogicalProcessors(void) {
+  cpu_set_t AllowedSet;
+  CPU_ZERO(&AllowedSet);
+  int Count = 0;
+  if (sched_getaffinity(0, sizeof(AllowedSet), &AllowedSet) == 0) {
+    Count = CPU_COUNT(&AllowedSet);
+  }
+  if (Count <= 0) {
+    Count = (int)sysconf(_SC_NPROCESSORS_ONLN);
+  }
+  return (Count > 0) ? Count : 1;
 }
 
 bool OsLimitProcessMemory(size_t Bytes) {

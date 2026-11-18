@@ -100,7 +100,8 @@ static ServerLaunchOptions ParseServerOptions(int Argc, char **Argv) {
   ServerLaunchOptions Options = {
       .Config =
           {
-              .WorkerCount = CHUNK_WORKER_MAX_THREADS,
+              // 0 picks the detected default once --cores has been applied.
+              .WorkerCount = 0,
               .RenderDistance = DEFAULT_RENDER_DISTANCE,
               .HasSeed = false,
               .Seed = 0,

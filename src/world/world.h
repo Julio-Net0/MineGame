@@ -6,9 +6,16 @@
 #include "world/dense_pool.h"
 #include "world/world_limits.h"
 #include <stdbool.h>
+#include <stdint.h>
 
 // Open-addressing hash map: ~25% load factor keeps probe chains short
 #define CHUNK_MAP_SIZE (MAX_ACTIVE_CHUNKS * 4)
+
+// Distance buckets of the mesh-candidate set: one per whole chunk of distance
+// from the load centre, the vertical offset counting a quarter in squared
+// distance, plus room for chunks a deferred eviction leaves outside the disc.
+#define MESH_CANDIDATE_BUCKETS \
+  (MAX_RENDER_DISTANCE + (MAX_LOAD_LAYER_REACH / 2) + 2)
 
 typedef void (*ChunkEvictCallback)(Chunk *EvictedChunk);
 
@@ -37,6 +44,35 @@ typedef struct World {
   int LastLoadChunkZ;
   int LastLoadRenderDist;
   bool HasLoadedOnce;
+  // Every position of the last load request got a slot (HasLoadedOnce also
+  // demands that no eviction was deferred).
+  bool LastLoadAllCreated;
+
+  // Chunks queued for generation whose completion the main thread has not yet
+  // processed. Main thread only.
+  int PendingGeneration;
+#ifdef MINEGAME_PROFILE
+  // Last answers of the counter-based settle checks, so the walks that verify
+  // them run once per transition to settled rather than every frame.
+  bool LastGenerationSettled;
+  bool LastSettled;
+#endif
+
+  // Mesh-candidate set: every generated chunk that is dirty or has a mesh in
+  // flight, so mesh queueing visits those instead of every slot. Intrusive
+  // doubly linked lists per distance bucket, indexed by slot; CandBucket is -1
+  // for a slot outside the set. Membership is "dirty or meshing" and is
+  // dropped lazily, when the queueing pass finds the chunk clean and idle.
+  // Main thread only.
+  int CandNext[MAX_ACTIVE_CHUNKS];
+  int CandPrev[MAX_ACTIVE_CHUNKS];
+  int16_t CandBucket[MAX_ACTIVE_CHUNKS];
+  int CandHead[MESH_CANDIDATE_BUCKETS];
+  int CandidateCount;
+  // The load centre the buckets were computed against.
+  int CandCenterX;
+  int CandCenterY;
+  int CandCenterZ;
 
   // Inclusive chunk-Y range holding generated content (bedrock band up to the
   // generation ceiling), resolved from the strata table in InitWorld.
@@ -88,6 +124,19 @@ void WorldGetChunkStorageCounts(const World *WorldVal, ChunkStorageCounts *Out);
 
 void UpdateWorld(World *WorldVal, Vec3 PlayerPos, int RenderDist);
 void UpdateNeighborsDirtyFlag(World *WorldVal, int Cx, int Cy, int Cz);
+
+// Tick step: reacts to the chunks the workers finished generating since the
+// last call by marking their neighbours dirty. Costs nothing when none did.
+void WorldProcessGenerationEvents(World *WorldVal);
+
+// Mesh-candidate iteration, nearest bucket first. Pass -1 to get the first
+// candidate; returns -1 past the last. Fetch the next slot before removing the
+// current one.
+int WorldNextMeshCandidate(const World *WorldVal, int Slot);
+// Drops a slot from the candidate set; a no-op for a slot outside it. Callers
+// remove a chunk only once it is neither dirty nor meshing.
+void WorldRemoveMeshCandidate(World *WorldVal, int Slot);
+int WorldMeshCandidateCount(const World *WorldVal);
 int GetBlockIDFromWorld(World *WorldVal, Vec3 GlobalPos);
 
 // Biome id of a global biome cell (cell C spans blocks [C*BIOME_CELL_SIZE ..
@@ -132,6 +181,13 @@ bool WorldCheckLoadVolumes(const World *WorldVal);
 // meshed. It reports only what the world itself knows; whether the meshes those
 // chunks produced have reached the GPU is the renderer's to answer.
 bool WorldIsSettled(World *WorldVal, Vec3 Center, int RenderDist);
+
+// True when every loaded position within horizontal distance Radius (in chunks)
+// of Center is present, generated, and neither dirty nor meshing, for the load
+// request made at Center and RenderDist. Costs time proportional to the chunks
+// within Radius, not to the whole volume.
+bool WorldIsNearSettled(World *WorldVal, Vec3 Center, int RenderDist,
+                        int Radius);
 
 // How many active chunks are generated, and how many of those are still waiting
 // on generation or meshing. Any out parameter may be null.

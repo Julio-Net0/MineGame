@@ -4,16 +4,15 @@
 #include "world/feature.h"
 #include "persistence/world_save.h"
 #include "core/hash.h"
+#include "core/log.h"
 #include "core/profiler.h"
+#include "platform/os_limits.h"
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include <stdio.h>
 
-// A ring holds QUEUE_SIZE - 1 jobs. Column affinity can route every active
-// chunk to the same worker, so each ring must fit the whole slot pool: a
-// single recompute at the maximum render distance enqueues all of it.
+// A ring holds QUEUE_SIZE - 1 entries: enough for every active chunk at once.
 #define QUEUE_SIZE (MAX_ACTIVE_CHUNKS + 1)
 
 // Meshing and generation share one pool rather than getting one each. The queue
@@ -21,20 +20,38 @@
 // and a second pool would contend for the same cores while doubling the
 // shutdown surface.
 //
-// Generation takes priority over meshing: a chunk cannot be meshed until its
-// neighbours are generated, so a pool saturated with mesh work would stall the
-// generation that unblocks it.
+// Meshing takes priority over generation. Mesh work cannot saturate the pool:
+// it is capped by the renderer's job slots, refilled nearest first once per
+// frame, so generation always gets the remaining capacity, and what the player
+// is standing next to is meshed without waiting for the horizon to generate.
 //
 // Generation is queued per worker, by column: every cube of a column goes to
 // the same worker, so the column's 2D data is computed once, in that worker's
 // column cache, instead of once per worker. A worker whose own queue is empty
 // takes the oldest job of another queue rather than sitting idle; that only
 // happens when the load is already draining, so affinity holds for the bulk.
+//
+// Each queue is a FIFO threaded through Chunk.GenNext. Column affinity can route
+// every active chunk to one worker, so a queue must be able to hold all of
+// them; a link per chunk gives that capacity once instead of once per worker,
+// and an enqueue can never be refused.
 typedef struct {
-  Chunk *Jobs[QUEUE_SIZE];
+  Chunk *Head;
+  Chunk *Tail;
+} GenerationQueue;
+
+// Chunks whose generation finished, in completion order, for the main thread to
+// react to. Without it the main thread found them by walking every chunk slot
+// each tick, which at the maximum render distance means touching tens of
+// megabytes to discover a handful of chunks. A slot completes at most once per
+// enqueue, so the ring cannot fill in practice; if it ever does, Overflowed
+// tells the drain to fall back to one full walk instead of losing events.
+typedef struct {
+  Chunk *Chunks[QUEUE_SIZE];
   int Head;
   int Tail;
-} GenerationQueue;
+  bool Overflowed;
+} CompletionRing;
 
 typedef struct ChunkWorkerState {
   GenerationQueue GenerationQueues[CHUNK_WORKER_MAX_THREADS];
@@ -42,6 +59,8 @@ typedef struct ChunkWorkerState {
   int MeshQueue[QUEUE_SIZE];
   int MeshHead;
   int MeshTail;
+
+  CompletionRing Completions;
 
   pthread_t WorkerThreads[CHUNK_WORKER_MAX_THREADS];
   int WorkerIndices[CHUNK_WORKER_MAX_THREADS];
@@ -63,14 +82,10 @@ static ChunkWorkerState *GetWorkerState(void) {
   return &State;
 }
 
-static bool QueueIsEmpty(const GenerationQueue *Queue) {
-  return Queue->Head == Queue->Tail;
-}
-
 // Caller holds QueueMutex.
 static bool HasWork(const ChunkWorkerState *State) {
-  for (int Idx = 0; Idx < CHUNK_WORKER_MAX_THREADS; Idx++) {
-    if (!QueueIsEmpty(&State->GenerationQueues[Idx])) {
+  for (int Idx = 0; Idx < State->ThreadCount; Idx++) {
+    if (State->GenerationQueues[Idx].Head != (Chunk *)0) {
       return true;
     }
   }
@@ -98,16 +113,33 @@ static int ColumnOwner(const ChunkWorkerState *State, int ChunkX, int ChunkZ) {
 // Caller holds QueueMutex. Own queue first; otherwise the oldest job of the
 // next non-empty queue.
 static Chunk *TakeGenerationJob(ChunkWorkerState *State, int WorkerIndex) {
-  for (int Offset = 0; Offset < CHUNK_WORKER_MAX_THREADS; Offset++) {
+  for (int Offset = 0; Offset < State->ThreadCount; Offset++) {
     GenerationQueue *Queue =
-        &State->GenerationQueues[(WorkerIndex + Offset) % CHUNK_WORKER_MAX_THREADS];
-    if (!QueueIsEmpty(Queue)) {
-      Chunk *Job = Queue->Jobs[Queue->Head];
-      Queue->Head = (Queue->Head + 1) % QUEUE_SIZE;
+        &State->GenerationQueues[(WorkerIndex + Offset) % State->ThreadCount];
+    Chunk *Job = Queue->Head;
+    if (Job != (Chunk *)0) {
+      Queue->Head = Job->GenNext;
+      if (Queue->Head == (Chunk *)0) {
+        Queue->Tail = (Chunk *)0;
+      }
+      Job->GenNext = (Chunk *)0;
       return Job;
     }
   }
   return (Chunk *)0;
+}
+
+// Caller holds QueueMutex, which is also what publishes the chunk's generated
+// state to the thread that drains the ring.
+static void PushCompletion(ChunkWorkerState *State, Chunk *Done) {
+  CompletionRing *Ring = &State->Completions;
+  int NextTail = (Ring->Tail + 1) % QUEUE_SIZE;
+  if (NextTail == Ring->Head) {
+    Ring->Overflowed = true;
+    return;
+  }
+  Ring->Chunks[Ring->Tail] = Done;
+  Ring->Tail = NextTail;
 }
 
 static void RunGeneration(Chunk *Target, int WorkerIndex) {
@@ -159,10 +191,19 @@ static void RunGeneration(Chunk *Target, int WorkerIndex) {
 static void *WorkerLoop(void *Arg) {
   ChunkWorkerState *State = GetWorkerState();
   int WorkerIndex = (Arg != (void *)0) ? *(const int *)Arg : 0;
+  // Reported inside the lock this loop takes anyway for its next job, so a
+  // completion costs no extra lock round trip. It is pushed before the wait
+  // below, so a worker going idle never sits on one.
+  Chunk *Completed = (Chunk *)0;
 
   for (;;) {
     if (pthread_mutex_lock(&State->QueueMutex) != 0) {
       break;
+    }
+
+    if (Completed != (Chunk *)0) {
+      PushCompletion(State, Completed);
+      Completed = (Chunk *)0;
     }
 
     while (atomic_load(&State->WorkerRunning) && !HasWork(State)) {
@@ -177,12 +218,17 @@ static void *WorkerLoop(void *Arg) {
     Chunk *GenerationTarget = (Chunk *)0;
     int MeshJobId = -1;
 
-    // Generation first, always: meshing depends on it, so draining mesh work
-    // ahead of it would stall the pipeline that feeds the mesh queue.
-    GenerationTarget = TakeGenerationJob(State, WorkerIndex);
-    if (GenerationTarget == (Chunk *)0) {
+    // Mesh work first. It is bounded by the renderer's job slots, which the main
+    // thread refills nearest first, so it can never saturate the pool the way
+    // an unbounded mesh queue could; generation runs in what is left. Taking
+    // generation first instead parked the vicinity's mesh jobs behind every
+    // other cube of the load: after a teleport at the maximum render distance
+    // nothing near the player appeared until the whole disc had generated.
+    if (State->MeshHead != State->MeshTail) {
       MeshJobId = State->MeshQueue[State->MeshHead];
       State->MeshHead = (State->MeshHead + 1) % QUEUE_SIZE;
+    } else {
+      GenerationTarget = TakeGenerationJob(State, WorkerIndex);
     }
 
     MeshJobRunner Runner = State->MeshRunner;
@@ -190,6 +236,7 @@ static void *WorkerLoop(void *Arg) {
 
     if (GenerationTarget != (Chunk *)0) {
       RunGeneration(GenerationTarget, WorkerIndex);
+      Completed = GenerationTarget;
     } else if (MeshJobId >= 0 && Runner != (MeshJobRunner)0) {
       Runner(MeshJobId, WorkerIndex);
     }
@@ -201,6 +248,16 @@ void SetChunkWorkerMeshRunner(MeshJobRunner Runner) {
   GetWorkerState()->MeshRunner = Runner;
 }
 
+int ChunkWorkerDefaultThreadCount(void) {
+  int Count = OsGetUsableLogicalProcessors() - 1;
+  if (Count < 1) {
+    return 1;
+  }
+  return (Count > CHUNK_WORKER_MAX_THREADS) ? CHUNK_WORKER_MAX_THREADS : Count;
+}
+
+int ChunkWorkerThreadCount(void) { return GetWorkerState()->ThreadCount; }
+
 void InitChunkWorker(int ThreadCount) {
   ChunkWorkerState *State = GetWorkerState();
   int ClampedCount = ThreadCount;
@@ -210,7 +267,23 @@ void InitChunkWorker(int ThreadCount) {
     ClampedCount = CHUNK_WORKER_MAX_THREADS;
   }
 
+  // Each worker needs a column cache of its own; with fewer caches than asked
+  // for, fewer workers start rather than two sharing one.
+  int CacheCount = ColumnCacheInitWorkers(ClampedCount);
+  if (CacheCount < ClampedCount) {
+    LogWarn("WORKER: column caches for %d of %d workers; starting %d",
+            CacheCount, ClampedCount, CacheCount);
+    ClampedCount = CacheCount;
+  }
+
   State->ThreadCount = ClampedCount;
+  for (int Idx = 0; Idx < CHUNK_WORKER_MAX_THREADS; Idx++) {
+    State->GenerationQueues[Idx].Head = (Chunk *)0;
+    State->GenerationQueues[Idx].Tail = (Chunk *)0;
+  }
+  State->Completions.Head = 0;
+  State->Completions.Tail = 0;
+  State->Completions.Overflowed = false;
   atomic_store(&State->WorkerRunning, true);
   pthread_mutex_init(&State->QueueMutex, (const pthread_mutexattr_t *)0);
   pthread_cond_init(&State->WorkAvail, (const pthread_condattr_t *)0);
@@ -233,6 +306,7 @@ void CloseChunkWorker(void) {
   State->ThreadCount = 0;
   pthread_cond_destroy(&State->WorkAvail);
   pthread_mutex_destroy(&State->QueueMutex);
+  ColumnCacheFreeWorkers();
 }
 
 void EnqueueChunkGeneration(Chunk *ChunkVal) {
@@ -241,22 +315,36 @@ void EnqueueChunkGeneration(Chunk *ChunkVal) {
 
   GenerationQueue *Queue = &State->GenerationQueues[ColumnOwner(
       State, ChunkVal->ChunkX, ChunkVal->ChunkZ)];
-  int NextTail = (Queue->Tail + 1) % QUEUE_SIZE;
 
-  if (NextTail != Queue->Head) {
-    ChunkVal->IsGenerating = true;
-    ChunkVal->IsGenerated = false;
-
-    Queue->Jobs[Queue->Tail] = ChunkVal;
-    Queue->Tail = NextTail;
-    pthread_cond_signal(&State->WorkAvail);
+  ChunkVal->IsGenerating = true;
+  ChunkVal->IsGenerated = false;
+  ChunkVal->GenNext = (Chunk *)0;
+  if (Queue->Tail != (Chunk *)0) {
+    Queue->Tail->GenNext = ChunkVal;
   } else {
-    (void)fprintf(stderr, "Chunk generation queue full! Chunk rejected at: %d, %d, %d\n", ChunkVal->ChunkX, ChunkVal->ChunkY, ChunkVal->ChunkZ);
-    ChunkVal->IsGenerating = false;
-    ChunkVal->IsGenerated = false;
+    Queue->Head = ChunkVal;
   }
+  Queue->Tail = ChunkVal;
+  pthread_cond_signal(&State->WorkAvail);
 
   pthread_mutex_unlock(&State->QueueMutex);
+}
+
+int DrainChunkCompletions(Chunk **Out, int Capacity, bool *OutOverflowed) {
+  ChunkWorkerState *State = GetWorkerState();
+  CompletionRing *Ring = &State->Completions;
+  int Count = 0;
+
+  pthread_mutex_lock(&State->QueueMutex);
+  while (Ring->Head != Ring->Tail && Count < Capacity) {
+    Out[Count++] = Ring->Chunks[Ring->Head];
+    Ring->Head = (Ring->Head + 1) % QUEUE_SIZE;
+  }
+  *OutOverflowed = Ring->Overflowed;
+  Ring->Overflowed = false;
+  pthread_mutex_unlock(&State->QueueMutex);
+
+  return Count;
 }
 
 bool EnqueueChunkMeshJob(int JobId) {

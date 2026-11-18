@@ -109,7 +109,10 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
   // interpolation factor is always exactly zero, so a screenshot no longer
   // depends on how the machine's frame times happened to fall between ticks,
   // and chat fades advance by frames rather than by wall time.
-  if (ScriptIsActive()) { PlatformSetFixedFrameTime(TICK_DT); }
+  if (ScriptIsActive()) {
+    PlatformSetFixedFrameTime(TICK_DT);
+    GetDebugState()->StableDrawOrder = true;
+  }
   if (Options->Window.Fullscreen) { PlatformToggleFullscreen(); }
 
   InitBlockRegistry();
@@ -174,10 +177,14 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
   RendererAttachWorld(*WorldVal);
   LogInfo("MAIN THREAD ID: %llu", (unsigned long long)pthread_self());
 
-  int WorkerCount = (Options->WorkerCount > 0) ? Options->WorkerCount
-                                               : CHUNK_WORKER_MAX_THREADS;
+  int WorkerCount = (Options->WorkerCount > 0)
+                        ? Options->WorkerCount
+                        : ChunkWorkerDefaultThreadCount();
   if (Options->WorkerCount > 0) {
     LogInfo("MAIN: simulation --workers %d", WorkerCount);
+  } else {
+    LogInfo("MAIN: %d chunk workers (usable logical processors - 1)",
+            WorkerCount);
   }
 #ifdef MINEGAME_PROFILE
   if (Options->CpuSlowdown > 1.0) {
@@ -185,6 +192,16 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
     LogInfo("MAIN: simulation --cpu-slowdown %.2f", Options->CpuSlowdown);
   }
 #endif
+  int MesherSlots = RendererInitMesherSlots(WorkerCount);
+  if (MesherSlots == 0) {
+    LogError("MAIN: could not allocate mesher scratch for any worker");
+    return false;
+  }
+  if (MesherSlots < WorkerCount) {
+    LogWarn("MAIN: mesher scratch for %d of %d workers; starting %d",
+            MesherSlots, WorkerCount, MesherSlots);
+    WorkerCount = MesherSlots;
+  }
   SetChunkWorkerMeshRunner(RendererBuildMeshJob);
   InitChunkWorker(WorkerCount);
 
@@ -279,33 +296,61 @@ static void UpdateCameras(GameCamera *PlayerCamera, GameCamera *FreeCamera,
   *WasFreecam = GetDebugState()->Freecam;
 }
 
-// Hand dirty chunks to the workers. Capturing the snapshot is the only cost the
-// frame pays here; the mask scanning it feeds happens off-thread.
+// Hand dirty chunks to the workers, nearest first. Only the mesh-candidate set
+// is visited, not every slot. Capturing the snapshot is the only cost the frame
+// pays here; the mask scanning it feeds happens off-thread.
 static void QueueMeshWork(World *WorldVal) {
-  for (int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++) {
-    if (!WorldVal->SlotInUse[IdxI]) {
-      continue;
-    }
-    Chunk *ChunkVal = &WorldVal->Chunks[IdxI];
+  // Only this thread claims slots, so the free count read once here can only
+  // grow while the loop runs; counting down from it replaces a slot scan per
+  // candidate.
+  int FreeSlots = RendererCountFreeMeshJobs();
+  int Slot = WorldNextMeshCandidate(WorldVal, -1);
+  while (Slot >= 0) {
+    int Next = WorldNextMeshCandidate(WorldVal, Slot);
+    Chunk *ChunkVal = &WorldVal->Chunks[Slot];
 
     // Already in flight: queueing it again would build the same chunk twice and
-    // race two results onto one slot.
+    // race two results onto one slot. It stays a candidate until its result
+    // lands, so the set also answers whether any mesh is outstanding.
     if (ChunkVal->IsMeshing) {
+      Slot = Next;
+      continue;
+    }
+    if (!ChunkVal->IsDirty) {
+      WorldRemoveMeshCandidate(WorldVal, Slot);
+      Slot = Next;
+      continue;
+    }
+    if (!ChunkVal->IsGenerated || ChunkVal->IsGenerating) {
+      Slot = Next;
       continue;
     }
 
-    if (ChunkVal->IsGenerated && ChunkVal->IsDirty && !ChunkVal->IsGenerating &&
-        AreNeighborsGenerated(WorldVal, ChunkVal)) {
-      // The pool being full is the back-pressure that keeps the workers from
+    // Ahead of the neighbour check: an empty chunk's result reads no neighbour,
+    // and empty chunks are most of the candidates during a load.
+    if (RendererResolveEmptyChunk(ChunkVal)) {
+      WorldRemoveMeshCandidate(WorldVal, Slot);
+      Slot = Next;
+      continue;
+    }
+
+    if (AreNeighborsGenerated(WorldVal, ChunkVal)) {
+      // The pool running out is the back-pressure that keeps the workers from
       // running arbitrarily far ahead of what the frame can upload.
-      if (!RendererHasMeshJobCapacity()) {
+      if (FreeSlots <= 0) {
         return;
       }
 
+      // A short-circuited (sealed) chunk returns -1 without taking a slot.
       int JobId = RendererQueueMeshJob(WorldVal, ChunkVal);
       if (JobId < 0) {
+        if (!ChunkVal->IsDirty) {
+          WorldRemoveMeshCandidate(WorldVal, Slot);
+        }
+        Slot = Next;
         continue;
       }
+      FreeSlots--;
       if (!EnqueueChunkMeshJob(JobId)) {
         // The work queue refused it, so the slot must go back. Leaving it
         // claimed would strand it and leave the chunk's in-flight flag set,
@@ -314,6 +359,7 @@ static void QueueMeshWork(World *WorldVal) {
         return;
       }
     }
+    Slot = Next;
   }
 }
 
@@ -544,11 +590,18 @@ int main(int Argc, char **Argv) {
 
     // Once per frame, after the ticks so it sees this frame's bookkeeping.
     // Queueing costs the frame only the snapshot captures; the mask scanning
-    // runs on the workers. The budget now bounds the GPU uploads, which are the
+    // runs on the workers. The budget bounds the GPU uploads, which are the
     // only part that must stay on this thread.
-    QueueMeshWork(WorldVal);
+    //
+    // Upload first: a slot released by an upload is refilled by the queueing
+    // right after it. Queueing first left every freed slot empty until the next
+    // frame, so each slot completed one cycle per two frames and loading was
+    // capped at half the slot count per frame.
     UploadFinishedMeshes(MAX_MESHES_PER_FRAME,
                          PlatformGetTime() + MESH_BUDGET_SECONDS);
+    PROFILE_BEGIN(MeshQueueStart);
+    QueueMeshWork(WorldVal);
+    PROFILE_END(MeshQueueStart, PROFILE_MESH_QUEUE);
 
     if (!PauseMenuIsOpen()) {
       UpdateChat(&ChatVal, ActiveCamera, &PlayerVal, WorldVal);

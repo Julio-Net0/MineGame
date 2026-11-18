@@ -3,10 +3,18 @@
 
 #include "world/chunk.h"
 
-// One mesher scratch is allocated per worker, so the renderer sizes its pool
-// from this maximum. Declared here rather than duplicated as a matching
-// constant, since two numbers that must agree eventually disagree.
-#define CHUNK_WORKER_MAX_THREADS 4
+// Upper bound on worker threads; it bounds every worker index. Storage that is
+// significant per worker is allocated for the actual count instead, so raising
+// this costs little on machines that run few workers.
+#define CHUNK_WORKER_MAX_THREADS 16
+
+// Worker count to use without a --workers override: every logical processor the
+// process may run on except one, left to the main thread, clamped to
+// [1, CHUNK_WORKER_MAX_THREADS]. Call after any affinity restriction (--cores).
+int ChunkWorkerDefaultThreadCount(void);
+
+// Workers started by InitChunkWorker, 0 before it and after CloseChunkWorker.
+int ChunkWorkerThreadCount(void);
 
 // Runs one queued mesh job on a worker thread, using the mesher scratch
 // belonging to MesherSlot. Supplied as a callback rather than called directly so
@@ -21,6 +29,13 @@ void CloseChunkWorker(void);
 void SetChunkWorkerMeshRunner(MeshJobRunner Runner);
 
 void EnqueueChunkGeneration(Chunk *ChunkVal);
+
+// Main thread: moves up to Capacity chunks whose generation finished since the
+// last drain into Out, oldest first, and returns how many. An entry may be
+// stale (its slot evicted or reused since), so the caller validates each one.
+// OutOverflowed is set when completions were dropped because the ring was full;
+// the caller must then rediscover them by walking every slot.
+int DrainChunkCompletions(Chunk **Out, int Capacity, bool *OutOverflowed);
 
 // The job id comes from the renderer, which owns the snapshot the job carries.
 // Returns false when the queue is full, leaving the caller to retry later.

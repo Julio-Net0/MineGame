@@ -31,7 +31,7 @@ Every push to `master` is built for Linux and Windows automatically. Pick a perm
 
 **Interface.** The HUD, chat and menus are drawn with the vanilla GUI sprites and bitmap font, so a resource pack that replaces them reskins the interface too. Nine-slice sprites scale to any size, and an integer GUI scale (automatic, or set with `/guiscale`) keeps every pixel sharp. `ESC` opens the game menu: back to game, GUI scale, field of view, and save and quit. The world keeps running while it is open. The window's close button also saves and quits.
 
-**Architecture.** Simulation runs on a fixed 20 TPS tick with render interpolation, independent of framerate, while four worker threads generate and load chunks in the background and a time-sliced budget caps how many meshes are built per tick. GLFW and OpenGL are confined to the platform, input and render-backend translation units behind their interfaces; the world, physics, persistence and generation code uses engine-owned math types and knows nothing about the renderer — which keeps the door open for a different graphics backend and for a dedicated-server split later. Chunk meshes live in a paged GPU arena and each render pass is submitted in a handful of multi-draw calls rather than one draw per chunk.
+**Architecture.** Simulation runs on a fixed 20 TPS tick with render interpolation, independent of framerate, while a pool of chunk worker threads (one per usable logical processor minus one, up to 16) generates and meshes chunks in the background, meshing the chunks nearest the player first, and a per-frame budget caps how many finished meshes are uploaded. GLFW and OpenGL are confined to the platform, input and render-backend translation units behind their interfaces; the world, physics, persistence and generation code uses engine-owned math types and knows nothing about the renderer — which keeps the door open for a different graphics backend and for a dedicated-server split later. Chunk meshes live in a paged GPU arena and each render pass is submitted in a handful of multi-draw calls rather than one draw per chunk.
 
 ## 🤓 Tech Stack
 
@@ -165,7 +165,7 @@ Launch flags constrain the process to approximate weaker hardware in a repeatabl
 
 | Flag | Range | Effect |
 |---|---|---|
-| `--workers <N>` | `1` .. `4` (`CHUNK_WORKER_MAX_THREADS`) | Spawn `N` chunk worker threads instead of the default 4. |
+| `--workers <N>` | `1` .. `16` (`CHUNK_WORKER_MAX_THREADS`) | Spawn `N` chunk worker threads instead of the default (usable logical processors minus one, so `--cores` lowers it too). |
 | `--cores <N>` | `>= 1` (clamped to physical cores) | Pin the process to one logical processor on each of the first `N` physical cores so SMT siblings are not counted as separate cores. |
 | `--cpu-slowdown <K>` | `1.0` .. `16.0` | Busy-wait at the end of every CPU-bound profiler scope until `K` times its measured wall duration has elapsed, recording the stretched duration. Requires `MINEGAME_PROFILE=ON`. |
 | `--ram-limit <MB>` | `>= 1` (MB) | Cap process memory through the OS (a Job Object commit limit on Windows, `RLIMIT_DATA` on Linux) before the world is allocated. |
@@ -201,6 +201,7 @@ The entire script is parsed before the window, OpenGL context or worker threads 
 |---|---|
 | `/...` | Any chat command, dispatched verbatim (`/tp 0 90 0`, `/debug wireframe 1`, `/profile start 10`). |
 | `wait loaded` | Blocks until all chunks within the render distance are generated, meshed and uploaded for 8 consecutive frames. |
+| `wait near <N>` | Blocks until every chunk within `N` chunks of the player is generated and meshed — the first view after a teleport, without waiting for the whole render distance. |
 | `wait ticks <N>` / `wait frames <N>` | Blocks for `N` simulation ticks (20 TPS) or `N` rendered frames. |
 | `wait profile` | Blocks until a timed `/profile start <seconds>` capture has stopped by itself — the one wall-clock wait, for recording a fixed span of real time. |
 | `look <yaw> <pitch>` | Sets the active camera aim in degrees (`yaw 0` faces `+Z`, pitch clamped like mouse look). |

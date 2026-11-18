@@ -29,6 +29,14 @@ typedef struct {
   // skips the occlusion traversal and draws every frustum-visible chunk, so the
   // two can be compared in one sitting.
   bool Occlusion;
+
+  // Set for scripted runs only. Draw order otherwise follows upload order in two
+  // places -- chunks at the same distance from the camera, and the opaque passes'
+  // grouping by GPU memory block -- and upload order depends on worker timing.
+  // Wireframe lines and the odd seam pixel then change between runs. Ordering
+  // ties by chunk coordinates and submitting every pass in that exact order makes
+  // screenshots repeatable at a cost normal play skips.
+  bool StableDrawOrder;
 } DebugState;
 
 DebugState *GetDebugState(void);

@@ -9,6 +9,10 @@
 // the applied count to OutApplied (when non-NULL) on success.
 bool OsLimitPhysicalCores(int CoreCount, int *OutApplied);
 
+// Logical processors this process may run on, at least 1. Honours the affinity
+// mask, so it already reflects a restriction applied by OsLimitPhysicalCores.
+int OsGetUsableLogicalProcessors(void);
+
 // Cap the process's memory at Bytes (committed memory on Windows via a Job
 // Object, RLIMIT_DATA on Linux).
 bool OsLimitProcessMemory(size_t Bytes);

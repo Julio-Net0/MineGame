@@ -14,7 +14,7 @@ static const char *const SCOPE_NAMES[PROFILE_SCOPE_COUNT] = {
     "Mesh build", "Mesh snap",  "Mesh upload", "World draw",  "World update",
     "Frame setup", "UI build",  "UI submit",   "Present",     "Player",
     "Worker gen",  "Gen column", "Gen terrain", "Gen features", "Mesh vis",
-    "Occlusion",   "Chunk submit"};
+    "Occlusion",   "Chunk submit", "Chunk events", "Mesh queue", "Script wait"};
 
 // Kept beside the names so the two cannot drift: a scope that changes threads
 // has to be updated here, and the overlay and any analysis read it rather than
@@ -36,7 +36,10 @@ static const bool SCOPE_IS_WORKER_SIDE[PROFILE_SCOPE_COUNT] = {
     true,  /* Gen features */
     true,  /* Mesh vis     */
     false, /* Occlusion    */
-    false  /* Chunk submit */
+    false, /* Chunk submit */
+    false, /* Chunk events */
+    false, /* Mesh queue   */
+    false  /* Script wait  */
 };
 
 // Every scope is CPU-bound except Present, whose wall time is waiting on the
@@ -45,7 +48,8 @@ static const bool SCOPE_IS_WORKER_SIDE[PROFILE_SCOPE_COUNT] = {
 // aligned when scopes are added or reordered.
 static const bool SCOPE_IS_CPU_BOUND[PROFILE_SCOPE_COUNT] = {
     true,  /* Mesh build   */
-    true,  /* Mesh snap    */
+    // Nested inside Mesh queue.
+    false, /* Mesh snap    */
     true,  /* Mesh upload  */
     true,  /* World draw   */
     true,  /* World update */
@@ -62,12 +66,15 @@ static const bool SCOPE_IS_CPU_BOUND[PROFILE_SCOPE_COUNT] = {
     true,  /* Mesh vis     */
     // Nested inside World draw.
     false, /* Occlusion    */
-    false  /* Chunk submit */
+    false, /* Chunk submit */
+    true,  /* Chunk events */
+    true,  /* Mesh queue   */
+    true   /* Script wait  */
 };
 
 static const bool SCOPE_IS_NESTED[PROFILE_SCOPE_COUNT] = {
     false, /* Mesh build   */
-    false, /* Mesh snap    */
+    true,  /* Mesh snap    */
     false, /* Mesh upload  */
     false, /* World draw   */
     false, /* World update */
@@ -82,7 +89,10 @@ static const bool SCOPE_IS_NESTED[PROFILE_SCOPE_COUNT] = {
     true,  /* Gen features */
     false, /* Mesh vis     */
     true,  /* Occlusion    */
-    true   /* Chunk submit */
+    true,  /* Chunk submit */
+    false, /* Chunk events */
+    false, /* Mesh queue   */
+    false  /* Script wait  */
 };
 
 bool IsProfileScopeWorkerSide(ProfileScope Scope) {

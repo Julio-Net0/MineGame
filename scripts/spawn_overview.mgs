@@ -13,6 +13,9 @@
 look 0 -20
 
 wait loaded
+# Lets the "Noclip" and "Tp to" chat lines finish fading (3 s shown + 1 s fade =
+# 80 ticks): a load that settles sooner would otherwise put them in the shot.
+wait ticks 80
 
 screenshot spawn
 state spawn

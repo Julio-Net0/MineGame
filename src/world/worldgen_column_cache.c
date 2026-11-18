@@ -5,17 +5,54 @@
 #include "world/surface.h"
 #include "world/terrain_shape.h"
 #include <math.h>
+#include <stdlib.h>
 
-static ColumnCache *GetColumnCaches(void) {
-  static ColumnCache SCaches[COLUMN_CACHE_SLOTS];
-  return SCaches;
+typedef struct {
+  ColumnCache *Workers;
+  int WorkerCount;
+} WorkerCaches;
+
+static WorkerCaches *GetWorkerCaches(void) {
+  static WorkerCaches Caches = {.Workers = (ColumnCache *)0, .WorkerCount = 0};
+  return &Caches;
+}
+
+// Static, not allocated: the main thread samples columns before the workers
+// exist (spawn search, self-tests) and after they are gone.
+static ColumnCache *GetMainColumnCache(void) {
+  static ColumnCache MainCache;
+  return &MainCache;
+}
+
+int ColumnCacheInitWorkers(int Count) {
+  WorkerCaches *Caches = GetWorkerCaches();
+  ColumnCacheFreeWorkers();
+  // Halved on failure: fewer workers with a cache each beats none starting.
+  for (int Want = Count; Want > 0; Want /= 2) {
+    ColumnCache *Workers =
+        (ColumnCache *)calloc((size_t)Want, sizeof(ColumnCache));
+    if (Workers != (ColumnCache *)0) {
+      Caches->Workers = Workers;
+      Caches->WorkerCount = Want;
+      return Want;
+    }
+  }
+  return 0;
+}
+
+void ColumnCacheFreeWorkers(void) {
+  WorkerCaches *Caches = GetWorkerCaches();
+  free(Caches->Workers);
+  Caches->Workers = (ColumnCache *)0;
+  Caches->WorkerCount = 0;
 }
 
 ColumnCache *GetColumnCache(int Slot) {
-  if (Slot < 0 || Slot >= COLUMN_CACHE_SLOTS) {
-    Slot = COLUMN_CACHE_MAIN_SLOT;
+  WorkerCaches *Caches = GetWorkerCaches();
+  if (Slot >= 0 && Slot < Caches->WorkerCount) {
+    return &Caches->Workers[Slot];
   }
-  return &GetColumnCaches()[Slot];
+  return GetMainColumnCache();
 }
 
 void ColumnEntryFill(ColumnEntry *Entry, int ColumnX, int ColumnZ,
@@ -157,10 +194,13 @@ const ColumnEntry *ColumnCacheLookup(ColumnCache *Cache, int ColumnX,
 }
 
 void ColumnCacheGetTotals(uint64_t *OutHits, uint64_t *OutMisses) {
+  WorkerCaches *Caches = GetWorkerCaches();
+  // The main cache sits after the workers' in this walk.
   uint64_t Hits = 0;
   uint64_t Misses = 0;
-  for (int Slot = 0; Slot < COLUMN_CACHE_SLOTS; Slot++) {
-    ColumnCache *Cache = GetColumnCache(Slot);
+  for (int Slot = 0; Slot <= Caches->WorkerCount; Slot++) {
+    ColumnCache *Cache = (Slot < Caches->WorkerCount) ? &Caches->Workers[Slot]
+                                                      : GetMainColumnCache();
     Hits += atomic_load_explicit(&Cache->Hits, memory_order_relaxed);
     Misses += atomic_load_explicit(&Cache->Misses, memory_order_relaxed);
   }

@@ -72,19 +72,49 @@ typedef struct {
   FaceVisScratch Visibility;
 } MesherState;
 
-// Indexed per meshing thread. One slot today; the workers claim their own once
-// meshing leaves the main thread, which is what the snapshot design exists to
-// allow.
-enum {
-  MESHER_SLOT_COUNT = CHUNK_WORKER_MAX_THREADS
-};
+// One per mesh worker, indexed by worker. Allocated for the actual worker
+// count: each holds three full-chunk vertex buffers, so sizing them for the
+// compiled maximum would cost tens of megabytes on a machine running a few
+// workers.
+typedef struct {
+  MesherState *States;
+  int Count;
+} MesherSlots;
+
+static MesherSlots *GetMesherSlots(void) {
+  static MesherSlots Slots = {.States = (MesherState *)0, .Count = 0};
+  return &Slots;
+}
+
+int RendererInitMesherSlots(int Count) {
+  MesherSlots *Slots = GetMesherSlots();
+  RendererFreeMesherSlots();
+  // Halved on failure: fewer workers that can each mesh beats none starting.
+  for (int Want = Count; Want > 0; Want /= 2) {
+    MesherState *States =
+        (MesherState *)malloc((size_t)Want * sizeof(MesherState));
+    if (States != (MesherState *)0) {
+      Slots->States = States;
+      Slots->Count = Want;
+      return Want;
+    }
+  }
+  return 0;
+}
+
+void RendererFreeMesherSlots(void) {
+  MesherSlots *Slots = GetMesherSlots();
+  free(Slots->States);
+  Slots->States = (MesherState *)0;
+  Slots->Count = 0;
+}
 
 static MesherState *GetMesherStateSlot(int Slot) {
-  static MesherState States[MESHER_SLOT_COUNT];
-  if (Slot < 0 || Slot >= MESHER_SLOT_COUNT) {
+  MesherSlots *Slots = GetMesherSlots();
+  if (Slot < 0 || Slot >= Slots->Count) {
     Slot = 0;
   }
-  return &States[Slot];
+  return &Slots->States[Slot];
 }
 
 // Emitting past the buffer would wrap the 16-bit indices and produce garbage
@@ -105,6 +135,7 @@ static void ResetRenderableSet(void);
 void CloseRenderer(void) {
     ResetRenderableSet();
     RenderBackendShutdown();
+    RendererFreeMesherSlots();
 }
 
 // ---------------------------------------------------------------------------
@@ -715,9 +746,14 @@ static void BuildCrossPass(const ChunkSnapshot *Snap, MesherState *State) {
 // The pool is bounded. When every slot is taken the main thread simply stops
 // queueing, which throttles the workers to the rate the frame can upload at and
 // keeps memory fixed however far they would otherwise run ahead.
+//
+// Sized so the workers stay busy for a whole loading frame: at the maximum
+// render distance a frame lasts several milliseconds against ~0.27 ms per mesh,
+// and 24 slots let the pool go idle after a few hundred microseconds. Each slot
+// carries a ~12 KB snapshot, so 128 of them cost ~1.5 MB.
 
 enum {
-  MESH_JOB_SLOT_COUNT = 24,
+  MESH_JOB_SLOT_COUNT = 128,
 
   MESH_JOB_FREE = 0,
   MESH_JOB_QUEUED = 1,
@@ -1234,15 +1270,16 @@ bool RendererHasPendingMeshWork(void) {
     return false;
 }
 
-bool RendererHasMeshJobCapacity(void) {
+int RendererCountFreeMeshJobs(void) {
     MeshJob *Jobs = GetMeshJobs();
+    int Free = 0;
     for (int Idx = 0; Idx < MESH_JOB_SLOT_COUNT; Idx++) {
         if (atomic_load_explicit(&Jobs[Idx].Stage, memory_order_acquire) ==
             MESH_JOB_FREE) {
-            return true;
+            Free++;
         }
     }
-    return false;
+    return Free;
 }
 
 // Along the step axis, the neighbour's layer facing back toward the chunk;
@@ -1294,13 +1331,20 @@ static bool IsSealedUniformSolid(World *WorldVal, const Chunk *ChunkVal) {
            NeighbourSideSealed(WorldVal, ChunkVal, 0, 0, 1);
 }
 
+bool RendererResolveEmptyChunk(Chunk *ChunkVal) {
+    if (ChunkVal->SolidBlockCount != 0) {
+        return false;
+    }
+    UnloadChunkMesh(ChunkVal);
+    SetChunkVisibility(ChunkVal, FACE_VIS_ALL);
+    ChunkVal->IsDirty = false;
+    return true;
+}
+
 int RendererQueueMeshJob(World *WorldVal, Chunk *ChunkVal) {
     // An empty chunk needs no mesh at all, so it is resolved here rather than
     // occupying a slot and a worker to produce nothing.
-    if (ChunkVal->SolidBlockCount == 0) {
-        UnloadChunkMesh(ChunkVal);
-        SetChunkVisibility(ChunkVal, FACE_VIS_ALL);
-        ChunkVal->IsDirty = false;
+    if (RendererResolveEmptyChunk(ChunkVal)) {
         return -1;
     }
 
@@ -1420,13 +1464,20 @@ void RendererBuildMeshJob(int JobId, int MesherSlot) {
 // Main thread. Uploads one finished mesh and releases its slot; returns false
 // when nothing is ready.
 bool RendererUploadFinishedMesh(void) {
+    // Round robin from the slot after the last one uploaded. Scanning from slot
+    // 0 every time starved the high slots: with more slots than the per-frame
+    // upload ceiling, the low slots were refilled and ready again every frame,
+    // and a mesh in a high slot could wait for the whole load to drain.
+    static int NextSlot = 0;
     MeshJob *Jobs = GetMeshJobs();
-    for (int Idx = 0; Idx < MESH_JOB_SLOT_COUNT; Idx++) {
+    for (int Step = 0; Step < MESH_JOB_SLOT_COUNT; Step++) {
+        int Idx = (NextSlot + Step) % MESH_JOB_SLOT_COUNT;
         MeshJob *Job = &Jobs[Idx];
         if (atomic_load_explicit(&Job->Stage, memory_order_acquire) !=
             MESH_JOB_READY) {
             continue;
         }
+        NextSlot = (Idx + 1) % MESH_JOB_SLOT_COUNT;
 
         Chunk *ChunkVal = Job->Target;
 
@@ -1658,6 +1709,29 @@ typedef struct {
     Chunk *ChunkVal;
     int Bucket;
 } ChunkOrderEntry;
+
+static bool ChunkPrecedes(const Chunk *Lhs, const Chunk *Rhs) {
+    if (Lhs->ChunkX != Rhs->ChunkX) { return Lhs->ChunkX < Rhs->ChunkX; }
+    if (Lhs->ChunkY != Rhs->ChunkY) { return Lhs->ChunkY < Rhs->ChunkY; }
+    return Lhs->ChunkZ < Rhs->ChunkZ;
+}
+
+// Insertion sort of each bucket's run of the counting-sorted order. Ends holds
+// every bucket's end offset, which is what the scatter left in the offsets.
+static void SortDistanceTies(Chunk **Order, const int *Ends, const int *Counts) {
+    for (int B = 0; B < CHUNK_DISTANCE_BUCKETS; B++) {
+        int Start = Ends[B] - Counts[B];
+        for (int IdxI = Start + 1; IdxI < Ends[B]; IdxI++) {
+            Chunk *Key = Order[IdxI];
+            int IdxJ = IdxI - 1;
+            while (IdxJ >= Start && ChunkPrecedes(Key, Order[IdxJ])) {
+                Order[IdxJ + 1] = Order[IdxJ];
+                IdxJ--;
+            }
+            Order[IdxJ + 1] = Key;
+        }
+    }
+}
 
 static int ChunkDistanceBucket(int DeltaX, int DeltaY, int DeltaZ) {
     int Bucket = (DeltaX * DeltaX) + (DeltaY * DeltaY) + (DeltaZ * DeltaZ);
@@ -2151,6 +2225,8 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
     for (int IdxI = 0; IdxI < VisibleCount; IdxI++) {
         NearToFar[Offsets[VisibleChunks[IdxI].Bucket]++] = VisibleChunks[IdxI].ChunkVal;
     }
+    if (GetDebugState()->StableDrawOrder) { SortDistanceTies(NearToFar, Offsets, BucketCounts); }
+    RenderSetExactChunkOrder(GetDebugState()->StableDrawOrder);
 
     // The solid and cutout passes are the ones the toggle governs; SetOrder is
     // the visible chunks in whatever order the renderable set holds them, the

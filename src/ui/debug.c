@@ -9,6 +9,7 @@ DebugState *GetDebugState(void) {
     .ForceCutoutShader = false,
     .SortChunks = true,
     .Occlusion = true,
+    .StableDrawOrder = false,
   };
   return &SDebug;
 }

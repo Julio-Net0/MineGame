@@ -147,6 +147,7 @@ typedef struct {
   // submission hands the driver. Ordered passes (translucent) keep the added
   // order across blocks; the others are grouped by block.
   bool InTranslucentPass;
+  bool ExactChunkOrder;
   bool PassOrdered;
   PassDraw PassDraws[PASS_CAPACITY];
   int PassDrawCount;
@@ -1221,7 +1222,7 @@ void RenderBeginChunkPass(ChunkPassKind Kind) {
   State->ActiveChunk =
       (Kind == CHUNK_PASS_CUTOUT) ? &State->ChunkCutout : &State->ChunkOpaque;
   State->PassDrawCount = 0;
-  State->PassOrdered = State->InTranslucentPass;
+  State->PassOrdered = State->InTranslucentPass || State->ExactChunkOrder;
 
   glUseProgram(State->ActiveChunk->Program);
   glUniformMatrix4fv(State->ActiveChunk->MvpLoc, 1, GL_FALSE, State->Mvp3D);
@@ -1232,6 +1233,10 @@ void RenderBeginChunkPass(ChunkPassKind Kind) {
 #ifdef MINEGAME_PROFILE
   BeginSolidOcclusionQuery(State);
 #endif
+}
+
+void RenderSetExactChunkOrder(bool Exact) {
+  GetBackendState()->ExactChunkOrder = Exact;
 }
 
 void RenderEndChunkPass(void) {

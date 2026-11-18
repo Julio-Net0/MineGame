@@ -200,17 +200,9 @@ bool ServerSendChunkToClient(ServerState *Server, int ChunkX, int ChunkY,
 }
 
 void ServerUpdateWorldChunks(World *WorldVal) {
-  for (int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++) {
-    if (!WorldVal->SlotInUse[IdxI]) {
-      continue;
-    }
-    Chunk *ChunkVal = &WorldVal->Chunks[IdxI];
-    if (ChunkVal->IsGenerated && ChunkVal->TerrainJustGenerated) {
-      UpdateNeighborsDirtyFlag(WorldVal, ChunkVal->ChunkX, ChunkVal->ChunkY,
-                               ChunkVal->ChunkZ);
-      ChunkVal->TerrainJustGenerated = false;
-    }
-  }
+  PROFILE_BEGIN(EventsStart);
+  WorldProcessGenerationEvents(WorldVal);
+  PROFILE_END(EventsStart, PROFILE_CHUNK_EVENTS);
 }
 
 bool ServerWaitForWorldSettle(ServerState *Server, double TimeoutSeconds) {
@@ -293,8 +285,10 @@ bool ServerInit(ServerState *Server, const ServerConfig *Config) {
   NoisePrepareSeed(GetWorldSeed());
   InitWorld(Server->WorldVal);
 
-  int WorkerCount = (Config->WorkerCount > 0) ? Config->WorkerCount
-                                              : CHUNK_WORKER_MAX_THREADS;
+  int WorkerCount = (Config->WorkerCount > 0)
+                        ? Config->WorkerCount
+                        : ChunkWorkerDefaultThreadCount();
+  LogInfo("SERVER: %d chunk workers", WorkerCount);
   SetChunkWorkerMeshRunner((MeshJobRunner)0);
   InitChunkWorker(WorkerCount);
 

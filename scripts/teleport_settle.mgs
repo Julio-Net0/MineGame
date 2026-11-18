@@ -1,0 +1,29 @@
+# Teleport latency: how long the vicinity takes to mesh after a jump into
+# unloaded terrain, against how long the whole load takes.
+#
+#   build/MineGame.exe --script scripts/teleport_settle.mgs --render-distance 64
+#
+# run.log reports the frames and ticks at which the R<=2 vicinity was meshed
+# ("vicinity R<=2 meshed after ...") and at which the world settled. Writes
+# automation_out/teleport_near.png, teleport_settled.png and teleport.json.
+
+/noclip 1
+/tp ~ ~40 ~
+look 0 -20
+
+wait loaded
+
+# Far enough that nothing of the spawn load overlaps the new disc at R=64.
+# The terrain top there is Y -57 under the ocean (default seed), so Y 20 keeps
+# the water and the sea floor inside the loaded layers; from Y 255 the whole
+# vicinity would be empty air and "wait near" would measure nothing.
+/tp 4000 20 4000
+
+wait near 2
+screenshot teleport_near
+
+wait loaded
+screenshot teleport_settled
+state teleport
+
+quit
