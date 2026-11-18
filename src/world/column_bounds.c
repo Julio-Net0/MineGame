@@ -147,6 +147,19 @@ int ColumnBoundsTopLayer(ColumnBoundsTable *Table, int ColumnX, int ColumnZ) {
   return ResolveWithLayers(Table, ColumnX, ColumnZ)->TopLayer;
 }
 
+bool ColumnBoundsPeekTopLayer(const ColumnBoundsTable *Table, int ColumnX,
+                              int ColumnZ, int *OutTop) {
+  size_t Index = ((size_t)WrapIndex(ColumnX) * COLUMN_BOUNDS_SIDE) +
+                 (size_t)WrapIndex(ColumnZ);
+  const ColumnBoundsEntry *Entry = &Table->Entries[Index];
+  if (!Entry->Valid || Entry->ColumnX != ColumnX ||
+      Entry->ColumnZ != ColumnZ || Entry->LayerKey != Table->LayerKey) {
+    return false;
+  }
+  *OutTop = Entry->TopLayer;
+  return true;
+}
+
 int ColumnBoundsBottomLayer(ColumnBoundsTable *Table, int ColumnX,
                             int ColumnZ) {
   return ResolveWithLayers(Table, ColumnX, ColumnZ)->BottomLayer;

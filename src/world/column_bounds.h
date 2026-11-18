@@ -62,6 +62,12 @@ int ColumnBoundsEnsure(ColumnBoundsTable *Table, int CenterX, int CenterZ,
 // water up to sea level, flora, or a structure anchored within reach.
 int ColumnBoundsTopLayer(ColumnBoundsTable *Table, int ColumnX, int ColumnZ);
 
+// ColumnBoundsTopLayer without evaluating anything: false when the table does
+// not hold the column's answer for its current reach. Never changes the table,
+// so it is safe for columns far outside the load disc.
+bool ColumnBoundsPeekTopLayer(const ColumnBoundsTable *Table, int ColumnX,
+                              int ColumnZ, int *OutTop);
+
 // Lowest chunk layer that can hold terrain air. Every layer below it is solid
 // rock apart from caves and buried structure foundations.
 int ColumnBoundsBottomLayer(ColumnBoundsTable *Table, int ColumnX, int ColumnZ);

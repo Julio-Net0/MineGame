@@ -15,8 +15,11 @@
 // Distance buckets of the mesh-candidate set: one per whole chunk of distance
 // from the load centre, the vertical offset counting a quarter in squared
 // distance, plus room for chunks a deferred eviction leaves outside the disc.
-#define MESH_CANDIDATE_BUCKETS \
+// Two tiers of them: the near cylinder and every column's surface first, then
+// the rock under the far surfaces.
+#define MESH_CANDIDATE_TIER_BUCKETS \
   (MAX_RENDER_DISTANCE + (MAX_VERTICAL_LOAD_REACH / 2) + 2)
+#define MESH_CANDIDATE_BUCKETS (2 * MESH_CANDIDATE_TIER_BUCKETS)
 
 typedef void (*ChunkEvictCallback)(Chunk *EvictedChunk);
 

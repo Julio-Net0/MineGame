@@ -874,15 +874,43 @@ static void MarkUsefulChunks(World *WorldVal, const LoadVolume *Volume, bool *Ke
   }
 }
 
+// The first tier: chunks in the near cylinder, and the top surface layers of
+// any column (with anything built above them), which is what the horizon shows.
+// Before the first bounds pass there is no surface to compare with, and every
+// chunk stays in the first tier. The bounds are only peeked: a column the table
+// does not hold lies outside the load volume (a chunk being evicted, whose
+// neighbours it dirties), and evaluating it would also overwrite the slot of a
+// column inside the volume.
+static bool MeshCandidateIsForeground(const World *WorldVal,
+                                      const Chunk *ChunkVal, int HorizontalSq) {
+  if (HorizontalSq <= NEAR_LOAD_RADIUS * NEAR_LOAD_RADIUS ||
+      WorldVal->ColumnBounds.LayerKey == 0U) {
+    return true;
+  }
+  int Top = 0;
+  return ColumnBoundsPeekTopLayer(&WorldVal->ColumnBounds, ChunkVal->ChunkX,
+                                  ChunkVal->ChunkZ, &Top) &&
+         ChunkVal->ChunkY > Top - WORLD_SURFACE_SETTLE_LAYERS;
+}
+
+// Every first-tier bucket comes before every second-tier one, so the meshes of
+// the horizon are built before the rock under it, however near that rock is.
 static int MeshCandidateBucket(const World *WorldVal, const Chunk *ChunkVal) {
   int Dx = ChunkVal->ChunkX - WorldVal->CandCenterX;
   int Dy = ChunkVal->ChunkY - WorldVal->CandCenterY;
   int Dz = ChunkVal->ChunkZ - WorldVal->CandCenterZ;
+  int HorizontalSq = (Dx * Dx) + (Dz * Dz);
   // A quarter weight on the vertical keeps every loaded layer of the nearest
   // columns ahead of the horizon, while nearer layers still go first.
-  int DistanceSq = (Dx * Dx) + (Dz * Dz) + ((Dy * Dy) / 4);
+  int DistanceSq = HorizontalSq + ((Dy * Dy) / 4);
   int Bucket = (int)sqrtf((float)DistanceSq);
-  return (Bucket < MESH_CANDIDATE_BUCKETS) ? Bucket : MESH_CANDIDATE_BUCKETS - 1;
+  if (Bucket >= MESH_CANDIDATE_TIER_BUCKETS) {
+    Bucket = MESH_CANDIDATE_TIER_BUCKETS - 1;
+  }
+  if (!MeshCandidateIsForeground(WorldVal, ChunkVal, HorizontalSq)) {
+    Bucket += MESH_CANDIDATE_TIER_BUCKETS;
+  }
+  return Bucket;
 }
 
 static void LinkMeshCandidate(World *WorldVal, int Slot, int Bucket) {
@@ -1179,8 +1207,6 @@ void UpdateWorld(World *WorldVal, Vec3 PlayerPos, int RenderDist){
     return;
   }
 
-  RebucketMeshCandidates(WorldVal, PChunkX, PChunkY, PChunkZ);
-
   PROFILE_BEGIN(BoundsStart);
   (void)ColumnBoundsEnsure(&WorldVal->ColumnBounds, PChunkX, PChunkZ,
                            RenderDist, GetWorldSeed());
@@ -1192,6 +1218,10 @@ void UpdateWorld(World *WorldVal, Vec3 PlayerPos, int RenderDist){
   memset(KeepChunk, 0, sizeof(KeepChunk));
 
   const LoadVolume *Volume = GetLoadVolume(WorldVal, PlayerPos, RenderDist);
+
+  // After the volume is built, which resolves the surface of every column a
+  // candidate tier compares with; before any eviction adds candidates.
+  RebucketMeshCandidates(WorldVal, PChunkX, PChunkY, PChunkZ);
 
   MarkUsefulChunks(WorldVal, Volume, KeepChunk);
   bool EvictionDeferred = EvictUnneededChunks(WorldVal, KeepChunk);
