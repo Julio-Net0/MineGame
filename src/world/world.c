@@ -39,7 +39,14 @@ enum {
   MAX_COLUMN_LAYERS = MAX_LOAD_LAYERS + MAX_BAND_LAYERS,
   // Load volumes kept built: the last load request's, and one for any other
   // centre a caller asks about.
-  LOAD_VOLUME_CACHE_SLOTS = 2
+  LOAD_VOLUME_CACHE_SLOTS = 2,
+  // Top band layers of a far column generated ahead of the rest of the band:
+  // the surface layers plus the one under them, which their meshes read.
+  SURFACE_PRIORITY_LAYERS = WORLD_SURFACE_SETTLE_LAYERS + 1,
+  // Columns beyond the near cylinder still generated whole ahead of the far
+  // surfaces: every neighbour, diagonals included (sqrt(2) away), of a column
+  // within the cylinder lies within this margin.
+  NEAR_PRIORITY_MARGIN = 2
 };
 
 _Static_assert(((2 * NEAR_LOAD_RADIUS) + 1) * ((2 * NEAR_LOAD_RADIUS) + 1) *
@@ -1093,6 +1100,64 @@ static bool CreateOrRecycleChunk(World *WorldVal, int ChunkX, int ChunkY, int Ch
   return true;
 }
 
+typedef struct {
+  int32_t Col;
+  int32_t ChunkY;
+} DeferredPosition;
+
+// Creates every volume position not loaded yet, which enqueues its generation,
+// in three priorities: the near cylinder whole, then the surface layers of
+// every far column, then the rest of the far bands. Workers take jobs in queue
+// order, so the horizon is generated before the rock under it instead of
+// waiting behind the deep layers of nearer columns. The first priority also
+// takes the columns within NEAR_PRIORITY_MARGIN of the cylinder whole: a chunk
+// is meshed only once all its neighbours are generated, so the cylinder's edge
+// would otherwise wait for those columns' deep layers. Columns come nearest
+// first, so the first two priorities are created during the scan and only the
+// third waits for its end: one lookup per position, as a single priority would
+// need.
+// Returns false if the slot pool ran out.
+static bool CreateMissingChunks(World *WorldVal, const LoadVolume *Volume) {
+  // Static: one entry per active chunk is too large for the stack, and the
+  // world is driven from one thread.
+  static DeferredPosition Deferred[MAX_ACTIVE_CHUNKS];
+  int DeferredCount = 0;
+  bool AllCreated = true;
+  int WholeRadius = NEAR_LOAD_RADIUS + NEAR_PRIORITY_MARGIN;
+  if (WholeRadius > Volume->Radius) { WholeRadius = Volume->Radius; }
+  int WholeCount = GetColumnOrder()->PrefixCount[WholeRadius];
+
+  for (int Col = 0; Col < Volume->ColumnCount; Col++) {
+    int ChunkX = Volume->CenterX + Volume->Columns[Col].Dx;
+    int ChunkZ = Volume->CenterZ + Volume->Columns[Col].Dz;
+    int Layers[MAX_COLUMN_LAYERS];
+    int LayerCount = ColumnLayers(Volume, Col, Layers);
+    // A far column lists its band from the top down.
+    int CreateNow = (Col < WholeCount) ? LayerCount : SURFACE_PRIORITY_LAYERS;
+    for (int Layer = 0; Layer < LayerCount; Layer++) {
+      int ChunkY = Layers[Layer];
+      if (GetChunkFromWorld(WorldVal, ChunkX, ChunkY, ChunkZ) != (Chunk *)0) {
+        continue;
+      }
+      if (Layer < CreateNow) {
+        AllCreated = CreateOrRecycleChunk(WorldVal, ChunkX, ChunkY, ChunkZ) &&
+                     AllCreated;
+      } else {
+        Deferred[DeferredCount++] = (DeferredPosition){Col, ChunkY};
+      }
+    }
+  }
+
+  for (int Idx = 0; Idx < DeferredCount; Idx++) {
+    const ColumnOffset *Offset = &Volume->Columns[Deferred[Idx].Col];
+    AllCreated = CreateOrRecycleChunk(WorldVal, Volume->CenterX + Offset->Dx,
+                                      Deferred[Idx].ChunkY,
+                                      Volume->CenterZ + Offset->Dz) &&
+                 AllCreated;
+  }
+  return AllCreated;
+}
+
 void UpdateWorld(World *WorldVal, Vec3 PlayerPos, int RenderDist){
   PROFILE_BEGIN(UpdateStart);
   RenderDist = ClampRenderDistance(RenderDist);
@@ -1131,21 +1196,7 @@ void UpdateWorld(World *WorldVal, Vec3 PlayerPos, int RenderDist){
   MarkUsefulChunks(WorldVal, Volume, KeepChunk);
   bool EvictionDeferred = EvictUnneededChunks(WorldVal, KeepChunk);
 
-  // Volume order is nearest first, so generation is enqueued nearest first.
-  bool AllCreated = true;
-  for(int Col = 0; Col < Volume->ColumnCount; Col++){
-    int ChunkX = Volume->CenterX + Volume->Columns[Col].Dx;
-    int ChunkZ = Volume->CenterZ + Volume->Columns[Col].Dz;
-    int Layers[MAX_COLUMN_LAYERS];
-    int LayerCount = ColumnLayers(Volume, Col, Layers);
-    for(int Layer = 0; Layer < LayerCount; Layer++){
-      int ChunkY = Layers[Layer];
-      if(GetChunkFromWorld(WorldVal, ChunkX, ChunkY, ChunkZ) == (Chunk *)0 &&
-         !CreateOrRecycleChunk(WorldVal, ChunkX, ChunkY, ChunkZ)){
-        AllCreated = false;
-      }
-    }
-  }
+  bool AllCreated = CreateMissingChunks(WorldVal, Volume);
 
   WorldVal->LastLoadChunkX = PChunkX;
   WorldVal->LastLoadChunkY = PChunkY;
