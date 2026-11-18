@@ -32,6 +32,8 @@ package.json
 .claude/
 .gemini/
 openspec/
+graphify-out/
+.graphifyignore
 CLAUDE.md
 AGENTS.md
 
