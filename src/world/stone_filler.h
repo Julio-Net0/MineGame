@@ -52,6 +52,8 @@ typedef struct {
   BlockID RowBlock[FILLER_ROWS];
   // For a band row, the index of the layer below the band; -1 otherwise.
   int RowBand[FILLER_ROWS];
+  // Bit Row set for every transition-band row.
+  uint32_t BandRows;
   int PocketCount;
   FillerPocket Pockets[FILLER_MAX_CUBE_POCKETS];
   int VeinCount;
@@ -73,6 +75,12 @@ bool FillerCubeUniform(const FillerCube *Cube, BlockID *OutBlock);
 
 // The filler block at a position of the cube (global coordinates).
 BlockID FillerBlockAt(const FillerCube *Cube, int X, int Y, int Z);
+
+// The rows of the block column at global (X, Z) whose filler block is not the
+// row's layer block alone: transition-band rows and rows a pocket or vein
+// bounding box covers. Bit Row is set for such a row; at every other row,
+// FillerBlockAt gives RowBlock[Row].
+uint32_t FillerColumnSlowRows(const FillerCube *Cube, int X, int Z);
 
 // Every block of a SOLID cube, equal to FillerBlockAt at each position. With
 // no transition band in the cube it fills the layer block and draws only the

@@ -334,10 +334,14 @@ void FillerCubeInit(FillerCube *Cube, int ChunkX, int ChunkY, int ChunkZ,
   int MinZ = ChunkZ * FILLER_ROWS;
   Cube->BaseY = MinY;
   Cube->Seed = Seed;
+  Cube->BandRows = 0;
   for (int Row = 0; Row < FILLER_ROWS; Row++) {
     int Class = ClassifyRow(State, MinY + Row);
     Cube->RowBand[Row] = (Class < 0) ? -Class - 1 : -1;
     Cube->RowBlock[Row] = (Class < 0) ? 0 : State->Layers[Class].Block;
+    if (Class < 0) {
+      Cube->BandRows |= 1U << (unsigned)Row;
+    }
   }
 
   Cube->PocketCount =
@@ -407,6 +411,39 @@ BlockID FillerBlockAt(const FillerCube *Cube, int X, int Y, int Z) {
     }
   }
   return Layer;
+}
+
+// Rows of the cube that Blob's bounding box covers in the column at (X, Z),
+// clipped to the rows InsidePocket can accept.
+static uint32_t BlobColumnRows(const FillerPocket *Blob, int BaseY, int X,
+                               int Z) {
+  if (abs(X - Blob->CenterX) > Blob->RadiusX ||
+      abs(Z - Blob->CenterZ) > Blob->RadiusZ) {
+    return 0;
+  }
+  int Low = Blob->CenterY - Blob->RadiusY;
+  int High = Blob->CenterY + Blob->RadiusY;
+  Low = (Blob->MinY > Low) ? Blob->MinY : Low;
+  High = (Blob->MaxY < High) ? Blob->MaxY : High;
+  Low = (Low > BaseY) ? Low - BaseY : 0;
+  High = (High < BaseY + FILLER_ROWS - 1) ? High - BaseY : FILLER_ROWS - 1;
+  if (Low > High) {
+    return 0;
+  }
+  uint32_t UpToHigh = (2U << (unsigned)High) - 1U;
+  uint32_t BelowLow = (1U << (unsigned)Low) - 1U;
+  return UpToHigh & ~BelowLow;
+}
+
+uint32_t FillerColumnSlowRows(const FillerCube *Cube, int X, int Z) {
+  uint32_t Rows = Cube->BandRows;
+  for (int Idx = 0; Idx < Cube->PocketCount; Idx++) {
+    Rows |= BlobColumnRows(&Cube->Pockets[Idx], Cube->BaseY, X, Z);
+  }
+  for (int Idx = 0; Idx < Cube->VeinCount; Idx++) {
+    Rows |= BlobColumnRows(&Cube->Veins[Idx], Cube->BaseY, X, Z);
+  }
+  return Rows;
 }
 
 // Writes Blob's cells over Layer into a uniform cube, never over a cell that

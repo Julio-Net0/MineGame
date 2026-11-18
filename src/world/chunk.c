@@ -614,6 +614,19 @@ static int FillCubePerBlock(Chunk *ChunkVal, const ColumnEntry *Column,
     memset(Slice.Flooded, 0, sizeof(Slice.Flooded));
   }
 
+  // One biome per BIOME_CELL_SIZE^3 cell, so it is resolved per cell rather
+  // than per block.
+  const BiomeType *Biomes[BIOME_CELLS_PER_CHUNK][BIOME_CELLS_PER_CHUNK]
+                         [BIOME_CELLS_PER_CHUNK];
+  for (int CellX = 0; CellX < BIOME_CELLS_PER_CHUNK; CellX++) {
+    for (int CellY = 0; CellY < BIOME_CELLS_PER_CHUNK; CellY++) {
+      for (int CellZ = 0; CellZ < BIOME_CELLS_PER_CHUNK; CellZ++) {
+        Biomes[CellX][CellY][CellZ] =
+            GetBiomeDef(ChunkVal->BiomeMap[CellX][CellY][CellZ]);
+      }
+    }
+  }
+
   for (int IdxX = 0; IdxX < CHUNK_SIZE; IdxX++) {
     if (Corners != NULL) {
       SliceFill Fill = {.Corners = Corners,
@@ -630,6 +643,10 @@ static int FillCubePerBlock(Chunk *ChunkVal, const ColumnEntry *Column,
     for (int IdxZ = 0; IdxZ < CHUNK_SIZE; IdxZ++) {
       int GlobalX = (ChunkVal->ChunkX * CHUNK_SIZE) + IdxX;
       int GlobalZ = (ChunkVal->ChunkZ * CHUNK_SIZE) + IdxZ;
+      // Built on the column's first filler block; rows outside it take the
+      // row's layer block directly.
+      uint32_t SlowRows = 0;
+      bool HaveSlowRows = false;
 
       for (int IdxY = 0; IdxY < CHUNK_SIZE; IdxY++) {
         int GlobalY = BaseY + IdxY;
@@ -638,7 +655,8 @@ static int FillCubePerBlock(Chunk *ChunkVal, const ColumnEntry *Column,
         switch (Layers[IdxY]) {
         case STRATUM_GEN_OVERWORLD: {
           const BiomeType *Biome =
-              GetBiomeDef(GetChunkBiomeAtLocal(ChunkVal, IdxX, IdxY, IdxZ));
+              Biomes[IdxX / BIOME_CELL_SIZE][IdxY / BIOME_CELL_SIZE]
+                    [IdxZ / BIOME_CELL_SIZE];
           int Depth = Slice.Depths[IdxY][IdxZ];
           if (Depth >= Biome->SubsurfaceDepth) {
             if (!HaveFiller) {
@@ -646,7 +664,13 @@ static int FillCubePerBlock(Chunk *ChunkVal, const ColumnEntry *Column,
                              ChunkVal->ChunkZ, SeedVal);
               HaveFiller = true;
             }
-            BlockId = FillerBlockAt(&Filler, GlobalX, GlobalY, GlobalZ);
+            if (!HaveSlowRows) {
+              SlowRows = FillerColumnSlowRows(&Filler, GlobalX, GlobalZ);
+              HaveSlowRows = true;
+            }
+            BlockId = (((SlowRows >> (unsigned)IdxY) & 1U) != 0U)
+                          ? FillerBlockAt(&Filler, GlobalX, GlobalY, GlobalZ)
+                          : Filler.RowBlock[IdxY];
             break;
           }
           bool Steep = Corners != NULL && Biome->SteepBlockId >= 0 &&
