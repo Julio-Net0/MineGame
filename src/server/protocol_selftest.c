@@ -930,8 +930,8 @@ static bool ClientChunkMatchesServer(const ClientInbox *Inbox,
       GetChunkFromWorld(Server->WorldVal, Inbox->WantChunkX, Inbox->WantChunkY,
                         Inbox->WantChunkZ);
   const Chunk *ClientChunk = Inbox->ClientChunk;
-  return ServerChunk != (const Chunk *)0 && Inbox->ChunkDecoded &&
-         ChunkCellsEqual(ClientChunk, ServerChunk) &&
+  return ServerChunk != (const Chunk *)0 && ClientChunk != (const Chunk *)0 &&
+         Inbox->ChunkDecoded && ChunkCellsEqual(ClientChunk, ServerChunk) &&
          memcmp(ClientChunk->BiomeMap, ServerChunk->BiomeMap,
                 sizeof(ServerChunk->BiomeMap)) == 0 &&
          ClientChunk->SolidBlockCount == CountSolid(ServerChunk);
