@@ -46,7 +46,9 @@ enum {
   // Columns beyond the near cylinder still generated whole ahead of the far
   // surfaces: every neighbour, diagonals included (sqrt(2) away), of a column
   // within the cylinder lies within this margin.
-  NEAR_PRIORITY_MARGIN = 2
+  NEAR_PRIORITY_MARGIN = 2,
+  // Column bounds evaluated ahead per idle frame (about 8 us each).
+  BOUNDS_PREFETCH_BUDGET = 32
 };
 
 _Static_assert(((2 * NEAR_LOAD_RADIUS) + 1) * ((2 * NEAR_LOAD_RADIUS) + 1) *
@@ -1485,6 +1487,11 @@ void UpdateWorld(World *WorldVal, Vec3 PlayerPos, int RenderDist){
      WorldVal->LastLoadChunkY == PChunkY &&
      WorldVal->LastLoadChunkZ == PChunkZ &&
      WorldVal->LastLoadRenderDist == RenderDist){
+    // Idle frames evaluate ahead the columns the next crossing will add, so
+    // the crossing frame does not pay for them.
+    PROFILE_BEGIN(PrefetchStart);
+    (void)ColumnBoundsPrefetch(&WorldVal->ColumnBounds, BOUNDS_PREFETCH_BUDGET);
+    PROFILE_END(PrefetchStart, PROFILE_COLUMN_BOUNDS);
     PROFILE_END(UpdateStart, PROFILE_WORLD_UPDATE);
     return;
   }

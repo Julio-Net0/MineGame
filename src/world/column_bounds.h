@@ -54,6 +54,10 @@ typedef struct {
   int EnsuredZ;
   int EnsuredSpan;
   bool EnsuredValid;
+  // ColumnBoundsPrefetch's progress over the square around that disc, reset by
+  // every ColumnBoundsEnsure.
+  int PrefetchCursor;
+  bool PrefetchDone;
 } ColumnBoundsTable;
 
 void ColumnBoundsInit(ColumnBoundsTable *Table);
@@ -63,6 +67,13 @@ void ColumnBoundsInit(ColumnBoundsTable *Table);
 // how many columns were evaluated.
 int ColumnBoundsEnsure(ColumnBoundsTable *Table, int CenterX, int CenterZ,
                        int Radius, uint64_t Seed);
+
+// Evaluates up to Budget columns that the next ColumnBoundsEnsure would add if
+// the centre moved by one column on each axis (diagonals included), so a
+// crossing finds them held. Spread over idle frames: returns how many it
+// evaluated, and 0 at no cost once the ring around the last ensured disc is
+// complete.
+int ColumnBoundsPrefetch(ColumnBoundsTable *Table, int Budget);
 
 // Highest chunk layer that can hold a non-air block of the column: terrain,
 // water up to sea level, flora, or a structure anchored within reach.

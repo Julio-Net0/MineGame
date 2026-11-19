@@ -114,6 +114,61 @@ int ColumnBoundsEnsure(ColumnBoundsTable *Table, int CenterX, int CenterZ,
   Table->EnsuredZ = CenterZ;
   Table->EnsuredSpan = Span;
   Table->EnsuredValid = true;
+  Table->PrefetchCursor = 0;
+  Table->PrefetchDone = false;
+  return Evaluated;
+}
+
+// Outside the disc of radius sqrt(SpanSq), but inside it once the centre
+// moves by at most one column on each axis.
+static bool ColumnNextToDisc(int Dx, int Dz, int SpanSq) {
+  if ((Dx * Dx) + (Dz * Dz) <= SpanSq) {
+    return false;
+  }
+  for (int ShiftX = -1; ShiftX <= 1; ShiftX++) {
+    for (int ShiftZ = -1; ShiftZ <= 1; ShiftZ++) {
+      int MovedX = Dx - ShiftX;
+      int MovedZ = Dz - ShiftZ;
+      if ((MovedX * MovedX) + (MovedZ * MovedZ) <= SpanSq) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// The ring lies within Span + sqrt(2) of the centre. Two columns share a slot
+// only COLUMN_BOUNDS_SIDE apart, so while the ring's diameter stays below that
+// it never takes the slot of a disc column; a structure reach wide enough to
+// break that just goes without the prefetch.
+int ColumnBoundsPrefetch(ColumnBoundsTable *Table, int Budget) {
+  if (!Table->EnsuredValid || Table->PrefetchDone) {
+    return 0;
+  }
+  int Span = Table->EnsuredSpan;
+  int SpanSq = Span * Span;
+  int Outer = Span + 1;
+  if ((2 * Outer) >= COLUMN_BOUNDS_SIDE) {
+    Table->PrefetchDone = true;
+    return 0;
+  }
+  int Side = (2 * Outer) + 1;
+  int Total = Side * Side;
+  int Evaluated = 0;
+  // Row by row, as ColumnBoundsEnsure walks, for the shape memo.
+  while (Table->PrefetchCursor < Total && Evaluated < Budget) {
+    int Idx = Table->PrefetchCursor++;
+    int Dx = (Idx / Side) - Outer;
+    int Dz = (Idx % Side) - Outer;
+    if (!ColumnNextToDisc(Dx, Dz, SpanSq)) {
+      continue;
+    }
+    bool Computed = false;
+    (void)Resolve(Table, Table->EnsuredX + Dx, Table->EnsuredZ + Dz,
+                  &Computed);
+    Evaluated += Computed ? 1 : 0;
+  }
+  Table->PrefetchDone = Table->PrefetchCursor >= Total;
   return Evaluated;
 }
 
