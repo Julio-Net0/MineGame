@@ -253,9 +253,11 @@ static int DrawWorldgenCountersLine(UiContext *Ctx, int Y) {
 
   char Line[DEBUG_TEXT_CAPACITY];
   snprintf(Line, sizeof(Line),
-           "Gen cubes: air %llu solid %llu mixed %llu | column cache %.1f%%",
+           "Gen cubes: air %llu solid %llu water %llu mixed %llu | column "
+           "cache %.1f%%",
            (unsigned long long)Classes[CUBE_CLASS_AIR],
            (unsigned long long)Classes[CUBE_CLASS_SOLID],
+           (unsigned long long)Classes[CUBE_CLASS_WATER],
            (unsigned long long)Classes[CUBE_CLASS_MIXED], HitRate);
   return DrawDebugLine(Ctx, Line, Y);
 }

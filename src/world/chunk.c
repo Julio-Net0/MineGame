@@ -251,6 +251,17 @@ static int EvaluateCubeCorners(const Chunk *ChunkVal,
   return Reused;
 }
 
+// Whether a cube none of whose blocks is solid is sea water throughout. Wholly
+// below sea level, no block takes the frozen sea surface; at or above every
+// column's surface minus the shell (the comparison CaveFluidAt makes), every
+// block is sea water; and the flood rows end below that line, so no flood
+// barrier rock reaches the cube or its padding.
+static bool CubeIsSubmerged(int BaseY, const ColumnEntry *Column) {
+  return BaseY + CHUNK_SIZE - 1 < SEA_LEVEL &&
+         (float)BaseY >=
+             (float)Column->MaxSurface - GetCaveParams()->ShellBase;
+}
+
 // Tier 2: the column's density bounds alone, no 3D noise. Returns MIXED when
 // they cannot decide.
 static CubeClass ClassifyByBounds(int BaseY, const ColumnEntry *Column,
@@ -261,6 +272,9 @@ static CubeClass ClassifyByBounds(int BaseY, const ColumnEntry *Column,
                            : (float)SEA_LEVEL;
   if ((float)BaseY > HighestSolid) {
     return CUBE_CLASS_AIR;
+  }
+  if ((float)BaseY > Column->BoundHigh && CubeIsSubmerged(BaseY, Column)) {
+    return CUBE_CLASS_WATER;
   }
   // Caves can open anywhere between the shell and the cave floor, so the bound
   // alone proves solidity only below the floor or with caves disabled.
@@ -274,11 +288,12 @@ static CubeClass ClassifyByBounds(int BaseY, const ColumnEntry *Column,
 
 // Tier 3: trilinear blending never leaves the range of a cell's corners, so the
 // corner signs decide exactly. AIR needs every corner of the cube's own rows
-// non-positive and no water; SOLID needs every corner, padding row included,
-// positive, which gives every block at least 8 solid blocks above it, deeper
-// than any biome's palette layers.
-static CubeClass ClassifyByCorners(int BaseY, const CubeCorners *Corners,
-                                   int Ceiling) {
+// non-positive and no water; WATER the same corners with the cube submerged;
+// SOLID needs every corner, padding row included, positive, which gives every
+// block at least 8 solid blocks above it, deeper than any biome's palette
+// layers.
+static CubeClass ClassifyByCorners(int BaseY, const ColumnEntry *Column,
+                                   const CubeCorners *Corners, int Ceiling) {
   bool AllNonSolid = true;
   bool AllSolid = true;
   for (int CornerX = 0; CornerX < DENSITY_CORNERS_XZ; CornerX++) {
@@ -295,6 +310,9 @@ static CubeClass ClassifyByCorners(int BaseY, const CubeCorners *Corners,
 
   if (AllNonSolid && BaseY > SEA_LEVEL && BaseY > GetCaveParams()->LavaLevel) {
     return CUBE_CLASS_AIR;
+  }
+  if (AllNonSolid && CubeIsSubmerged(BaseY, Column)) {
+    return CUBE_CLASS_WATER;
   }
   if (AllSolid && BaseY + CHUNK_SIZE - 1 + DENSITY_TOP_PADDING < Ceiling) {
     return CUBE_CLASS_SOLID;
@@ -760,7 +778,7 @@ CubeClass GenerateChunkTerrainEx(Chunk *ChunkVal, const ColumnEntry *Column,
       ReusedPlanes = EvaluateCubeCorners(ChunkVal, Column, SeedVal,
                                          Options->CornerRows, &Corners);
       HaveCorners = true;
-      Class = ClassifyByCorners(BaseY, &Corners, Ceiling);
+      Class = ClassifyByCorners(BaseY, Column, &Corners, Ceiling);
     }
   }
 
@@ -780,6 +798,8 @@ CubeClass GenerateChunkTerrainEx(Chunk *ChunkVal, const ColumnEntry *Column,
   } else if (Class == CUBE_CLASS_AIR) {
     // Sky and void cubes: no noise sampled, no cell written, no buffer leased.
     SolidCount = FillCubeUniform(ChunkVal, BLOCK_AIR);
+  } else if (Class == CUBE_CLASS_WATER) {
+    SolidCount = FillCubeUniform(ChunkVal, GetTerrainBaseBlocks()->WaterId);
   } else {
     SolidCount = FillCubeFiller(ChunkVal, SeedVal);
   }

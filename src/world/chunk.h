@@ -133,6 +133,9 @@ typedef enum {
   CUBE_CLASS_AIR = 0,
   CUBE_CLASS_SOLID,
   CUBE_CLASS_MIXED,
+  // Sea water throughout: no block solid, all below sea level and above the
+  // shell of every column.
+  CUBE_CLASS_WATER,
   CUBE_CLASS_COUNT
 } CubeClass;
 

@@ -1076,6 +1076,8 @@ static void ScriptAddWorldgenJson(cJSON *Root, const ScriptContext *Ctx) {
                             (double)Classes[CUBE_CLASS_SOLID]);
     cJSON_AddNumberToObject(ClassNode, "mixed",
                             (double)Classes[CUBE_CLASS_MIXED]);
+    cJSON_AddNumberToObject(ClassNode, "water",
+                            (double)Classes[CUBE_CLASS_WATER]);
     cJSON_AddItemToObject(Node, "cubeClasses", ClassNode);
   }
 

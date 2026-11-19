@@ -19,20 +19,53 @@
 enum {
   // A 4x4 block of columns around the origin plus one far column, so surface
   // cubes cover both land and sea and the far column exercises a different
-  // stretch of every noise field.
+  // stretch of every noise field, plus one column under deep sea, where the
+  // WATER short-circuit happens.
   TEST_COLUMN_MIN = -2,
   TEST_COLUMN_MAX = 1,
   FAR_COLUMN = 31,
   TEST_COLUMN_COUNT = ((TEST_COLUMN_MAX - TEST_COLUMN_MIN + 1) *
-                       (TEST_COLUMN_MAX - TEST_COLUMN_MIN + 1)) + 1
+                       (TEST_COLUMN_MAX - TEST_COLUMN_MIN + 1)) + 2,
+  // The sea column is searched for on a grid of this spacing and half-width,
+  // in columns, so every seed finds one: its surface lies this deep or deeper,
+  // which puts the test layers -1 and -2 under the shell.
+  SEA_SEARCH_STEP = 32,
+  SEA_SEARCH_REACH = 1024,
+  SEA_COLUMN_MAX_SURFACE = -40
 };
+
+static int SeaColumnX;
+static int SeaColumnZ;
+
+// Nearest grid column (by search order) whose whole surface lies under deep
+// sea. False when the seed has none in reach.
+static bool FindSeaColumn(uint64_t Seed) {
+  // Static: a column entry is too large to want on the stack.
+  static ColumnEntry Entry;
+  for (int Ring = 0; Ring <= SEA_SEARCH_REACH; Ring += SEA_SEARCH_STEP) {
+    for (int Dx = -Ring; Dx <= Ring; Dx += SEA_SEARCH_STEP) {
+      for (int Dz = -Ring; Dz <= Ring; Dz += SEA_SEARCH_STEP) {
+        if (abs(Dx) != Ring && abs(Dz) != Ring) {
+          continue;
+        }
+        ColumnEntryFill(&Entry, Dx, Dz, Seed);
+        if (Entry.MaxSurface <= SEA_COLUMN_MAX_SURFACE) {
+          SeaColumnX = Dx;
+          SeaColumnZ = Dz;
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
 
 // Cube layers chosen to hit every path: above the ceiling and just below it,
 // around the surface, deep stone, the bedrock band and its overworld neighbour,
 // and the reserved void below the floor.
 static const int TEST_CHUNK_YS[] = {40, 39, 2, 1, 0, -1, -2, -10, -32, -33, -34};
 static const char *const CLASS_NAMES[CUBE_CLASS_COUNT] = {"AIR", "SOLID",
-                                                          "MIXED"};
+                                                          "MIXED", "WATER"};
 
 typedef struct {
   Chunk *Reference;
@@ -63,9 +96,14 @@ enum {
 
 static void GetTestColumn(int Index, int *ColumnX, int *ColumnZ) {
   const int SIDE = TEST_COLUMN_MAX - TEST_COLUMN_MIN + 1;
-  if (Index == TEST_COLUMN_COUNT - 1) {
+  if (Index == TEST_COLUMN_COUNT - 2) {
     *ColumnX = FAR_COLUMN;
     *ColumnZ = FAR_COLUMN;
+    return;
+  }
+  if (Index == TEST_COLUMN_COUNT - 1) {
+    *ColumnX = SeaColumnX;
+    *ColumnZ = SeaColumnZ;
     return;
   }
   *ColumnX = TEST_COLUMN_MIN + (Index % SIDE);
@@ -957,6 +995,13 @@ static bool RunChecks(SelfTestScratch *Scratch) {
           PREPARED_SAMPLES);
 
   uint64_t Seed = GetWorldSeed();
+  if (!FindSeaColumn(Seed)) {
+    LogError("WORLDGEN_TEST: FAIL no column within %d columns of the origin "
+             "lies under sea deeper than %d",
+             SEA_SEARCH_REACH, SEA_COLUMN_MAX_SURFACE);
+    return false;
+  }
+  LogInfo("WORLDGEN_TEST: sea test column (%d, %d)", SeaColumnX, SeaColumnZ);
   for (int Index = 0; Index < TEST_COLUMN_COUNT; Index++) {
     int ColumnX = 0;
     int ColumnZ = 0;
@@ -981,10 +1026,12 @@ static bool RunChecks(SelfTestScratch *Scratch) {
       return false;
     }
   }
-  LogInfo("WORLDGEN_TEST: ok every class exercised (AIR=%d SOLID=%d MIXED=%d)",
+  LogInfo("WORLDGEN_TEST: ok every class exercised (AIR=%d SOLID=%d MIXED=%d "
+          "WATER=%d)",
           Scratch->ClassCounts[CUBE_CLASS_AIR],
           Scratch->ClassCounts[CUBE_CLASS_SOLID],
-          Scratch->ClassCounts[CUBE_CLASS_MIXED]);
+          Scratch->ClassCounts[CUBE_CLASS_MIXED],
+          Scratch->ClassCounts[CUBE_CLASS_WATER]);
 
   if (Scratch->ProbedBlocks == 0) {
     LogError("WORLDGEN_TEST: FAIL no block was probed, so probe equality went "

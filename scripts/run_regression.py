@@ -1090,6 +1090,13 @@ def verify_worldgen(out_dir: Path, _run_log: str, render_distance: int) -> None:
             classes[cube_class] > 0,
             f"worldgen.json: expected some {cube_class.upper()} cubes, got {classes[cube_class]}",
         )
+    # The spawn region holds no submerged cube at small render distances, so
+    # WATER is only required to be reported; --test-worldgen exercises it on a
+    # searched deep-sea column.
+    require(
+        isinstance(classes.get("water"), int) and classes["water"] >= 0,
+        f"worldgen.json: expected a WATER cube count, got {classes.get('water')}",
+    )
     cache = state["worldgen"]["columnCache"]
     require(cache["hits"] > 0, "worldgen.json: the column cache recorded no hits")
 
