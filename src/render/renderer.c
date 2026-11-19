@@ -2514,6 +2514,36 @@ enum {
 #define HORIZON_MIN_HEADING 1.0e-3F
 #define HORIZON_MIN_PLANE_UP 1.0e-4F
 
+// Min, max, floor and ceil for the horizon's hot loops. Without SSE4.1 and
+// with math errno semantics, fminf, fmaxf, floorf and ceilf compile to library
+// calls, which cost more than the comparisons around them; these compile to
+// minss, maxss and integer conversions. No value here is ever NaN, where the
+// two would differ.
+static inline float HorizonMin(float A, float B) { return (A < B) ? A : B; }
+
+static inline float HorizonMax(float A, float B) { return (A > B) ? A : B; }
+
+// For X well inside the int range. Truncation rounds toward zero, so a
+// negative non-integer X truncates up and is stepped back down.
+static inline int HorizonFloor(float X) {
+    int I = (int)X;
+    return ((float)I > X) ? I - 1 : I;
+}
+
+static inline int HorizonCeil(float X) {
+    int I = (int)X;
+    return ((float)I < X) ? I + 1 : I;
+}
+
+// One bin: every v below Prefix is blocked, and every v in [FloatLo, FloatHi]
+// when FloatLo <= FloatHi. Interleaved so a span of bins reads consecutive
+// memory once rather than three arrays.
+typedef struct {
+    float Prefix;
+    float FloatLo;
+    float FloatHi;
+} HorizonBin;
+
 typedef struct {
     float CamX;
     float CamY;
@@ -2531,9 +2561,7 @@ typedef struct {
     float PrefixMax;
     float FloatLoMin;
     float FloatHiMax;
-    float Prefix[HORIZON_BINS];
-    float FloatLo[HORIZON_BINS];
-    float FloatHi[HORIZON_BINS];
+    HorizonBin Bins[HORIZON_BINS];
 } HorizonFrame;
 
 static HorizonFrame *GetHorizonFrame(void) {
@@ -2585,8 +2613,8 @@ static bool BeginHorizonFrame(HorizonFrame *H, const RenderFrustum *Frustum,
         float Fz = (Cx * H->Fx) + (Cz * H->Fz);
         if (Len <= 0.0F || Fz < HORIZON_CORNER_MIN_FZ * Len) { return false; }
         float U = ((Cx * H->Rx) + (Cz * H->Rz)) / Fz;
-        H->Umin = fminf(H->Umin, U);
-        H->Umax = fmaxf(H->Umax, U);
+        H->Umin = HorizonMin(H->Umin, U);
+        H->Umax = HorizonMax(H->Umax, U);
     }
     if (!(H->Umax > H->Umin)) { return false; }
     H->InvBinWidth = (float)HORIZON_BINS / (H->Umax - H->Umin);
@@ -2600,17 +2628,18 @@ static bool BeginHorizonFrame(HorizonFrame *H, const RenderFrustum *Frustum,
     float NormalRight = (Bottom[0] * H->Rx) + (Bottom[2] * H->Rz);
     float NormalFwd = (Bottom[0] * H->Fx) + (Bottom[2] * H->Fz);
     float BinWidth = (H->Umax - H->Umin) / (float)HORIZON_BINS;
+    H->PrefixMax = -HUGE_VALF;
     for (int Bin = 0; Bin < HORIZON_BINS; Bin++) {
         float U0 = H->Umin + ((float)Bin * BinWidth);
         float U1 = U0 + BinWidth;
         float V0 = -((U0 * NormalRight) + NormalFwd) / NormalUp;
         float V1 = -((U1 * NormalRight) + NormalFwd) / NormalUp;
-        H->Prefix[Bin] = fminf(V0, V1) - HORIZON_SLOPE_EPS;
-        H->FloatLo[Bin] = HUGE_VALF;
-        H->FloatHi[Bin] = -HUGE_VALF;
+        HorizonBin *Entry = &H->Bins[Bin];
+        Entry->Prefix = HorizonMin(V0, V1) - HORIZON_SLOPE_EPS;
+        Entry->FloatLo = HUGE_VALF;
+        Entry->FloatHi = -HUGE_VALF;
+        H->PrefixMax = HorizonMax(H->PrefixMax, Entry->Prefix);
     }
-    H->PrefixMax = -HUGE_VALF;
-    for (int Bin = 0; Bin < HORIZON_BINS; Bin++) { H->PrefixMax = fmaxf(H->PrefixMax, H->Prefix[Bin]); }
     H->FloatLoMin = HUGE_VALF;
     H->FloatHiMax = -HUGE_VALF;
     return true;
@@ -2646,9 +2675,9 @@ static bool ProjectFootprint(const HorizonFrame *H, int ChunkX, int ChunkZ,
     float StepRz = (float)CHUNK_SIZE * H->Rz;
     float Fz[FOOTPRINT_CORNERS] = {Fz0, Fz0 + StepFx, Fz0 + StepFz, Fz0 + StepFx + StepFz};
     float R[FOOTPRINT_CORNERS] = {R0, R0 + StepRx, R0 + StepRz, R0 + StepRx + StepRz};
-    Out->FzMin = fminf(fminf(Fz[0], Fz[1]), fminf(Fz[2], Fz[3]));
+    Out->FzMin = HorizonMin(HorizonMin(Fz[0], Fz[1]), HorizonMin(Fz[2], Fz[3]));
     if (Out->FzMin <= HORIZON_MIN_FZ) { return false; }
-    Out->FzMax = fmaxf(fmaxf(Fz[0], Fz[1]), fmaxf(Fz[2], Fz[3]));
+    Out->FzMax = HorizonMax(HorizonMax(Fz[0], Fz[1]), HorizonMax(Fz[2], Fz[3]));
     Out->InvFzMin = 1.0F / Out->FzMin;
     Out->InvFzMax = 1.0F / Out->FzMax;
     float U[FOOTPRINT_CORNERS];
@@ -2709,9 +2738,10 @@ typedef struct {
 static HorizonSpan GatherHorizonSpan(const HorizonFrame *H, int First, int Last) {
     HorizonSpan Span = {HUGE_VALF, -HUGE_VALF, HUGE_VALF};
     for (int Bin = First; Bin <= Last; Bin++) {
-        Span.PrefixMin = fminf(Span.PrefixMin, H->Prefix[Bin]);
-        Span.FloatLoMax = fmaxf(Span.FloatLoMax, H->FloatLo[Bin]);
-        Span.FloatHiMin = fminf(Span.FloatHiMin, H->FloatHi[Bin]);
+        const HorizonBin *Entry = &H->Bins[Bin];
+        Span.PrefixMin = HorizonMin(Span.PrefixMin, Entry->Prefix);
+        Span.FloatLoMax = HorizonMax(Span.FloatLoMax, Entry->FloatLo);
+        Span.FloatHiMin = HorizonMin(Span.FloatHiMin, Entry->FloatHi);
     }
     return Span;
 }
@@ -2732,15 +2762,16 @@ static bool HorizonSpanHides(const HorizonSpan *Span, float VMin, float VMax) {
 }
 
 static void HorizonInsertBin(HorizonFrame *H, int Bin, float VBot, float VTop) {
-    float Prefix = H->Prefix[Bin];
-    float Lo = H->FloatLo[Bin];
-    float Hi = H->FloatHi[Bin];
+    HorizonBin *Entry = &H->Bins[Bin];
+    float Prefix = Entry->Prefix;
+    float Lo = Entry->FloatLo;
+    float Hi = Entry->FloatHi;
     bool HasFloat = Lo <= Hi;
     if (VBot <= Prefix) {
-        Prefix = fmaxf(Prefix, VTop);
+        Prefix = HorizonMax(Prefix, VTop);
     } else if (HasFloat && VBot <= Hi && VTop >= Lo) {
-        Lo = fminf(Lo, VBot);
-        Hi = fmaxf(Hi, VTop);
+        Lo = HorizonMin(Lo, VBot);
+        Hi = HorizonMax(Hi, VTop);
     } else if (!HasFloat || VTop > Hi) {
         // Disjoint from both: keep the band nearer the horizon line, where the
         // far columns that remain to be tested sit.
@@ -2748,17 +2779,17 @@ static void HorizonInsertBin(HorizonFrame *H, int Bin, float VBot, float VTop) {
         Hi = VTop;
     }
     if (Lo <= Hi && Lo <= Prefix) {
-        Prefix = fmaxf(Prefix, Hi);
+        Prefix = HorizonMax(Prefix, Hi);
         Lo = HUGE_VALF;
         Hi = -HUGE_VALF;
     }
-    H->Prefix[Bin] = Prefix;
-    H->FloatLo[Bin] = Lo;
-    H->FloatHi[Bin] = Hi;
-    H->PrefixMax = fmaxf(H->PrefixMax, Prefix);
+    Entry->Prefix = Prefix;
+    Entry->FloatLo = Lo;
+    Entry->FloatHi = Hi;
+    H->PrefixMax = HorizonMax(H->PrefixMax, Prefix);
     if (Lo <= Hi) {
-        H->FloatLoMin = fminf(H->FloatLoMin, Lo);
-        H->FloatHiMax = fmaxf(H->FloatHiMax, Hi);
+        H->FloatLoMin = HorizonMin(H->FloatLoMin, Lo);
+        H->FloatHiMax = HorizonMax(H->FloatHiMax, Hi);
     }
 }
 
@@ -2770,49 +2801,72 @@ static void HorizonInsert(HorizonFrame *H, const HorizonFootprint *F, float VBot
     VTop -= HORIZON_SLOPE_EPS;
     if (VTop <= VBot) { return; }
     // In bin units, clamped first so the conversions below stay in range.
-    float Lo = fmaxf((F->InnerMin - H->Umin) * H->InvBinWidth, -1.0F);
-    float Hi = fminf((F->InnerMax - H->Umin) * H->InvBinWidth, (float)HORIZON_BINS + 1.0F);
+    float Lo = HorizonMax((F->InnerMin - H->Umin) * H->InvBinWidth, -1.0F);
+    float Hi = HorizonMin((F->InnerMax - H->Umin) * H->InvBinWidth,
+                          (float)HORIZON_BINS + 1.0F);
     // Only bins wholly inside [Lo, Hi].
-    int First = (int)ceilf(Lo);
-    int Last = (int)floorf(Hi) - 1;
+    int First = HorizonCeil(Lo);
+    int Last = HorizonFloor(Hi) - 1;
     if (First < 0) { First = 0; }
     if (Last >= HORIZON_BINS) { Last = HORIZON_BINS - 1; }
     for (int Bin = First; Bin <= Last; Bin++) { HorizonInsertBin(H, Bin, VBot, VTop); }
 }
 
+// A column that survived the frustum, with everything the sweep reads about
+// it. Filled during the frustum pass, which walks the columns in memory order;
+// the near-to-far pass then reads this compact copy instead of reaching back
+// into the column pool in an order that misses the cache on every column.
+typedef struct {
+    HorizonFootprint Footprint;
+    int ChunkX;
+    int ChunkZ;
+    int MinChunkY;
+    int MaxChunkY;
+    int Head;
+    int Key;
+    int16_t RunTop[COLUMN_OCCLUDER_RUNS];
+    int16_t RunBottom[COLUMN_OCCLUDER_RUNS];
+    uint8_t RunCount;
+    bool TestEach;
+    // Footprint holds the column's projection: set when the column was tested,
+    // which every column is before it can be committed as an occluder.
+    bool Projected;
+} HorizonCandidate;
+
+// Columns can outnumber the loaded disc while the load centre moves and old
+// chunks wait for eviction; a frame with more than this goes without the cull.
+enum { HORIZON_MAX_CANDIDATES = 2 * MAX_LOADED_COLUMNS };
+
 // Adds a column's opaque layer runs to the horizon, lowest first so the upper
 // run can chain onto the band the lower one extends.
-static void HorizonAddOccluder(World *WorldVal, HorizonFrame *H, RenderColumn *Col) {
-    if (Col->RunsStale) { RefreshColumnRuns(WorldVal, Col); }
-    if (Col->RunCount == 0) { return; }
-    HorizonFootprint Footprint;
-    if (!ProjectFootprint(H, Col->ChunkX, Col->ChunkZ, &Footprint) ||
-        Footprint.FzMin < (float)CHUNK_SIZE) {
+static void HorizonAddOccluder(HorizonFrame *H, const HorizonCandidate *C) {
+    if (C->RunCount == 0 || !C->Projected || C->Footprint.FzMin < (float)CHUNK_SIZE) {
         return;
     }
-    for (int Run = Col->RunCount - 1; Run >= 0; Run--) {
-        float Bottom = ((float)Col->RunBottom[Run] - BLOCK_HALF_SIZE) - H->CamY;
-        float Top = ((float)Col->RunTop[Run] + BLOCK_HALF_SIZE) - H->CamY;
-        HorizonInsert(H, &Footprint, FootprintSlopeHigh(&Footprint, Bottom),
-                      FootprintSlopeLow(&Footprint, Top));
+    for (int Run = C->RunCount - 1; Run >= 0; Run--) {
+        float Bottom = ((float)C->RunBottom[Run] - BLOCK_HALF_SIZE) - H->CamY;
+        float Top = ((float)C->RunTop[Run] + BLOCK_HALF_SIZE) - H->CamY;
+        HorizonInsert(H, &C->Footprint, FootprintSlopeHigh(&C->Footprint, Bottom),
+                      FootprintSlopeLow(&C->Footprint, Top));
     }
 }
 
-// The smallest key at which a column of key Key may hide anything:
+// Per key, the smallest key at which a column of that key may hide anything:
 // (sqrt(Key) + HORIZON_COMMIT_LAG)^2, with the root rounded up.
-static int HorizonCommitKey(int Key) {
-    int Root = (int)sqrtf((float)Key);
-    while (Root * Root < Key) { Root++; }
-    int Reach = Root + HORIZON_COMMIT_LAG;
-    return Reach * Reach;
+static const int *GetHorizonCommitKeys(void) {
+    static int Keys[HORIZON_KEY_BUCKETS];
+    static bool Built = false;
+    if (!Built) {
+        int Root = 0;
+        for (int Key = 0; Key < HORIZON_KEY_BUCKETS; Key++) {
+            while (Root * Root < Key) { Root++; }
+            int Reach = Root + HORIZON_COMMIT_LAG;
+            Keys[Key] = Reach * Reach;
+        }
+        Built = true;
+    }
+    return Keys;
 }
-
-// A column that survived the frustum, in sweep order.
-typedef struct {
-    int Column;
-    int Key;
-    bool TestEach;
-} SweepEntry;
 
 static int HorizonColumnKey(const RenderColumn *Col, int CameraChunkX, int CameraChunkZ) {
     int DeltaX = Col->ChunkX - CameraChunkX;
@@ -2826,11 +2880,13 @@ static int HorizonColumnKey(const RenderColumn *Col, int CameraChunkX, int Camer
     return (Key >= HORIZON_KEY_BUCKETS) ? HORIZON_KEY_BUCKETS - 1 : Key;
 }
 
-// Counting sort of Entries by key into Out, near to far.
-static void SortSweepEntries(const SweepEntry *Entries, int Count, SweepEntry *Out) {
+// Counting sort of the candidates by key: Out receives their indices, near to
+// far, ties in candidate order.
+static void SortHorizonCandidates(const HorizonCandidate *Candidates, int Count,
+                                  int *Out) {
     static int KeyOffsets[HORIZON_KEY_BUCKETS];
     memset(KeyOffsets, 0, sizeof(KeyOffsets));
-    for (int Idx = 0; Idx < Count; Idx++) { KeyOffsets[Entries[Idx].Key]++; }
+    for (int Idx = 0; Idx < Count; Idx++) { KeyOffsets[Candidates[Idx].Key]++; }
     int Running = 0;
     for (int Key = 0; Key < HORIZON_KEY_BUCKETS; Key++) {
         int Here = KeyOffsets[Key];
@@ -2838,7 +2894,166 @@ static void SortSweepEntries(const SweepEntry *Entries, int Count, SweepEntry *O
         Running += Here;
     }
     for (int Idx = 0; Idx < Count; Idx++) {
-        Out[KeyOffsets[Entries[Idx].Key]++] = Entries[Idx];
+        Out[KeyOffsets[Candidates[Idx].Key]++] = Idx;
+    }
+}
+
+// What the column sweep reads and fills: the frame's frustum and stats, and
+// the visible list with the distance bucket counts every pass sorts on.
+typedef struct {
+    World *WorldVal;
+    RenderableSet *Renderable;
+    const RenderFrustum *Frustum;
+    RenderCullStats *Stats;
+    ChunkOrderEntry *Visible;
+    Chunk **SetOrder;
+    int *BucketCounts;
+    int VisibleCount;
+    int CameraChunkX;
+    int CameraChunkY;
+    int CameraChunkZ;
+} CullSweep;
+
+static void AppendVisibleChunk(CullSweep *S, Chunk *ChunkVal) {
+    ChunkOrderEntry *Entry = &S->Visible[S->VisibleCount];
+    Entry->ChunkVal = ChunkVal;
+    Entry->Bucket = ChunkDistanceBucket(ChunkVal->ChunkX - S->CameraChunkX,
+                                        ChunkVal->ChunkY - S->CameraChunkY,
+                                        ChunkVal->ChunkZ - S->CameraChunkZ);
+    S->BucketCounts[Entry->Bucket]++;
+    S->SetOrder[S->VisibleCount] = ChunkVal;
+    S->VisibleCount++;
+}
+
+// A column wholly outside or wholly inside the frustum settles all its chunks
+// with one box test; only straddling columns test their chunks one by one.
+static BoxClass ClassifySweepColumn(CullSweep *S, RenderColumn *Col) {
+    if (Col->ExtentStale) { RefreshColumnExtent(S->Renderable, Col); }
+    Vec3 BoxMin;
+    Vec3 BoxMax;
+    GetColumnBox(Col, &BoxMin, &BoxMax);
+    BoxClass Class = ClassifyColumnBox(S->Frustum, BoxMin, BoxMax);
+    if (Class == BOX_OUTSIDE) {
+        S->Stats->ColumnsOutside++;
+    } else if (Class == BOX_INTERSECTING) {
+        S->Stats->ColumnsIntersecting++;
+    } else {
+        S->Stats->ColumnsInside++;
+    }
+    return Class;
+}
+
+// The columns in set order, with frustum culling and, when the traversal ran,
+// the chunks it reached.
+static void SweepFrustumOnly(CullSweep *S, bool OcclusionActive) {
+    RenderableSet *Renderable = S->Renderable;
+    for (int Dense = 0; Dense < Renderable->ActiveColumnCount; Dense++) {
+        RenderColumn *Col = &Renderable->Columns[Renderable->ActiveColumns[Dense]];
+        BoxClass Class = ClassifySweepColumn(S, Col);
+        if (Class == BOX_OUTSIDE) { continue; }
+        bool TestEach = (Class == BOX_INTERSECTING);
+        for (int Rec = Col->Head; Rec != 0;
+             Rec = Renderable->Records[Rec].NextInColumn) {
+            Chunk *ChunkVal = Renderable->Records[Rec].ChunkVal;
+            if (TestEach) {
+                S->Stats->ChunksTested++;
+                if (!IsChunkVisible(S->Frustum, ChunkVal)) { continue; }
+            }
+            if (OcclusionActive && !WasChunkReached(S->WorldVal, ChunkVal)) {
+                S->Stats->Occluded++;
+                continue;
+            }
+            AppendVisibleChunk(S, ChunkVal);
+        }
+    }
+}
+
+// The surviving columns near to far, each tested against the horizon of the
+// columns committed before it and then queued to join it.
+static void SweepWithHorizon(CullSweep *S, HorizonFrame *H) {
+    static HorizonCandidate Candidates[HORIZON_MAX_CANDIDATES];
+    static int Order[HORIZON_MAX_CANDIDATES];
+    RenderableSet *Renderable = S->Renderable;
+    int Count = 0;
+    for (int Dense = 0; Dense < Renderable->ActiveColumnCount; Dense++) {
+        RenderColumn *Col = &Renderable->Columns[Renderable->ActiveColumns[Dense]];
+        BoxClass Class = ClassifySweepColumn(S, Col);
+        if (Class == BOX_OUTSIDE) { continue; }
+        if (Col->RunsStale) { RefreshColumnRuns(S->WorldVal, Col); }
+        HorizonCandidate *C = &Candidates[Count++];
+        C->ChunkX = Col->ChunkX;
+        C->ChunkZ = Col->ChunkZ;
+        C->MinChunkY = Col->MinChunkY;
+        C->MaxChunkY = Col->MaxChunkY;
+        C->Head = Col->Head;
+        C->Key = HorizonColumnKey(Col, S->CameraChunkX, S->CameraChunkZ);
+        C->RunCount = Col->RunCount;
+        for (int Run = 0; Run < COLUMN_OCCLUDER_RUNS; Run++) {
+            C->RunTop[Run] = Col->RunTop[Run];
+            C->RunBottom[Run] = Col->RunBottom[Run];
+        }
+        C->TestEach = (Class == BOX_INTERSECTING);
+        C->Projected = false;
+    }
+    SortHorizonCandidates(Candidates, Count, Order);
+
+    const int *CommitKeys = GetHorizonCommitKeys();
+    int Committed = 0;
+    for (int Idx = 0; Idx < Count; Idx++) {
+        HorizonCandidate *C = &Candidates[Order[Idx]];
+        while (Committed < Idx &&
+               CommitKeys[Candidates[Order[Committed]].Key] <= C->Key) {
+            HorizonAddOccluder(H, &Candidates[Order[Committed]]);
+            Committed++;
+        }
+
+        C->Projected = ProjectFootprint(H, C->ChunkX, C->ChunkZ, &C->Footprint);
+        int FirstBin = 0;
+        int LastBin = -1;
+        bool Testable = C->Projected && FootprintBins(H, &C->Footprint, &FirstBin, &LastBin);
+        HorizonSpan Span = {0};
+        bool SpanReady = false;
+        bool ColumnHidden = false;
+        if (Testable) {
+            float Bottom = ((float)(C->MinChunkY * CHUNK_SIZE) - BLOCK_HALF_SIZE) - H->CamY;
+            float Top = ((float)((C->MaxChunkY + 1) * CHUNK_SIZE) - BLOCK_HALF_SIZE) - H->CamY;
+            float VMin = FootprintSlopeLow(&C->Footprint, Bottom);
+            float VMax = FootprintSlopeHigh(&C->Footprint, Top);
+            if (HorizonMightHide(H, VMin, VMax)) {
+                Span = GatherHorizonSpan(H, FirstBin, LastBin);
+                SpanReady = true;
+                ColumnHidden = HorizonSpanHides(&Span, VMin, VMax);
+            }
+        }
+
+        for (int Rec = C->Head; Rec != 0; Rec = Renderable->Records[Rec].NextInColumn) {
+            Chunk *ChunkVal = Renderable->Records[Rec].ChunkVal;
+            if (C->TestEach) {
+                S->Stats->ChunksTested++;
+                if (!IsChunkVisible(S->Frustum, ChunkVal)) { continue; }
+            }
+            if (Testable) {
+                bool Hidden = ColumnHidden;
+                if (!Hidden) {
+                    float Bottom = ((float)(ChunkVal->ChunkY * CHUNK_SIZE) - BLOCK_HALF_SIZE) -
+                                   H->CamY;
+                    float VMin = FootprintSlopeLow(&C->Footprint, Bottom);
+                    float VMax = FootprintSlopeHigh(&C->Footprint, Bottom + (float)CHUNK_SIZE);
+                    if (HorizonMightHide(H, VMin, VMax)) {
+                        if (!SpanReady) {
+                            Span = GatherHorizonSpan(H, FirstBin, LastBin);
+                            SpanReady = true;
+                        }
+                        Hidden = HorizonSpanHides(&Span, VMin, VMax);
+                    }
+                }
+                if (Hidden) {
+                    S->Stats->HorizonCulled++;
+                    continue;
+                }
+            }
+            AppendVisibleChunk(S, ChunkVal);
+        }
     }
 }
 
@@ -2898,128 +3113,33 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
     // With the horizon cull active the surviving columns are walked near to
     // far instead of in set order; otherwise the order is left as it was.
     PROFILE_BEGIN(SweepStart);
-    static SweepEntry Candidates[MAX_ACTIVE_CHUNKS];
-    static SweepEntry SortedCandidates[MAX_ACTIVE_CHUNKS];
     HorizonFrame *Horizon = GetHorizonFrame();
     Stats.HorizonEnabled = Stats.OcclusionEnabled && GetDebugState()->HorizonCulling;
     bool HorizonActive = Stats.HorizonEnabled && !OcclusionActive &&
                          !GetOcclusionState()->CameraEnclosed &&
+                         Renderable->ActiveColumnCount <= HORIZON_MAX_CANDIDATES &&
                          BeginHorizonFrame(Horizon, &Frustum, CameraVal);
     Stats.HorizonActive = HorizonActive;
 
-    int CandidateCount = 0;
-    for (int Dense = 0; Dense < Renderable->ActiveColumnCount; Dense++) {
-        int Column = Renderable->ActiveColumns[Dense];
-        RenderColumn *Col = &Renderable->Columns[Column];
-        if (Col->ExtentStale) { RefreshColumnExtent(Renderable, Col); }
-
-        Vec3 BoxMin;
-        Vec3 BoxMax;
-        GetColumnBox(Col, &BoxMin, &BoxMax);
-        BoxClass Class = ClassifyColumnBox(&Frustum, BoxMin, BoxMax);
-        if (Class == BOX_OUTSIDE) {
-            Stats.ColumnsOutside++;
-            continue;
-        }
-        bool TestEach = (Class == BOX_INTERSECTING);
-        if (TestEach) {
-            Stats.ColumnsIntersecting++;
-        } else {
-            Stats.ColumnsInside++;
-        }
-        Candidates[CandidateCount++] = (SweepEntry){
-            .Column = Column,
-            .Key = HorizonActive ? HorizonColumnKey(Col, CameraChunkX, CameraChunkZ) : 0,
-            .TestEach = TestEach,
-        };
-    }
-
-    const SweepEntry *Sweep = Candidates;
+    CullSweep Sweep = {
+        .WorldVal = WorldVal,
+        .Renderable = Renderable,
+        .Frustum = &Frustum,
+        .Stats = &Stats,
+        .Visible = VisibleChunks,
+        .SetOrder = SetOrder,
+        .BucketCounts = BucketCounts,
+        .VisibleCount = 0,
+        .CameraChunkX = CameraChunkX,
+        .CameraChunkY = CameraChunkY,
+        .CameraChunkZ = CameraChunkZ,
+    };
     if (HorizonActive) {
-        SortSweepEntries(Candidates, CandidateCount, SortedCandidates);
-        Sweep = SortedCandidates;
+        SweepWithHorizon(&Sweep, Horizon);
+    } else {
+        SweepFrustumOnly(&Sweep, OcclusionActive);
     }
-
-    int Committed = 0;
-    for (int Idx = 0; Idx < CandidateCount; Idx++) {
-        const SweepEntry *Entry = &Sweep[Idx];
-        RenderColumn *Col = &Renderable->Columns[Entry->Column];
-        bool TestEach = Entry->TestEach;
-
-        HorizonFootprint Footprint;
-        HorizonSpan Span = {0};
-        bool SpanReady = false;
-        int FirstBin = 0;
-        int LastBin = -1;
-        bool HorizonTestable = false;
-        bool ColumnHidden = false;
-        if (HorizonActive) {
-            while (Committed < Idx &&
-                   HorizonCommitKey(Sweep[Committed].Key) <= Entry->Key) {
-                HorizonAddOccluder(WorldVal, Horizon,
-                                   &Renderable->Columns[Sweep[Committed].Column]);
-                Committed++;
-            }
-            HorizonTestable =
-                ProjectFootprint(Horizon, Col->ChunkX, Col->ChunkZ, &Footprint) &&
-                FootprintBins(Horizon, &Footprint, &FirstBin, &LastBin);
-            if (HorizonTestable) {
-                float Bottom = ((float)(Col->MinChunkY * CHUNK_SIZE) - BLOCK_HALF_SIZE) -
-                               Horizon->CamY;
-                float Top = ((float)((Col->MaxChunkY + 1) * CHUNK_SIZE) - BLOCK_HALF_SIZE) -
-                            Horizon->CamY;
-                float VMin = FootprintSlopeLow(&Footprint, Bottom);
-                float VMax = FootprintSlopeHigh(&Footprint, Top);
-                if (HorizonMightHide(Horizon, VMin, VMax)) {
-                    Span = GatherHorizonSpan(Horizon, FirstBin, LastBin);
-                    SpanReady = true;
-                    ColumnHidden = HorizonSpanHides(&Span, VMin, VMax);
-                }
-            }
-        }
-
-        for (int Rec = Col->Head; Rec != 0;
-             Rec = Renderable->Records[Rec].NextInColumn) {
-            Chunk *ChunkVal = Renderable->Records[Rec].ChunkVal;
-            if (TestEach) {
-                Stats.ChunksTested++;
-                if (!IsChunkVisible(&Frustum, ChunkVal)) { continue; }
-            }
-            if (OcclusionActive && !WasChunkReached(WorldVal, ChunkVal)) {
-                Stats.Occluded++;
-                continue;
-            }
-            if (HorizonTestable) {
-                bool Hidden = ColumnHidden;
-                if (!Hidden) {
-                    float Bottom = ((float)(ChunkVal->ChunkY * CHUNK_SIZE) - BLOCK_HALF_SIZE) -
-                                   Horizon->CamY;
-                    float VMin = FootprintSlopeLow(&Footprint, Bottom);
-                    float VMax = FootprintSlopeHigh(&Footprint, Bottom + (float)CHUNK_SIZE);
-                    if (HorizonMightHide(Horizon, VMin, VMax)) {
-                        if (!SpanReady) {
-                            Span = GatherHorizonSpan(Horizon, FirstBin, LastBin);
-                            SpanReady = true;
-                        }
-                        Hidden = HorizonSpanHides(&Span, VMin, VMax);
-                    }
-                }
-                if (Hidden) {
-                    Stats.HorizonCulled++;
-                    continue;
-                }
-            }
-
-            VisibleChunks[VisibleCount].ChunkVal = ChunkVal;
-            VisibleChunks[VisibleCount].Bucket =
-                ChunkDistanceBucket(ChunkVal->ChunkX - CameraChunkX,
-                                    ChunkVal->ChunkY - CameraChunkY,
-                                    ChunkVal->ChunkZ - CameraChunkZ);
-            BucketCounts[VisibleChunks[VisibleCount].Bucket]++;
-            SetOrder[VisibleCount] = ChunkVal;
-            VisibleCount++;
-        }
-    }
+    VisibleCount = Sweep.VisibleCount;
     // Frustum candidates, whether or not occlusion or the horizon then removed
     // them.
     Stats.Visible = VisibleCount + Stats.Occluded + Stats.HorizonCulled;
