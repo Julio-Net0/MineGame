@@ -5,11 +5,13 @@
 // column loads its terrain band, the layers its terrain bounds say can hold
 // anything visible; the columns within NEAR_LOAD_RADIUS also load a vertical
 // window of at most 2 * VERTICAL_RENDER_RADIUS + 1 layers around the load
-// centre, for caves and the player's surroundings. The slot pool keeps the size
-// the uniform window needed, which the bands stay well inside.
+// centre, for caves and the player's surroundings. With MAX_RENDER_DISTANCE at
+// 128, terrain bands stay around ~7 layers/column (~375k chunks), so the slot
+// pool is sized for banded loading + near window headroom instead of a full
+// 17-layer cylinder, and TrimToSlotBudget enforces the cap on extreme relief.
 #define MIN_RENDER_DISTANCE 2
 #define DEFAULT_RENDER_DISTANCE 8
-#define MAX_RENDER_DISTANCE 64
+#define MAX_RENDER_DISTANCE 128
 #define VERTICAL_RENDER_RADIUS 8
 // Farthest an active layer can lie from the load centre's layer. The window
 // holds 2 * VERTICAL_RENDER_RADIUS + 1 layers and always contains the layer
@@ -24,8 +26,7 @@
 // Lattice points with dx^2 + dz^2 <= MAX_RENDER_DISTANCE^2. A literal because
 // C17 cannot count them at compile time; the column table builder never
 // exceeds it.
-#define MAX_LOADED_COLUMNS 12853
-#define MAX_ACTIVE_CHUNKS \
-  (MAX_LOADED_COLUMNS * ((2 * VERTICAL_RENDER_RADIUS) + 1))
+#define MAX_LOADED_COLUMNS 51433
+#define MAX_ACTIVE_CHUNKS 524288
 
 #endif

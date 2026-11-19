@@ -37,7 +37,7 @@ DENSE_SLAB_CAPACITY = 512
 CHUNK_SIZE = 16
 MIN_RENDER_DISTANCE = 2
 DEFAULT_RENDER_DISTANCE = 8
-MAX_RENDER_DISTANCE = 64
+MAX_RENDER_DISTANCE = 128
 VERTICAL_RENDER_RADIUS = 8
 DEPTH_SHIFT_PER_LAYER = 1
 MIN_UP_LAYERS = 2
@@ -45,8 +45,8 @@ SEA_CHUNK_Y = 0
 WORLD_LO_CHUNK_Y = -33
 WORLD_HI_CHUNK_Y = 40
 NEAR_LOAD_RADIUS = 16
-MAX_LOADED_COLUMNS = 12853
-MAX_ACTIVE_CHUNKS = MAX_LOADED_COLUMNS * (2 * VERTICAL_RENDER_RADIUS + 1)
+MAX_LOADED_COLUMNS = 51433
+MAX_ACTIVE_CHUNKS = 524288
 
 
 def disc_columns(render_distance: int) -> int:
@@ -129,6 +129,7 @@ def self_check_loader_mirror() -> None:
     require(disc_columns(16) == 797, f"loader mirror: disc_columns(16) == {disc_columns(16)}, expected 797")
     require(disc_columns(32) == 3209, f"loader mirror: disc_columns(32) == {disc_columns(32)}, expected 3209")
     require(disc_columns(64) == 12853, f"loader mirror: disc_columns(64) == {disc_columns(64)}, expected 12853")
+    require(disc_columns(128) == 51433, f"loader mirror: disc_columns(128) == {disc_columns(128)}, expected 51433")
     window_cases = (
         (4, 8, list(range(-4, 13))),
         (-1, 8, list(range(-9, 8))),

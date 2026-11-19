@@ -31,7 +31,7 @@ typedef struct {
 
 // Open-addressing table of the columns holding loaded chunks. Never more
 // columns than chunks, so the table stays at most MAX_ACTIVE_CHUNKS / SIZE full.
-#define LOADED_COLUMN_HASH_SIZE 262144
+#define LOADED_COLUMN_HASH_SIZE 1048576
 #define LOADED_COLUMN_HASH_MASK (LOADED_COLUMN_HASH_SIZE - 1)
 
 // One column with loaded chunks, kept from the chunk map alone (insertions and
