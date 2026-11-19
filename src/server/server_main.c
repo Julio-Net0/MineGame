@@ -220,6 +220,15 @@ static ServerLaunchOptions ParseServerOptions(int Argc, char **Argv) {
     }
   }
 
+  // The self-tests break and place blocks and assume the terrain a fresh seed
+  // generates. Against the save next to the binary they would read whatever
+  // earlier runs or play left there and write their own edits back, so each
+  // run would start from a different world. Read-only mode neither reads nor
+  // writes the save and fixes the seed.
+  if (Options.TestProtocol || Options.TestWorldgen) {
+    Options.Config.ReadOnly = true;
+  }
+
   return Options;
 }
 
