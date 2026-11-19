@@ -1180,15 +1180,28 @@ _Static_assert(RENDER_COLUMN_HASH_SIZE >= 2 * MAX_ACTIVE_CHUNKS,
 _Static_assert((RENDER_COLUMN_HASH_SIZE & RENDER_COLUMN_HASH_MASK) == 0,
                "column hash size must be a power of two");
 
+// Everything the per-frame sweep and the draw passes read about a chunk, so
+// neither touches the Chunk itself: its fields sit on two cache lines past the
+// block storage pointers, and the frame used to miss on both for every visible
+// chunk, once in the sweep and again in the passes. Kept at 32 bytes, two per
+// cache line: the chunk is named by its world slot rather than a pointer, its
+// column by its coordinates, and a mesh is present exactly when its handle is
+// valid.
 typedef struct {
-    Chunk *ChunkVal;
-    int Column;
+    int Slot;
     int PrevInColumn;
     int NextInColumn;
+    MeshHandle Meshes[MESH_TARGET_COUNT];
+    int16_t ChunkY;
     // What this chunk contributes to RenderableSet.VertexTotals, so an unload
-    // subtracts exactly what the upload added.
-    int VertexCounts[MESH_TARGET_COUNT];
+    // subtracts exactly what the upload added; also what a draw submits.
+    uint16_t VertexCounts[MESH_TARGET_COUNT];
 } RenderableRecord;
+
+enum { RENDER_RECORD_BYTES = 32 };
+_Static_assert(sizeof(RenderableRecord) == RENDER_RECORD_BYTES,
+               "a render record is half a cache line");
+_Static_assert(MAX_MESH_VERTICES <= UINT16_MAX, "a mesh's vertex count fits 16 bits");
 
 enum { COLUMN_OCCLUDER_RUNS = 2 };
 
@@ -1554,9 +1567,10 @@ static void InsertRenderable(RenderableSet *Set, Chunk *ChunkVal) {
     WidenColumnTile(Set, Col);
 
     Set->Records[Record] = (RenderableRecord){
-        .ChunkVal = ChunkVal,
-        .Column = Column,
+        .Slot = ChunkVisibilitySlot(ChunkVal),
         .NextInColumn = Col->Head,
+        .Meshes = {ChunkVal->ChunkMesh, ChunkVal->CutoutMesh, ChunkVal->TranslucentMesh},
+        .ChunkY = (int16_t)ChunkVal->ChunkY,
     };
     if (Col->Head != 0) { Set->Records[Col->Head].PrevInColumn = Record; }
     Col->Head = Record;
@@ -1569,7 +1583,8 @@ static void InsertRenderable(RenderableSet *Set, Chunk *ChunkVal) {
 static void RemoveRenderable(RenderableSet *Set, Chunk *ChunkVal) {
     int Record = ChunkVal->RenderRecord;
     const RenderableRecord *Rec = &Set->Records[Record];
-    RenderColumn *Col = &Set->Columns[Rec->Column];
+    int Column = FindColumn(Set, ChunkVal->ChunkX, ChunkVal->ChunkZ);
+    RenderColumn *Col = &Set->Columns[Column];
 
     if (Rec->PrevInColumn != 0) {
         Set->Records[Rec->PrevInColumn].NextInColumn = Rec->NextInColumn;
@@ -1582,7 +1597,7 @@ static void RemoveRenderable(RenderableSet *Set, Chunk *ChunkVal) {
     Col->Count--;
 
     if (Col->Count == 0) {
-        ReleaseColumn(Set, Rec->Column);
+        ReleaseColumn(Set, Column);
     } else if (ChunkVal->ChunkY == Col->MinChunkY ||
                ChunkVal->ChunkY == Col->MaxChunkY) {
         Col->ExtentStale = true;
@@ -1607,12 +1622,11 @@ static void SyncChunkRenderable(Chunk *ChunkVal) {
 }
 
 static void RefreshColumnExtent(const RenderableSet *Set, RenderColumn *Col) {
-    const Chunk *First = Set->Records[Col->Head].ChunkVal;
-    Col->MinChunkY = First->ChunkY;
-    Col->MaxChunkY = First->ChunkY;
+    Col->MinChunkY = Set->Records[Col->Head].ChunkY;
+    Col->MaxChunkY = Col->MinChunkY;
     for (int Rec = Set->Records[Col->Head].NextInColumn; Rec != 0;
          Rec = Set->Records[Rec].NextInColumn) {
-        int ChunkY = Set->Records[Rec].ChunkVal->ChunkY;
+        int ChunkY = Set->Records[Rec].ChunkY;
         if (ChunkY < Col->MinChunkY) { Col->MinChunkY = ChunkY; }
         if (ChunkY > Col->MaxChunkY) { Col->MaxChunkY = ChunkY; }
     }
@@ -1660,6 +1674,10 @@ void RendererGetOccluderRunStats(World *WorldVal, OccluderRunStats *Out) {
 }
 
 #ifdef MINEGAME_PROFILE
+static const Chunk *RecordChunk(const RenderableRecord *Rec) {
+    return GetChunkVisibilityTable()->Base + Rec->Slot;
+}
+
 static bool CheckRenderableColumns(const RenderableSet *Set) {
     bool Consistent = true;
     int Members = 0;
@@ -1672,9 +1690,13 @@ static bool CheckRenderableColumns(const RenderableSet *Set) {
         int Prev = 0;
         for (int Rec = Col->Head; Rec != 0; Rec = Set->Records[Rec].NextInColumn) {
             const RenderableRecord *Entry = &Set->Records[Rec];
-            const Chunk *ChunkVal = Entry->ChunkVal;
-            if (Entry->Column != Column || Entry->PrevInColumn != Prev ||
+            const Chunk *ChunkVal = RecordChunk(Entry);
+            bool MeshesMatch = Entry->Meshes[MESH_TARGET_OPAQUE] == ChunkVal->ChunkMesh &&
+                               Entry->Meshes[MESH_TARGET_CUTOUT] == ChunkVal->CutoutMesh &&
+                               Entry->Meshes[MESH_TARGET_TRANSLUCENT] == ChunkVal->TranslucentMesh;
+            if (Entry->PrevInColumn != Prev || !MeshesMatch ||
                 ChunkVal->ChunkX != Col->ChunkX || ChunkVal->ChunkZ != Col->ChunkZ ||
+                ChunkVal->ChunkY != Entry->ChunkY ||
                 ChunkVal->ChunkY < Col->MinChunkY ||
                 ChunkVal->ChunkY > Col->MaxChunkY) {
                 Consistent = false;
@@ -1730,7 +1752,7 @@ bool RendererCheckRenderableSet(World *WorldVal) {
         Expected++;
         int Record = ChunkVal->RenderRecord;
         if (Record <= 0 || Record > Set->RecordsEverUsed ||
-            Set->Records[Record].ChunkVal != ChunkVal) {
+            Set->Records[Record].Slot != IdxI) {
             Consistent = false;
         }
     }
@@ -1768,7 +1790,7 @@ static void RecordUploadedVertexCounts(const Chunk *ChunkVal,
         ChunkVal->HasMesh, ChunkVal->HasCutoutMesh, ChunkVal->HasTranslucentMesh};
     for (int Target = 0; Target < MESH_TARGET_COUNT; Target++) {
         int Count = Uploaded[Target] ? Sets[Target].VertexCount : 0;
-        Rec->VertexCounts[Target] = Count;
+        Rec->VertexCounts[Target] = (uint16_t)Count;
         Set->VertexTotals[Target] += Count;
     }
 }
@@ -2158,11 +2180,12 @@ static void BuildRenderFrustum(RenderFrustum *Out) {
 // kept rather than an axis-aligned box because a chunk is a cube of known size,
 // the test is four multiplies per plane, and the few extra chunks a tighter box
 // would reject are nothing beside the ones the cone was admitting.
-static bool IsChunkVisible(const RenderFrustum *Frustum, const Chunk *ChunkVal) {
+static bool IsChunkCellVisible(const RenderFrustum *Frustum, int ChunkX, int ChunkY,
+                               int ChunkZ) {
     float const HALFCHUNKSIZE = CHUNK_SIZE / 2.0F;
-    float Cx = (float)(ChunkVal->ChunkX * CHUNK_SIZE) + HALFCHUNKSIZE;
-    float Cy = (float)(ChunkVal->ChunkY * CHUNK_SIZE) + HALFCHUNKSIZE;
-    float Cz = (float)(ChunkVal->ChunkZ * CHUNK_SIZE) + HALFCHUNKSIZE;
+    float Cx = (float)(ChunkX * CHUNK_SIZE) + HALFCHUNKSIZE;
+    float Cy = (float)(ChunkY * CHUNK_SIZE) + HALFCHUNKSIZE;
+    float Cz = (float)(ChunkZ * CHUNK_SIZE) + HALFCHUNKSIZE;
 
     for (int P = 0; P < FRUSTUM_PLANE_COUNT; P++) {
         float Distance = (Frustum->Planes[P][0] * Cx) +
@@ -2173,6 +2196,10 @@ static bool IsChunkVisible(const RenderFrustum *Frustum, const Chunk *ChunkVal) 
         }
     }
     return true;
+}
+
+static bool IsChunkVisible(const RenderFrustum *Frustum, const Chunk *ChunkVal) {
+    return IsChunkCellVisible(Frustum, ChunkVal->ChunkX, ChunkVal->ChunkY, ChunkVal->ChunkZ);
 }
 
 typedef enum {
@@ -2265,30 +2292,58 @@ enum {
 _Static_assert(MAX_VERTICAL_LOAD_REACH >= MAX_LOAD_LAYER_REACH,
                "distance buckets must cover the window too");
 
+// A visible chunk, by render record, and its distance bucket.
 typedef struct {
-    Chunk *ChunkVal;
+    int Record;
     int Bucket;
 } ChunkOrderEntry;
 
-static bool ChunkPrecedes(const Chunk *Lhs, const Chunk *Rhs) {
-    if (Lhs->ChunkX != Rhs->ChunkX) { return Lhs->ChunkX < Rhs->ChunkX; }
-    if (Lhs->ChunkY != Rhs->ChunkY) { return Lhs->ChunkY < Rhs->ChunkY; }
-    return Lhs->ChunkZ < Rhs->ChunkZ;
+// Tie order for scripted runs: a chunk's grid position relative to the
+// camera's chunk, packed so that comparing keys compares X, then Y, then Z.
+// Relative positions order exactly as absolute ones, and the packing holds
+// them while every visible chunk lies within TIE_KEY_REACH_XZ columns and
+// TIE_KEY_REACH_Y layers of the camera, many times the largest render
+// distance; past that, positions clamp and may tie.
+enum {
+    TIE_KEY_BITS_XZ = 11,
+    TIE_KEY_BITS_Y = 10,
+    TIE_KEY_REACH_XZ = 1 << (TIE_KEY_BITS_XZ - 1),
+    TIE_KEY_REACH_Y = 1 << (TIE_KEY_BITS_Y - 1)
+};
+_Static_assert((2 * TIE_KEY_BITS_XZ) + TIE_KEY_BITS_Y == (int)(sizeof(uint32_t) * CHAR_BIT),
+               "a tie key fills its 32 bits");
+
+static uint32_t TieKeyField(int Delta, int Reach) {
+    if (Delta < -Reach) { Delta = -Reach; }
+    if (Delta > Reach - 1) { Delta = Reach - 1; }
+    return (uint32_t)(Delta + Reach);
 }
 
-// Insertion sort of each bucket's run of the counting-sorted order. Ends holds
-// every bucket's end offset, which is what the scatter left in the offsets.
-static void SortDistanceTies(Chunk **Order, const int *Ends, const int *Counts) {
+static uint32_t ChunkTieKey(int DeltaX, int DeltaY, int DeltaZ) {
+    return (TieKeyField(DeltaX, TIE_KEY_REACH_XZ) << (TIE_KEY_BITS_Y + TIE_KEY_BITS_XZ)) |
+           (TieKeyField(DeltaY, TIE_KEY_REACH_Y) << TIE_KEY_BITS_XZ) |
+           TieKeyField(DeltaZ, TIE_KEY_REACH_XZ);
+}
+
+// Insertion sort of each bucket's run of the counting-sorted order, by tie
+// key, moving each record with its key. Ends holds every bucket's end offset,
+// which is what the scatter left in the offsets. Keys are precomputed so the
+// sort reads no chunk: it runs before any draw is submitted, so its time adds
+// to the frame even when the GPU is the bottleneck.
+static void SortDistanceTies(int *Order, uint32_t *Keys, const int *Ends, const int *Counts) {
     for (int B = 0; B < CHUNK_DISTANCE_BUCKETS; B++) {
         int Start = Ends[B] - Counts[B];
         for (int IdxI = Start + 1; IdxI < Ends[B]; IdxI++) {
-            Chunk *Key = Order[IdxI];
+            int Record = Order[IdxI];
+            uint32_t Key = Keys[IdxI];
             int IdxJ = IdxI - 1;
-            while (IdxJ >= Start && ChunkPrecedes(Key, Order[IdxJ])) {
+            while (IdxJ >= Start && Key < Keys[IdxJ]) {
                 Order[IdxJ + 1] = Order[IdxJ];
+                Keys[IdxJ + 1] = Keys[IdxJ];
                 IdxJ--;
             }
-            Order[IdxJ + 1] = Key;
+            Order[IdxJ + 1] = Record;
+            Keys[IdxJ + 1] = Key;
         }
     }
 }
@@ -2299,10 +2354,6 @@ static int ChunkDistanceBucket(int DeltaX, int DeltaY, int DeltaZ) {
     return Bucket;
 }
 
-static int64_t RecordVertexCount(const RenderableSet *Set, const Chunk *ChunkVal,
-                                 MeshTarget Target) {
-    return Set->Records[ChunkVal->RenderRecord].VertexCounts[Target];
-}
 
 // ---------------------------------------------------------------------------
 // Occlusion traversal
@@ -2647,9 +2698,9 @@ static bool RunOcclusionTraversal(World *WorldVal, const RenderFrustum *Frustum,
     return !State->TouchedSky;
 }
 
-static bool WasChunkReached(const World *WorldVal, const Chunk *ChunkVal) {
+static bool WasSlotReached(int Slot) {
     const OcclusionState *State = GetOcclusionState();
-    return State->Slots[ChunkVal - WorldVal->Chunks].VisitStamp == State->Frame;
+    return State->Slots[Slot].VisitStamp == State->Frame;
 }
 
 // ---------------------------------------------------------------------------
@@ -3112,7 +3163,9 @@ typedef struct {
     const RenderFrustum *Frustum;
     RenderCullStats *Stats;
     ChunkOrderEntry *Visible;
-    Chunk **SetOrder;
+    int *SetOrder;
+    // Filled only when ties are ordered (scripted runs), else NULL.
+    uint32_t *TieKeys;
     int *BucketCounts;
     int VisibleCount;
     int CameraChunkX;
@@ -3120,14 +3173,19 @@ typedef struct {
     int CameraChunkZ;
 } CullSweep;
 
-static void AppendVisibleChunk(CullSweep *S, Chunk *ChunkVal) {
+static void AppendVisibleChunk(CullSweep *S, int Record, int ChunkX, int ChunkY,
+                               int ChunkZ) {
     ChunkOrderEntry *Entry = &S->Visible[S->VisibleCount];
-    Entry->ChunkVal = ChunkVal;
-    Entry->Bucket = ChunkDistanceBucket(ChunkVal->ChunkX - S->CameraChunkX,
-                                        ChunkVal->ChunkY - S->CameraChunkY,
-                                        ChunkVal->ChunkZ - S->CameraChunkZ);
+    Entry->Record = Record;
+    Entry->Bucket = ChunkDistanceBucket(ChunkX - S->CameraChunkX, ChunkY - S->CameraChunkY,
+                                        ChunkZ - S->CameraChunkZ);
     S->BucketCounts[Entry->Bucket]++;
-    S->SetOrder[S->VisibleCount] = ChunkVal;
+    S->SetOrder[S->VisibleCount] = Record;
+    if (S->TieKeys != NULL) {
+        S->TieKeys[S->VisibleCount] = ChunkTieKey(ChunkX - S->CameraChunkX,
+                                                  ChunkY - S->CameraChunkY,
+                                                  ChunkZ - S->CameraChunkZ);
+    }
     S->VisibleCount++;
 }
 
@@ -3141,8 +3199,7 @@ typedef struct {
 // A column wholly outside or wholly inside the frustum settles all its chunks
 // with one box test; only straddling columns test their chunks one by one.
 // Within a tile wholly inside, the column is inside without a test of its own.
-static void ClassifySweepColumn(CullSweep *S, int Column, BoxClass TileClass,
-                                SweepColumn *Out, int *Count) {
+static BoxClass ClassifySweepColumn(CullSweep *S, int Column, BoxClass TileClass) {
     RenderColumn *Col = &S->Renderable->Columns[Column];
     if (Col->ExtentStale) { RefreshColumnExtent(S->Renderable, Col); }
     BoxClass Class = TileClass;
@@ -3154,13 +3211,18 @@ static void ClassifySweepColumn(CullSweep *S, int Column, BoxClass TileClass,
     }
     if (Class == BOX_OUTSIDE) {
         S->Stats->ColumnsOutside++;
-        return;
-    }
-    if (Class == BOX_INTERSECTING) {
+    } else if (Class == BOX_INTERSECTING) {
         S->Stats->ColumnsIntersecting++;
     } else {
         S->Stats->ColumnsInside++;
     }
+    return Class;
+}
+
+static void GatherSweepColumn(CullSweep *S, int Column, BoxClass TileClass,
+                              SweepColumn *Out, int *Count) {
+    BoxClass Class = ClassifySweepColumn(S, Column, TileClass);
+    if (Class == BOX_OUTSIDE) { return; }
     Out[*Count] = (SweepColumn){Column, Class == BOX_INTERSECTING};
     (*Count)++;
 }
@@ -3173,7 +3235,7 @@ static int GatherSweepColumns(CullSweep *S, SweepColumn *Out) {
     int Count = 0;
     if (Set->UntiledColumns > 0) {
         for (int Dense = 0; Dense < Set->ActiveColumnCount; Dense++) {
-            ClassifySweepColumn(S, Set->ActiveColumns[Dense], BOX_INTERSECTING, Out, &Count);
+            GatherSweepColumn(S, Set->ActiveColumns[Dense], BOX_INTERSECTING, Out, &Count);
         }
         return Count;
     }
@@ -3197,39 +3259,64 @@ static int GatherSweepColumns(CullSweep *S, SweepColumn *Out) {
             continue;
         }
         for (int Column = Entry->Head; Column != 0; Column = Set->Columns[Column].TileNext) {
-            ClassifySweepColumn(S, Column, TileClass, Out, &Count);
+            GatherSweepColumn(S, Column, TileClass, Out, &Count);
         }
     }
     return Count;
 }
 
+// Sized like the horizon's candidates: the loaded disc twice over. Columns can
+// outnumber it only while the load centre moves and old chunks await eviction;
+// such a frame streams the columns instead of collecting them.
+enum { SWEEP_COLUMN_CAPACITY = 2 * MAX_LOADED_COLUMNS };
+_Static_assert(SWEEP_COLUMN_CAPACITY == HORIZON_MAX_CANDIDATES,
+               "the horizon sweep relies on the column list holding every column");
+
 static SweepColumn *GetSweepColumns(void) {
-    static SweepColumn Columns[MAX_ACTIVE_CHUNKS];
+    static SweepColumn Columns[SWEEP_COLUMN_CAPACITY];
     return Columns;
+}
+
+// One column's chunks, with frustum culling when the column straddles it and,
+// when the traversal ran, the chunks it reached.
+static void SweepColumnChunks(CullSweep *S, const RenderColumn *Col, bool TestEach,
+                              bool OcclusionActive) {
+    const RenderableSet *Renderable = S->Renderable;
+    for (int Rec = Col->Head; Rec != 0; Rec = Renderable->Records[Rec].NextInColumn) {
+        const RenderableRecord *Entry = &Renderable->Records[Rec];
+        if (TestEach) {
+            S->Stats->ChunksTested++;
+            if (!IsChunkCellVisible(S->Frustum, Col->ChunkX, Entry->ChunkY, Col->ChunkZ)) {
+                continue;
+            }
+        }
+        if (OcclusionActive && !WasSlotReached(Entry->Slot)) {
+            S->Stats->Occluded++;
+            continue;
+        }
+        AppendVisibleChunk(S, Rec, Col->ChunkX, Entry->ChunkY, Col->ChunkZ);
+    }
 }
 
 // The columns in set order, with frustum culling and, when the traversal ran,
 // the chunks it reached.
 static void SweepFrustumOnly(CullSweep *S, bool OcclusionActive) {
     RenderableSet *Renderable = S->Renderable;
+    if (Renderable->ActiveColumnCount > SWEEP_COLUMN_CAPACITY) {
+        for (int Dense = 0; Dense < Renderable->ActiveColumnCount; Dense++) {
+            int Column = Renderable->ActiveColumns[Dense];
+            BoxClass Class = ClassifySweepColumn(S, Column, BOX_INTERSECTING);
+            if (Class == BOX_OUTSIDE) { continue; }
+            SweepColumnChunks(S, &Renderable->Columns[Column], Class == BOX_INTERSECTING,
+                              OcclusionActive);
+        }
+        return;
+    }
     SweepColumn *Columns = GetSweepColumns();
     int ColumnCount = GatherSweepColumns(S, Columns);
     for (int Idx = 0; Idx < ColumnCount; Idx++) {
-        const RenderColumn *Col = &Renderable->Columns[Columns[Idx].Column];
-        bool TestEach = Columns[Idx].TestEach;
-        for (int Rec = Col->Head; Rec != 0;
-             Rec = Renderable->Records[Rec].NextInColumn) {
-            Chunk *ChunkVal = Renderable->Records[Rec].ChunkVal;
-            if (TestEach) {
-                S->Stats->ChunksTested++;
-                if (!IsChunkVisible(S->Frustum, ChunkVal)) { continue; }
-            }
-            if (OcclusionActive && !WasChunkReached(S->WorldVal, ChunkVal)) {
-                S->Stats->Occluded++;
-                continue;
-            }
-            AppendVisibleChunk(S, ChunkVal);
-        }
+        SweepColumnChunks(S, &Renderable->Columns[Columns[Idx].Column],
+                          Columns[Idx].TestEach, OcclusionActive);
     }
 }
 
@@ -3292,15 +3379,15 @@ static void SweepWithHorizon(CullSweep *S, HorizonFrame *H) {
         }
 
         for (int Rec = C->Head; Rec != 0; Rec = Renderable->Records[Rec].NextInColumn) {
-            Chunk *ChunkVal = Renderable->Records[Rec].ChunkVal;
+            int ChunkY = Renderable->Records[Rec].ChunkY;
             if (C->TestEach) {
                 S->Stats->ChunksTested++;
-                if (!IsChunkVisible(S->Frustum, ChunkVal)) { continue; }
+                if (!IsChunkCellVisible(S->Frustum, C->ChunkX, ChunkY, C->ChunkZ)) { continue; }
             }
             if (Testable) {
                 bool Hidden = ColumnHidden;
                 if (!Hidden) {
-                    float Bottom = ((float)(ChunkVal->ChunkY * CHUNK_SIZE) - BLOCK_HALF_SIZE) -
+                    float Bottom = ((float)(ChunkY * CHUNK_SIZE) - BLOCK_HALF_SIZE) -
                                    H->CamY;
                     float VMin = FootprintSlopeLow(&C->Footprint, Bottom);
                     float VMax = FootprintSlopeHigh(&C->Footprint, Bottom + (float)CHUNK_SIZE);
@@ -3317,7 +3404,7 @@ static void SweepWithHorizon(CullSweep *S, HorizonFrame *H) {
                     continue;
                 }
             }
-            AppendVisibleChunk(S, ChunkVal);
+            AppendVisibleChunk(S, Rec, C->ChunkX, ChunkY, C->ChunkZ);
         }
     }
 }
@@ -3333,8 +3420,11 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
     BuildRenderFrustum(&Frustum);
 
     static ChunkOrderEntry VisibleChunks[MAX_ACTIVE_CHUNKS];
-    static Chunk *NearToFar[MAX_ACTIVE_CHUNKS];
-    static Chunk *SetOrder[MAX_ACTIVE_CHUNKS];
+    static int NearToFar[MAX_ACTIVE_CHUNKS];
+    static int SetOrder[MAX_ACTIVE_CHUNKS];
+    static uint32_t VisibleTieKeys[MAX_ACTIVE_CHUNKS];
+    static uint32_t NearToFarTieKeys[MAX_ACTIVE_CHUNKS];
+    bool StableOrder = GetDebugState()->StableDrawOrder;
 
     // Static: two arrays of CHUNK_DISTANCE_BUCKETS ints are too large for the
     // stack, and only the render thread draws.
@@ -3398,6 +3488,7 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
         .CameraChunkX = CameraChunkX,
         .CameraChunkY = CameraChunkY,
         .CameraChunkZ = CameraChunkZ,
+        .TieKeys = StableOrder ? VisibleTieKeys : NULL,
     };
     if (HorizonActive) {
         SweepWithHorizon(&Sweep, Horizon);
@@ -3418,15 +3509,17 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
         Running += BucketCounts[B];
     }
     for (int IdxI = 0; IdxI < VisibleCount; IdxI++) {
-        NearToFar[Offsets[VisibleChunks[IdxI].Bucket]++] = VisibleChunks[IdxI].ChunkVal;
+        int Pos = Offsets[VisibleChunks[IdxI].Bucket]++;
+        NearToFar[Pos] = VisibleChunks[IdxI].Record;
+        if (StableOrder) { NearToFarTieKeys[Pos] = VisibleTieKeys[IdxI]; }
     }
-    if (GetDebugState()->StableDrawOrder) { SortDistanceTies(NearToFar, Offsets, BucketCounts); }
-    RenderSetExactChunkOrder(GetDebugState()->StableDrawOrder);
+    if (StableOrder) { SortDistanceTies(NearToFar, NearToFarTieKeys, Offsets, BucketCounts); }
+    RenderSetExactChunkOrder(StableOrder);
 
     // The solid and cutout passes are the ones the toggle governs; SetOrder is
     // the visible chunks in whatever order the renderable set holds them, the
     // unsorted traversal the toggle compares against.
-    Chunk *const *SolidOrder = GetDebugState()->SortChunks ? NearToFar : SetOrder;
+    const int *SolidOrder = GetDebugState()->SortChunks ? NearToFar : SetOrder;
 
     int Rendered = 0;
 
@@ -3444,11 +3537,11 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
     RenderBeginChunkPass(GetDebugState()->ForceCutoutShader ? CHUNK_PASS_CUTOUT
                                                             : CHUNK_PASS_OPAQUE);
     for (int IdxI = 0; IdxI < VisibleCount; IdxI++) {
-        const Chunk *ChunkVal = SolidOrder[IdxI];
-        if (!ChunkVal->HasMesh) { continue; }
-        RenderDrawMesh(ChunkVal->ChunkMesh);
-        Stats.SubmittedVertices +=
-            RecordVertexCount(Renderable, ChunkVal, MESH_TARGET_OPAQUE);
+        const RenderableRecord *Entry = &Renderable->Records[SolidOrder[IdxI]];
+        MeshHandle Mesh = Entry->Meshes[MESH_TARGET_OPAQUE];
+        if (Mesh == MESH_HANDLE_INVALID) { continue; }
+        RenderDrawMesh(Mesh);
+        Stats.SubmittedVertices += Entry->VertexCounts[MESH_TARGET_OPAQUE];
         Rendered++;
     }
     RenderEndChunkPass();
@@ -3459,11 +3552,11 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
     PROFILE_BEGIN(CutoutSubmitStart);
     RenderBeginChunkPass(CHUNK_PASS_CUTOUT);
     for (int IdxI = 0; IdxI < VisibleCount; IdxI++) {
-        const Chunk *ChunkVal = SolidOrder[IdxI];
-        if (!ChunkVal->HasCutoutMesh) { continue; }
-        RenderDrawMesh(ChunkVal->CutoutMesh);
-        Stats.SubmittedVertices +=
-            RecordVertexCount(Renderable, ChunkVal, MESH_TARGET_CUTOUT);
+        const RenderableRecord *Entry = &Renderable->Records[SolidOrder[IdxI]];
+        MeshHandle Mesh = Entry->Meshes[MESH_TARGET_CUTOUT];
+        if (Mesh == MESH_HANDLE_INVALID) { continue; }
+        RenderDrawMesh(Mesh);
+        Stats.SubmittedVertices += Entry->VertexCounts[MESH_TARGET_CUTOUT];
     }
     RenderEndChunkPass();
     PROFILE_END(CutoutSubmitStart, PROFILE_CHUNK_SUBMIT);
@@ -3496,11 +3589,11 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
 
     RenderBeginChunkPass(CHUNK_PASS_CUTOUT);
     for (int IdxI = VisibleCount - 1; IdxI >= 0; IdxI--) {
-        const Chunk *ChunkVal = NearToFar[IdxI];
-        if (!ChunkVal->HasTranslucentMesh) { continue; }
-        RenderDrawMesh(ChunkVal->TranslucentMesh);
-        Stats.SubmittedVertices +=
-            RecordVertexCount(Renderable, ChunkVal, MESH_TARGET_TRANSLUCENT);
+        const RenderableRecord *Entry = &Renderable->Records[NearToFar[IdxI]];
+        MeshHandle Mesh = Entry->Meshes[MESH_TARGET_TRANSLUCENT];
+        if (Mesh == MESH_HANDLE_INVALID) { continue; }
+        RenderDrawMesh(Mesh);
+        Stats.SubmittedVertices += Entry->VertexCounts[MESH_TARGET_TRANSLUCENT];
     }
     RenderEndChunkPass();
 
