@@ -99,6 +99,9 @@ set(MINEGAME_SIM_SOURCES
   src/world/worldgen_strata.c
   src/world/worldgen_column_cache.c
   src/world/column_bounds.c
+  src/world/lod/lod_section.c
+  src/world/lod/lod_downsample.c
+  src/world/lod/lod_store.c
   src/persistence/world_save.c
   src/persistence/chunk_serial.c
   src/player/player.c
@@ -148,6 +151,7 @@ add_executable(MineGameServer
   src/server/server_main.c
   src/server/protocol_selftest.c
   src/server/worldgen_selftest.c
+  src/server/lod_selftest.c
   ${MINEGAME_SIM_SOURCES}
 )
 

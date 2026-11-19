@@ -3,6 +3,7 @@
 #include "persistence/world_save.h"
 #include "platform/os_limits.h"
 #include "platform/os_time.h"
+#include "server/lod_selftest.h"
 #include "server/protocol_selftest.h"
 #include "server/worldgen_selftest.h"
 #include "server/server.h"
@@ -32,6 +33,7 @@ typedef struct {
   bool PaceRealtime;
   bool TestProtocol;
   bool TestWorldgen;
+  bool TestLod;
   int CoreCount;
   double CpuSlowdown;
   size_t RamLimitMb;
@@ -113,6 +115,7 @@ static ServerLaunchOptions ParseServerOptions(int Argc, char **Argv) {
       .PaceRealtime = false,
       .TestProtocol = false,
       .TestWorldgen = false,
+      .TestLod = false,
       .CoreCount = 0,
       .CpuSlowdown = 1.0,
       .RamLimitMb = 0,
@@ -134,6 +137,10 @@ static ServerLaunchOptions ParseServerOptions(int Argc, char **Argv) {
     }
     if (strcmp(Arg, "--test-worldgen") == 0) {
       Options.TestWorldgen = true;
+      continue;
+    }
+    if (strcmp(Arg, "--test-lod") == 0) {
+      Options.TestLod = true;
       continue;
     }
 
@@ -225,7 +232,7 @@ static ServerLaunchOptions ParseServerOptions(int Argc, char **Argv) {
   // earlier runs or play left there and write their own edits back, so each
   // run would start from a different world. Read-only mode neither reads nor
   // writes the save and fixes the seed.
-  if (Options.TestProtocol || Options.TestWorldgen) {
+  if (Options.TestProtocol || Options.TestWorldgen || Options.TestLod) {
     Options.Config.ReadOnly = true;
   }
 
@@ -274,6 +281,18 @@ int main(int Argc, char **Argv) {
       return EXIT_FAILURE;
     }
     LogInfo("WORLDGEN_TEST: PASS");
+    return EXIT_SUCCESS;
+  }
+
+  // The LOD hierarchy is a client structure; the dedicated server only builds
+  // it here, for the self-test, and never during a normal run.
+  if (Options.TestLod) {
+    bool Passed = RunLodSelfTest();
+    ServerShutdown(&Server);
+    if (!Passed) {
+      return EXIT_FAILURE;
+    }
+    LogInfo("LOD_TEST: PASS");
     return EXIT_SUCCESS;
   }
 
