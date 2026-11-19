@@ -1,5 +1,6 @@
 #include "render/backend.h"
 #include "render/gl_api.h"
+#include "render/gl_caps.h"
 #include "render/gl_math.h"
 #include "render/gl_mesh_arena.h"
 #include "core/fileio.h"
@@ -695,15 +696,6 @@ static bool ProbeVertexIdIncludesBase(GLuint SharedIndexBuffer) {
   return Page == PROBE_PAGE;
 }
 
-// Multi-draw indirect is core in 4.3 and an extension before it; the draw
-// indirect buffer it reads is core in 4.0 or comes with ARB_draw_indirect. A 3.3
-// context may still expose both, so the flags are checked, not the version.
-static bool HasMultiDrawIndirect(void) {
-  bool Indirect = GLAD_GL_VERSION_4_0 != 0 || GLAD_GL_ARB_draw_indirect != 0;
-  bool Multi = GLAD_GL_VERSION_4_3 != 0 || GLAD_GL_ARB_multi_draw_indirect != 0;
-  return Indirect && Multi && glMultiDrawElementsIndirect != NULL;
-}
-
 static RenderTier TierFromCap(int Cap) {
   switch (Cap) {
   case 0:
@@ -716,19 +708,24 @@ static RenderTier TierFromCap(int Cap) {
 }
 
 // The highest tier the driver supports, lowered to --gl-tier when given.
+// Multi-draw indirect support comes from capability detection, which already
+// honours --gl-max: a 3.3 cap ignores the indirect extensions a newer driver
+// offers, so the cap limits the supported tier before --gl-tier lowers it.
 static void SelectRenderTier(BackendState *State) {
   State->VertexIdIncludesBase = ProbeVertexIdIncludesBase(State->ChunkSharedEbo);
   RenderTier Supported = RENDER_TIER_SINGLE;
   if (State->VertexIdIncludesBase) {
-    Supported = HasMultiDrawIndirect() ? RENDER_TIER_INDIRECT
-                                       : RENDER_TIER_MULTI_DRAW;
+    Supported = RenderGetCapabilities()->MultiDrawIndirect
+                    ? RENDER_TIER_INDIRECT
+                    : RENDER_TIER_MULTI_DRAW;
   }
   RenderTier Tier = Supported;
   int Cap = GetLaunchOptions()->GlTierCap;
   if (Cap != GL_TIER_CAP_NONE && Cap < (int)Supported) {
     Tier = TierFromCap(Cap);
   } else if (Cap != GL_TIER_CAP_NONE && Cap > (int)Supported) {
-    LogWarn("RENDER: --gl-tier %d requested; this driver supports tier %d",
+    LogWarn("RENDER: --gl-tier %d requested; this driver (after any --gl-max "
+            "cap) supports tier %d",
             Cap, (int)Supported);
   }
   State->Tier = Tier;
@@ -742,6 +739,7 @@ static void SelectRenderTier(BackendState *State) {
 void RenderBackendInit(void) {
   BackendState *State = GetBackendState();
 
+  GlCapsDetect(GetLaunchOptions()->GlVersionCap);
   LoadBlockTextureArray();
 
   State->ChunkOpaque = LoadChunkProgram("assets/shaders/chunk_opaque.frag");

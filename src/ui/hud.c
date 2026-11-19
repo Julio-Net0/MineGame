@@ -502,6 +502,22 @@ static void DrawDebugScreen(UiContext *Ctx, Player *PlayerVal, World *WorldVal,
   snprintf(DebugText, sizeof(DebugText), "Render: tier %d, OpenGL %s",
            Render.Tier, RenderGetApiVersion());
   Y = DrawDebugLine(Ctx, DebugText, Y);
+  const RenderCapabilities *Caps = RenderGetCapabilities();
+  snprintf(DebugText, sizeof(DebugText),
+           "GL: %d.%d requested, %d.%d provided, %d.%d effective%s | LOD %s",
+           Caps->RequestedMajor, Caps->RequestedMinor, Caps->ContextMajor,
+           Caps->ContextMinor, Caps->EffectiveMajor, Caps->EffectiveMinor,
+           Caps->VersionCapped ? " (capped)" : "",
+           Caps->LodSupported ? "supported" : "unavailable");
+  Y = DrawDebugLine(Ctx, DebugText, Y);
+  snprintf(DebugText, sizeof(DebugText),
+           "GL caps: mdi %d, base inst %d, compute %d, icount %d, clip %d, "
+           "drawparams %d, aniso %.0fx",
+           (int)Caps->MultiDrawIndirect, (int)Caps->BaseInstance,
+           (int)Caps->ComputeShaders, (int)Caps->IndirectCount,
+           (int)Caps->ClipControl, (int)Caps->ShaderDrawParameters,
+           (double)Caps->MaxAnisotropy);
+  Y = DrawDebugLine(Ctx, DebugText, Y);
   snprintf(DebugText, sizeof(DebugText),
            "Mesh Arena: %d blocks, %lld MB used, %lld MB slack", Render.ArenaBlocks,
            (long long)(Render.UsedBytes >> BYTES_TO_MB_SHIFT),

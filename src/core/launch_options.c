@@ -47,6 +47,7 @@ static LaunchOptions *GetMutableLaunchOptions(void) {
       .ScriptOutDir = SCRIPT_DEFAULT_OUT_DIR,
       .ScriptTimeoutSeconds = SCRIPT_DEFAULT_TIMEOUT_SECONDS,
       .GlTierCap = GL_TIER_CAP_NONE,
+      .GlVersionCap = GL_VERSION_CAP_NONE,
       .Hidden = false,
       .Monitor = LAUNCH_MONITOR_DEFAULT,
   };
@@ -261,6 +262,16 @@ static void ParseGlTierValue(const char *ValueStr, LaunchOptions *Options) {
   Options->GlTierCap = (int)Value;
 }
 
+static void ParseGlMaxValue(const char *ValueStr, LaunchOptions *Options) {
+  if (strcmp(ValueStr, "3.3") == 0) {
+    Options->GlVersionCap = GL_VERSION_CAP_33;
+  } else if (strcmp(ValueStr, "4.3") == 0) {
+    Options->GlVersionCap = GL_VERSION_CAP_43;
+  } else {
+    LogWarn("MAIN: --gl-max must be 3.3 or 4.3; ignoring \"%s\"", ValueStr);
+  }
+}
+
 static void ParseMonitorValue(const char *ValueStr, LaunchOptions *Options) {
   long Value = 0;
   if (!ParseStrictLong(ValueStr, &Value) || Value < 1 ||
@@ -303,6 +314,7 @@ void ParseLaunchOptions(int Argc, char **Argv) {
       .ScriptOutDir = SCRIPT_DEFAULT_OUT_DIR,
       .ScriptTimeoutSeconds = SCRIPT_DEFAULT_TIMEOUT_SECONDS,
       .GlTierCap = GL_TIER_CAP_NONE,
+      .GlVersionCap = GL_VERSION_CAP_NONE,
       .Hidden = false,
       .Monitor = LAUNCH_MONITOR_DEFAULT,
   };
@@ -337,6 +349,7 @@ void ParseLaunchOptions(int Argc, char **Argv) {
                      (strcmp(Arg, "--seed") == 0) ||
                      (strcmp(Arg, "--render-distance") == 0) ||
                      (strcmp(Arg, "--gl-tier") == 0) ||
+                     (strcmp(Arg, "--gl-max") == 0) ||
                      (strcmp(Arg, "--monitor") == 0) ||
                      (strcmp(Arg, "--script") == 0) ||
                      (strcmp(Arg, "--script-out") == 0) ||
@@ -370,6 +383,8 @@ void ParseLaunchOptions(int Argc, char **Argv) {
       ParseRenderDistanceValue(ValueStr, Options);
     } else if (strcmp(Arg, "--gl-tier") == 0) {
       ParseGlTierValue(ValueStr, Options);
+    } else if (strcmp(Arg, "--gl-max") == 0) {
+      ParseGlMaxValue(ValueStr, Options);
     } else if (strcmp(Arg, "--monitor") == 0) {
       ParseMonitorValue(ValueStr, Options);
     } else if (strcmp(Arg, "--script") == 0) {

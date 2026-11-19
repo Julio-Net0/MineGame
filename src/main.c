@@ -103,6 +103,7 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
       .Title = "MineGame Beta 4",
       .Hidden = Options->Hidden,
       .Monitor = Options->Monitor,
+      .MaxApiVersion = Options->GlVersionCap,
   };
   PlatformInit(&WindowDesc);
   // A scripted run ignores the mouse, so capturing the cursor would only take it
@@ -517,7 +518,9 @@ int main(int Argc, char **Argv) {
                                .HotbarKey = -1,
                                .ShiftHeld = false,
                                .SelectedHotbarSlot = 0};
-    if (!ScriptDriven) {
+    if (ScriptDriven) {
+      ShowDebug = ScriptDebugScreenShown();
+    } else {
       SystemInput System = UpdateSystemInputs(&ShowDebug, &ChatVal, &PlayerVal);
       if (CreativeInventoryIsOpen()) {
         InvInput.WheelDelta = InputGetScrollDelta();

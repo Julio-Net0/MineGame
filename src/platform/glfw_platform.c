@@ -18,14 +18,31 @@
 enum {
   GL_REQUIRED_MAJOR = 3,
   GL_REQUIRED_MINOR = 3,
-  GL_REQUIRED_DEPTH_BITS = 24
+  GL_REQUIRED_DEPTH_BITS = 24,
+  GL_VERSION_ENCODE_MAJOR = 10
 };
+
+typedef struct {
+  int Major;
+  int Minor;
+} GlContextRequest;
+
+// Tried in order: the first core context the driver grants wins. 4.3 is what
+// the GPU-driven LOD renderer needs; 3.3 is the floor everything else runs on.
+static const GlContextRequest GL_CONTEXT_LADDER[] = {{4, 3},
+                                                     {GL_REQUIRED_MAJOR,
+                                                      GL_REQUIRED_MINOR}};
 
 typedef struct {
   GLFWwindow *Window;
   GLFWcursor *IBeamCursor;
   GLFWcursor *HandCursor;
   PlatformCursorShape CursorShape;
+  PlatformGraphicsContext Context;
+
+  // Set while a context request that has a fallback is being tried, so the
+  // refusal it may produce is reported as part of the fallback, not as an error.
+  bool ProbingContext;
 
   // Frame clock: the wall-clock time between consecutive presents.
   double LastPresentTime;
@@ -49,7 +66,12 @@ static PlatformState *GetPlatformState(void) {
 }
 
 static void OnGlfwError(int Code, const char *Description) {
-  LogWarn("GLFW: error %d: %s", Code, (Description != NULL) ? Description : "");
+  const char *Text = (Description != NULL) ? Description : "";
+  if (GetPlatformState()->ProbingContext) {
+    LogInfo("GLFW: context request refused (%d): %s", Code, Text);
+    return;
+  }
+  LogWarn("GLFW: error %d: %s", Code, Text);
 }
 
 // Opening the game is not possible without the window or the context, and the
@@ -98,6 +120,49 @@ static void PlaceWindowOnMonitor(GLFWmonitor *Monitor, int Width, int Height) {
   glfwWindowHint(GLFW_POSITION_Y, PosY);
 }
 
+static int EncodeGlVersion(int Major, int Minor) {
+  return (Major * GL_VERSION_ENCODE_MAJOR) + Minor;
+}
+
+// Creates the window with the newest core context the ladder offers at or
+// below MaxApiVersion. Every window hint except the version is already set.
+static GLFWwindow *CreateWindowWithContext(const PlatformWindowDesc *Desc,
+                                           int Width, int Height) {
+  PlatformState *State = GetPlatformState();
+  int RungCount =
+      (int)(sizeof(GL_CONTEXT_LADDER) / sizeof(GL_CONTEXT_LADDER[0]));
+  const char *Title = (Desc->Title != NULL) ? Desc->Title : " ";
+  bool Refused = false;
+
+  for (int Rung = 0; Rung < RungCount; Rung++) {
+    const GlContextRequest *Request = &GL_CONTEXT_LADDER[Rung];
+    bool LastRung = (Rung == RungCount - 1);
+    if (!LastRung && Desc->MaxApiVersion > 0 &&
+        EncodeGlVersion(Request->Major, Request->Minor) > Desc->MaxApiVersion) {
+      continue;
+    }
+
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, Request->Major);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, Request->Minor);
+    State->ProbingContext = !LastRung;
+    GLFWwindow *Window = glfwCreateWindow(Width, Height, Title, NULL, NULL);
+    State->ProbingContext = false;
+
+    if (Window != NULL) {
+      State->Context.RequestedMajor = Request->Major;
+      State->Context.RequestedMinor = Request->Minor;
+      State->Context.FellBack = Refused;
+      return Window;
+    }
+    if (!LastRung) {
+      LogInfo("PLATFORM: OpenGL %d.%d core context unavailable; falling back",
+              Request->Major, Request->Minor);
+      Refused = true;
+    }
+  }
+  return NULL;
+}
+
 void PlatformInit(const PlatformWindowDesc *Desc) {
   PlatformState *State = GetPlatformState();
   int Width = Desc->Width;
@@ -112,8 +177,6 @@ void PlatformInit(const PlatformWindowDesc *Desc) {
     FailInit("GLFW could not be initialised");
   }
 
-  glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, GL_REQUIRED_MAJOR);
-  glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, GL_REQUIRED_MINOR);
   glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 #ifdef __APPLE__
   glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
@@ -129,8 +192,7 @@ void PlatformInit(const PlatformWindowDesc *Desc) {
 
   PlaceWindowOnMonitor(RequestedMonitor(Desc->Monitor), Width, Height);
 
-  State->Window = glfwCreateWindow(
-      Width, Height, (Desc->Title != NULL) ? Desc->Title : " ", NULL, NULL);
+  State->Window = CreateWindowWithContext(Desc, Width, Height);
   if (State->Window == NULL) {
     FailInit("could not create a window with an OpenGL 3.3 core context; "
              "MineGame requires OpenGL 3.3");
@@ -144,6 +206,14 @@ void PlatformInit(const PlatformWindowDesc *Desc) {
     FailInit("the OpenGL context does not provide OpenGL 3.3; MineGame "
              "requires OpenGL 3.3");
   }
+  State->Context.Major =
+      glfwGetWindowAttrib(State->Window, GLFW_CONTEXT_VERSION_MAJOR);
+  State->Context.Minor =
+      glfwGetWindowAttrib(State->Window, GLFW_CONTEXT_VERSION_MINOR);
+  LogInfo("PLATFORM: OpenGL %d.%d core context requested, %d.%d provided%s",
+          State->Context.RequestedMajor, State->Context.RequestedMinor,
+          State->Context.Major, State->Context.Minor,
+          State->Context.FellBack ? " (fallback)" : "");
   glfwSwapInterval(0);
 
   State->IBeamCursor = glfwCreateStandardCursor(GLFW_IBEAM_CURSOR);
@@ -153,6 +223,17 @@ void PlatformInit(const PlatformWindowDesc *Desc) {
   GlfwInputAttach(State->Window);
   State->LastPresentTime = glfwGetTime();
   State->FrameTime = 0.0F;
+}
+
+const PlatformGraphicsContext *PlatformGetGraphicsContext(void) {
+  return &GetPlatformState()->Context;
+}
+
+PlatformProc PlatformGetProcAddress(const char *Name) {
+  if (Name == NULL || GetPlatformState()->Window == NULL) {
+    return NULL;
+  }
+  return glfwGetProcAddress(Name);
 }
 
 void PlatformShutdown(void) {

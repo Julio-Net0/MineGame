@@ -99,6 +99,7 @@ typedef enum {
   SCRIPT_OP_HOLD,
   SCRIPT_OP_PRESS,
   SCRIPT_OP_HOTBAR,
+  SCRIPT_OP_DEBUG_SCREEN,
   SCRIPT_OP_SCREENSHOT,
   SCRIPT_OP_STATE,
   SCRIPT_OP_INVENTORY,
@@ -212,6 +213,8 @@ typedef struct {
   bool PressPlace;
   bool PressPick;
   int HotbarSelect;
+  // "f3 on" shows the debug screen, which real input cannot toggle during a run.
+  bool DebugScreen;
 
   double TimeoutSeconds;
   double Deadline;
@@ -721,6 +724,25 @@ static bool ParseStatement(char *Statement, int LineNumber) {
                            "", LineText);
   }
 
+  if (CompareString(Tokens[0], "f3") == 0) {
+    int Shown = -1;
+    if (TokenCount == 2) {
+      if (CompareString(Tokens[1], "on") == 0) {
+        Shown = 1;
+      } else if (CompareString(Tokens[1], "off") == 0) {
+        Shown = 0;
+      }
+    }
+    if (Shown < 0) {
+      ParseError(LineNumber, "expected \"f3 <on|off>\"");
+      return false;
+    }
+    return AppendStatement((ScriptStatement){.Kind = SCRIPT_OP_DEBUG_SCREEN,
+                                             .Line = LineNumber,
+                                             .Index = Shown},
+                           "", LineText);
+  }
+
   if (CompareString(Tokens[0], "inventory") == 0) {
     return ParseInventoryStatement(Tokens, TokenCount, LineNumber, LineText);
   }
@@ -831,6 +853,11 @@ bool ScriptLoad(const char *Path, const char *OutDir, double TimeoutSeconds) {
   LogInfo("SCRIPT: loaded %d statements from \"%s\"", State->StepCount, Path);
   ScriptLog("parsed %d statements", State->StepCount);
   return true;
+}
+
+bool ScriptDebugScreenShown(void) {
+  const ScriptState *State = GetScriptState();
+  return State->Active && State->DebugScreen;
 }
 
 bool ScriptIsActive(void) { return GetScriptState()->Active; }
@@ -970,6 +997,47 @@ static void ScriptAddPlayerJson(cJSON *Root, const ScriptContext *Ctx) {
   cJSON_AddItemToObject(Root, "player", Node);
 }
 
+enum {
+  VERSION_TEXT_CAPACITY = 16
+};
+
+static void AddVersionString(cJSON *Node, const char *Key, int Major,
+                             int Minor) {
+  char Text[VERSION_TEXT_CAPACITY];
+  snprintf(Text, sizeof(Text), "%d.%d", Major, Minor);
+  cJSON_AddStringToObject(Node, Key, Text);
+}
+
+static void ScriptAddCapabilitiesJson(cJSON *Node) {
+  const RenderCapabilities *Caps = RenderGetCapabilities();
+  AddVersionString(Node, "glRequested", Caps->RequestedMajor,
+                   Caps->RequestedMinor);
+  AddVersionString(Node, "glContext", Caps->ContextMajor, Caps->ContextMinor);
+  AddVersionString(Node, "glEffective", Caps->EffectiveMajor,
+                   Caps->EffectiveMinor);
+  cJSON_AddBoolToObject(Node, "glFellBack", Caps->ContextFellBack);
+  cJSON_AddBoolToObject(Node, "glCapped", Caps->VersionCapped);
+  cJSON_AddBoolToObject(Node, "lodSupported", Caps->LodSupported);
+  cJSON_AddStringToObject(Node, "lodUnavailableReason",
+                          (Caps->LodUnavailableReason != (const char *)0)
+                              ? Caps->LodUnavailableReason
+                              : "");
+  cJSON *CapsNode = cJSON_CreateObject();
+  if (CapsNode == (cJSON *)0) {
+    return;
+  }
+  cJSON_AddBoolToObject(CapsNode, "multiDrawIndirect", Caps->MultiDrawIndirect);
+  cJSON_AddBoolToObject(CapsNode, "baseInstance", Caps->BaseInstance);
+  cJSON_AddBoolToObject(CapsNode, "computeShaders", Caps->ComputeShaders);
+  cJSON_AddBoolToObject(CapsNode, "indirectCount", Caps->IndirectCount);
+  cJSON_AddBoolToObject(CapsNode, "clipControl", Caps->ClipControl);
+  cJSON_AddBoolToObject(CapsNode, "shaderDrawParameters",
+                        Caps->ShaderDrawParameters);
+  cJSON_AddNumberToObject(CapsNode, "maxAnisotropy",
+                          (double)Caps->MaxAnisotropy);
+  cJSON_AddItemToObject(Node, "caps", CapsNode);
+}
+
 static void ScriptAddRenderJson(cJSON *Root) {
   cJSON *Node = cJSON_CreateObject();
   if (Node == (cJSON *)0) {
@@ -982,6 +1050,7 @@ static void ScriptAddRenderJson(cJSON *Root) {
   RenderStats Stats;
   RenderGetStats(&Stats);
   cJSON_AddNumberToObject(Node, "tier", Stats.Tier);
+  ScriptAddCapabilitiesJson(Node);
   cJSON *Arena = cJSON_CreateObject();
   if (Arena != (cJSON *)0) {
     cJSON_AddNumberToObject(Arena, "blocks", Stats.ArenaBlocks);
@@ -1615,6 +1684,9 @@ void ScriptStep(ChatState *Chat, GameCamera *Camera, Player *PlayerVal,
       break;
     case SCRIPT_OP_HOTBAR:
       State->HotbarSelect = Step->Index;
+      break;
+    case SCRIPT_OP_DEBUG_SCREEN:
+      State->DebugScreen = Step->Index != 0;
       break;
     case SCRIPT_OP_INVENTORY:
       if (!ScriptRunInventory(Step, PlayerVal)) {

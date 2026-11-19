@@ -1479,6 +1479,7 @@ def run_scenario(
     timeout_seconds: int,
     render_distance_arg: int | None,
     gl_tier: int | None = None,
+    gl_max: str | None = None,
     window_flags: list[str] | None = None,
 ) -> float:
     out_dir = out_root / name
@@ -1496,6 +1497,7 @@ def run_scenario(
         str(timeout_seconds),
         *render_distance_flag(render_distance_arg),
         *(["--gl-tier", str(gl_tier)] if gl_tier is not None else []),
+        *(["--gl-max", gl_max] if gl_max is not None else []),
         *(window_flags or []),
     ]
 
@@ -1595,6 +1597,12 @@ def main() -> int:
         default=None,
         help="Render tier cap forwarded to MineGame as --gl-tier. Omit to let the engine choose.",
     )
+    parser.add_argument(
+        "--gl-max",
+        choices=("3.3", "4.3"),
+        default=None,
+        help="OpenGL version cap forwarded to MineGame as --gl-max (applied before --gl-tier).",
+    )
     add_window_arguments(parser)
     args = parser.parse_args()
 
@@ -1652,6 +1660,8 @@ def main() -> int:
         return 1
     if args.gl_tier is not None:
         print(f"Render tier capped at {args.gl_tier}")
+    if args.gl_max is not None:
+        print(f"OpenGL version capped at {args.gl_max}")
     if window_flags(args):
         print(f"Window: {' '.join(window_flags(args))}")
     total_start = time.monotonic()
@@ -1716,6 +1726,7 @@ def main() -> int:
                 timeout_seconds=max(args.timeout, min_timeout),
                 render_distance_arg=args.render_distance,
                 gl_tier=args.gl_tier,
+                gl_max=args.gl_max,
                 window_flags=window_flags(args),
             )
             note = ""
@@ -1735,6 +1746,7 @@ def main() -> int:
                         timeout_seconds=max(args.timeout, min_timeout),
                         render_distance_arg=args.render_distance,
                         gl_tier=args.gl_tier,
+                        gl_max=args.gl_max,
                         window_flags=window_flags(args),
                     )
                     run_dirs.append(rerun_root / name)

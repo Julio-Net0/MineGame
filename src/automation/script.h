@@ -34,6 +34,10 @@ bool ScriptLoad(const char *Path, const char *OutDir, double TimeoutSeconds);
 // world is not written to disk.
 bool ScriptIsActive(void);
 
+// Whether the running script asked for the debug screen ("f3 on"). False when
+// no script is running.
+bool ScriptDebugScreenShown(void);
+
 // Advances the script. Called once per frame at the top of the main loop,
 // before input is polled, and runs statements until one blocks or the script
 // ends.

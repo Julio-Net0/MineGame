@@ -26,6 +26,17 @@ typedef struct {
 #define GL_TIER_CAP_NONE (-1)
 #define GL_TIER_CAP_MAX 2
 
+// --gl-max "3.3" or "4.3" caps the OpenGL version: the platform asks for no
+// newer context, and the backend detects capabilities as if the driver stopped
+// at that version even when it hands back a newer one (Windows drivers commonly
+// return 4.6 for a 3.3 request). Encoded as major * 10 + minor.
+//
+// It is applied before --gl-tier: the version cap decides which tiers the
+// "driver" supports, and --gl-tier can then only lower the tier further.
+#define GL_VERSION_CAP_NONE 0
+#define GL_VERSION_CAP_33 33
+#define GL_VERSION_CAP_43 43
+
 // --monitor is 1-based; 0 means the flag was not given (primary monitor). The
 // platform clamps it to the monitors actually connected.
 #define LAUNCH_MONITOR_DEFAULT 0
@@ -57,6 +68,8 @@ typedef struct {
   double ScriptTimeoutSeconds;
   // GL_TIER_CAP_NONE unless --gl-tier was given.
   int GlTierCap;
+  // GL_VERSION_CAP_NONE unless --gl-max was given.
+  int GlVersionCap;
   // --hidden: the window is never shown nor focused; rendering and frame
   // capture work as usual. Implies windowed.
   bool Hidden;

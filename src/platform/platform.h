@@ -20,14 +20,37 @@ typedef struct {
   const char *Title;
   bool Hidden;
   int Monitor;
+  // Newest graphics API version to ask for, encoded major * 10 + minor
+  // (43 = 4.3); 0 asks for the newest version the platform tries.
+  int MaxApiVersion;
 } PlatformWindowDesc;
 
-// Window lifecycle. PlatformInit creates the window and the OpenGL 3.3 core
-// context the render backend draws into, so it must run before the render
-// backend is initialized. It ends the process with a logged error when the
-// driver cannot provide that context.
+// Window lifecycle. PlatformInit creates the window and the graphics context
+// the render backend draws into, so it must run before the render backend is
+// initialized. It asks for an OpenGL 4.3 core context first and falls back to
+// 3.3 core when the driver refuses; it ends the process with a logged error
+// when not even 3.3 is available.
 void PlatformInit(const PlatformWindowDesc *Desc);
 void PlatformShutdown(void);
+
+// The graphics context PlatformInit created. Requested* is the version it was
+// asked for; Major/Minor is what the driver reports providing, which may be
+// newer than requested.
+typedef struct {
+  int RequestedMajor;
+  int RequestedMinor;
+  int Major;
+  int Minor;
+  // A newer request was refused and an older one succeeded.
+  bool FellBack;
+} PlatformGraphicsContext;
+
+const PlatformGraphicsContext *PlatformGetGraphicsContext(void);
+
+// Address of a graphics API entry point by name; NULL when the driver does not
+// export it. Valid only after PlatformInit, with its context current.
+typedef void (*PlatformProc)(void);
+PlatformProc PlatformGetProcAddress(const char *Name);
 
 // Quit signal: true once the platform has requested the window to close.
 bool PlatformShouldClose(void);

@@ -138,6 +138,46 @@ typedef struct {
 } RenderStats;
 void RenderGetStats(RenderStats *Out);
 
+// What the graphics device can do, detected once at backend init. Versions are
+// the graphics API's: the one the context was asked for, the one the driver
+// provides, and the effective one capabilities were detected at, which a
+// --gl-max cap can lower below what the driver provides. With a cap given only
+// features that are core at or below the effective version count; extensions
+// are ignored, so the run behaves like a driver that stops there.
+typedef struct {
+  int RequestedMajor;
+  int RequestedMinor;
+  int ContextMajor;
+  int ContextMinor;
+  int EffectiveMajor;
+  int EffectiveMinor;
+  bool ContextFellBack;
+  bool VersionCapped;
+
+  // Draw records read from GPU memory, many per call.
+  bool MultiDrawIndirect;
+  // Draws can offset the instance index, which is how indirect draws find
+  // their per-draw data without shader draw parameters.
+  bool BaseInstance;
+  // Compute dispatch writing a storage buffer was probed and read back.
+  bool ComputeShaders;
+  // Optional: draw count read from GPU memory, depth range control (reversed
+  // depth), per-draw shader parameters.
+  bool IndirectCount;
+  bool ClipControl;
+  bool ShaderDrawParameters;
+  // 1 when anisotropic filtering is unavailable.
+  float MaxAnisotropy;
+
+  // The GPU-driven LOD renderer can run. When false, LodUnavailableReason says
+  // which requirement failed; it is empty when true.
+  bool LodSupported;
+  const char *LodUnavailableReason;
+} RenderCapabilities;
+
+// Valid after RenderBackendInit; zeroed before it.
+const RenderCapabilities *RenderGetCapabilities(void);
+
 // Translucent pass state (depth-mask off, color blend on, batch flush).
 void RenderBeginTranslucentPass(void);
 void RenderEndTranslucentPass(void);
