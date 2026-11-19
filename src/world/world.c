@@ -179,8 +179,10 @@ typedef struct {
   ColumnOffset Offsets[COLUMN_CANDIDATE_SIDE * COLUMN_CANDIDATE_SIDE];
   int PrefixCount[MAX_RENDER_DISTANCE + 1];
   // Position of each offset in Offsets, -1 outside the list; indexed by
-  // ColumnOrderSlot.
-  int16_t IndexOf[COLUMN_CANDIDATE_SIDE * COLUMN_CANDIDATE_SIDE];
+  // ColumnOrderSlot. Wider than 16 bits: the largest disc holds over 51,000
+  // columns, and a wrapped index reads as negative, which the incremental load
+  // takes for a column it never held and loads a second time.
+  int32_t IndexOf[COLUMN_CANDIDATE_SIDE * COLUMN_CANDIDATE_SIDE];
   bool Built;
 } ColumnOrder;
 
@@ -226,7 +228,7 @@ static const ColumnOrder *GetColumnOrder(void) {
   }
   for (int Idx = 0; Idx < Count; Idx++) {
     Order.IndexOf[ColumnOrderSlot(Order.Offsets[Idx].Dx,
-                                  Order.Offsets[Idx].Dz)] = (int16_t)Idx;
+                                  Order.Offsets[Idx].Dz)] = (int32_t)Idx;
   }
   Order.Built = true;
   return &Order;
@@ -749,9 +751,10 @@ static void LoadedColumnAdd(World *WorldVal, int ChunkX, int ChunkY, int ChunkZ)
     LoadedColumn *Entry = &WorldVal->LoadedColumns[Slot];
     if (Entry->ColumnX == ChunkX && Entry->ColumnZ == ChunkZ) {
       Entry->Count++;
-      // A stale top is only ever too high, so a layer above it is the new top
-      // whatever the rescan would have found.
-      if (ChunkY > Entry->Top) {
+      // A stale top is only ever too high, so a layer at or above it is the
+      // new top whatever the rescan would have found. At it too: the rescan
+      // starts one layer below, so a stale top re-added would be skipped.
+      if (ChunkY >= Entry->Top) {
         Entry->Top = (int16_t)ChunkY;
         Entry->TopStale = false;
       }
