@@ -1013,6 +1013,7 @@ typedef struct {
 
   // Written by the worker with the meshes, committed with them on upload.
   FaceVisibility Visibility;
+  OpaqueLayerMask OpaqueLayers;
 
   atomic_int Stage;
   int ChunkX;
@@ -1085,6 +1086,10 @@ static MeshHandle UploadMeshBufferSet(const MeshBufferSet *Set, Vec3 Origin) {
 typedef struct {
     const Chunk *Base;
     FaceVisibility Slots[MAX_ACTIVE_CHUNKS];
+    // Fully opaque layers per slot, committed with the mesh they were computed
+    // with, so an edit never makes the horizon cull trust a wall that the
+    // geometry on screen no longer draws (or the reverse).
+    OpaqueLayerMask Layers[MAX_ACTIVE_CHUNKS];
 } ChunkVisibilityTable;
 
 static ChunkVisibilityTable *GetChunkVisibilityTable(void) {
@@ -1107,6 +1112,22 @@ static int ChunkVisibilitySlot(const Chunk *ChunkVal) {
 static void SetChunkVisibility(const Chunk *ChunkVal, FaceVisibility Vis) {
     int Slot = ChunkVisibilitySlot(ChunkVal);
     if (Slot >= 0) { GetChunkVisibilityTable()->Slots[Slot] = Vis; }
+}
+
+static void MarkColumnRunsStale(int ChunkX, int ChunkZ);
+
+static void SetChunkOpaqueLayers(const Chunk *ChunkVal, OpaqueLayerMask Layers) {
+    int Slot = ChunkVisibilitySlot(ChunkVal);
+    if (Slot < 0) { return; }
+    ChunkVisibilityTable *Table = GetChunkVisibilityTable();
+    if (Table->Layers[Slot] == Layers) { return; }
+    Table->Layers[Slot] = Layers;
+    MarkColumnRunsStale(ChunkVal->ChunkX, ChunkVal->ChunkZ);
+}
+
+static OpaqueLayerMask GetChunkOpaqueLayers(const Chunk *ChunkVal) {
+    int Slot = ChunkVisibilitySlot(ChunkVal);
+    return (Slot < 0) ? OPAQUE_LAYERS_NONE : GetChunkVisibilityTable()->Layers[Slot];
 }
 
 #ifdef MINEGAME_PROFILE
@@ -1168,6 +1189,8 @@ typedef struct {
     int VertexCounts[MESH_TARGET_COUNT];
 } RenderableRecord;
 
+enum { COLUMN_OCCLUDER_RUNS = 2 };
+
 typedef struct {
     int ChunkX;
     int ChunkZ;
@@ -1178,6 +1201,15 @@ typedef struct {
     int Head;
     int Count;
     int DenseIndex;
+    // Occluder runs for the horizon cull: the topmost stacks of fully opaque
+    // layers found walking down from MaxChunkY, as inclusive world block rows,
+    // topmost first. A chunk that is absent or not yet analysed ends a run, so
+    // a run never spans anything unverified. Recomputed lazily: every layer
+    // mask change in the column sets RunsStale.
+    int16_t RunTop[COLUMN_OCCLUDER_RUNS];
+    int16_t RunBottom[COLUMN_OCCLUDER_RUNS];
+    uint8_t RunCount;
+    bool RunsStale;
     bool ExtentStale;
 } RenderColumn;
 
@@ -1238,9 +1270,62 @@ static int FindOrCreateColumn(RenderableSet *Set, int ChunkX, int ChunkZ) {
         .ChunkX = ChunkX,
         .ChunkZ = ChunkZ,
         .DenseIndex = Set->ActiveColumnCount,
+        .RunsStale = true,
     };
     Set->ActiveColumns[Set->ActiveColumnCount++] = Column;
     return Column;
+}
+
+static int FindColumn(const RenderableSet *Set, int ChunkX, int ChunkZ) {
+    int Slot = ColumnHomeSlot(ChunkX, ChunkZ);
+    while (Set->ColumnHash[Slot] != 0) {
+        int Existing = Set->ColumnHash[Slot];
+        if (Set->Columns[Existing].ChunkX == ChunkX &&
+            Set->Columns[Existing].ChunkZ == ChunkZ) {
+            return Existing;
+        }
+        Slot = (Slot + 1) & RENDER_COLUMN_HASH_MASK;
+    }
+    return 0;
+}
+
+static void MarkColumnRunsStale(int ChunkX, int ChunkZ) {
+    RenderableSet *Set = GetRenderableSet();
+    int Column = FindColumn(Set, ChunkX, ChunkZ);
+    if (Column != 0) { Set->Columns[Column].RunsStale = true; }
+}
+
+static void PushColumnRun(RenderColumn *Col, int Top, int Bottom) {
+    Col->RunTop[Col->RunCount] = (int16_t)Top;
+    Col->RunBottom[Col->RunCount] = (int16_t)Bottom;
+    Col->RunCount++;
+}
+
+static void RefreshColumnRuns(World *WorldVal, RenderColumn *Col) {
+    Col->RunCount = 0;
+    Col->RunsStale = false;
+    bool InRun = false;
+    int Top = 0;
+    int Bottom = 0;
+    for (int ChunkY = Col->MaxChunkY; Col->RunCount < COLUMN_OCCLUDER_RUNS; ChunkY--) {
+        const Chunk *ChunkVal = GetChunkFromWorld(WorldVal, Col->ChunkX, ChunkY, Col->ChunkZ);
+        OpaqueLayerMask Layers =
+            (ChunkVal != NULL) ? GetChunkOpaqueLayers(ChunkVal) : OPAQUE_LAYERS_NONE;
+        for (int Layer = CHUNK_SIZE - 1;
+             Layer >= 0 && Col->RunCount < COLUMN_OCCLUDER_RUNS; Layer--) {
+            int Row = (ChunkY * CHUNK_SIZE) + Layer;
+            if ((Layers & (1U << (unsigned)Layer)) != 0) {
+                if (!InRun) { Top = Row; }
+                InRun = true;
+                Bottom = Row;
+            } else if (InRun) {
+                PushColumnRun(Col, Top, Bottom);
+                InRun = false;
+            }
+        }
+        if (ChunkVal == NULL) { break; }
+    }
+    if (InRun && Col->RunCount < COLUMN_OCCLUDER_RUNS) { PushColumnRun(Col, Top, Bottom); }
 }
 
 // Backward-shift deletion: after emptying the slot, every entry further along
@@ -1370,6 +1455,27 @@ static void ResetRenderableSet(void) {
     memset(GetRenderableSet(), 0, sizeof(RenderableSet));
 }
 
+void RendererGetOccluderRunStats(World *WorldVal, OccluderRunStats *Out) {
+    RenderableSet *Set = GetRenderableSet();
+    OccluderRunStats Stats = {.Columns = Set->ActiveColumnCount};
+    for (int Dense = 0; Dense < Set->ActiveColumnCount; Dense++) {
+        RenderColumn *Col = &Set->Columns[Set->ActiveColumns[Dense]];
+        if (Col->ExtentStale) { RefreshColumnExtent(Set, Col); }
+        if (Col->RunsStale) {
+            RefreshColumnRuns(WorldVal, Col);
+            Stats.Refreshed++;
+        }
+        if (Col->RunCount == 0) { continue; }
+        Stats.ColumnsWithRun++;
+        Stats.TopRunLayers += Col->RunTop[0] - Col->RunBottom[0] + 1;
+        for (int Run = 0; Run < Col->RunCount; Run++) {
+            Stats.Runs++;
+            Stats.RunLayers += Col->RunTop[Run] - Col->RunBottom[Run] + 1;
+        }
+    }
+    *Out = Stats;
+}
+
 #ifdef MINEGAME_PROFILE
 static bool CheckRenderableColumns(const RenderableSet *Set) {
     bool Consistent = true;
@@ -1473,6 +1579,7 @@ void UnloadChunkMesh(Chunk *ChunkVal) {
     // evicts a slot or empties a chunk passes through here, so a slot never
     // keeps the connectivity of whatever occupied it before.
     SetChunkVisibility(ChunkVal, FACE_VIS_UNKNOWN);
+    SetChunkOpaqueLayers(ChunkVal, OPAQUE_LAYERS_NONE);
     ReleaseRecordVertexCounts(ChunkVal);
     if (ChunkVal->HasMesh) {
         RenderFreeMesh(ChunkVal->ChunkMesh);
@@ -1592,6 +1699,7 @@ int RendererQueueMeshJob(World *WorldVal, Chunk *ChunkVal) {
     if (IsSealedUniformSolid(WorldVal, ChunkVal)) {
         UnloadChunkMesh(ChunkVal);
         SetChunkVisibility(ChunkVal, FACE_VIS_NONE);
+        SetChunkOpaqueLayers(ChunkVal, OPAQUE_LAYERS_ALL);
         ChunkVal->IsDirty = false;
         return -1;
     }
@@ -1691,7 +1799,8 @@ void RendererBuildMeshJob(int JobId, int MesherSlot) {
     PROFILE_END(MeshBuildStart, PROFILE_MESH_BUILD);
 
     PROFILE_BEGIN(VisibilityStart);
-    Job->Visibility = ComputeFaceVisibility(Snap, &State->Visibility);
+    Job->Visibility =
+        ComputeFaceVisibility(Snap, &State->Visibility, &Job->OpaqueLayers);
     PROFILE_END(VisibilityStart, PROFILE_MESH_VISIBILITY);
 
     // Copied out so the worker can take the next chunk instead of waiting for
@@ -1750,6 +1859,7 @@ bool RendererUploadFinishedMesh(void) {
             SyncChunkRenderable(ChunkVal);
             RecordUploadedVertexCounts(ChunkVal, Job->Sets);
             SetChunkVisibility(ChunkVal, Job->Visibility);
+            SetChunkOpaqueLayers(ChunkVal, Job->OpaqueLayers);
 
             // Only now, and only if nothing edited the chunk after the snapshot
             // was taken. Clearing unconditionally would leave a block the player

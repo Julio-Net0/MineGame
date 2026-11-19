@@ -18,8 +18,15 @@ enum {
   WORD_SHIFT = 6,
   WORD_MASK = (1 << WORD_SHIFT) - 1,
   SNAPSHOT_MARGIN = 1,
-  FACE_VIS_PAIR_BITS = 15
+  FACE_VIS_PAIR_BITS = 15,
+  LAYERS_PER_WORD = (1 << WORD_SHIFT) / CHUNK_SIZE,
+  LAYER_WORDS_PER_X = CHUNK_SIZE / LAYERS_PER_WORD
 };
+
+#define Z_ROW_MASK ((uint64_t)0xFFFFU)
+
+_Static_assert(CELL_STEP_X == (1 << WORD_SHIFT) * LAYER_WORDS_PER_X,
+               "one X slab of the blocked mask spans LAYER_WORDS_PER_X words");
 
 _Static_assert(CHUNK_SIZE == (1 << CELL_Y_SHIFT),
                "cell indexing packs each axis into 4 bits");
@@ -151,7 +158,8 @@ static unsigned FloodFaces(FaceVisScratch *Scratch, int Seed) {
 }
 
 FaceVisibility ComputeFaceVisibility(const ChunkSnapshot *Snap,
-                                     FaceVisScratch *Scratch) {
+                                     FaceVisScratch *Scratch,
+                                     OpaqueLayerMask *OutLayers) {
   const bool *OpaqueById = GetOpaqueTable();
   memset(Scratch->Blocked, 0, sizeof(Scratch->Blocked));
 
@@ -169,6 +177,26 @@ FaceVisibility ComputeFaceVisibility(const ChunkSnapshot *Snap,
       }
     }
   }
+
+  // Each X slab of the mask is LAYER_WORDS_PER_X words holding the 16-cell Z
+  // rows of four consecutive layers. ANDing the slabs leaves a row's bits all
+  // set only where that row is opaque for every X, so a layer is full exactly
+  // when all its rows survive.
+  uint64_t Common[LAYER_WORDS_PER_X];
+  for (int Word = 0; Word < LAYER_WORDS_PER_X; Word++) { Common[Word] = ~(uint64_t)0; }
+  for (int X = 0; X < CHUNK_SIZE; X++) {
+    for (int Word = 0; Word < LAYER_WORDS_PER_X; Word++) {
+      Common[Word] &= Scratch->Blocked[(X * LAYER_WORDS_PER_X) + Word];
+    }
+  }
+  OpaqueLayerMask Layers = OPAQUE_LAYERS_NONE;
+  for (int Y = 0; Y < CHUNK_SIZE; Y++) {
+    unsigned Shift = (unsigned)(Y % LAYERS_PER_WORD) * (unsigned)CHUNK_SIZE;
+    if (((Common[Y / LAYERS_PER_WORD] >> Shift) & Z_ROW_MASK) == Z_ROW_MASK) {
+      Layers |= (OpaqueLayerMask)(1U << (unsigned)Y);
+    }
+  }
+  *OutLayers = Layers;
 
   if (OpaqueCount == 0) { return FACE_VIS_ALL; }
   if (OpaqueCount == (int)CHUNK_VOLUME) { return FACE_VIS_NONE; }
@@ -244,11 +272,15 @@ static FaceVisibility PairsOf(unsigned FaceMask) {
 }
 
 static bool CheckCase(const char *Name, FaceVisibility Expected,
-                      FaceVisScratch *Scratch) {
-  FaceVisibility Actual = ComputeFaceVisibility(GetSelfTestSnapshot(), Scratch);
-  if (Actual == Expected) { return true; }
-  LogError("RENDER: face visibility self-test '%s' expected 0x%04X, got 0x%04X",
-           Name, (unsigned)Expected, (unsigned)Actual);
+                      OpaqueLayerMask ExpectedLayers, FaceVisScratch *Scratch) {
+  OpaqueLayerMask Layers = OPAQUE_LAYERS_NONE;
+  FaceVisibility Actual =
+      ComputeFaceVisibility(GetSelfTestSnapshot(), Scratch, &Layers);
+  if (Actual == Expected && Layers == ExpectedLayers) { return true; }
+  LogError("RENDER: face visibility self-test '%s' expected 0x%04X/layers "
+           "0x%04X, got 0x%04X/layers 0x%04X",
+           Name, (unsigned)Expected, (unsigned)ExpectedLayers, (unsigned)Actual,
+           (unsigned)Layers);
   return false;
 }
 
@@ -275,19 +307,22 @@ bool RunFaceVisibilitySelfTest(void) {
   ChunkSnapshot *Snap = GetSelfTestSnapshot();
   const unsigned ALL_FACES = (1U << CHUNK_FACE_COUNT) - 1U;
   const int MIDDLE = CHUNK_SIZE / 2;
+  // Every case that opens cells only on layer MIDDLE keeps the rest full.
+  const OpaqueLayerMask ALL_BUT_MIDDLE =
+      (OpaqueLayerMask)(OPAQUE_LAYERS_ALL & ~(1U << (unsigned)MIDDLE));
   int Failures = 0;
   int Cases = 0;
 
   FillSnapshot(Snap, 0);
-  Failures += !CheckCase("air", FACE_VIS_ALL, &Scratch);
+  Failures += !CheckCase("air", FACE_VIS_ALL, OPAQUE_LAYERS_NONE, &Scratch);
   Cases++;
 
   FillSnapshot(Snap, Blocks.Water);
-  Failures += !CheckCase("water", FACE_VIS_ALL, &Scratch);
+  Failures += !CheckCase("water", FACE_VIS_ALL, OPAQUE_LAYERS_NONE, &Scratch);
   Cases++;
 
   FillSnapshot(Snap, Blocks.Stone);
-  Failures += !CheckCase("stone", FACE_VIS_NONE, &Scratch);
+  Failures += !CheckCase("stone", FACE_VIS_NONE, OPAQUE_LAYERS_ALL, &Scratch);
   Cases++;
 
   // A one-block tunnel along X through solid rock.
@@ -295,12 +330,14 @@ bool RunFaceVisibilitySelfTest(void) {
   for (int X = 0; X < CHUNK_SIZE; X++) { SetCell(Snap, X, MIDDLE, MIDDLE, 0); }
   Failures += !CheckCase(
       "tunnel", PairsOf((1U << CHUNK_FACE_NEG_X) | (1U << CHUNK_FACE_POS_X)),
-      &Scratch);
+      ALL_BUT_MIDDLE, &Scratch);
   Cases++;
 
   // Entering the tunnel from -X leads only out through +X (or back).
-  unsigned TunnelExits = FaceVisExits(ComputeFaceVisibility(Snap, &Scratch),
-                                      1U << CHUNK_FACE_NEG_X);
+  OpaqueLayerMask TunnelLayers = OPAQUE_LAYERS_NONE;
+  unsigned TunnelExits =
+      FaceVisExits(ComputeFaceVisibility(Snap, &Scratch, &TunnelLayers),
+                   1U << CHUNK_FACE_NEG_X);
   if (TunnelExits != ((1U << CHUNK_FACE_NEG_X) | (1U << CHUNK_FACE_POS_X))) {
     LogError("RENDER: face visibility self-test 'tunnel exits' got 0x%02X",
              TunnelExits);
@@ -315,7 +352,16 @@ bool RunFaceVisibilitySelfTest(void) {
   Failures += !CheckCase(
       "slab", PairsOf(ALL_FACES & ~((1U << CHUNK_FACE_NEG_Y) |
                                     (1U << CHUNK_FACE_POS_Y))),
-      &Scratch);
+      ALL_BUT_MIDDLE, &Scratch);
+  Cases++;
+
+  // Rock below MIDDLE, air above: only the rock layers are full, and the four
+  // sides see the top through the air.
+  FillSnapshot(Snap, Blocks.Stone);
+  for (int Y = MIDDLE; Y < CHUNK_SIZE; Y++) { SetPlane(Snap, 1, Y, 0); }
+  Failures += !CheckCase(
+      "half", PairsOf(ALL_FACES & ~(1U << CHUNK_FACE_NEG_Y)),
+      (OpaqueLayerMask)((1U << (unsigned)MIDDLE) - 1U), &Scratch);
   Cases++;
 
   // A stone wall across X separates -X from +X; every other pair stays open.
@@ -325,15 +371,15 @@ bool RunFaceVisibilitySelfTest(void) {
       "stone wall",
       (FaceVisibility)(FACE_VIS_ALL &
                        ~FacePairBit(CHUNK_FACE_NEG_X, CHUNK_FACE_POS_X)),
-      &Scratch);
+      OPAQUE_LAYERS_NONE, &Scratch);
   Cases++;
 
   // The same wall in glass, then in cross flora, does not occlude.
   SetPlane(Snap, 0, MIDDLE, Blocks.Glass);
-  Failures += !CheckCase("glass wall", FACE_VIS_ALL, &Scratch);
+  Failures += !CheckCase("glass wall", FACE_VIS_ALL, OPAQUE_LAYERS_NONE, &Scratch);
   Cases++;
   SetPlane(Snap, 0, MIDDLE, Blocks.Flower);
-  Failures += !CheckCase("flora wall", FACE_VIS_ALL, &Scratch);
+  Failures += !CheckCase("flora wall", FACE_VIS_ALL, OPAQUE_LAYERS_NONE, &Scratch);
   Cases++;
 
   // One open corner cell lies on three faces at once and joins them.
@@ -343,14 +389,14 @@ bool RunFaceVisibilitySelfTest(void) {
                          PairsOf((1U << CHUNK_FACE_NEG_X) |
                                  (1U << CHUNK_FACE_NEG_Y) |
                                  (1U << CHUNK_FACE_NEG_Z)),
-                         &Scratch);
+                         (OpaqueLayerMask)(OPAQUE_LAYERS_ALL & ~1U), &Scratch);
   Cases++;
 
   // An air pocket that never reaches the boundary connects nothing.
   FillSnapshot(Snap, Blocks.Stone);
   SetCell(Snap, MIDDLE, MIDDLE, MIDDLE, 0);
   SetCell(Snap, MIDDLE + 1, MIDDLE, MIDDLE, 0);
-  Failures += !CheckCase("pocket", FACE_VIS_NONE, &Scratch);
+  Failures += !CheckCase("pocket", FACE_VIS_NONE, ALL_BUT_MIDDLE, &Scratch);
   Cases++;
 
   if (Failures == 0) {

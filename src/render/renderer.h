@@ -106,6 +106,22 @@ typedef struct {
 
 void GetLastCullStats(RenderCullStats *Out);
 
+// The horizon cull's occluders: per renderable column, the topmost stacks of
+// fully opaque chunk layers. Columns counts the renderable columns, Runs and
+// RunLayers every cached run and its height in blocks, TopRunLayers only each
+// column's topmost run. Refreshed is how many stale columns this query had to
+// recompute; the query refreshes them, which the draw would otherwise do.
+typedef struct {
+  int Columns;
+  int ColumnsWithRun;
+  int Runs;
+  int Refreshed;
+  int64_t RunLayers;
+  int64_t TopRunLayers;
+} OccluderRunStats;
+
+void RendererGetOccluderRunStats(World *WorldVal, OccluderRunStats *Out);
+
 // Vertices currently uploaded for chunk meshes, per mesh target. Machine
 // independent, unlike timings, so scripts compare geometry changes with it.
 typedef struct {

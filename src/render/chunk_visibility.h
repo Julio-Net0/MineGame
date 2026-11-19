@@ -39,6 +39,14 @@ enum {
   FACE_VIS_WORDS = (int)(CHUNK_VOLUME / 64)
 };
 
+// Bit y is set when chunk-local layer y is opaque in all 16x16 cells. A stack
+// of set bits is a slab no sight line crosses, which is what lets the horizon
+// cull treat it as an occluder; zero is the safe value for anything unknown.
+typedef uint16_t OpaqueLayerMask;
+
+#define OPAQUE_LAYERS_NONE ((OpaqueLayerMask)0x0000U)
+#define OPAQUE_LAYERS_ALL ((OpaqueLayerMask)0xFFFFU)
+
 // Per-thread flood-fill scratch; one lives in each mesher slot.
 typedef struct {
   uint64_t Blocked[FACE_VIS_WORDS];
@@ -67,8 +75,10 @@ bool FaceVisConnects(FaceVisibility Vis, ChunkFace A, ChunkFace B);
 unsigned FaceVisExits(FaceVisibility Vis, unsigned EntryMask);
 
 // Worker-safe: reads only the snapshot's own 16^3 cells and the scratch.
+// Also writes which layers are fully opaque to OutLayers.
 FaceVisibility ComputeFaceVisibility(const ChunkSnapshot *Snap,
-                                     FaceVisScratch *Scratch);
+                                     FaceVisScratch *Scratch,
+                                     OpaqueLayerMask *OutLayers);
 
 // Checks ComputeFaceVisibility against hand-built snapshots using real block
 // ids (stone, water, glass, a cross flower). Logs each failure; returns false if

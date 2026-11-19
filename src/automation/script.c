@@ -1167,6 +1167,19 @@ static void ScriptAddChunksJson(cJSON *Root, const ScriptContext *Ctx) {
                             (double)Cull.SubmittedVertices);
     cJSON_AddItemToObject(Node, "cull", CullNode);
   }
+
+  OccluderRunStats Runs = {0};
+  RendererGetOccluderRunStats(Ctx->WorldVal, &Runs);
+  cJSON *RunsNode = cJSON_CreateObject();
+  if (RunsNode != (cJSON *)0) {
+    cJSON_AddNumberToObject(RunsNode, "columns", Runs.Columns);
+    cJSON_AddNumberToObject(RunsNode, "columnsWithRun", Runs.ColumnsWithRun);
+    cJSON_AddNumberToObject(RunsNode, "runs", Runs.Runs);
+    cJSON_AddNumberToObject(RunsNode, "refreshed", Runs.Refreshed);
+    cJSON_AddNumberToObject(RunsNode, "runLayers", (double)Runs.RunLayers);
+    cJSON_AddNumberToObject(RunsNode, "topRunLayers", (double)Runs.TopRunLayers);
+    cJSON_AddItemToObject(Node, "occluderRuns", RunsNode);
+  }
   cJSON_AddItemToObject(Root, "chunks", Node);
 
   MeshVertexTotals Vertices = {0};
