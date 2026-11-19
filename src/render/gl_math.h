@@ -32,7 +32,9 @@ _Static_assert(sizeof(GlMat4) == sizeof(float) * GL_MAT4_ELEMENTS,
 // double arithmetic exactly as BeginMode3D does.
 #define GL_MATH_PI_F 3.14159265358979323846F
 #define GL_MATH_DEG2RAD_F (GL_MATH_PI_F / 180.0F)
-#define GL_MATH_CULL_NEAR 0.01
+// 0.08 avoids near-clipping against the player's 0.2-block head clearance
+// while keeping 8x more 24-bit depth precision than raylib's 0.01 default.
+#define GL_MATH_CULL_NEAR 0.08
 #define GL_MATH_CULL_FAR 1000.0
 // Clip space spans two units per axis.
 #define GL_MATH_CLIP_SPAN 2.0F

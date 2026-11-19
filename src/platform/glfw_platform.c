@@ -17,7 +17,8 @@
 
 enum {
   GL_REQUIRED_MAJOR = 3,
-  GL_REQUIRED_MINOR = 3
+  GL_REQUIRED_MINOR = 3,
+  GL_REQUIRED_DEPTH_BITS = 24
 };
 
 typedef struct {
@@ -124,6 +125,7 @@ void PlatformInit(const PlatformWindowDesc *Desc) {
   glfwWindowHint(GLFW_FOCUS_ON_SHOW, TakeFocus ? GLFW_TRUE : GLFW_FALSE);
   glfwWindowHint(GLFW_SCALE_TO_MONITOR, GLFW_FALSE);
   glfwWindowHint(GLFW_SAMPLES, 0);
+  glfwWindowHint(GLFW_DEPTH_BITS, GL_REQUIRED_DEPTH_BITS);
 
   PlaceWindowOnMonitor(RequestedMonitor(Desc->Monitor), Width, Height);
 
