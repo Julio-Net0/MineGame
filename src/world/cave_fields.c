@@ -473,14 +473,11 @@ bool CaveFloodZone(int Y, int Surface) {
          (float)Y < (float)Surface - GetCaveState()->Params.ShellBase;
 }
 
-bool CaveFloodRows(int Surface, int *Lowest, int *Highest) {
-  const CaveParams *Params = &GetCaveState()->Params;
-  if (!CavesEnabled()) {
-    return false;
-  }
-  // The highest Y with (float)Y < Limit, found with the same comparison
-  // CaveFloodZone makes, so both agree even where rounding is involved.
-  float Limit = (float)Surface - Params->ShellBase;
+// The highest Y with (float)Y < (float)Surface - ShellBase, found with the
+// comparison CaveFloodZone and CaveFluidAt make, so all of them agree even
+// where rounding is involved.
+static int HighestUnderShell(int Surface) {
+  float Limit = (float)Surface - GetCaveState()->Params.ShellBase;
   int High = (int)ceilf(Limit) - 1;
   while (!((float)High < Limit)) {
     High--;
@@ -488,6 +485,15 @@ bool CaveFloodRows(int Surface, int *Lowest, int *Highest) {
   while ((float)(High + 1) < Limit) {
     High++;
   }
+  return High;
+}
+
+bool CaveFloodRows(int Surface, int *Lowest, int *Highest) {
+  const CaveParams *Params = &GetCaveState()->Params;
+  if (!CavesEnabled()) {
+    return false;
+  }
+  int High = HighestUnderShell(Surface);
   *Lowest = Params->LavaLevel + 1;
   *Highest = (High < SEA_LEVEL) ? High : SEA_LEVEL;
   return *Lowest <= *Highest;
@@ -501,6 +507,12 @@ float CaveBarrierDensity(float Flood) {
 
 // Oceans and lakes fill only the band within ShellBase of the surface, which
 // caves never reach, so a cave below sea level is not flooded by the sea.
+CaveFluidRows CaveUnfloodedFluidRows(int Surface) {
+  return (CaveFluidRows){.WaterLow = HighestUnderShell(Surface) + 1,
+                         .WaterHigh = SEA_LEVEL,
+                         .LavaHigh = GetCaveState()->Params.LavaLevel};
+}
+
 CaveFluid CaveFluidAt(int Y, int Surface, bool Flooded) {
   const CaveParams *Params = &GetCaveState()->Params;
   if (Y <= SEA_LEVEL && (float)Y >= (float)Surface - Params->ShellBase) {

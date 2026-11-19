@@ -980,9 +980,44 @@ static bool CheckCornerPlaneReuse(SelfTestScratch *Scratch, uint64_t Seed) {
   return Passed;
 }
 
+// The fluid ranges a column's open blocks are filled from must give exactly
+// what CaveFluidAt gives each block: swept over surfaces from below the lava
+// level to above the sea, around each one's shell, the sea and the lava level.
+static bool CheckFluidRows(void) {
+  enum { SURFACE_LO = -600, SURFACE_HI = 700, SPAN = 24 };
+  int Checked = 0;
+  int LavaLevel = GetCaveParams()->LavaLevel;
+  for (int Surface = SURFACE_LO; Surface <= SURFACE_HI; Surface++) {
+    CaveFluidRows Rows = CaveUnfloodedFluidRows(Surface);
+    const int CENTERS[3] = {Rows.WaterLow, SEA_LEVEL, LavaLevel};
+    for (int Center = 0; Center < 3; Center++) {
+      for (int Y = CENTERS[Center] - SPAN; Y <= CENTERS[Center] + SPAN; Y++) {
+        CaveFluid Expected = CaveFluidAt(Y, Surface, false);
+        CaveFluid Ranged = CAVE_FLUID_AIR;
+        if (Y >= Rows.WaterLow && Y <= Rows.WaterHigh) {
+          Ranged = CAVE_FLUID_WATER;
+        } else if (Y <= Rows.LavaHigh) {
+          Ranged = CAVE_FLUID_LAVA;
+        }
+        if (Ranged != Expected) {
+          LogError("WORLDGEN_TEST: FAIL fluid rows of surface %d give %d at "
+                   "Y %d, CaveFluidAt gives %d",
+                   Surface, (int)Ranged, Y, (int)Expected);
+          return false;
+        }
+        Checked++;
+      }
+    }
+  }
+  LogInfo("WORLDGEN_TEST: ok fluid rows agree with CaveFluidAt at %d positions",
+          Checked);
+  return true;
+}
+
 static bool RunChecks(SelfTestScratch *Scratch) {
   enum { PREPARED_SAMPLES = 512 };
-  if (!CheckSplines() || !CheckShapeModifiers(GetWorldSeed())) {
+  if (!CheckSplines() || !CheckShapeModifiers(GetWorldSeed()) ||
+      !CheckFluidRows()) {
     return false;
   }
   if (!NoisePreparedMatches(PREPARED_SAMPLES)) {

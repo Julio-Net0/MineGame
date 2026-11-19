@@ -120,4 +120,15 @@ float CaveBarrierDensity(float Flood);
 // FloodThreshold.
 CaveFluid CaveFluidAt(int Y, int Surface, bool Flooded);
 
+// The Y ranges in which CaveFluidAt(Y, Surface, false) answers each fluid:
+// water for WaterLow <= Y <= WaterHigh, otherwise lava for Y <= LavaHigh,
+// otherwise air. WaterLow comes from CaveFluidAt's own float comparison, so a
+// column's fluids can be filled by range without calling it per block.
+typedef struct {
+  int WaterLow;
+  int WaterHigh;
+  int LavaHigh;
+} CaveFluidRows;
+CaveFluidRows CaveUnfloodedFluidRows(int Surface);
+
 #endif

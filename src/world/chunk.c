@@ -616,11 +616,50 @@ static void ComputeSliceColumns(const SliceFill *Fill, ColumnSlice *Slice,
   ComputeSliceDepths(Fill, Slice);
 }
 
-// Corners is NULL when the cube has no overworld layer.
+// Whether every row of a slice's block column is open (non-solid) and
+// unflooded: then each block takes the fluid its height alone decides.
+static bool ColumnIsOpenFluid(const ColumnSlice *Slice, int LocalZ) {
+  for (int Row = 0; Row < CHUNK_SIZE; Row++) {
+    if (Slice->Depths[Row][LocalZ] >= 0 || Slice->Flooded[Row][LocalZ]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// An open, unflooded overworld block column, filled by fluid range instead of
+// block by block: the blocks DeterminePaletteBlock gives it, CaveFluidAt's
+// fluid and the frozen sea surface (FrozenSea: the biome at the sea level row
+// freezes). Returns how many blocks are not air.
+static int FillFluidColumn(Chunk *ChunkVal, int LocalX, int LocalZ, int BaseY,
+                           int Surface, bool FrozenSea) {
+  const TerrainBaseBlocks *Base = GetTerrainBaseBlocks();
+  CaveFluidRows Rows = CaveUnfloodedFluidRows(Surface);
+  int SolidCount = 0;
+  for (int LocalY = 0; LocalY < CHUNK_SIZE; LocalY++) {
+    int GlobalY = BaseY + LocalY;
+    BlockID BlockId = BLOCK_AIR;
+    if (GlobalY >= Rows.WaterLow && GlobalY <= Rows.WaterHigh) {
+      BlockId = (FrozenSea && GlobalY == SEA_LEVEL) ? Base->IceId
+                                                    : Base->WaterId;
+    } else if (GlobalY <= Rows.LavaHigh) {
+      BlockId = Base->LavaId;
+    }
+    (*ChunkVal->Blocks)[LocalX][LocalY][LocalZ] = BlockId;
+    if (BlockId != BLOCK_AIR) {
+      SolidCount++;
+    }
+  }
+  return SolidCount;
+}
+
+// Corners is NULL when the cube has no overworld layer. FluidColumns lets open
+// columns skip the per-block decision; without it every block takes the full
+// path, which is what the self-test compares the shortcut against.
 static int FillCubePerBlock(Chunk *ChunkVal, const ColumnEntry *Column,
                             const CubeCorners *Corners,
                             const StratumGenerator *Layers, uint64_t SeedVal,
-                            float *DebugDensity) {
+                            float *DebugDensity, bool FluidColumns) {
   int SolidCount = 0;
   int BaseY = ChunkVal->ChunkY * CHUNK_SIZE;
   int Ceiling = GetGenerationCeiling();
@@ -632,6 +671,15 @@ static int FillCubePerBlock(Chunk *ChunkVal, const ColumnEntry *Column,
   if (Corners == NULL) {
     memset(Slice.Depths, 0, sizeof(Slice.Depths));
     memset(Slice.Flooded, 0, sizeof(Slice.Flooded));
+  }
+  bool AllOverworld = true;
+  for (int IdxY = 0; IdxY < CHUNK_SIZE; IdxY++) {
+    AllOverworld &= (Layers[IdxY] == STRATUM_GEN_OVERWORLD);
+  }
+  // The row holding the sea surface, where frozen biomes put ice, or -1.
+  int SeaRow = SEA_LEVEL - BaseY;
+  if (SeaRow < 0 || SeaRow >= CHUNK_SIZE) {
+    SeaRow = -1;
   }
 
   // One biome per BIOME_CELL_SIZE^3 cell, so it is resolved per cell rather
@@ -661,6 +709,18 @@ static int FillCubePerBlock(Chunk *ChunkVal, const ColumnEntry *Column,
     }
 
     for (int IdxZ = 0; IdxZ < CHUNK_SIZE; IdxZ++) {
+      // Most open columns (sky over land, the sea above its floor) need no
+      // per-block decision at all.
+      if (FluidColumns && Corners != NULL && AllOverworld &&
+          ColumnIsOpenFluid(&Slice, IdxZ)) {
+        bool FrozenSea =
+            SeaRow >= 0 && Biomes[IdxX / BIOME_CELL_SIZE]
+                                 [SeaRow / BIOME_CELL_SIZE]
+                                 [IdxZ / BIOME_CELL_SIZE]->FrozenWater;
+        SolidCount += FillFluidColumn(ChunkVal, IdxX, IdxZ, BaseY,
+                                      Column->Surface[IdxX][IdxZ], FrozenSea);
+        continue;
+      }
       int GlobalX = (ChunkVal->ChunkX * CHUNK_SIZE) + IdxX;
       int GlobalZ = (ChunkVal->ChunkZ * CHUNK_SIZE) + IdxZ;
       // Built on the column's first filler block; rows outside it take the
@@ -793,7 +853,8 @@ CubeClass GenerateChunkTerrainEx(Chunk *ChunkVal, const ColumnEntry *Column,
     SolidCount = ChunkBeginFill(ChunkVal)
                      ? FillCubePerBlock(ChunkVal, Column,
                                         HaveCorners ? &Corners : NULL, Layers,
-                                        SeedVal, Options->DebugDensity)
+                                        SeedVal, Options->DebugDensity,
+                                        Options->AllowClassification)
                      : -1;
   } else if (Class == CUBE_CLASS_AIR) {
     // Sky and void cubes: no noise sampled, no cell written, no buffer leased.
