@@ -14,6 +14,7 @@
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -1211,7 +1212,46 @@ typedef struct {
     uint8_t RunCount;
     bool RunsStale;
     bool ExtentStale;
+    // The tile holding the column (0 when the tile pool was full) and the
+    // column's neighbours in that tile's list.
+    int Tile;
+    int TilePrev;
+    int TileNext;
 } RenderColumn;
+
+// Square groups of RENDER_TILE_SIDE x RENDER_TILE_SIDE columns. At the larger
+// render distances most loaded columns lie wholly outside the view frustum,
+// and testing their tile once settles all of them: at R=128 about 860 tile
+// tests replace some 51,000 column tests, which also no longer touch the
+// columns' cold memory. A tile's extent covers its columns' extents, which are
+// themselves only ever too wide, so a tile classified outside or inside is so
+// for every column in it.
+//
+// Tiles are 1-based like columns. The pool covers every loaded disc several
+// times over; should it still run out, the column stays untiled and the sweep
+// goes back to testing every column for as long as any is.
+enum {
+    RENDER_TILE_SIDE = 8,
+    RENDER_TILE_CAPACITY = 16384,
+    RENDER_TILE_HASH_SIZE = 32768,
+    RENDER_TILE_HASH_MASK = RENDER_TILE_HASH_SIZE - 1
+};
+_Static_assert(RENDER_TILE_HASH_SIZE >= 2 * RENDER_TILE_CAPACITY,
+               "tile hash must stay at or below half load");
+_Static_assert((RENDER_TILE_HASH_SIZE & RENDER_TILE_HASH_MASK) == 0,
+               "tile hash size must be a power of two");
+
+typedef struct {
+    int TileX;
+    int TileZ;
+    // Conservative like a column's: only ever too wide until refreshed.
+    int MinChunkY;
+    int MaxChunkY;
+    int Head;
+    int Count;
+    int DenseIndex;
+    bool ExtentStale;
+} RenderTile;
 
 typedef struct {
     RenderableRecord Records[MAX_ACTIVE_CHUNKS + 1];
@@ -1229,6 +1269,16 @@ typedef struct {
     // The live columns, packed, so the per-frame walk touches nothing else.
     int ActiveColumns[MAX_ACTIVE_CHUNKS];
     int ActiveColumnCount;
+
+    RenderTile Tiles[RENDER_TILE_CAPACITY + 1];
+    int FreeTiles[RENDER_TILE_CAPACITY];
+    int FreeTileCount;
+    int TilesEverUsed;
+    int TileHash[RENDER_TILE_HASH_SIZE];
+    int ActiveTiles[RENDER_TILE_CAPACITY];
+    int ActiveTileCount;
+    // Live columns no tile could take.
+    int UntiledColumns;
 
     int64_t VertexTotals[MESH_TARGET_COUNT];
 } RenderableSet;
@@ -1249,6 +1299,123 @@ static int ColumnHomeSlot(int ChunkX, int ChunkZ) {
                         ((unsigned int)ChunkZ * COLUMN_HASH_PRIME_Z);
     Hash ^= Hash >> COLUMN_HASH_FOLD_SHIFT;
     return (int)(Hash & (unsigned int)RENDER_COLUMN_HASH_MASK);
+}
+
+static int TileHomeSlot(int TileX, int TileZ) {
+    unsigned int Hash = ((unsigned int)TileX * COLUMN_HASH_PRIME_X) ^
+                        ((unsigned int)TileZ * COLUMN_HASH_PRIME_Z);
+    Hash ^= Hash >> COLUMN_HASH_FOLD_SHIFT;
+    return (int)(Hash & (unsigned int)RENDER_TILE_HASH_MASK);
+}
+
+// The tile at (TileX, TileZ), created empty if absent; 0 when the pool is full.
+static int FindOrCreateTile(RenderableSet *Set, int TileX, int TileZ) {
+    int Slot = TileHomeSlot(TileX, TileZ);
+    while (Set->TileHash[Slot] != 0) {
+        int Existing = Set->TileHash[Slot];
+        if (Set->Tiles[Existing].TileX == TileX && Set->Tiles[Existing].TileZ == TileZ) {
+            return Existing;
+        }
+        Slot = (Slot + 1) & RENDER_TILE_HASH_MASK;
+    }
+    if (Set->FreeTileCount == 0 && Set->TilesEverUsed == RENDER_TILE_CAPACITY) {
+        return 0;
+    }
+    int Tile = (Set->FreeTileCount > 0) ? Set->FreeTiles[--Set->FreeTileCount]
+                                        : ++Set->TilesEverUsed;
+    Set->TileHash[Slot] = Tile;
+    Set->Tiles[Tile] = (RenderTile){
+        .TileX = TileX,
+        .TileZ = TileZ,
+        .MinChunkY = INT_MAX,
+        .MaxChunkY = INT_MIN,
+        .DenseIndex = Set->ActiveTileCount,
+    };
+    Set->ActiveTiles[Set->ActiveTileCount++] = Tile;
+    return Tile;
+}
+
+// Backward-shift deletion, as for the column hash.
+static void ReleaseTile(RenderableSet *Set, int Tile) {
+    const RenderTile *Entry = &Set->Tiles[Tile];
+    int Hole = TileHomeSlot(Entry->TileX, Entry->TileZ);
+    while (Set->TileHash[Hole] != Tile) {
+        Hole = (Hole + 1) & RENDER_TILE_HASH_MASK;
+    }
+    Set->TileHash[Hole] = 0;
+    int Current = (Hole + 1) & RENDER_TILE_HASH_MASK;
+    while (Set->TileHash[Current] != 0) {
+        const RenderTile *Moving = &Set->Tiles[Set->TileHash[Current]];
+        int Home = TileHomeSlot(Moving->TileX, Moving->TileZ);
+        int FromHome = (Current - Home) & RENDER_TILE_HASH_MASK;
+        int FromHole = (Current - Hole) & RENDER_TILE_HASH_MASK;
+        if (FromHome >= FromHole) {
+            Set->TileHash[Hole] = Set->TileHash[Current];
+            Set->TileHash[Current] = 0;
+            Hole = Current;
+        }
+        Current = (Current + 1) & RENDER_TILE_HASH_MASK;
+    }
+
+    int Dense = Entry->DenseIndex;
+    int Last = --Set->ActiveTileCount;
+    if (Dense != Last) {
+        int Moved = Set->ActiveTiles[Last];
+        Set->ActiveTiles[Dense] = Moved;
+        Set->Tiles[Moved].DenseIndex = Dense;
+    }
+    Set->FreeTiles[Set->FreeTileCount++] = Tile;
+}
+
+static void AttachColumnToTile(RenderableSet *Set, int Column) {
+    RenderColumn *Col = &Set->Columns[Column];
+    int Tile = FindOrCreateTile(Set, FloorDivCells(Col->ChunkX, RENDER_TILE_SIDE),
+                                FloorDivCells(Col->ChunkZ, RENDER_TILE_SIDE));
+    Col->Tile = Tile;
+    Col->TilePrev = 0;
+    if (Tile == 0) {
+        Col->TileNext = 0;
+        Set->UntiledColumns++;
+        return;
+    }
+    RenderTile *Entry = &Set->Tiles[Tile];
+    Col->TileNext = Entry->Head;
+    if (Entry->Head != 0) { Set->Columns[Entry->Head].TilePrev = Column; }
+    Entry->Head = Column;
+    Entry->Count++;
+}
+
+static void DetachColumnFromTile(RenderableSet *Set, int Column) {
+    const RenderColumn *Col = &Set->Columns[Column];
+    if (Col->Tile == 0) {
+        Set->UntiledColumns--;
+        return;
+    }
+    RenderTile *Entry = &Set->Tiles[Col->Tile];
+    if (Col->TilePrev != 0) {
+        Set->Columns[Col->TilePrev].TileNext = Col->TileNext;
+    } else {
+        Entry->Head = Col->TileNext;
+    }
+    if (Col->TileNext != 0) { Set->Columns[Col->TileNext].TilePrev = Col->TilePrev; }
+    Entry->Count--;
+    if (Entry->Count == 0) {
+        ReleaseTile(Set, Col->Tile);
+    } else {
+        Entry->ExtentStale = true;
+    }
+}
+
+// Grows the column's tile to cover the column's current extent.
+static void WidenColumnTile(RenderableSet *Set, const RenderColumn *Col) {
+    if (Col->Tile == 0) { return; }
+    RenderTile *Entry = &Set->Tiles[Col->Tile];
+    if (Col->MinChunkY < Entry->MinChunkY) { Entry->MinChunkY = Col->MinChunkY; }
+    if (Col->MaxChunkY > Entry->MaxChunkY) { Entry->MaxChunkY = Col->MaxChunkY; }
+}
+
+static void MarkColumnTileStale(RenderableSet *Set, const RenderColumn *Col) {
+    if (Col->Tile != 0) { Set->Tiles[Col->Tile].ExtentStale = true; }
 }
 
 static int FindOrCreateColumn(RenderableSet *Set, int ChunkX, int ChunkZ) {
@@ -1273,6 +1440,7 @@ static int FindOrCreateColumn(RenderableSet *Set, int ChunkX, int ChunkZ) {
         .RunsStale = true,
     };
     Set->ActiveColumns[Set->ActiveColumnCount++] = Column;
+    AttachColumnToTile(Set, Column);
     return Column;
 }
 
@@ -1355,6 +1523,7 @@ static void RemoveColumnFromHash(RenderableSet *Set, int Column) {
 }
 
 static void ReleaseColumn(RenderableSet *Set, int Column) {
+    DetachColumnFromTile(Set, Column);
     RemoveColumnFromHash(Set, Column);
 
     int Dense = Set->Columns[Column].DenseIndex;
@@ -1382,6 +1551,7 @@ static void InsertRenderable(RenderableSet *Set, Chunk *ChunkVal) {
         if (ChunkVal->ChunkY < Col->MinChunkY) { Col->MinChunkY = ChunkVal->ChunkY; }
         if (ChunkVal->ChunkY > Col->MaxChunkY) { Col->MaxChunkY = ChunkVal->ChunkY; }
     }
+    WidenColumnTile(Set, Col);
 
     Set->Records[Record] = (RenderableRecord){
         .ChunkVal = ChunkVal,
@@ -1416,6 +1586,7 @@ static void RemoveRenderable(RenderableSet *Set, Chunk *ChunkVal) {
     } else if (ChunkVal->ChunkY == Col->MinChunkY ||
                ChunkVal->ChunkY == Col->MaxChunkY) {
         Col->ExtentStale = true;
+        MarkColumnTileStale(Set, Col);
     }
 
     Set->Records[Record] = (RenderableRecord){0};
@@ -1446,6 +1617,18 @@ static void RefreshColumnExtent(const RenderableSet *Set, RenderColumn *Col) {
         if (ChunkY > Col->MaxChunkY) { Col->MaxChunkY = ChunkY; }
     }
     Col->ExtentStale = false;
+}
+
+static void RefreshTileExtent(RenderableSet *Set, RenderTile *Entry) {
+    Entry->MinChunkY = INT_MAX;
+    Entry->MaxChunkY = INT_MIN;
+    for (int Column = Entry->Head; Column != 0; Column = Set->Columns[Column].TileNext) {
+        RenderColumn *Col = &Set->Columns[Column];
+        if (Col->ExtentStale) { RefreshColumnExtent(Set, Col); }
+        if (Col->MinChunkY < Entry->MinChunkY) { Entry->MinChunkY = Col->MinChunkY; }
+        if (Col->MaxChunkY > Entry->MaxChunkY) { Entry->MaxChunkY = Col->MaxChunkY; }
+    }
+    Entry->ExtentStale = false;
 }
 
 // The backend frees every mesh at shutdown without going through
@@ -1507,8 +1690,31 @@ static bool CheckRenderableColumns(const RenderableSet *Set) {
     for (int Slot = 0; Slot < RENDER_COLUMN_HASH_SIZE; Slot++) {
         if (Set->ColumnHash[Slot] != 0) { Hashed++; }
     }
+
+    int Tiled = 0;
+    for (int Dense = 0; Dense < Set->ActiveTileCount; Dense++) {
+        int Tile = Set->ActiveTiles[Dense];
+        const RenderTile *Entry = &Set->Tiles[Tile];
+        if (Entry->DenseIndex != Dense) { Consistent = false; }
+        int Length = 0;
+        int Prev = 0;
+        for (int Column = Entry->Head; Column != 0; Column = Set->Columns[Column].TileNext) {
+            const RenderColumn *Col = &Set->Columns[Column];
+            if (Col->Tile != Tile || Col->TilePrev != Prev ||
+                FloorDivCells(Col->ChunkX, RENDER_TILE_SIDE) != Entry->TileX ||
+                FloorDivCells(Col->ChunkZ, RENDER_TILE_SIDE) != Entry->TileZ ||
+                Col->MinChunkY < Entry->MinChunkY || Col->MaxChunkY > Entry->MaxChunkY) {
+                Consistent = false;
+            }
+            Prev = Column;
+            Length++;
+        }
+        if (Length != Entry->Count || Length == 0) { Consistent = false; }
+        Tiled += Length;
+    }
     return Consistent && Members == Set->RecordCount &&
-           Hashed == Set->ActiveColumnCount;
+           Hashed == Set->ActiveColumnCount &&
+           Tiled + Set->UntiledColumns == Set->ActiveColumnCount;
 }
 
 bool RendererCheckRenderableSet(World *WorldVal) {
@@ -2925,33 +3131,92 @@ static void AppendVisibleChunk(CullSweep *S, Chunk *ChunkVal) {
     S->VisibleCount++;
 }
 
+// A column the frustum does not rule out, and whether its chunks still need
+// testing one by one.
+typedef struct {
+    int Column;
+    bool TestEach;
+} SweepColumn;
+
 // A column wholly outside or wholly inside the frustum settles all its chunks
 // with one box test; only straddling columns test their chunks one by one.
-static BoxClass ClassifySweepColumn(CullSweep *S, RenderColumn *Col) {
+// Within a tile wholly inside, the column is inside without a test of its own.
+static void ClassifySweepColumn(CullSweep *S, int Column, BoxClass TileClass,
+                                SweepColumn *Out, int *Count) {
+    RenderColumn *Col = &S->Renderable->Columns[Column];
     if (Col->ExtentStale) { RefreshColumnExtent(S->Renderable, Col); }
-    Vec3 BoxMin;
-    Vec3 BoxMax;
-    GetColumnBox(Col, &BoxMin, &BoxMax);
-    BoxClass Class = ClassifyColumnBox(S->Frustum, BoxMin, BoxMax);
+    BoxClass Class = TileClass;
+    if (Class != BOX_INSIDE) {
+        Vec3 BoxMin;
+        Vec3 BoxMax;
+        GetColumnBox(Col, &BoxMin, &BoxMax);
+        Class = ClassifyColumnBox(S->Frustum, BoxMin, BoxMax);
+    }
     if (Class == BOX_OUTSIDE) {
         S->Stats->ColumnsOutside++;
-    } else if (Class == BOX_INTERSECTING) {
+        return;
+    }
+    if (Class == BOX_INTERSECTING) {
         S->Stats->ColumnsIntersecting++;
     } else {
         S->Stats->ColumnsInside++;
     }
-    return Class;
+    Out[*Count] = (SweepColumn){Column, Class == BOX_INTERSECTING};
+    (*Count)++;
+}
+
+// The columns the frustum leaves, tile by tile: a tile wholly outside drops
+// all its columns untouched, one wholly inside keeps them all untested.
+// While any column is untiled, every column is tested in set order instead.
+static int GatherSweepColumns(CullSweep *S, SweepColumn *Out) {
+    RenderableSet *Set = S->Renderable;
+    int Count = 0;
+    if (Set->UntiledColumns > 0) {
+        for (int Dense = 0; Dense < Set->ActiveColumnCount; Dense++) {
+            ClassifySweepColumn(S, Set->ActiveColumns[Dense], BOX_INTERSECTING, Out, &Count);
+        }
+        return Count;
+    }
+    for (int Dense = 0; Dense < Set->ActiveTileCount; Dense++) {
+        RenderTile *Entry = &Set->Tiles[Set->ActiveTiles[Dense]];
+        if (Entry->ExtentStale) { RefreshTileExtent(Set, Entry); }
+        float TileSpan = (float)(RENDER_TILE_SIDE * CHUNK_SIZE);
+        Vec3 BoxMin = {
+            ((float)(Entry->TileX * RENDER_TILE_SIDE * CHUNK_SIZE)) - BLOCK_HALF_SIZE,
+            ((float)(Entry->MinChunkY * CHUNK_SIZE)) - BLOCK_HALF_SIZE,
+            ((float)(Entry->TileZ * RENDER_TILE_SIDE * CHUNK_SIZE)) - BLOCK_HALF_SIZE,
+        };
+        Vec3 BoxMax = {
+            BoxMin.x + TileSpan,
+            ((float)((Entry->MaxChunkY + 1) * CHUNK_SIZE)) - BLOCK_HALF_SIZE,
+            BoxMin.z + TileSpan,
+        };
+        BoxClass TileClass = ClassifyColumnBox(S->Frustum, BoxMin, BoxMax);
+        if (TileClass == BOX_OUTSIDE) {
+            S->Stats->ColumnsOutside += Entry->Count;
+            continue;
+        }
+        for (int Column = Entry->Head; Column != 0; Column = Set->Columns[Column].TileNext) {
+            ClassifySweepColumn(S, Column, TileClass, Out, &Count);
+        }
+    }
+    return Count;
+}
+
+static SweepColumn *GetSweepColumns(void) {
+    static SweepColumn Columns[MAX_ACTIVE_CHUNKS];
+    return Columns;
 }
 
 // The columns in set order, with frustum culling and, when the traversal ran,
 // the chunks it reached.
 static void SweepFrustumOnly(CullSweep *S, bool OcclusionActive) {
     RenderableSet *Renderable = S->Renderable;
-    for (int Dense = 0; Dense < Renderable->ActiveColumnCount; Dense++) {
-        RenderColumn *Col = &Renderable->Columns[Renderable->ActiveColumns[Dense]];
-        BoxClass Class = ClassifySweepColumn(S, Col);
-        if (Class == BOX_OUTSIDE) { continue; }
-        bool TestEach = (Class == BOX_INTERSECTING);
+    SweepColumn *Columns = GetSweepColumns();
+    int ColumnCount = GatherSweepColumns(S, Columns);
+    for (int Idx = 0; Idx < ColumnCount; Idx++) {
+        const RenderColumn *Col = &Renderable->Columns[Columns[Idx].Column];
+        bool TestEach = Columns[Idx].TestEach;
         for (int Rec = Col->Head; Rec != 0;
              Rec = Renderable->Records[Rec].NextInColumn) {
             Chunk *ChunkVal = Renderable->Records[Rec].ChunkVal;
@@ -2974,11 +3239,11 @@ static void SweepWithHorizon(CullSweep *S, HorizonFrame *H) {
     static HorizonCandidate Candidates[HORIZON_MAX_CANDIDATES];
     static int Order[HORIZON_MAX_CANDIDATES];
     RenderableSet *Renderable = S->Renderable;
+    SweepColumn *Columns = GetSweepColumns();
+    int ColumnCount = GatherSweepColumns(S, Columns);
     int Count = 0;
-    for (int Dense = 0; Dense < Renderable->ActiveColumnCount; Dense++) {
-        RenderColumn *Col = &Renderable->Columns[Renderable->ActiveColumns[Dense]];
-        BoxClass Class = ClassifySweepColumn(S, Col);
-        if (Class == BOX_OUTSIDE) { continue; }
+    for (int Idx = 0; Idx < ColumnCount; Idx++) {
+        RenderColumn *Col = &Renderable->Columns[Columns[Idx].Column];
         if (Col->RunsStale) { RefreshColumnRuns(S->WorldVal, Col); }
         HorizonCandidate *C = &Candidates[Count++];
         C->ChunkX = Col->ChunkX;
@@ -2992,7 +3257,7 @@ static void SweepWithHorizon(CullSweep *S, HorizonFrame *H) {
             C->RunTop[Run] = Col->RunTop[Run];
             C->RunBottom[Run] = Col->RunBottom[Run];
         }
-        C->TestEach = (Class == BOX_INTERSECTING);
+        C->TestEach = Columns[Idx].TestEach;
         C->Projected = false;
     }
     SortHorizonCandidates(Candidates, Count, Order);
