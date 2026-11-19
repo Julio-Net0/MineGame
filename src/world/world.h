@@ -23,6 +23,12 @@
 
 typedef void (*ChunkEvictCallback)(Chunk *EvictedChunk);
 
+// The layers one column holds, one bit per layer from World.LoadMaskBase.
+#define LOAD_LAYER_MASK_WORDS 2
+typedef struct {
+  uint64_t Bits[LOAD_LAYER_MASK_WORDS];
+} LoadLayerMask;
+
 // Open-addressing table of the columns holding loaded chunks. Never more
 // columns than chunks, so the table stays at most MAX_ACTIVE_CHUNKS / SIZE full.
 #define LOADED_COLUMN_HASH_SIZE 262144
@@ -70,6 +76,20 @@ typedef struct World {
   // Every position of the last load request got a slot (HasLoadedOnce also
   // demands that no eviction was deferred).
   bool LastLoadAllCreated;
+
+  // What the last complete load holds, per column of its volume in volume
+  // order: exactly the loaded set, so a load one chunk away diffs against it
+  // instead of looking up every position. Only valid while LoadMaskValid; a
+  // load that leaves anything uncreated or unevicted drops it.
+  LoadLayerMask LoadMasks[MAX_LOADED_COLUMNS];
+  int LoadMaskBase;
+  int LoadMaskCenterX;
+  int LoadMaskCenterY;
+  int LoadMaskCenterZ;
+  int LoadMaskRadius;
+  int LoadMaskColumnCount;
+  uint32_t LoadMaskRaisedVersion;
+  bool LoadMaskValid;
 
   // Chunks queued for generation whose completion the main thread has not yet
   // processed. Main thread only.

@@ -70,6 +70,7 @@ int ColumnBoundsEnsure(ColumnBoundsTable *Table, int CenterX, int CenterZ,
       Table->Entries[Idx].Valid = false;
     }
     Table->Seed = Seed;
+    Table->EnsuredValid = false;
   }
 
   // A structure rooted up to Footprint blocks outside a column can stamp into
@@ -84,6 +85,14 @@ int ColumnBoundsEnsure(ColumnBoundsTable *Table, int CenterX, int CenterZ,
   int Span = Radius + Table->ReachColumns;
   int SpanSq = Span * Span;
   int Evaluated = 0;
+  // A column inside the last pass's disc was resolved by it. Its slot can only
+  // have gone to a column outside both discs since (the table is wider than
+  // any disc), and Resolve evaluates it again on demand if so; skipping it
+  // here only moves that rare cost to its first query.
+  int ShiftX = CenterX - Table->EnsuredX;
+  int ShiftZ = CenterZ - Table->EnsuredZ;
+  bool Shifted = Table->EnsuredValid && Table->EnsuredSpan == Span &&
+                 abs(ShiftX) <= 1 && abs(ShiftZ) <= 1;
   // Row by row, so neighbouring columns meet their shared lattice corners
   // while the shape memo still holds them.
   for (int Dx = -Span; Dx <= Span; Dx++) {
@@ -91,11 +100,20 @@ int ColumnBoundsEnsure(ColumnBoundsTable *Table, int CenterX, int CenterZ,
       if ((Dx * Dx) + (Dz * Dz) > SpanSq) {
         continue;
       }
+      int OldDx = Dx + ShiftX;
+      int OldDz = Dz + ShiftZ;
+      if (Shifted && (OldDx * OldDx) + (OldDz * OldDz) <= SpanSq) {
+        continue;
+      }
       bool Computed = false;
       (void)Resolve(Table, CenterX + Dx, CenterZ + Dz, &Computed);
       Evaluated += Computed ? 1 : 0;
     }
   }
+  Table->EnsuredX = CenterX;
+  Table->EnsuredZ = CenterZ;
+  Table->EnsuredSpan = Span;
+  Table->EnsuredValid = true;
   return Evaluated;
 }
 
@@ -145,6 +163,13 @@ static const ColumnBoundsEntry *ResolveWithLayers(ColumnBoundsTable *Table,
 
 int ColumnBoundsTopLayer(ColumnBoundsTable *Table, int ColumnX, int ColumnZ) {
   return ResolveWithLayers(Table, ColumnX, ColumnZ)->TopLayer;
+}
+
+void ColumnBoundsLayers(ColumnBoundsTable *Table, int ColumnX, int ColumnZ,
+                        int *OutTop, int *OutBottom) {
+  const ColumnBoundsEntry *Entry = ResolveWithLayers(Table, ColumnX, ColumnZ);
+  *OutTop = Entry->TopLayer;
+  *OutBottom = Entry->BottomLayer;
 }
 
 bool ColumnBoundsPeekTopLayer(const ColumnBoundsTable *Table, int ColumnX,

@@ -316,10 +316,8 @@ void CloseChunkWorker(void) {
   ColumnCacheFreeWorkers();
 }
 
-void EnqueueChunkGeneration(Chunk *ChunkVal) {
-  ChunkWorkerState *State = GetWorkerState();
-  pthread_mutex_lock(&State->QueueMutex);
-
+// Caller holds QueueMutex.
+static void AppendGenerationJob(ChunkWorkerState *State, Chunk *ChunkVal) {
   GenerationQueue *Queue = &State->GenerationQueues[ColumnOwner(
       State, ChunkVal->ChunkX, ChunkVal->ChunkZ)];
 
@@ -332,8 +330,18 @@ void EnqueueChunkGeneration(Chunk *ChunkVal) {
     Queue->Head = ChunkVal;
   }
   Queue->Tail = ChunkVal;
-  pthread_cond_signal(&State->WorkAvail);
+}
 
+void EnqueueChunkGenerations(Chunk *const *Chunks, int Count) {
+  if (Count <= 0) {
+    return;
+  }
+  ChunkWorkerState *State = GetWorkerState();
+  pthread_mutex_lock(&State->QueueMutex);
+  for (int Idx = 0; Idx < Count; Idx++) {
+    AppendGenerationJob(State, Chunks[Idx]);
+  }
+  pthread_cond_broadcast(&State->WorkAvail);
   pthread_mutex_unlock(&State->QueueMutex);
 }
 

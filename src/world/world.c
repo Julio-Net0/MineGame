@@ -176,8 +176,16 @@ static int CompareColumnOffsets(const void *Lhs, const void *Rhs) {
 typedef struct {
   ColumnOffset Offsets[COLUMN_CANDIDATE_SIDE * COLUMN_CANDIDATE_SIDE];
   int PrefixCount[MAX_RENDER_DISTANCE + 1];
+  // Position of each offset in Offsets, -1 outside the list; indexed by
+  // ColumnOrderSlot.
+  int16_t IndexOf[COLUMN_CANDIDATE_SIDE * COLUMN_CANDIDATE_SIDE];
   bool Built;
 } ColumnOrder;
+
+static int ColumnOrderSlot(int Dx, int Dz) {
+  return ((Dx + MAX_RENDER_DISTANCE) * COLUMN_CANDIDATE_SIDE) +
+         (Dz + MAX_RENDER_DISTANCE);
+}
 
 static const ColumnOrder *GetColumnOrder(void) {
   static ColumnOrder Order;
@@ -209,6 +217,14 @@ static const ColumnOrder *GetColumnOrder(void) {
       Prefix++;
     }
     Order.PrefixCount[Radius] = Prefix;
+  }
+  for (int Slot = 0; Slot < COLUMN_CANDIDATE_SIDE * COLUMN_CANDIDATE_SIDE;
+       Slot++) {
+    Order.IndexOf[Slot] = -1;
+  }
+  for (int Idx = 0; Idx < Count; Idx++) {
+    Order.IndexOf[ColumnOrderSlot(Order.Offsets[Idx].Dx,
+                                  Order.Offsets[Idx].Dz)] = (int16_t)Idx;
   }
   Order.Built = true;
   return &Order;
@@ -369,9 +385,9 @@ static void BuildWindowLayers(const World *WorldVal, int CenterY, int Vertical,
 // world.
 static void ResolveColumnBand(World *WorldVal, int ColumnX, int ColumnZ,
                               int16_t *OutLo, int16_t *OutHi) {
-  ColumnBoundsTable *Table = &WorldVal->ColumnBounds;
-  int Top = ColumnBoundsTopLayer(Table, ColumnX, ColumnZ);
-  int Bottom = ColumnBoundsBottomLayer(Table, ColumnX, ColumnZ);
+  int Top = 0;
+  int Bottom = 0;
+  ColumnBoundsLayers(&WorldVal->ColumnBounds, ColumnX, ColumnZ, &Top, &Bottom);
   int Raised = 0;
   if (RaisedTopsGet(&WorldVal->RaisedTops, ColumnX, ColumnZ, &Raised) &&
       Raised > Top) {
@@ -641,6 +657,9 @@ void InitWorld(World *WorldVal){
   WorldVal->LastSettled = false;
 #endif
   ResolveWorldChunkRange(&WorldVal->WorldLoChunkY, &WorldVal->WorldHiChunkY);
+  // Room for the centre's neighbour layers when it stands just below the world.
+  WorldVal->LoadMaskBase = WorldVal->WorldLoChunkY - 2;
+  WorldVal->LoadMaskValid = false;
   ColumnBoundsInit(&WorldVal->ColumnBounds);
   for (int Slot = 0; Slot < LOADED_COLUMN_HASH_SIZE; Slot++) {
     WorldVal->LoadedColumns[Slot].Used = false;
@@ -1046,54 +1065,77 @@ static int BorderStep(int Local) {
   return 0;
 }
 
-// Returns true when a chunk that should go had to stay because work was still
-// in flight on it. The caller must then come back: until it does, that chunk
-// stays loaded outside the volume, and a border chunk meshed while it exists
-// keeps faces it would not have against an empty neighbour.
+// Evicts the chunk in slot IdxI, unless work is still in flight on it: then it
+// stays and this returns false. The caller must then come back: until it does,
+// that chunk stays loaded outside the volume, and a border chunk meshed while
+// it exists keeps faces it would not have against an empty neighbour. A caller
+// passing MarkNeighbours false dirties the neighbours that stay itself.
+static bool TryEvictChunk(World *WorldVal, int IdxI, bool MarkNeighbours) {
+  if(WorldVal->Chunks[IdxI].IsGenerating || WorldVal->Chunks[IdxI].IsMeshing){
+    return false;
+  }
+
+  int OldX = WorldVal->Chunks[IdxI].ChunkX;
+  int OldY = WorldVal->Chunks[IdxI].ChunkY;
+  int OldZ = WorldVal->Chunks[IdxI].ChunkZ;
+
+  if(WorldVal->Chunks[IdxI].IsModified){
+    SaveChunkToDisk(&WorldVal->Chunks[IdxI]);
+  }
+
+  Chunk *Evicted = &WorldVal->Chunks[IdxI];
+
+  // Still counted as pending: its completion is waiting in the drain (or, if
+  // it never generated, it never will). Clearing the flag also turns that
+  // waiting completion entry into a stale one the drain skips.
+  if (!Evicted->IsGenerated || Evicted->TerrainJustGenerated) {
+    WorldVal->PendingGeneration--;
+    Evicted->TerrainJustGenerated = false;
+  }
+  WorldRemoveMeshCandidate(WorldVal, IdxI);
+  if(WorldVal->OnChunkEvict != (ChunkEvictCallback)0){
+    WorldVal->OnChunkEvict(Evicted);
+  }
+
+  RemoveChunkFromMap(WorldVal, OldX, OldY, OldZ);
+  if (MarkNeighbours) {
+    UpdateNeighborsDirtyFlag(WorldVal, OldX, OldY, OldZ);
+  }
+  ChunkResetStorage(Evicted, BLOCK_ID_AIR);
+
+  WorldVal->SlotInUse[IdxI] = false;
+  WorldVal->FreeList[WorldVal->FreeCount++] = IdxI;
+  return true;
+}
+
+// Returns true when a chunk that should go had to stay (see TryEvictChunk).
 static bool EvictUnneededChunks(World *WorldVal, const bool *KeepChunk){
   bool Deferred = false;
   for(int IdxI = 0; IdxI < WorldVal->ChunkCount; IdxI++){
-    if(!WorldVal->SlotInUse[IdxI] || KeepChunk[IdxI]){
-      continue;
-    }
-    if(WorldVal->Chunks[IdxI].IsGenerating || WorldVal->Chunks[IdxI].IsMeshing){
+    if(WorldVal->SlotInUse[IdxI] && !KeepChunk[IdxI] &&
+       !TryEvictChunk(WorldVal, IdxI, true)){
       Deferred = true;
-      continue;
     }
-
-    int OldX = WorldVal->Chunks[IdxI].ChunkX;
-    int OldY = WorldVal->Chunks[IdxI].ChunkY;
-    int OldZ = WorldVal->Chunks[IdxI].ChunkZ;
-
-    if(WorldVal->Chunks[IdxI].IsModified){
-      SaveChunkToDisk(&WorldVal->Chunks[IdxI]);
-    }
-
-    Chunk *Evicted = &WorldVal->Chunks[IdxI];
-
-    // Still counted as pending: its completion is waiting in the drain (or, if
-    // it never generated, it never will). Clearing the flag also turns that
-    // waiting completion entry into a stale one the drain skips.
-    if (!Evicted->IsGenerated || Evicted->TerrainJustGenerated) {
-      WorldVal->PendingGeneration--;
-      Evicted->TerrainJustGenerated = false;
-    }
-    WorldRemoveMeshCandidate(WorldVal, IdxI);
-    if(WorldVal->OnChunkEvict != (ChunkEvictCallback)0){
-      WorldVal->OnChunkEvict(Evicted);
-    }
-
-    RemoveChunkFromMap(WorldVal, OldX, OldY, OldZ);
-    UpdateNeighborsDirtyFlag(WorldVal, OldX, OldY, OldZ);
-    ChunkResetStorage(Evicted, BLOCK_ID_AIR);
-
-    WorldVal->SlotInUse[IdxI] = false;
-    WorldVal->FreeList[WorldVal->FreeCount++] = IdxI;
   }
   return Deferred;
 }
 
-static bool CreateOrRecycleChunk(World *WorldVal, int ChunkX, int ChunkY, int ChunkZ){
+// Chunks created but not yet handed to the workers, which take them in lots
+// rather than one lock and wake-up each. Always flushed before the creating
+// call returns, so no chunk is left in the map unqueued.
+enum { GENERATION_ENQUEUE_BATCH = 1024 };
+typedef struct {
+  Chunk *Chunks[GENERATION_ENQUEUE_BATCH];
+  int Count;
+} GenerationBatch;
+
+static void FlushGenerationBatch(GenerationBatch *Batch) {
+  EnqueueChunkGenerations(Batch->Chunks, Batch->Count);
+  Batch->Count = 0;
+}
+
+static bool CreateOrRecycleChunk(World *WorldVal, GenerationBatch *Batch,
+                                 int ChunkX, int ChunkY, int ChunkZ){
   if(WorldVal->FreeCount == 0){
     return false;
   }
@@ -1119,13 +1161,239 @@ static bool CreateOrRecycleChunk(World *WorldVal, int ChunkX, int ChunkY, int Ch
   WorldVal->Chunks[IdxI].ChunkZ = ChunkZ;
 
   WorldVal->PendingGeneration++;
-  EnqueueChunkGeneration(&WorldVal->Chunks[IdxI]);
+  Batch->Chunks[Batch->Count++] = &WorldVal->Chunks[IdxI];
+  if (Batch->Count == GENERATION_ENQUEUE_BATCH) {
+    FlushGenerationBatch(Batch);
+  }
   InsertChunkIntoMap(WorldVal, IdxI);
 
   if(IdxI >= WorldVal->ChunkCount){
     WorldVal->ChunkCount = IdxI + 1;
   }
   return true;
+}
+
+enum {
+  LOAD_MASK_WORD_BITS = 64,
+  LOAD_MASK_BITS = LOAD_LAYER_MASK_WORDS * LOAD_MASK_WORD_BITS
+};
+
+// Bit of layer ChunkY in a load mask, -1 when a mask cannot hold it.
+static int LoadMaskBit(const World *WorldVal, int ChunkY) {
+  int Bit = ChunkY - WorldVal->LoadMaskBase;
+  return (Bit >= 0 && Bit < LOAD_MASK_BITS) ? Bit : -1;
+}
+
+static bool MaskIsEmpty(const LoadLayerMask *Mask) {
+  for (int Word = 0; Word < LOAD_LAYER_MASK_WORDS; Word++) {
+    if (Mask->Bits[Word] != 0U) {
+      return false;
+    }
+  }
+  return true;
+}
+
+static bool MaskHas(const LoadLayerMask *Mask, int Bit) {
+  return ((Mask->Bits[Bit / LOAD_MASK_WORD_BITS] >>
+           (unsigned int)(Bit % LOAD_MASK_WORD_BITS)) &
+          1U) != 0U;
+}
+
+// Sets bits LoBit..HiBit, both valid.
+static void MaskSetRange(LoadLayerMask *Mask, int LoBit, int HiBit) {
+  for (int Word = 0; Word < LOAD_LAYER_MASK_WORDS; Word++) {
+    int First = Word * LOAD_MASK_WORD_BITS;
+    int Lo = ((LoBit > First) ? LoBit : First) - First;
+    int Last = First + LOAD_MASK_WORD_BITS - 1;
+    int Hi = ((HiBit < Last) ? HiBit : Last) - First;
+    if (Lo > Hi) {
+      continue;
+    }
+    uint64_t Ones = (Hi - Lo == LOAD_MASK_WORD_BITS - 1)
+                        ? ~(uint64_t)0
+                        : (((uint64_t)1 << (unsigned int)(Hi - Lo + 1)) - 1U);
+    Mask->Bits[Word] |= Ones << (unsigned int)Lo;
+  }
+}
+
+// The window's layers as a mask, for the near columns. False when the centre
+// lies so far outside the world that its neighbour layers do not fit.
+static bool BuildWindowMask(const World *WorldVal, const LoadVolume *Volume,
+                            LoadLayerMask *Out) {
+  *Out = (LoadLayerMask){{0U, 0U}};
+  for (int Idx = 0; Idx < Volume->LayerCount; Idx++) {
+    int Bit = LoadMaskBit(WorldVal, Volume->Layers[Idx]);
+    if (Bit < 0) {
+      return false;
+    }
+    MaskSetRange(Out, Bit, Bit);
+  }
+  return true;
+}
+
+// The positions column Col holds (ColumnLayers' set) as a mask. Bands lie in
+// the world, which a mask always holds.
+static void BuildColumnMask(const World *WorldVal, const LoadVolume *Volume,
+                            int Col, const LoadLayerMask *Window,
+                            LoadLayerMask *Out) {
+  *Out = ColumnIsNear(Volume, Col) ? *Window : (LoadLayerMask){{0U, 0U}};
+  if (Volume->BandHi[Col] >= Volume->BandLo[Col]) {
+    MaskSetRange(Out, LoadMaskBit(WorldVal, Volume->BandLo[Col]),
+                 LoadMaskBit(WorldVal, Volume->BandHi[Col]));
+  }
+}
+
+// Index in the column order of the offset (Dx, Dz) if it lies within the first
+// ColumnCount columns, else -1.
+static int ColumnIndexAt(int Dx, int Dz, int ColumnCount) {
+  if (abs(Dx) > MAX_RENDER_DISTANCE || abs(Dz) > MAX_RENDER_DISTANCE) {
+    return -1;
+  }
+  int Idx = GetColumnOrder()->IndexOf[ColumnOrderSlot(Dx, Dz)];
+  return (Idx < ColumnCount) ? Idx : -1;
+}
+
+// Whether Volume can be loaded as a diff against the last complete load: the
+// centre moved by at most one chunk on each axis, at the same radius, with no
+// raise of a player-built column since, and every new layer fits a mask. Fills
+// NewMasks with what each column of Volume holds and Missing with what it does
+// not hold yet.
+static bool PrepareIncrementalLoad(const World *WorldVal,
+                                   const LoadVolume *Volume,
+                                   LoadLayerMask *NewMasks,
+                                   LoadLayerMask *Missing) {
+  int ShiftX = Volume->CenterX - WorldVal->LoadMaskCenterX;
+  int ShiftY = Volume->CenterY - WorldVal->LoadMaskCenterY;
+  int ShiftZ = Volume->CenterZ - WorldVal->LoadMaskCenterZ;
+  LoadLayerMask Window;
+  if (!WorldVal->LoadMaskValid || Volume->Radius != WorldVal->LoadMaskRadius ||
+      abs(ShiftX) > 1 || abs(ShiftY) > 1 || abs(ShiftZ) > 1 ||
+      Volume->RaisedVersion != WorldVal->LoadMaskRaisedVersion ||
+      !BuildWindowMask(WorldVal, Volume, &Window)) {
+    return false;
+  }
+
+  for (int Col = 0; Col < Volume->ColumnCount; Col++) {
+    BuildColumnMask(WorldVal, Volume, Col, &Window, &NewMasks[Col]);
+    int Old = ColumnIndexAt(Volume->Columns[Col].Dx + ShiftX,
+                            Volume->Columns[Col].Dz + ShiftZ,
+                            WorldVal->LoadMaskColumnCount);
+    Missing[Col] = NewMasks[Col];
+    if (Old >= 0) {
+      for (int Word = 0; Word < LOAD_LAYER_MASK_WORDS; Word++) {
+        Missing[Col].Bits[Word] &= ~WorldVal->LoadMasks[Old].Bits[Word];
+      }
+    }
+  }
+  return true;
+}
+
+typedef struct {
+  int32_t ChunkX;
+  int32_t ChunkY;
+  int32_t ChunkZ;
+} EvictedPosition;
+
+// Evicts what the last complete load holds and Volume does not, found from the
+// masks alone: one lookup per leaving chunk. Neighbours are dirtied once all
+// have gone, and only those that stay through this load (held before it and by
+// Volume), each once: the many neighbours that are leaving as well, absent, or
+// created after the evictions cost no lookup. Returns true when a chunk had to
+// stay.
+static bool EvictLeavingChunks(World *WorldVal, const LoadVolume *Volume,
+                               const LoadLayerMask *NewMasks,
+                               const LoadLayerMask *Missing) {
+  // Static: one entry per active chunk is too large for the stack, and the
+  // world is driven from one thread.
+  static EvictedPosition Evicted[MAX_ACTIVE_CHUNKS];
+  int EvictedCount = 0;
+  int ShiftX = Volume->CenterX - WorldVal->LoadMaskCenterX;
+  int ShiftZ = Volume->CenterZ - WorldVal->LoadMaskCenterZ;
+  bool Deferred = false;
+  for (int Old = 0; Old < WorldVal->LoadMaskColumnCount; Old++) {
+    const ColumnOffset *Offset = &Volume->Columns[Old];
+    int New = ColumnIndexAt(Offset->Dx - ShiftX, Offset->Dz - ShiftZ,
+                            Volume->ColumnCount);
+    int ChunkX = WorldVal->LoadMaskCenterX + Offset->Dx;
+    int ChunkZ = WorldVal->LoadMaskCenterZ + Offset->Dz;
+    for (int Word = 0; Word < LOAD_LAYER_MASK_WORDS; Word++) {
+      uint64_t Gone = WorldVal->LoadMasks[Old].Bits[Word];
+      if (New >= 0) {
+        Gone &= ~NewMasks[New].Bits[Word];
+      }
+      while (Gone != 0U) {
+        int ChunkY = WorldVal->LoadMaskBase + (Word * LOAD_MASK_WORD_BITS) +
+                     __builtin_ctzll(Gone);
+        Gone &= Gone - 1U;
+        Chunk *ChunkVal = GetChunkFromWorld(WorldVal, ChunkX, ChunkY, ChunkZ);
+        if (ChunkVal == (Chunk *)0) {
+          continue;
+        }
+        if (TryEvictChunk(WorldVal, (int)(ChunkVal - WorldVal->Chunks),
+                          false)) {
+          Evicted[EvictedCount++] = (EvictedPosition){ChunkX, ChunkY, ChunkZ};
+        } else {
+          Deferred = true;
+        }
+      }
+    }
+  }
+
+  static LoadLayerMask Marked[MAX_LOADED_COLUMNS];
+  if (EvictedCount > 0) {
+    memset(Marked, 0, sizeof(Marked[0]) * (size_t)Volume->ColumnCount);
+  }
+  for (int Idx = 0; Idx < EvictedCount; Idx++) {
+    for (int Dx = -1; Dx <= 1; Dx++) {
+      for (int Dz = -1; Dz <= 1; Dz++) {
+        int X = Evicted[Idx].ChunkX + Dx;
+        int Z = Evicted[Idx].ChunkZ + Dz;
+        int Col = ColumnIndexAt(X - Volume->CenterX, Z - Volume->CenterZ,
+                                Volume->ColumnCount);
+        if (Col < 0) {
+          continue;
+        }
+        for (int Dy = -1; Dy <= 1; Dy++) {
+          int Y = Evicted[Idx].ChunkY + Dy;
+          int Bit = LoadMaskBit(WorldVal, Y);
+          if (Bit < 0 || !MaskHas(&NewMasks[Col], Bit) ||
+              MaskHas(&Missing[Col], Bit) || MaskHas(&Marked[Col], Bit)) {
+            continue;
+          }
+          MaskSetRange(&Marked[Col], Bit, Bit);
+          MarkChunkDirty(WorldVal, GetChunkFromWorld(WorldVal, X, Y, Z));
+        }
+      }
+    }
+  }
+  return Deferred;
+}
+
+// Records Volume as what the world now holds, from NewMasks when the caller
+// built them already.
+static void SaveLoadMasks(World *WorldVal, const LoadVolume *Volume,
+                          const LoadLayerMask *NewMasks) {
+  WorldVal->LoadMaskValid = false;
+  LoadLayerMask Window;
+  if (!BuildWindowMask(WorldVal, Volume, &Window)) {
+    return;
+  }
+  if (NewMasks != (const LoadLayerMask *)0) {
+    memcpy(WorldVal->LoadMasks, NewMasks,
+           sizeof(LoadLayerMask) * (size_t)Volume->ColumnCount);
+  } else {
+    for (int Col = 0; Col < Volume->ColumnCount; Col++) {
+      BuildColumnMask(WorldVal, Volume, Col, &Window,
+                      &WorldVal->LoadMasks[Col]);
+    }
+  }
+  WorldVal->LoadMaskCenterX = Volume->CenterX;
+  WorldVal->LoadMaskCenterY = Volume->CenterY;
+  WorldVal->LoadMaskCenterZ = Volume->CenterZ;
+  WorldVal->LoadMaskRadius = Volume->Radius;
+  WorldVal->LoadMaskColumnCount = Volume->ColumnCount;
+  WorldVal->LoadMaskRaisedVersion = Volume->RaisedVersion;
+  WorldVal->LoadMaskValid = true;
 }
 
 typedef struct {
@@ -1143,14 +1411,17 @@ typedef struct {
 // would otherwise wait for those columns' deep layers. Columns come nearest
 // first, so the first two priorities are created during the scan and only the
 // third waits for its end: one lookup per position, as a single priority would
-// need.
-// Returns false if the slot pool ran out.
-static bool CreateMissingChunks(World *WorldVal, const LoadVolume *Volume) {
+// need. With Missing, the masks of what each column still lacks, nothing is
+// looked up at all and a column lacking nothing is skipped. Returns false if
+// the slot pool ran out.
+static bool CreateMissingChunks(World *WorldVal, const LoadVolume *Volume,
+                                const LoadLayerMask *Missing) {
   // Static: one entry per active chunk is too large for the stack, and the
   // world is driven from one thread.
   static DeferredPosition Deferred[MAX_ACTIVE_CHUNKS];
   int DeferredCount = 0;
   bool AllCreated = true;
+  GenerationBatch Batch = {.Count = 0};
   int WholeRadius = NEAR_LOAD_RADIUS + NEAR_PRIORITY_MARGIN;
   if (WholeRadius > Volume->Radius) { WholeRadius = Volume->Radius; }
   int WholeCount = GetColumnOrder()->PrefixCount[WholeRadius];
@@ -1158,18 +1429,27 @@ static bool CreateMissingChunks(World *WorldVal, const LoadVolume *Volume) {
   for (int Col = 0; Col < Volume->ColumnCount; Col++) {
     int ChunkX = Volume->CenterX + Volume->Columns[Col].Dx;
     int ChunkZ = Volume->CenterZ + Volume->Columns[Col].Dz;
+    bool Known = Missing != (const LoadLayerMask *)0;
+    if (Known && MaskIsEmpty(&Missing[Col])) {
+      continue;
+    }
     int Layers[MAX_COLUMN_LAYERS];
     int LayerCount = ColumnLayers(Volume, Col, Layers);
     // A far column lists its band from the top down.
     int CreateNow = (Col < WholeCount) ? LayerCount : SURFACE_PRIORITY_LAYERS;
     for (int Layer = 0; Layer < LayerCount; Layer++) {
       int ChunkY = Layers[Layer];
-      if (GetChunkFromWorld(WorldVal, ChunkX, ChunkY, ChunkZ) != (Chunk *)0) {
+      bool Loaded =
+          Known ? !MaskHas(&Missing[Col], LoadMaskBit(WorldVal, ChunkY))
+                : GetChunkFromWorld(WorldVal, ChunkX, ChunkY, ChunkZ) !=
+                      (Chunk *)0;
+      if (Loaded) {
         continue;
       }
       if (Layer < CreateNow) {
-        AllCreated = CreateOrRecycleChunk(WorldVal, ChunkX, ChunkY, ChunkZ) &&
-                     AllCreated;
+        AllCreated =
+            CreateOrRecycleChunk(WorldVal, &Batch, ChunkX, ChunkY, ChunkZ) &&
+            AllCreated;
       } else {
         Deferred[DeferredCount++] = (DeferredPosition){Col, ChunkY};
       }
@@ -1178,11 +1458,13 @@ static bool CreateMissingChunks(World *WorldVal, const LoadVolume *Volume) {
 
   for (int Idx = 0; Idx < DeferredCount; Idx++) {
     const ColumnOffset *Offset = &Volume->Columns[Deferred[Idx].Col];
-    AllCreated = CreateOrRecycleChunk(WorldVal, Volume->CenterX + Offset->Dx,
+    AllCreated = CreateOrRecycleChunk(WorldVal, &Batch,
+                                      Volume->CenterX + Offset->Dx,
                                       Deferred[Idx].ChunkY,
                                       Volume->CenterZ + Offset->Dz) &&
                  AllCreated;
   }
+  FlushGenerationBatch(&Batch);
   return AllCreated;
 }
 
@@ -1212,21 +1494,32 @@ void UpdateWorld(World *WorldVal, Vec3 PlayerPos, int RenderDist){
                            RenderDist, GetWorldSeed());
   PROFILE_END(BoundsStart, PROFILE_COLUMN_BOUNDS);
 
-  // Static: at MAX_ACTIVE_CHUNKS entries it is too large to want on the stack,
-  // and UpdateWorld only runs on the thread driving the world.
-  static bool KeepChunk[MAX_ACTIVE_CHUNKS];
-  memset(KeepChunk, 0, sizeof(KeepChunk));
-
   const LoadVolume *Volume = GetLoadVolume(WorldVal, PlayerPos, RenderDist);
 
   // After the volume is built, which resolves the surface of every column a
   // candidate tier compares with; before any eviction adds candidates.
   RebucketMeshCandidates(WorldVal, PChunkX, PChunkY, PChunkZ);
 
-  MarkUsefulChunks(WorldVal, Volume, KeepChunk);
-  bool EvictionDeferred = EvictUnneededChunks(WorldVal, KeepChunk);
-
-  bool AllCreated = CreateMissingChunks(WorldVal, Volume);
+  // Static: at one entry per active chunk or column they are too large to want
+  // on the stack, and UpdateWorld only runs on the thread driving the world.
+  static LoadLayerMask NewMasks[MAX_LOADED_COLUMNS];
+  static LoadLayerMask Missing[MAX_LOADED_COLUMNS];
+  bool Incremental =
+      PrepareIncrementalLoad(WorldVal, Volume, NewMasks, Missing);
+  bool EvictionDeferred = false;
+  bool AllCreated = false;
+  if (Incremental) {
+    EvictionDeferred =
+        EvictLeavingChunks(WorldVal, Volume, NewMasks, Missing);
+    AllCreated = CreateMissingChunks(WorldVal, Volume, Missing);
+  } else {
+    static bool KeepChunk[MAX_ACTIVE_CHUNKS];
+    memset(KeepChunk, 0, sizeof(KeepChunk));
+    MarkUsefulChunks(WorldVal, Volume, KeepChunk);
+    EvictionDeferred = EvictUnneededChunks(WorldVal, KeepChunk);
+    AllCreated =
+        CreateMissingChunks(WorldVal, Volume, (const LoadLayerMask *)0);
+  }
 
   WorldVal->LastLoadChunkX = PChunkX;
   WorldVal->LastLoadChunkY = PChunkY;
@@ -1236,6 +1529,14 @@ void UpdateWorld(World *WorldVal, Vec3 PlayerPos, int RenderDist){
   // The gate above only opens again when the player changes chunk, so a load
   // that left chunks uncreated or unevicted keeps it shut off until it is done.
   WorldVal->HasLoadedOnce = AllCreated && !EvictionDeferred;
+  // Only a complete load leaves the loaded set equal to its volume, which is
+  // what the next load's diff assumes.
+  if (WorldVal->HasLoadedOnce) {
+    SaveLoadMasks(WorldVal, Volume,
+                  Incremental ? NewMasks : (const LoadLayerMask *)0);
+  } else {
+    WorldVal->LoadMaskValid = false;
+  }
   PROFILE_END(UpdateStart, PROFILE_WORLD_UPDATE);
 }
 
@@ -1622,9 +1923,17 @@ static bool LastLoadMatches(const World *WorldVal, Vec3 Center, int RenderDist) 
 }
 
 #ifdef MINEGAME_PROFILE
-// The volume walk the counters replaced, kept to verify them.
+// The volume walk the counters replaced, kept to verify them. After a complete
+// load it also verifies the loaded set is the volume and nothing else, which
+// is what the full load path guarantees and the incremental one must match.
 static bool WalkGenerationSettled(World *WorldVal, Vec3 Center, int RenderDist) {
   const LoadVolume *Volume = GetLoadVolume(WorldVal, Center, RenderDist);
+  int InUse = MAX_ACTIVE_CHUNKS - WorldVal->FreeCount;
+  if (WorldVal->HasLoadedOnce && InUse != Volume->ChunkTotal) {
+    LogError("WORLD: %d chunks loaded, the load volume holds %d", InUse,
+             Volume->ChunkTotal);
+    return false;
+  }
 
   for (int Col = 0; Col < Volume->ColumnCount; Col++) {
     int ChunkX = Volume->CenterX + Volume->Columns[Col].Dx;

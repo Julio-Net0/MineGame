@@ -29,7 +29,10 @@ void CloseChunkWorker(void);
 // Wire the mesher in before any mesh job is queued.
 void SetChunkWorkerMeshRunner(MeshJobRunner Runner);
 
-void EnqueueChunkGeneration(Chunk *ChunkVal);
+// Enqueues Count chunks for generation, in order, under one lock and one
+// wake-up: a lock and a wake per chunk made idle workers contend with the main
+// thread for every job.
+void EnqueueChunkGenerations(Chunk *const *Chunks, int Count);
 
 // Main thread: moves up to Capacity chunks whose generation finished since the
 // last drain into Out, oldest first, and returns how many. An entry may be

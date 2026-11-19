@@ -48,6 +48,12 @@ typedef struct {
   int ReachColumns;
   int ReachAbove;
   uint32_t LayerKey;
+  // The disc the last ColumnBoundsEnsure covered, so a pass one column away
+  // only visits the columns it adds.
+  int EnsuredX;
+  int EnsuredZ;
+  int EnsuredSpan;
+  bool EnsuredValid;
 } ColumnBoundsTable;
 
 void ColumnBoundsInit(ColumnBoundsTable *Table);
@@ -61,6 +67,10 @@ int ColumnBoundsEnsure(ColumnBoundsTable *Table, int CenterX, int CenterZ,
 // Highest chunk layer that can hold a non-air block of the column: terrain,
 // water up to sea level, flora, or a structure anchored within reach.
 int ColumnBoundsTopLayer(ColumnBoundsTable *Table, int ColumnX, int ColumnZ);
+
+// ColumnBoundsTopLayer and ColumnBoundsBottomLayer in one table lookup.
+void ColumnBoundsLayers(ColumnBoundsTable *Table, int ColumnX, int ColumnZ,
+                        int *OutTop, int *OutBottom);
 
 // ColumnBoundsTopLayer without evaluating anything: false when the table does
 // not hold the column's answer for its current reach. Never changes the table,
