@@ -464,10 +464,15 @@ static void DrawDebugScreen(UiContext *Ctx, Player *PlayerVal, World *WorldVal,
   // re-running the visibility test here was a second full scan over every chunk.
   RenderCullStats Cull = {0};
   GetLastCullStats(&Cull);
+  // "idle": enabled, but this frame did not run it (occlusion traced the
+  // frame, the camera is enclosed or the pitch is too steep).
+  const char *HorizonState = " off";
+  if (Cull.HorizonEnabled) { HorizonState = Cull.HorizonActive ? "" : " idle"; }
   snprintf(DebugText, sizeof(DebugText),
-           "Rendered Chunks: %d / %d (occluded %d%s)", Cull.Rendered,
-           MAX_ACTIVE_CHUNKS, Cull.Occluded,
-           Cull.OcclusionEnabled ? "" : ", occlusion off");
+           "Rendered Chunks: %d / %d (occluded %d%s, horizon %d%s)",
+           Cull.Rendered, MAX_ACTIVE_CHUNKS, Cull.Occluded,
+           Cull.OcclusionEnabled ? "" : ", occlusion off", Cull.HorizonCulled,
+           HorizonState);
   Y = DrawDebugLine(Ctx, DebugText, Y);
 
   ChunkStorageCounts Storage = {0};

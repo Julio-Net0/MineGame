@@ -92,6 +92,7 @@ static void DebugFreeCam(CommandContext *Ctx, bool State);
 static void DebugForceCutout(CommandContext *Ctx, bool State);
 static void DebugSortChunks(CommandContext *Ctx, bool State);
 static void DebugOcclusion(CommandContext *Ctx, bool State);
+static void DebugHorizon(CommandContext *Ctx, bool State);
 
 static const DebugToggle AVAILABLEDEBUGS[] = {
     {"aabb", "Show collision boxes", DebugAABB},
@@ -104,6 +105,8 @@ static const DebugToggle AVAILABLEDEBUGS[] = {
      DebugSortChunks},
     {"occlusion", "Skip chunks hidden behind terrain (on by default)",
      DebugOcclusion},
+    {"horizon", "Skip surface chunks below the terrain horizon (on by default)",
+     DebugHorizon},
 };
 
 static const int AVAILABLEDEBUGSCOUNT =
@@ -1035,6 +1038,11 @@ static void DebugSortChunks(CommandContext *Ctx, bool State) {
 static void DebugOcclusion(CommandContext *Ctx, bool State) {
   (void)Ctx;
   GetDebugState()->Occlusion = State;
+}
+
+static void DebugHorizon(CommandContext *Ctx, bool State) {
+  (void)Ctx;
+  GetDebugState()->HorizonCulling = State;
 }
 
 static void CommandDebug(const char *Args, CommandContext *Ctx) {

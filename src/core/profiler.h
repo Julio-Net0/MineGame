@@ -29,7 +29,9 @@
 // generation sub-scopes split "Worker gen" by stage, and "Occlusion" and
 // "Chunk submit" split the traversal and the chunk-pass submission out of
 // "World draw", "Mesh snap" splits snapshot capture out of "Mesh queue", and
-// "Col bounds" splits the column bound refresh out of "World update".
+// "Col bounds" splits the column bound refresh out of "World update", and
+// "Cull sweep" splits the column visibility sweep (frustum and horizon) out
+// of "World draw".
 // They are breakdowns of their parent, excluded
 // from the remainder, and not CPU-bound so --cpu-slowdown does not stretch the
 // same time twice.
@@ -60,6 +62,7 @@ typedef enum {
   PROFILE_MESH_QUEUE,
   PROFILE_SCRIPT_WAIT,
   PROFILE_COLUMN_BOUNDS,
+  PROFILE_CULL_SWEEP,
   PROFILE_SCOPE_COUNT
 } ProfileScope;
 

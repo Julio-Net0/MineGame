@@ -1163,6 +1163,9 @@ static void ScriptAddChunksJson(cJSON *Root, const ScriptContext *Ctx) {
     cJSON_AddNumberToObject(CullNode, "occlusionReachable",
                             Cull.OcclusionReachable);
     cJSON_AddBoolToObject(CullNode, "occlusionFallback", Cull.OcclusionFallback);
+    cJSON_AddBoolToObject(CullNode, "horizon", Cull.HorizonEnabled);
+    cJSON_AddBoolToObject(CullNode, "horizonActive", Cull.HorizonActive);
+    cJSON_AddNumberToObject(CullNode, "horizonCulled", Cull.HorizonCulled);
     cJSON_AddNumberToObject(CullNode, "submittedVertices",
                             (double)Cull.SubmittedVertices);
     cJSON_AddItemToObject(Node, "cull", CullNode);

@@ -2180,6 +2180,11 @@ typedef struct {
     // loaded surface is in view, so tracing on would cost far more than the
     // little it could still cull: the frame falls back to frustum culling.
     bool TouchedSky;
+    // The fallback was forced by where the camera stands -- inside an opaque
+    // block or in rock the load left out -- rather than by the open sky. From
+    // there the camera sees out through culled back faces, so no opaque layer
+    // hides anything and the horizon cull must stand down too.
+    bool CameraEnclosed;
 } OcclusionState;
 
 static OcclusionState *GetOcclusionState(void) {
@@ -2362,6 +2367,7 @@ static void BeginOcclusionFrame(OcclusionState *State) {
     State->Reachable = 0;
     State->Nodes = 0;
     State->TouchedSky = false;
+    State->CameraEnclosed = false;
 }
 
 // Half-width of the box around the camera checked for opaque blocks. Covers
@@ -2395,7 +2401,10 @@ static bool RunOcclusionTraversal(World *WorldVal, const RenderFrustum *Frustum,
     BeginOcclusionFrame(State);
     TraversalFrustum Planes;
     BuildTraversalFrustum(Frustum, &Planes);
-    if (IsCameraInsideOpaque(WorldVal, CameraPos)) { return false; }
+    if (IsCameraInsideOpaque(WorldVal, CameraPos)) {
+        State->CameraEnclosed = true;
+        return false;
+    }
 
     // Blocks are centred on integer coordinates, so chunk C spans
     // [16C - 0.5, 16C + 15.5]; the half-block shift picks the chunk the camera
@@ -2413,6 +2422,7 @@ static bool RunOcclusionTraversal(World *WorldVal, const RenderFrustum *Frustum,
         // In the open sky above its column, in rock left unloaded under a band,
         // or over a column holding nothing: no loaded chunk to start from that
         // is known to see what the camera sees.
+        State->CameraEnclosed = WorldIsUnloadedRock(WorldVal, CameraX, CameraY, CameraZ);
         return false;
     }
 
@@ -2434,6 +2444,402 @@ static bool RunOcclusionTraversal(World *WorldVal, const RenderFrustum *Frustum,
 static bool WasChunkReached(const World *WorldVal, const Chunk *ChunkVal) {
     const OcclusionState *State = GetOcclusionState();
     return State->Slots[ChunkVal - WorldVal->Chunks].VisitStamp == State->Frame;
+}
+
+// ---------------------------------------------------------------------------
+// Horizon culling
+// ---------------------------------------------------------------------------
+//
+// Runs on the frames the occlusion traversal gives up on because sight lines
+// reach the open sky, which is every frame at the surface. Columns are swept
+// near to far; each one is first tested against a horizon built from the
+// columns in front of it, then its fully opaque layer runs are added to it.
+//
+// A sight line is parameterised by camera-relative horizontal coordinates: with
+// FwdXZ and RightXZ the camera's heading and its perpendicular in the XZ plane,
+// a line through (dx, dy, dz) has fz = dot(dXZ, FwdXZ) > 0, u = dot(dXZ,
+// RightXZ) / fz and v = dy / fz. u picks the vertical half-plane the line lies
+// in and v is the tangent of its elevation, both independent of the pitch, and
+// along a line height grows linearly with fz.
+//
+// Per u bin the horizon holds what is known to be blocked: every v below
+// Prefix, and one floating interval [FloatLo, FloatHi]. The prefix starts at
+// the bottom frustum plane, since lines below it are off screen. The floating
+// interval exists because caves under the surface keep layer runs short (about
+// 14 blocks on average), so the runs of the nearest columns rarely reach below
+// the screen; the runs of successive columns still overlap one another and
+// chain into a band that hides what lies wholly inside it.
+//
+// Every step only ever claims less than what is really blocked:
+//   - A run spans whole 16x16 layers, so a line passing through the column at
+//     a height inside the run meets an opaque block, whose face toward the
+//     camera is drawn (the cell before it is open, or the line would have
+//     stopped there). Its v range takes the bottom at the largest and the top
+//     at the smallest v over the column's corners, so every point of the line's
+//     chord through the column lies inside the run, and it is entered only into
+//     bins wholly inside the column's inner u range (second smallest to second
+//     largest corner u), where every chord has length.
+//   - An occluder must lie in front of what it hides along every shared line.
+//     Bucket keys are squared chunk distances from the camera's chunk, and a
+//     column only joins the horizon once the sweep reaches keys of at least
+//     (r + HORIZON_COMMIT_LAG)^2, r being its own key's root. Three chunks
+//     cover both footprints' half-diagonals plus the camera's offset inside
+//     its chunk (2.92 chunks), so every point of the occluder is nearer than
+//     every point of anything it is then tested against.
+//   - Columns with a corner at fz <= HORIZON_MIN_FZ, or reaching past the
+//     frustum's u range, are never culled; occluders need every corner at
+//     fz >= one chunk, which excludes the camera's column and anything the
+//     near plane could clip open.
+enum {
+    HORIZON_BINS = 1024,
+    HORIZON_COMMIT_LAG = 3,
+    // Keys past the last bucket clamp into it: they then never commit as
+    // occluders (their threshold exceeds every key) and are tested only
+    // against occluders with real, smaller keys, which stays conservative.
+    HORIZON_KEY_BUCKETS = (MAX_RENDER_DISTANCE * MAX_RENDER_DISTANCE) + 1,
+    HORIZON_FRUSTUM_CORNERS = 4,
+    FRUSTUM_LEFT_PLANE = 0,
+    FRUSTUM_RIGHT_PLANE = 1,
+    FRUSTUM_BOTTOM_PLANE = 2,
+    FRUSTUM_TOP_PLANE = 3
+};
+
+// Slack on every v comparison, against float rounding in the projection.
+#define HORIZON_SLOPE_EPS 1.0e-4F
+// Smallest fz, in blocks, a tested column corner may have.
+#define HORIZON_MIN_FZ 1.0e-2F
+// Smallest heading component of a normalised frustum corner direction; past
+// it (pitch beyond roughly 45 degrees at a 90-degree FovY) u is unbounded.
+#define HORIZON_CORNER_MIN_FZ 5.0e-2F
+#define HORIZON_MIN_HEADING 1.0e-3F
+#define HORIZON_MIN_PLANE_UP 1.0e-4F
+
+typedef struct {
+    float CamX;
+    float CamY;
+    float CamZ;
+    float Fx;
+    float Fz;
+    float Rx;
+    float Rz;
+    float Umin;
+    float Umax;
+    float InvBinWidth;
+    // Bounds over every bin and over the whole sweep so far: the largest
+    // prefix, and the widest the floating bands have reached. A range they
+    // cannot cover is visible in some bin, so it is kept without reading any.
+    float PrefixMax;
+    float FloatLoMin;
+    float FloatHiMax;
+    float Prefix[HORIZON_BINS];
+    float FloatLo[HORIZON_BINS];
+    float FloatHi[HORIZON_BINS];
+} HorizonFrame;
+
+static HorizonFrame *GetHorizonFrame(void) {
+    static HorizonFrame Frame;
+    return &Frame;
+}
+
+// Sets the frame up; false when the projection degenerates (camera looking
+// nearly straight up or down) and the frame must go without the cull.
+static bool BeginHorizonFrame(HorizonFrame *H, const RenderFrustum *Frustum,
+                              RenderCamera Camera) {
+    float Dx = Camera.Target.x - Camera.Position.x;
+    float Dy = Camera.Target.y - Camera.Position.y;
+    float Dz = Camera.Target.z - Camera.Position.z;
+    float Heading = sqrtf((Dx * Dx) + (Dz * Dz));
+    if (Heading < HORIZON_MIN_HEADING * sqrtf((Dx * Dx) + (Dy * Dy) + (Dz * Dz))) {
+        return false;
+    }
+    H->CamX = Camera.Position.x;
+    H->CamY = Camera.Position.y;
+    H->CamZ = Camera.Position.z;
+    H->Fx = Dx / Heading;
+    H->Fz = Dz / Heading;
+    H->Rx = -H->Fz;
+    H->Rz = H->Fx;
+
+    // Corner directions of the view, each where two side planes meet; the
+    // visible region in (u, v) is the quadrilateral they span.
+    static const int CORNER_PLANES[HORIZON_FRUSTUM_CORNERS][2] = {
+        {FRUSTUM_LEFT_PLANE, FRUSTUM_BOTTOM_PLANE},
+        {FRUSTUM_LEFT_PLANE, FRUSTUM_TOP_PLANE},
+        {FRUSTUM_RIGHT_PLANE, FRUSTUM_BOTTOM_PLANE},
+        {FRUSTUM_RIGHT_PLANE, FRUSTUM_TOP_PLANE},
+    };
+    H->Umin = HUGE_VALF;
+    H->Umax = -HUGE_VALF;
+    for (int Corner = 0; Corner < HORIZON_FRUSTUM_CORNERS; Corner++) {
+        const float *A = Frustum->Planes[CORNER_PLANES[Corner][0]];
+        const float *B = Frustum->Planes[CORNER_PLANES[Corner][1]];
+        float Cx = (A[1] * B[2]) - (A[2] * B[1]);
+        float Cy = (A[2] * B[0]) - (A[0] * B[2]);
+        float Cz = (A[0] * B[1]) - (A[1] * B[0]);
+        if ((Cx * Dx) + (Cy * Dy) + (Cz * Dz) < 0.0F) {
+            Cx = -Cx;
+            Cy = -Cy;
+            Cz = -Cz;
+        }
+        float Len = sqrtf((Cx * Cx) + (Cy * Cy) + (Cz * Cz));
+        float Fz = (Cx * H->Fx) + (Cz * H->Fz);
+        if (Len <= 0.0F || Fz < HORIZON_CORNER_MIN_FZ * Len) { return false; }
+        float U = ((Cx * H->Rx) + (Cz * H->Rz)) / Fz;
+        H->Umin = fminf(H->Umin, U);
+        H->Umax = fmaxf(H->Umax, U);
+    }
+    if (!(H->Umax > H->Umin)) { return false; }
+    H->InvBinWidth = (float)HORIZON_BINS / (H->Umax - H->Umin);
+
+    // A line is on screen only on the inner side of the bottom plane:
+    // u * (N.R) + v * N.y + N.F >= 0, a line in (u, v). Over a bin it is lowest
+    // at one of the bin's two ends.
+    const float *Bottom = Frustum->Planes[FRUSTUM_BOTTOM_PLANE];
+    float NormalUp = Bottom[1];
+    if (NormalUp < HORIZON_MIN_PLANE_UP) { return false; }
+    float NormalRight = (Bottom[0] * H->Rx) + (Bottom[2] * H->Rz);
+    float NormalFwd = (Bottom[0] * H->Fx) + (Bottom[2] * H->Fz);
+    float BinWidth = (H->Umax - H->Umin) / (float)HORIZON_BINS;
+    for (int Bin = 0; Bin < HORIZON_BINS; Bin++) {
+        float U0 = H->Umin + ((float)Bin * BinWidth);
+        float U1 = U0 + BinWidth;
+        float V0 = -((U0 * NormalRight) + NormalFwd) / NormalUp;
+        float V1 = -((U1 * NormalRight) + NormalFwd) / NormalUp;
+        H->Prefix[Bin] = fminf(V0, V1) - HORIZON_SLOPE_EPS;
+        H->FloatLo[Bin] = HUGE_VALF;
+        H->FloatHi[Bin] = -HUGE_VALF;
+    }
+    H->PrefixMax = -HUGE_VALF;
+    for (int Bin = 0; Bin < HORIZON_BINS; Bin++) { H->PrefixMax = fmaxf(H->PrefixMax, H->Prefix[Bin]); }
+    H->FloatLoMin = HUGE_VALF;
+    H->FloatHiMax = -HUGE_VALF;
+    return true;
+}
+
+// A column's corners seen from the camera: fz extremes, the u range every
+// corner spans (Outer) and the one between the second smallest and second
+// largest corner u (Inner).
+typedef struct {
+    float FzMin;
+    float FzMax;
+    float InvFzMin;
+    float InvFzMax;
+    float OuterMin;
+    float OuterMax;
+    float InnerMin;
+    float InnerMax;
+} HorizonFootprint;
+
+enum { FOOTPRINT_CORNERS = 4, FOOTPRINT_SORT_STEPS = 5 };
+
+static bool ProjectFootprint(const HorizonFrame *H, int ChunkX, int ChunkZ,
+                             HorizonFootprint *Out) {
+    float X0 = ((float)(ChunkX * CHUNK_SIZE) - BLOCK_HALF_SIZE) - H->CamX;
+    float Z0 = ((float)(ChunkZ * CHUNK_SIZE) - BLOCK_HALF_SIZE) - H->CamZ;
+    // Both projections are linear, so the far corners are the near one plus
+    // a chunk's step along X, Z or both.
+    float Fz0 = (X0 * H->Fx) + (Z0 * H->Fz);
+    float R0 = (X0 * H->Rx) + (Z0 * H->Rz);
+    float StepFx = (float)CHUNK_SIZE * H->Fx;
+    float StepFz = (float)CHUNK_SIZE * H->Fz;
+    float StepRx = (float)CHUNK_SIZE * H->Rx;
+    float StepRz = (float)CHUNK_SIZE * H->Rz;
+    float Fz[FOOTPRINT_CORNERS] = {Fz0, Fz0 + StepFx, Fz0 + StepFz, Fz0 + StepFx + StepFz};
+    float R[FOOTPRINT_CORNERS] = {R0, R0 + StepRx, R0 + StepRz, R0 + StepRx + StepRz};
+    Out->FzMin = fminf(fminf(Fz[0], Fz[1]), fminf(Fz[2], Fz[3]));
+    if (Out->FzMin <= HORIZON_MIN_FZ) { return false; }
+    Out->FzMax = fmaxf(fmaxf(Fz[0], Fz[1]), fmaxf(Fz[2], Fz[3]));
+    Out->InvFzMin = 1.0F / Out->FzMin;
+    Out->InvFzMax = 1.0F / Out->FzMax;
+    float U[FOOTPRINT_CORNERS];
+    for (int Corner = 0; Corner < FOOTPRINT_CORNERS; Corner++) {
+        U[Corner] = R[Corner] / Fz[Corner];
+    }
+    // Sorting network for four values.
+    static const int PAIRS[FOOTPRINT_SORT_STEPS][2] = {
+        {0, 1}, {2, 3}, {0, 2}, {1, 3}, {1, 2}};
+    for (int Pair = 0; Pair < FOOTPRINT_SORT_STEPS; Pair++) {
+        int A = PAIRS[Pair][0];
+        int B = PAIRS[Pair][1];
+        if (U[A] > U[B]) {
+            float Swap = U[A];
+            U[A] = U[B];
+            U[B] = Swap;
+        }
+    }
+    Out->OuterMin = U[0];
+    Out->InnerMin = U[1];
+    Out->InnerMax = U[2];
+    Out->OuterMax = U[3];
+    return true;
+}
+
+// Smallest and largest v of a point at height offset Dy over the footprint.
+static float FootprintSlopeLow(const HorizonFootprint *F, float Dy) {
+    return Dy * ((Dy >= 0.0F) ? F->InvFzMax : F->InvFzMin);
+}
+
+static float FootprintSlopeHigh(const HorizonFootprint *F, float Dy) {
+    return Dy * ((Dy >= 0.0F) ? F->InvFzMin : F->InvFzMax);
+}
+
+// The bins the footprint touches; false when it reaches past the frustum's u
+// range, where nothing is recorded.
+static bool FootprintBins(const HorizonFrame *H, const HorizonFootprint *F,
+                          int *OutFirst, int *OutLast) {
+    if (F->OuterMin < H->Umin || F->OuterMax > H->Umax) { return false; }
+    int First = (int)((F->OuterMin - H->Umin) * H->InvBinWidth);
+    int Last = (int)((F->OuterMax - H->Umin) * H->InvBinWidth);
+    *OutFirst = (First < 0) ? 0 : First;
+    *OutLast = (Last >= HORIZON_BINS) ? HORIZON_BINS - 1 : Last;
+    return true;
+}
+
+// What is blocked in every one of a footprint's bins at once: v below
+// PrefixMin, and v inside [FloatLoMax, FloatHiMin]. Gathered once per column so
+// each of its chunks is tested with two comparisons; a v range blocked in each
+// bin but only by different means there is not recognised, which can only keep
+// a chunk, never drop one.
+typedef struct {
+    float PrefixMin;
+    float FloatLoMax;
+    float FloatHiMin;
+} HorizonSpan;
+
+static HorizonSpan GatherHorizonSpan(const HorizonFrame *H, int First, int Last) {
+    HorizonSpan Span = {HUGE_VALF, -HUGE_VALF, HUGE_VALF};
+    for (int Bin = First; Bin <= Last; Bin++) {
+        Span.PrefixMin = fminf(Span.PrefixMin, H->Prefix[Bin]);
+        Span.FloatLoMax = fmaxf(Span.FloatLoMax, H->FloatLo[Bin]);
+        Span.FloatHiMin = fminf(Span.FloatHiMin, H->FloatHi[Bin]);
+    }
+    return Span;
+}
+
+// False when no bin can block every line with v in [VMin, VMax], judged from
+// the frame-wide bounds alone.
+static bool HorizonMightHide(const HorizonFrame *H, float VMin, float VMax) {
+    if (VMax <= H->PrefixMax - HORIZON_SLOPE_EPS) { return true; }
+    return VMin >= H->FloatLoMin + HORIZON_SLOPE_EPS &&
+           VMax <= H->FloatHiMax - HORIZON_SLOPE_EPS;
+}
+
+// Whether every line of the span with v in [VMin, VMax] is blocked.
+static bool HorizonSpanHides(const HorizonSpan *Span, float VMin, float VMax) {
+    if (VMax <= Span->PrefixMin - HORIZON_SLOPE_EPS) { return true; }
+    return VMin >= Span->FloatLoMax + HORIZON_SLOPE_EPS &&
+           VMax <= Span->FloatHiMin - HORIZON_SLOPE_EPS;
+}
+
+static void HorizonInsertBin(HorizonFrame *H, int Bin, float VBot, float VTop) {
+    float Prefix = H->Prefix[Bin];
+    float Lo = H->FloatLo[Bin];
+    float Hi = H->FloatHi[Bin];
+    bool HasFloat = Lo <= Hi;
+    if (VBot <= Prefix) {
+        Prefix = fmaxf(Prefix, VTop);
+    } else if (HasFloat && VBot <= Hi && VTop >= Lo) {
+        Lo = fminf(Lo, VBot);
+        Hi = fmaxf(Hi, VTop);
+    } else if (!HasFloat || VTop > Hi) {
+        // Disjoint from both: keep the band nearer the horizon line, where the
+        // far columns that remain to be tested sit.
+        Lo = VBot;
+        Hi = VTop;
+    }
+    if (Lo <= Hi && Lo <= Prefix) {
+        Prefix = fmaxf(Prefix, Hi);
+        Lo = HUGE_VALF;
+        Hi = -HUGE_VALF;
+    }
+    H->Prefix[Bin] = Prefix;
+    H->FloatLo[Bin] = Lo;
+    H->FloatHi[Bin] = Hi;
+    H->PrefixMax = fmaxf(H->PrefixMax, Prefix);
+    if (Lo <= Hi) {
+        H->FloatLoMin = fminf(H->FloatLoMin, Lo);
+        H->FloatHiMax = fmaxf(H->FloatHiMax, Hi);
+    }
+}
+
+// Records that every line through the footprint's inner u range with v in
+// [VBot, VTop] is blocked.
+static void HorizonInsert(HorizonFrame *H, const HorizonFootprint *F, float VBot,
+                          float VTop) {
+    VBot += HORIZON_SLOPE_EPS;
+    VTop -= HORIZON_SLOPE_EPS;
+    if (VTop <= VBot) { return; }
+    // In bin units, clamped first so the conversions below stay in range.
+    float Lo = fmaxf((F->InnerMin - H->Umin) * H->InvBinWidth, -1.0F);
+    float Hi = fminf((F->InnerMax - H->Umin) * H->InvBinWidth, (float)HORIZON_BINS + 1.0F);
+    // Only bins wholly inside [Lo, Hi].
+    int First = (int)ceilf(Lo);
+    int Last = (int)floorf(Hi) - 1;
+    if (First < 0) { First = 0; }
+    if (Last >= HORIZON_BINS) { Last = HORIZON_BINS - 1; }
+    for (int Bin = First; Bin <= Last; Bin++) { HorizonInsertBin(H, Bin, VBot, VTop); }
+}
+
+// Adds a column's opaque layer runs to the horizon, lowest first so the upper
+// run can chain onto the band the lower one extends.
+static void HorizonAddOccluder(World *WorldVal, HorizonFrame *H, RenderColumn *Col) {
+    if (Col->RunsStale) { RefreshColumnRuns(WorldVal, Col); }
+    if (Col->RunCount == 0) { return; }
+    HorizonFootprint Footprint;
+    if (!ProjectFootprint(H, Col->ChunkX, Col->ChunkZ, &Footprint) ||
+        Footprint.FzMin < (float)CHUNK_SIZE) {
+        return;
+    }
+    for (int Run = Col->RunCount - 1; Run >= 0; Run--) {
+        float Bottom = ((float)Col->RunBottom[Run] - BLOCK_HALF_SIZE) - H->CamY;
+        float Top = ((float)Col->RunTop[Run] + BLOCK_HALF_SIZE) - H->CamY;
+        HorizonInsert(H, &Footprint, FootprintSlopeHigh(&Footprint, Bottom),
+                      FootprintSlopeLow(&Footprint, Top));
+    }
+}
+
+// The smallest key at which a column of key Key may hide anything:
+// (sqrt(Key) + HORIZON_COMMIT_LAG)^2, with the root rounded up.
+static int HorizonCommitKey(int Key) {
+    int Root = (int)sqrtf((float)Key);
+    while (Root * Root < Key) { Root++; }
+    int Reach = Root + HORIZON_COMMIT_LAG;
+    return Reach * Reach;
+}
+
+// A column that survived the frustum, in sweep order.
+typedef struct {
+    int Column;
+    int Key;
+    bool TestEach;
+} SweepEntry;
+
+static int HorizonColumnKey(const RenderColumn *Col, int CameraChunkX, int CameraChunkZ) {
+    int DeltaX = Col->ChunkX - CameraChunkX;
+    int DeltaZ = Col->ChunkZ - CameraChunkZ;
+    // Compared before squaring so a camera far from the loaded set cannot
+    // overflow the product.
+    if (abs(DeltaX) >= MAX_RENDER_DISTANCE || abs(DeltaZ) >= MAX_RENDER_DISTANCE) {
+        return HORIZON_KEY_BUCKETS - 1;
+    }
+    int Key = (DeltaX * DeltaX) + (DeltaZ * DeltaZ);
+    return (Key >= HORIZON_KEY_BUCKETS) ? HORIZON_KEY_BUCKETS - 1 : Key;
+}
+
+// Counting sort of Entries by key into Out, near to far.
+static void SortSweepEntries(const SweepEntry *Entries, int Count, SweepEntry *Out) {
+    static int KeyOffsets[HORIZON_KEY_BUCKETS];
+    memset(KeyOffsets, 0, sizeof(KeyOffsets));
+    for (int Idx = 0; Idx < Count; Idx++) { KeyOffsets[Entries[Idx].Key]++; }
+    int Running = 0;
+    for (int Key = 0; Key < HORIZON_KEY_BUCKETS; Key++) {
+        int Here = KeyOffsets[Key];
+        KeyOffsets[Key] = Running;
+        Running += Here;
+    }
+    for (int Idx = 0; Idx < Count; Idx++) {
+        Out[KeyOffsets[Entries[Idx].Key]++] = Entries[Idx];
+    }
 }
 
 void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
@@ -2488,8 +2894,23 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
     // straddling columns test their chunks one by one. The bucket is what
     // every pass sorts on, so deriving it here costs three integer multiplies
     // per visible chunk per frame rather than one per chunk per pass.
+    //
+    // With the horizon cull active the surviving columns are walked near to
+    // far instead of in set order; otherwise the order is left as it was.
+    PROFILE_BEGIN(SweepStart);
+    static SweepEntry Candidates[MAX_ACTIVE_CHUNKS];
+    static SweepEntry SortedCandidates[MAX_ACTIVE_CHUNKS];
+    HorizonFrame *Horizon = GetHorizonFrame();
+    Stats.HorizonEnabled = Stats.OcclusionEnabled && GetDebugState()->HorizonCulling;
+    bool HorizonActive = Stats.HorizonEnabled && !OcclusionActive &&
+                         !GetOcclusionState()->CameraEnclosed &&
+                         BeginHorizonFrame(Horizon, &Frustum, CameraVal);
+    Stats.HorizonActive = HorizonActive;
+
+    int CandidateCount = 0;
     for (int Dense = 0; Dense < Renderable->ActiveColumnCount; Dense++) {
-        RenderColumn *Col = &Renderable->Columns[Renderable->ActiveColumns[Dense]];
+        int Column = Renderable->ActiveColumns[Dense];
+        RenderColumn *Col = &Renderable->Columns[Column];
         if (Col->ExtentStale) { RefreshColumnExtent(Renderable, Col); }
 
         Vec3 BoxMin;
@@ -2506,6 +2927,56 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
         } else {
             Stats.ColumnsInside++;
         }
+        Candidates[CandidateCount++] = (SweepEntry){
+            .Column = Column,
+            .Key = HorizonActive ? HorizonColumnKey(Col, CameraChunkX, CameraChunkZ) : 0,
+            .TestEach = TestEach,
+        };
+    }
+
+    const SweepEntry *Sweep = Candidates;
+    if (HorizonActive) {
+        SortSweepEntries(Candidates, CandidateCount, SortedCandidates);
+        Sweep = SortedCandidates;
+    }
+
+    int Committed = 0;
+    for (int Idx = 0; Idx < CandidateCount; Idx++) {
+        const SweepEntry *Entry = &Sweep[Idx];
+        RenderColumn *Col = &Renderable->Columns[Entry->Column];
+        bool TestEach = Entry->TestEach;
+
+        HorizonFootprint Footprint;
+        HorizonSpan Span = {0};
+        bool SpanReady = false;
+        int FirstBin = 0;
+        int LastBin = -1;
+        bool HorizonTestable = false;
+        bool ColumnHidden = false;
+        if (HorizonActive) {
+            while (Committed < Idx &&
+                   HorizonCommitKey(Sweep[Committed].Key) <= Entry->Key) {
+                HorizonAddOccluder(WorldVal, Horizon,
+                                   &Renderable->Columns[Sweep[Committed].Column]);
+                Committed++;
+            }
+            HorizonTestable =
+                ProjectFootprint(Horizon, Col->ChunkX, Col->ChunkZ, &Footprint) &&
+                FootprintBins(Horizon, &Footprint, &FirstBin, &LastBin);
+            if (HorizonTestable) {
+                float Bottom = ((float)(Col->MinChunkY * CHUNK_SIZE) - BLOCK_HALF_SIZE) -
+                               Horizon->CamY;
+                float Top = ((float)((Col->MaxChunkY + 1) * CHUNK_SIZE) - BLOCK_HALF_SIZE) -
+                            Horizon->CamY;
+                float VMin = FootprintSlopeLow(&Footprint, Bottom);
+                float VMax = FootprintSlopeHigh(&Footprint, Top);
+                if (HorizonMightHide(Horizon, VMin, VMax)) {
+                    Span = GatherHorizonSpan(Horizon, FirstBin, LastBin);
+                    SpanReady = true;
+                    ColumnHidden = HorizonSpanHides(&Span, VMin, VMax);
+                }
+            }
+        }
 
         for (int Rec = Col->Head; Rec != 0;
              Rec = Renderable->Records[Rec].NextInColumn) {
@@ -2518,6 +2989,26 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
                 Stats.Occluded++;
                 continue;
             }
+            if (HorizonTestable) {
+                bool Hidden = ColumnHidden;
+                if (!Hidden) {
+                    float Bottom = ((float)(ChunkVal->ChunkY * CHUNK_SIZE) - BLOCK_HALF_SIZE) -
+                                   Horizon->CamY;
+                    float VMin = FootprintSlopeLow(&Footprint, Bottom);
+                    float VMax = FootprintSlopeHigh(&Footprint, Bottom + (float)CHUNK_SIZE);
+                    if (HorizonMightHide(Horizon, VMin, VMax)) {
+                        if (!SpanReady) {
+                            Span = GatherHorizonSpan(Horizon, FirstBin, LastBin);
+                            SpanReady = true;
+                        }
+                        Hidden = HorizonSpanHides(&Span, VMin, VMax);
+                    }
+                }
+                if (Hidden) {
+                    Stats.HorizonCulled++;
+                    continue;
+                }
+            }
 
             VisibleChunks[VisibleCount].ChunkVal = ChunkVal;
             VisibleChunks[VisibleCount].Bucket =
@@ -2529,8 +3020,10 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
             VisibleCount++;
         }
     }
-    // Frustum candidates, whether or not occlusion then removed them.
-    Stats.Visible = VisibleCount + Stats.Occluded;
+    // Frustum candidates, whether or not occlusion or the horizon then removed
+    // them.
+    Stats.Visible = VisibleCount + Stats.Occluded + Stats.HorizonCulled;
+    PROFILE_END(SweepStart, PROFILE_CULL_SWEEP);
 
     // Counting sort walked from the near bucket up, so the output runs nearest
     // to farthest. The translucent pass reads the same array backwards.

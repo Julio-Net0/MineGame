@@ -30,6 +30,12 @@ typedef struct {
   // two can be compared in one sitting.
   bool Occlusion;
 
+  // Measurement aid, enabled by default. Applies only while Occlusion is on and
+  // the traversal fell back because sight lines reach the open sky: the world
+  // draw then sweeps columns near to far and skips those wholly below a
+  // conservative horizon built from fully opaque chunk layers.
+  bool HorizonCulling;
+
   // Set for scripted runs only. Draw order otherwise follows upload order in two
   // places -- chunks at the same distance from the camera, and the opaque passes'
   // grouping by GPU memory block -- and upload order depends on worker timing.

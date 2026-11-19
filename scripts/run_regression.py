@@ -617,7 +617,8 @@ EXPECTED_RENDERED: dict[int, dict[int, dict[str, int]]] = {
     # replaces them, and an older version's numbers could only mislead.
     # Calibrated with per-column terrain bands, stone caps where unloaded rock
     # borders open cells, and frustum fallback for frames whose sight lines
-    # reach the open sky above the loaded columns (most R=32 poses).
+    # reach the open sky above the loaded columns (most R=32 poses), which the
+    # horizon cull then trims (R=16 after_walk, R=32 spawn and after_walk).
     6: {
         8: {
             "spawn": 414,
@@ -634,17 +635,17 @@ EXPECTED_RENDERED: dict[int, dict[int, dict[str, int]]] = {
             "far": 607,
             "after_ticks": 607,
             "landed": 892,
-            "after_walk": 1141,
+            "after_walk": 986,
             "after_break": 682,
             "after_place": 682,
             "after_jump": 682,
         },
         32: {
-            "spawn": 3309,
+            "spawn": 3094,
             "far": 1749,
             "after_ticks": 1749,
             "landed": 3585,
-            "after_walk": 2992,
+            "after_walk": 2515,
             "after_break": 3014,
             "after_place": 3014,
             "after_jump": 3023,
@@ -694,6 +695,20 @@ def assert_occlusion_counts(state: dict[str, Any], label: str) -> None:
     )
     if chunks.get("occlusion") is False:
         require(occluded == 0, f"{label}: occlusion is off but chunks.occluded == {occluded}")
+    cull = chunks.get("cull", {})
+    if "horizonCulled" in cull:
+        horizon_culled = cull["horizonCulled"]
+        require(
+            0 <= horizon_culled <= visible - occluded,
+            f"{label}: expected 0 <= cull.horizonCulled <= visible - occluded, got {horizon_culled}",
+        )
+        if not cull.get("horizonActive"):
+            require(horizon_culled == 0, f"{label}: horizon idle but cull.horizonCulled == {horizon_culled}")
+        if cull.get("horizonActive"):
+            require(
+                occluded == 0 and cull.get("occlusionFallback") is True,
+                f"{label}: horizon ran on a frame the occlusion traversal did not fall back on",
+            )
 
 
 def assert_settled_chunks(

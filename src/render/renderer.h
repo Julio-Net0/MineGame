@@ -85,7 +85,9 @@ int GetLastRenderedChunkCount(void);
 // OcclusionNodes and OcclusionReachable are the traversal's work and reach, and
 // OcclusionFallback is set when the frame fell back to frustum culling alone:
 // the camera stood outside the loaded set or inside rock, or a sight line
-// reached the open sky above the loaded columns. SubmittedVertices sums every mesh
+// reached the open sky above the loaded columns. HorizonActive is set when such a
+// sky fallback ran the horizon sweep instead, and HorizonCulled is how many of
+// the Visible chunks it rejected. SubmittedVertices sums every mesh
 // the passes actually drew -- a machine-independent proxy for GPU load.
 typedef struct {
   int Renderable;
@@ -99,9 +101,12 @@ typedef struct {
   int Occluded;
   int OcclusionNodes;
   int OcclusionReachable;
+  int HorizonCulled;
   int64_t SubmittedVertices;
   bool OcclusionEnabled;
   bool OcclusionFallback;
+  bool HorizonEnabled;
+  bool HorizonActive;
 } RenderCullStats;
 
 void GetLastCullStats(RenderCullStats *Out);
