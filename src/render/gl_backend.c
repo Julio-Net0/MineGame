@@ -130,6 +130,16 @@ enum {
 
 typedef struct {
   GLuint BlockArrayTex;
+  // Chunk passes sample the array through a sampler object, so the texture
+  // can carry a mip chain for the LOD without changing what near chunks read:
+  // the near sampler never leaves level 0.
+  GLuint NearSampler;
+  GLuint LodSampler;
+  int MipLevels;
+  int MipAlphaLayers;
+  int MipCheckFailures;
+  int MipNaiveDrifts;
+  float LodAnisotropy;
   GLuint BlockAtlasTex;
   GLuint UiAtlasTex;
   int BlockIconGrid;
@@ -488,6 +498,164 @@ static void CropToSquare(CoreImage *Tile) {
   }
 }
 
+enum {
+  RGBA_CHANNELS = 4,
+  CHANNEL_ALPHA = 3,
+  TEXEL_OPAQUE = 255,
+  BOX_TEXELS = 4,
+  // Rounding through log2(tile) halvings can move a channel a few steps away
+  // from the exact mean of the full tile.
+  MIP_CHECK_TOLERANCE = 4
+};
+
+// GL_TEXTURE_MAX_ANISOTROPY: the same value for the EXT and ARB extensions and
+// GL 4.6 core; the vendored loader stops at 4.3.
+#define SAMPLER_MAX_ANISOTROPY 0x84FEU
+#define LOD_ANISOTROPY_CAP 16.0F
+
+// One 2x box-filter step. Colour is averaged over the texels that show it,
+// weighted by alpha, so the transparent (often black) texels of leaves and
+// overlay fringes cannot darken the levels below; alpha is the plain mean. A
+// fully transparent box keeps the plain colour mean.
+static size_t TexelOffset(int X, int Y, int Size) {
+  return (((size_t)Y * (size_t)Size) + (size_t)X) * (size_t)RGBA_CHANNELS;
+}
+
+static void DownsampleTileLevel(const unsigned char *Src, int SrcSize,
+                                unsigned char *Dst) {
+  int DstSize = SrcSize / 2;
+  for (int Y = 0; Y < DstSize; Y++) {
+    for (int X = 0; X < DstSize; X++) {
+      const unsigned char *Box[BOX_TEXELS] = {
+          &Src[TexelOffset(X * 2, Y * 2, SrcSize)],
+          &Src[TexelOffset((X * 2) + 1, Y * 2, SrcSize)],
+          &Src[TexelOffset(X * 2, (Y * 2) + 1, SrcSize)],
+          &Src[TexelOffset((X * 2) + 1, (Y * 2) + 1, SrcSize)]};
+      unsigned SumAlpha = 0;
+      for (int Texel = 0; Texel < BOX_TEXELS; Texel++) {
+        SumAlpha += Box[Texel][CHANNEL_ALPHA];
+      }
+      unsigned char *Out = &Dst[TexelOffset(X, Y, DstSize)];
+      for (int Channel = 0; Channel < CHANNEL_ALPHA; Channel++) {
+        unsigned Weighted = 0;
+        unsigned Plain = 0;
+        for (int Texel = 0; Texel < BOX_TEXELS; Texel++) {
+          Weighted += (unsigned)Box[Texel][Channel] * Box[Texel][CHANNEL_ALPHA];
+          Plain += Box[Texel][Channel];
+        }
+        Out[Channel] = (unsigned char)((SumAlpha > 0U)
+                                           ? (Weighted + (SumAlpha / 2U)) / SumAlpha
+                                           : (Plain + (BOX_TEXELS / 2)) / BOX_TEXELS);
+      }
+      Out[CHANNEL_ALPHA] =
+          (unsigned char)((SumAlpha + (BOX_TEXELS / 2)) / BOX_TEXELS);
+    }
+  }
+}
+
+// The smallest level must equal the alpha-weighted mean of the whole tile, to
+// within rounding; a layer that drifts means its mips darkened or bled.
+// *OutNaiveDrifts reports whether a plain (unweighted) mean would have missed
+// the same target: the layers where alpha weighting is what keeps the mips
+// from darkening.
+static bool MipMatchesTile(const unsigned char *Tile, int TileSize,
+                           const unsigned char *Smallest, bool *OutHasAlpha,
+                           bool *OutNaiveDrifts) {
+  double SumAlpha = 0.0;
+  double Weighted[CHANNEL_ALPHA] = {0.0, 0.0, 0.0};
+  double Plain[CHANNEL_ALPHA] = {0.0, 0.0, 0.0};
+  int Texels = TileSize * TileSize;
+  *OutHasAlpha = false;
+  *OutNaiveDrifts = false;
+  for (int Idx = 0; Idx < Texels; Idx++) {
+    const unsigned char *Texel = &Tile[(size_t)Idx * (size_t)RGBA_CHANNELS];
+    double Alpha = (double)Texel[CHANNEL_ALPHA];
+    *OutHasAlpha = *OutHasAlpha || Texel[CHANNEL_ALPHA] != TEXEL_OPAQUE;
+    SumAlpha += Alpha;
+    for (int Channel = 0; Channel < CHANNEL_ALPHA; Channel++) {
+      Weighted[Channel] += (double)Texel[Channel] * Alpha;
+      Plain[Channel] += (double)Texel[Channel];
+    }
+  }
+  for (int Channel = 0; Channel < CHANNEL_ALPHA; Channel++) {
+    double Expected = (SumAlpha > 0.0) ? Weighted[Channel] / SumAlpha
+                                       : Plain[Channel] / (double)Texels;
+    double Naive = (Plain[Channel] / (double)Texels) - Expected;
+    if (Naive > (double)MIP_CHECK_TOLERANCE ||
+        Naive < -(double)MIP_CHECK_TOLERANCE) {
+      *OutNaiveDrifts = true;
+    }
+    double Drift = (double)Smallest[Channel] - Expected;
+    if (Drift > (double)MIP_CHECK_TOLERANCE ||
+        Drift < -(double)MIP_CHECK_TOLERANCE) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Uploads every level below 0 for one layer and checks the smallest.
+static void UploadTileMips(BackendState *State, const CoreImage *Tile,
+                           int Layer, int TileSize, unsigned char *ScratchA,
+                           unsigned char *ScratchB) {
+  const unsigned char *Source = Tile->Pixels;
+  unsigned char *Target = ScratchA;
+  int Size = TileSize;
+  for (int Level = 1; Level < State->MipLevels; Level++) {
+    DownsampleTileLevel(Source, Size, Target);
+    Size /= 2;
+    glTexSubImage3D(GL_TEXTURE_2D_ARRAY, Level, 0, 0, Layer, Size, Size, 1,
+                    GL_RGBA, GL_UNSIGNED_BYTE, Target);
+    Source = Target;
+    Target = (Target == ScratchA) ? ScratchB : ScratchA;
+  }
+  bool HasAlpha = false;
+  bool NaiveDrifts = false;
+  if (!MipMatchesTile(Tile->Pixels, TileSize, Source, &HasAlpha, &NaiveDrifts)) {
+    State->MipCheckFailures++;
+  }
+  if (NaiveDrifts) {
+    State->MipNaiveDrifts++;
+  }
+  if (HasAlpha) {
+    State->MipAlphaLayers++;
+  }
+}
+
+static int MipLevelsFor(int TileSize) {
+  int Levels = 1;
+  for (int Size = TileSize; Size > 1; Size /= 2) {
+    Levels++;
+  }
+  return Levels;
+}
+
+static void CreateChunkSamplers(BackendState *State, bool WithLod) {
+  glGenSamplers(1, &State->NearSampler);
+  glSamplerParameteri(State->NearSampler, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+  glSamplerParameteri(State->NearSampler, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+  glSamplerParameteri(State->NearSampler, GL_TEXTURE_WRAP_S, GL_REPEAT);
+  glSamplerParameteri(State->NearSampler, GL_TEXTURE_WRAP_T, GL_REPEAT);
+  State->LodAnisotropy = 0.0F;
+  if (!WithLod) {
+    return;
+  }
+  glGenSamplers(1, &State->LodSampler);
+  glSamplerParameteri(State->LodSampler, GL_TEXTURE_MIN_FILTER,
+                      GL_NEAREST_MIPMAP_LINEAR);
+  glSamplerParameteri(State->LodSampler, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+  glSamplerParameteri(State->LodSampler, GL_TEXTURE_WRAP_S, GL_REPEAT);
+  glSamplerParameteri(State->LodSampler, GL_TEXTURE_WRAP_T, GL_REPEAT);
+  float Anisotropy = RenderGetCapabilities()->MaxAnisotropy;
+  if (Anisotropy > 1.0F) {
+    if (Anisotropy > LOD_ANISOTROPY_CAP) {
+      Anisotropy = LOD_ANISOTROPY_CAP;
+    }
+    glSamplerParameterf(State->LodSampler, SAMPLER_MAX_ANISOTROPY, Anisotropy);
+    State->LodAnisotropy = Anisotropy;
+  }
+}
+
 static void LoadBlockTextureArray(void) {
   BackendState *State = GetBackendState();
 
@@ -523,10 +691,30 @@ static void LoadBlockTextureArray(void) {
     LogError("RENDER: out of memory building the block icon atlas");
   }
 
+  // The mip chain exists only for the LOD, so a device that cannot draw LOD
+  // keeps the single level it always had.
+  bool WithLod = RenderGetCapabilities()->LodSupported;
+  State->MipLevels = WithLod ? MipLevelsFor(TileSize) : 1;
+  State->MipAlphaLayers = 0;
+  State->MipCheckFailures = 0;
+  State->MipNaiveDrifts = 0;
+  unsigned char *MipScratch = NULL;
+  if (State->MipLevels > 1) {
+    size_t Half = (size_t)(TileSize / 2) * (size_t)(TileSize / 2) * RGBA_CHANNELS;
+    MipScratch = (unsigned char *)malloc(Half * 2U);
+    if (MipScratch == NULL) {
+      LogWarn("RENDER: out of memory for block texture mipmaps; one level only");
+      State->MipLevels = 1;
+    }
+  }
+
   glGenTextures(1, &State->BlockArrayTex);
   glBindTexture(GL_TEXTURE_2D_ARRAY, State->BlockArrayTex);
-  glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8, TileSize, TileSize, LayerCount,
-               0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+  for (int Level = 0; Level < State->MipLevels; Level++) {
+    int Size = TileSize >> Level;
+    glTexImage3D(GL_TEXTURE_2D_ARRAY, Level, GL_RGBA8, Size, Size, LayerCount,
+                 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+  }
 
   for (int Idx = 0; Idx < LayerCount; Idx++) {
     CoreImage *Tile = &Tiles[Idx];
@@ -536,6 +724,11 @@ static void LoadBlockTextureArray(void) {
     if (Tile->Pixels != NULL) {
       glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, Idx, TileSize, TileSize, 1,
                       GL_RGBA, GL_UNSIGNED_BYTE, Tile->Pixels);
+      if (MipScratch != NULL) {
+        size_t Half =
+            (size_t)(TileSize / 2) * (size_t)(TileSize / 2) * RGBA_CHANNELS;
+        UploadTileMips(State, Tile, Idx, TileSize, MipScratch, MipScratch + Half);
+      }
     }
     if (IconTile != TileSize) {
       (void)CoreImageResizeNearest(Tile, IconTile, IconTile);
@@ -544,11 +737,23 @@ static void LoadBlockTextureArray(void) {
     CoreImageFree(Tile);
   }
 
+  free(MipScratch);
+  glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_BASE_LEVEL, 0);
+  glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAX_LEVEL,
+                  State->MipLevels - 1);
   glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_REPEAT);
   glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_REPEAT);
   glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+  CreateChunkSamplers(State, WithLod);
+  LogInfo("RENDER: block textures: %d layers of %dx%d, %d mip level%s "
+          "(%d with alpha, %d failed the mip check, %d would drift with a "
+          "plain mean), LOD sampler anisotropy %.0f",
+          LayerCount, TileSize, TileSize, State->MipLevels,
+          (State->MipLevels == 1) ? "" : "s", State->MipAlphaLayers,
+          State->MipCheckFailures, State->MipNaiveDrifts,
+          (double)State->LodAnisotropy);
 
   if (Atlas.Pixels != NULL) {
     State->BlockAtlasTex = CreateNearestTexture2D(&Atlas);
@@ -847,6 +1052,14 @@ void RenderBackendShutdown(void) {
   DeleteTexture(&State->BlockAtlasTex);
   DeleteTexture(&State->UiAtlasTex);
   DeleteTexture(&State->BlockArrayTex);
+  if (State->NearSampler != 0) {
+    glDeleteSamplers(1, &State->NearSampler);
+    State->NearSampler = 0;
+  }
+  if (State->LodSampler != 0) {
+    glDeleteSamplers(1, &State->LodSampler);
+    State->LodSampler = 0;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1227,6 +1440,7 @@ void RenderBeginChunkPass(ChunkPassKind Kind) {
   glUniform1i(State->ActiveChunk->DrawPageBaseLoc, 0);
   glActiveTexture(GL_TEXTURE0 + BLOCK_TEXTURE_UNIT);
   glBindTexture(GL_TEXTURE_2D_ARRAY, State->BlockArrayTex);
+  glBindSampler(BLOCK_TEXTURE_UNIT, State->NearSampler);
 
 #ifdef MINEGAME_PROFILE
   BeginSolidOcclusionQuery(State);
@@ -1261,6 +1475,9 @@ void RenderEndChunkPass(void) {
   glBindTexture(GL_TEXTURE_BUFFER, 0);
   glActiveTexture(GL_TEXTURE0 + BLOCK_TEXTURE_UNIT);
   glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+  // The UI and atlas draws share this unit and rely on their own texture
+  // parameters, so no sampler may stay bound past the pass.
+  glBindSampler(BLOCK_TEXTURE_UNIT, 0);
   glUseProgram(0);
 }
 
@@ -1524,13 +1741,18 @@ void RenderGetStats(RenderStats *Out) {
   }
   ArenaStats Arena;
   ArenaGetStats(&Arena);
-  *Out = (RenderStats){.Tier = (int)GetBackendState()->Tier,
+  const BackendState *State = GetBackendState();
+  *Out = (RenderStats){.Tier = (int)State->Tier,
                        .ArenaBlocks = Arena.Blocks,
                        .UsedPages = Arena.UsedPages,
                        .FreePages = Arena.FreePages,
                        .PendingPages = Arena.PendingPages,
                        .UsedBytes = Arena.UsedBytes,
-                       .SlackBytes = Arena.SlackBytes};
+                       .SlackBytes = Arena.SlackBytes,
+                       .MipLevels = State->MipLevels,
+                       .MipAlphaLayers = State->MipAlphaLayers,
+                       .MipCheckFailures = State->MipCheckFailures,
+                       .LodSamplerAnisotropy = State->LodAnisotropy};
 }
 
 int RenderGetMissingBlockTextureCount(void) {

@@ -125,6 +125,7 @@ add_executable(${PROJECT_NAME}
   src/input/glfw_input.c
   src/platform/glfw_platform.c
   src/render/renderer.c
+  src/render/voxel_mesher.c
   src/render/chunk_visibility.c
   src/render/gl_backend.c
   src/render/gl_caps.c

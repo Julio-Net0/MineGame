@@ -135,6 +135,14 @@ typedef struct {
   int64_t PendingPages;
   int64_t UsedBytes;
   int64_t SlackBytes;
+  // Block texture mip chain: levels allocated (1 when LOD is off), layers whose
+  // tiles hold transparent texels, and layers whose smallest level drifted from
+  // the alpha-weighted mean of the full tile (should be 0). The anisotropy the
+  // LOD sampler uses (0 when there is none).
+  int MipLevels;
+  int MipAlphaLayers;
+  int MipCheckFailures;
+  float LodSamplerAnisotropy;
 } RenderStats;
 void RenderGetStats(RenderStats *Out);
 

@@ -4,6 +4,7 @@
 #include "core/vecmath.h"
 #include "player/player.h"
 #include "world/world.h"
+#include "world/lod/lod_section.h"
 #include "render/backend.h"
 #include <stdbool.h>
 #include <stdint.h>
@@ -30,6 +31,28 @@ void RendererFreeMesherSlots(void);
 // upload hands to the LOD store. Main thread, after LodIngestInit succeeded and
 // before the workers start; false when the patches cannot be allocated.
 bool RendererEnableLodIngest(void);
+
+// Result of meshing every resident LOD section once, as the LOD renderer will:
+// how many sections and quads per target, the largest section, and anything
+// that would be wrong to draw (vertices outside the section, unknown texture
+// layers, billboards, a section that overflowed its buffers).
+typedef struct {
+  bool Enabled;
+  int Sections;
+  int SectionsPerLevel[LOD_MAX_LEVEL + 1];
+  int EmptySections;
+  int64_t OpaqueQuads;
+  int64_t CutoutQuads;
+  int64_t TranslucentQuads;
+  int MaxSectionQuads;
+  int TruncatedSections;
+  int64_t InvalidVertices;
+  double Milliseconds;
+} LodMeshCheckStats;
+
+// Main thread. Allocates its meshing scratch for the call and frees it before
+// returning; false only when that allocation fails.
+bool RendererCheckLodMeshes(LodMeshCheckStats *Out);
 // Main thread: capture the chunk's snapshot into a free job slot and return its
 // id, or -1 when the chunk needs no mesh or no slot is free.
 int RendererQueueMeshJob(World *WorldVal, Chunk *ChunkVal);

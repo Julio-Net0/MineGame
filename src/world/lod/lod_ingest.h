@@ -75,6 +75,10 @@ void LodIngestGetStats(LodIngestStats *Out);
 // when off. Walks and sorts the store, so for state dumps, not per frame.
 uint64_t LodIngestContentHash(void);
 
+// The client's store, read-only, for tools that walk it on the main thread;
+// NULL when LOD is off.
+const LodStore *LodIngestStore(void);
+
 // Cheap figures for a per-frame overlay.
 int LodIngestSectionCount(void);
 size_t LodIngestBytes(void);

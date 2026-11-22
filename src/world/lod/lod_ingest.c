@@ -309,6 +309,11 @@ uint64_t LodIngestContentHash(void) {
   return Hash;
 }
 
+const LodStore *LodIngestStore(void) {
+  const LodIngestState *State = GetIngestState();
+  return State->Enabled ? &State->Store : NULL;
+}
+
 int LodIngestSectionCount(void) {
   const LodIngestState *State = GetIngestState();
   return State->Enabled ? State->Store.Count : 0;

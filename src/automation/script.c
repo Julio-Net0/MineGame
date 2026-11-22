@@ -103,6 +103,7 @@ typedef enum {
   SCRIPT_OP_DEBUG_SCREEN,
   SCRIPT_OP_SCREENSHOT,
   SCRIPT_OP_STATE,
+  SCRIPT_OP_LOD_MESH_CHECK,
   SCRIPT_OP_INVENTORY,
   SCRIPT_OP_WORLDGEN_PREVIEW,
   SCRIPT_OP_WORLDGEN_BIOME_MAP,
@@ -757,8 +758,17 @@ static bool ParseStatement(char *Statement, int LineNumber) {
   }
 
   bool IsScreenshot = CompareString(Tokens[0], "screenshot") == 0;
-  if (IsScreenshot || CompareString(Tokens[0], "state") == 0) {
-    const char *Keyword = IsScreenshot ? "screenshot" : "state";
+  bool IsLodCheck = CompareString(Tokens[0], "lod_mesh_check") == 0;
+  if (IsScreenshot || IsLodCheck || CompareString(Tokens[0], "state") == 0) {
+    const char *Keyword = "state";
+    ScriptOpKind Kind = SCRIPT_OP_STATE;
+    if (IsScreenshot) {
+      Keyword = "screenshot";
+      Kind = SCRIPT_OP_SCREENSHOT;
+    } else if (IsLodCheck) {
+      Keyword = "lod_mesh_check";
+      Kind = SCRIPT_OP_LOD_MESH_CHECK;
+    }
     if (TokenCount != 2) {
       char Reason[SCRIPT_LOG_LINE_CHARS];
       (void)snprintf(Reason, sizeof(Reason), "expected \"%s <name>\"", Keyword);
@@ -773,11 +783,9 @@ static bool ParseStatement(char *Statement, int LineNumber) {
       ParseError(LineNumber, Reason);
       return false;
     }
-    return AppendStatement((ScriptStatement){.Kind = IsScreenshot
-                                                 ? SCRIPT_OP_SCREENSHOT
-                                                 : SCRIPT_OP_STATE,
-                                             .Line = LineNumber},
-                           Tokens[1], LineText);
+    return AppendStatement(
+        (ScriptStatement){.Kind = Kind, .Line = LineNumber}, Tokens[1],
+        LineText);
   }
 
   ParseError(LineNumber, "unknown statement");
@@ -1105,6 +1113,11 @@ static void ScriptAddRenderJson(cJSON *Root) {
   RenderStats Stats;
   RenderGetStats(&Stats);
   cJSON_AddNumberToObject(Node, "tier", Stats.Tier);
+  cJSON_AddNumberToObject(Node, "mipLevels", Stats.MipLevels);
+  cJSON_AddNumberToObject(Node, "mipAlphaLayers", Stats.MipAlphaLayers);
+  cJSON_AddNumberToObject(Node, "mipCheckFailures", Stats.MipCheckFailures);
+  cJSON_AddNumberToObject(Node, "lodSamplerAnisotropy",
+                          (double)Stats.LodSamplerAnisotropy);
   ScriptAddCapabilitiesJson(Node);
   cJSON *Arena = cJSON_CreateObject();
   if (Arena != (cJSON *)0) {
@@ -1414,6 +1427,66 @@ static void ScriptAddProfilerJson(cJSON *Root) {
 
 // Writes everything a run can check without looking at pixels. Cheaper to read
 // than a screenshot and unambiguous where a screenshot is a judgement call.
+// Meshes every resident LOD section and writes what came out to Name.json.
+// Fails the run when anything meshed would be wrong to draw.
+static bool ScriptLodMeshCheck(const char *Name, int Line) {
+  ScriptState *State = GetScriptState();
+  LodMeshCheckStats Stats;
+  if (!RendererCheckLodMeshes(&Stats)) {
+    ScriptFail(Line, "out of memory meshing the LOD sections");
+    return false;
+  }
+  cJSON *Root = cJSON_CreateObject();
+  if (Root == (cJSON *)0) {
+    ScriptFail(Line, "out of memory building the LOD mesh check");
+    return false;
+  }
+  cJSON_AddBoolToObject(Root, "enabled", Stats.Enabled);
+  cJSON_AddNumberToObject(Root, "sections", Stats.Sections);
+  cJSON *Levels = cJSON_CreateArray();
+  if (Levels != (cJSON *)0) {
+    for (int Level = 1; Level <= LOD_MAX_LEVEL; Level++) {
+      cJSON_AddItemToArray(Levels,
+                           cJSON_CreateNumber(Stats.SectionsPerLevel[Level]));
+    }
+    cJSON_AddItemToObject(Root, "sectionsPerLevel", Levels);
+  }
+  cJSON_AddNumberToObject(Root, "emptySections", Stats.EmptySections);
+  cJSON_AddNumberToObject(Root, "opaqueQuads", (double)Stats.OpaqueQuads);
+  cJSON_AddNumberToObject(Root, "cutoutQuads", (double)Stats.CutoutQuads);
+  cJSON_AddNumberToObject(Root, "translucentQuads",
+                          (double)Stats.TranslucentQuads);
+  cJSON_AddNumberToObject(Root, "maxSectionQuads", Stats.MaxSectionQuads);
+  cJSON_AddNumberToObject(Root, "truncatedSections", Stats.TruncatedSections);
+  cJSON_AddNumberToObject(Root, "invalidVertices", (double)Stats.InvalidVertices);
+  cJSON_AddNumberToObject(Root, "milliseconds", Stats.Milliseconds);
+  char *Text = cJSON_Print(Root);
+  cJSON_Delete(Root);
+  char Path[FILEIO_MAX_PATH];
+  int Written = snprintf(Path, sizeof(Path), "%s/%s.json", State->OutDir, Name);
+  bool Ok = Text != (char *)0 && Written > 0 &&
+            (size_t)Written < sizeof(Path) && WriteTextFile(Path, Text);
+  cJSON_free(Text);
+  if (!Ok) {
+    ScriptFail(Line, "could not write the LOD mesh check");
+    return false;
+  }
+  ScriptLog("      | lod mesh check: %d sections, %lld opaque + %lld translucent "
+            "quads, max %d per section, %d truncated, %lld invalid vertices, "
+            "%.1f ms",
+            Stats.Sections, (long long)Stats.OpaqueQuads,
+            (long long)Stats.TranslucentQuads, Stats.MaxSectionQuads,
+            Stats.TruncatedSections, (long long)Stats.InvalidVertices,
+            Stats.Milliseconds);
+  bool Valid = Stats.TruncatedSections == 0 && Stats.InvalidVertices == 0 &&
+               Stats.CutoutQuads == 0 &&
+               (!Stats.Enabled || (Stats.Sections > 0 && Stats.OpaqueQuads > 0));
+  if (!Valid) {
+    ScriptFail(Line, "LOD meshes failed the check");
+  }
+  return Valid;
+}
+
 static bool ScriptWriteState(const ScriptContext *Ctx, const char *Name,
                              int Line) {
   ScriptState *State = GetScriptState();
@@ -1746,6 +1819,11 @@ void ScriptStep(ChatState *Chat, GameCamera *Camera, Player *PlayerVal,
       break;
     case SCRIPT_OP_INVENTORY:
       if (!ScriptRunInventory(Step, PlayerVal)) {
+        return;
+      }
+      break;
+    case SCRIPT_OP_LOD_MESH_CHECK:
+      if (!ScriptLodMeshCheck(Step->Name, Step->Line)) {
         return;
       }
       break;
