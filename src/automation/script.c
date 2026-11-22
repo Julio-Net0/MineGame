@@ -18,6 +18,7 @@
 #include "world/block_system.h"
 #include "world/chunk.h"
 #include "world/surface.h"
+#include "world/lod/lod_ingest.h"
 #include "world/terrain_density.h"
 #include "world/worldgen_column_cache.h"
 
@@ -954,12 +955,13 @@ static Vec3 ScriptLoadCenter(const ScriptContext *Ctx) {
 // Settled means the world has nothing left in flight AND the meshes it produced
 // have all reached the GPU; a chunk stops being dirty when its job is queued,
 // so the chunk flags alone would call a world with a full pool of meshes still
-// uploading finished.
+// uploading finished. With LOD on, the hierarchy must also have absorbed every
+// change, so what a later statement records does not depend on frame timing.
 static bool ScriptWorldSettled(const ScriptContext *Ctx) {
   PROFILE_BEGIN(SettleStart);
   bool Settled = WorldIsSettled(Ctx->WorldVal, ScriptLoadCenter(Ctx),
                                 Ctx->RenderDistance) &&
-                 !RendererHasPendingMeshWork();
+                 !RendererHasPendingMeshWork() && LodIngestIdle();
   PROFILE_END(SettleStart, PROFILE_SCRIPT_WAIT);
   return Settled;
 }
@@ -1036,6 +1038,59 @@ static void ScriptAddCapabilitiesJson(cJSON *Node) {
   cJSON_AddNumberToObject(CapsNode, "maxAnisotropy",
                           (double)Caps->MaxAnisotropy);
   cJSON_AddItemToObject(Node, "caps", CapsNode);
+}
+
+enum {
+  LOD_HASH_TEXT_CHARS = 20
+};
+
+static void ScriptAddLodJson(cJSON *Root) {
+  cJSON *Node = cJSON_CreateObject();
+  if (Node == (cJSON *)0) {
+    return;
+  }
+  LodIngestStats Stats;
+  LodIngestGetStats(&Stats);
+  cJSON_AddBoolToObject(Node, "enabled", Stats.Enabled);
+  cJSON_AddNumberToObject(Node, "pending", LodIngestPendingCount());
+  char HashText[LOD_HASH_TEXT_CHARS];
+  (void)snprintf(HashText, sizeof(HashText), "%016llx",
+                 (unsigned long long)LodIngestContentHash());
+  cJSON_AddStringToObject(Node, "contentHash", HashText);
+  cJSON_AddNumberToObject(Node, "sections", Stats.Store.Sections);
+  cJSON *Levels = cJSON_CreateArray();
+  if (Levels != (cJSON *)0) {
+    for (int Level = 1; Level <= LOD_MAX_LEVEL; Level++) {
+      cJSON_AddItemToArray(
+          Levels, cJSON_CreateNumber(Stats.Store.SectionsPerLevel[Level]));
+    }
+    cJSON_AddItemToObject(Node, "sectionsPerLevel", Levels);
+  }
+  cJSON *Modes = cJSON_CreateObject();
+  if (Modes != (cJSON *)0) {
+    cJSON_AddNumberToObject(Modes, "uniform",
+                            Stats.Store.SectionsPerMode[LOD_STORAGE_UNIFORM]);
+    cJSON_AddNumberToObject(Modes, "packed4",
+                            Stats.Store.SectionsPerMode[LOD_STORAGE_PACKED4]);
+    cJSON_AddNumberToObject(Modes, "packed8",
+                            Stats.Store.SectionsPerMode[LOD_STORAGE_PACKED8]);
+    cJSON_AddNumberToObject(Modes, "dense",
+                            Stats.Store.SectionsPerMode[LOD_STORAGE_DENSE]);
+    cJSON_AddItemToObject(Node, "sectionsPerMode", Modes);
+  }
+  cJSON_AddNumberToObject(Node, "sectionBytes", (double)Stats.Store.SectionBytes);
+  cJSON_AddNumberToObject(Node, "tableBytes", (double)Stats.Store.TableBytes);
+  cJSON_AddNumberToObject(Node, "scratchBytes", (double)Stats.Store.ScratchBytes);
+  cJSON_AddNumberToObject(Node, "hotSections", Stats.Store.HotSections);
+  cJSON_AddNumberToObject(Node, "poolBytes", (double)Stats.Store.PoolBytes);
+  cJSON_AddNumberToObject(Node, "bufferBytes", (double)Stats.BufferBytes);
+  cJSON_AddNumberToObject(Node, "totalBytes", (double)Stats.TotalBytes);
+  cJSON_AddNumberToObject(Node, "evicted", (double)Stats.Store.Evicted);
+  cJSON_AddNumberToObject(Node, "ingestedChunks", (double)Stats.IngestedChunks);
+  cJSON_AddNumberToObject(Node, "uniformChunks", (double)Stats.UniformChunks);
+  cJSON_AddNumberToObject(Node, "outOfRange", (double)Stats.OutOfRange);
+  cJSON_AddNumberToObject(Node, "failed", (double)Stats.Failed);
+  cJSON_AddItemToObject(Root, "lod", Node);
 }
 
 static void ScriptAddRenderJson(cJSON *Root) {
@@ -1380,6 +1435,7 @@ static bool ScriptWriteState(const ScriptContext *Ctx, const char *Name,
   ScriptAddWorldgenJson(Root, Ctx);
   ScriptAddInventoryJson(Root);
   ScriptAddRenderJson(Root);
+  ScriptAddLodJson(Root);
 #ifdef MINEGAME_PROFILE
   ScriptAddProfilerJson(Root);
 #endif

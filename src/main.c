@@ -33,8 +33,11 @@
 #include "core/noise.h"
 #include "core/profiler.h"
 #include "core/resource_pack.h"
+#include "world/lod/lod_downsample.h"
+#include "world/lod/lod_ingest.h"
 #include "world/world.h"
 #include "persistence/world_save.h"
+#include <math.h>
 #include <stdbool.h>
 #include <stdlib.h>
 
@@ -207,6 +210,18 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
             MesherSlots, WorkerCount, MesherSlots);
     WorkerCount = MesherSlots;
   }
+  // Only a device that can draw LOD builds it: everywhere else the store is
+  // never allocated and the workers never downsample.
+  if (RenderGetCapabilities()->LodSupported) {
+    LodDownsampleInit();
+    if (!LodIngestInit(RenderDistance) || !RendererEnableLodIngest()) {
+      LodIngestShutdown();
+      LogWarn("MAIN: LOD ingestion could not be set up; running without LOD");
+    }
+  } else {
+    LogInfo("MAIN: LOD ingestion off (%s)",
+            RenderGetCapabilities()->LodUnavailableReason);
+  }
   SetChunkWorkerMeshRunner(RendererBuildMeshJob);
   InitChunkWorker(WorkerCount, RenderDistance);
 
@@ -223,6 +238,7 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
 
 static void CleanupGame(World *WorldVal) {
   CloseChunkWorker();
+  LodIngestShutdown();
 #ifdef MINEGAME_PROFILE
   (void)RendererCheckRenderableSet(WorldVal);
   RendererLogVisibilityStats(WorldVal);
@@ -604,11 +620,23 @@ int main(int Argc, char **Argv) {
     // right after it. Queueing first left every freed slot empty until the next
     // frame, so each slot completed one cycle per two frames and loading was
     // capped at half the slot count per frame.
+    if (LodIngestEnabled()) {
+      Vec3 LodCenter = (GetDebugState()->Freecam && WasFreecam)
+                           ? FreeCamera.Position
+                           : PlayerVal.Position;
+      LodIngestUpdate((int)floorf(LodCenter.x / (float)CHUNK_SIZE),
+                      (int)floorf(LodCenter.y / (float)CHUNK_SIZE),
+                      (int)floorf(LodCenter.z / (float)CHUNK_SIZE),
+                      RenderDistance);
+    }
     UploadFinishedMeshes(MAX_MESHES_PER_FRAME,
                          PlatformGetTime() + MESH_BUDGET_SECONDS);
     PROFILE_BEGIN(MeshQueueStart);
     QueueMeshWork(WorldVal);
     PROFILE_END(MeshQueueStart, PROFILE_MESH_QUEUE);
+    if (LodIngestEnabled()) {
+      LodIngestFlush(RendererHasPendingMeshWork());
+    }
 
     if (!PauseMenuIsOpen()) {
       UpdateChat(&ChatVal, ActiveCamera, &PlayerVal, WorldVal);

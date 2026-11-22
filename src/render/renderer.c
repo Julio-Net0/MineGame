@@ -11,6 +11,8 @@
 #include "core/tint.h"
 #include "core/vecmath.h"
 #include "world/chunk_worker.h"
+#include "world/lod/lod_downsample.h"
+#include "world/lod/lod_ingest.h"
 #include <stdatomic.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -104,6 +106,13 @@ typedef struct {
 static MesherSlots *GetMesherSlots(void) {
   static MesherSlots Slots = {.States = (MesherState *)0, .Count = 0};
   return &Slots;
+}
+
+// One LOD patch per mesh job slot, indexed like the slots, or NULL when LOD
+// is off. Set before the workers start and never changed while they run.
+static LodPatch8 **LodJobPatchSlot(void) {
+  static LodPatch8 *Patches;
+  return &Patches;
 }
 
 int RendererInitMesherSlots(int Count) {
@@ -215,6 +224,8 @@ void CloseRenderer(void) {
     ResetRenderableSet();
     RenderBackendShutdown();
     RendererFreeMesherSlots();
+    free(*LodJobPatchSlot());
+    *LodJobPatchSlot() = NULL;
 }
 
 // ---------------------------------------------------------------------------
@@ -1914,6 +1925,9 @@ bool RendererResolveEmptyChunk(World *WorldVal, Chunk *ChunkVal) {
     UnloadChunkMesh(ChunkVal);
     SetChunkVisibility(ChunkVal, FACE_VIS_ALL);
     ChunkVal->IsDirty = false;
+    // No mesh job carries this chunk, so its (empty) patch goes in here; an
+    // edit that hollows a chunk out reaches the LOD this way.
+    LodIngestUniformChunk(ChunkVal);
     return true;
 }
 
@@ -1929,6 +1943,9 @@ int RendererQueueMeshJob(World *WorldVal, Chunk *ChunkVal) {
         SetChunkVisibility(ChunkVal, FACE_VIS_NONE);
         SetChunkOpaqueLayers(ChunkVal, OPAQUE_LAYERS_ALL);
         ChunkVal->IsDirty = false;
+        // Buried rock still has to exist in the LOD, or the coarse levels
+        // would show caves where the world has none.
+        LodIngestUniformChunk(ChunkVal);
         return -1;
     }
 
@@ -2031,6 +2048,15 @@ void RendererBuildMeshJob(int JobId, int MesherSlot) {
         ComputeFaceVisibility(Snap, &State->Visibility, &Job->OpaqueLayers);
     PROFILE_END(VisibilityStart, PROFILE_MESH_VISIBILITY);
 
+    // The snapshot is already here, so the LOD patch costs no extra capture;
+    // the store itself is only touched on the main thread.
+    LodPatch8 *LodPatches = *LodJobPatchSlot();
+    if (LodPatches != NULL) {
+        PROFILE_BEGIN(LodSampleStart);
+        LodDownsampleSnapshot(Snap, &LodPatches[JobId]);
+        PROFILE_END(LodSampleStart, PROFILE_LOD_SAMPLE);
+    }
+
     // Copied out so the worker can take the next chunk instead of waiting for
     // the main thread to consume its scratch.
     for (int Target = 0; Target < MESH_TARGET_COUNT; Target++) {
@@ -2097,6 +2123,12 @@ bool RendererUploadFinishedMesh(void) {
             }
             ChunkVal->DirtiedWhileMeshing = false;
             ChunkVal->IsMeshing = false;
+
+            const LodPatch8 *LodPatches = *LodJobPatchSlot();
+            if (LodPatches != NULL) {
+                LodIngestChunkPatch(Job->ChunkX, Job->ChunkY, Job->ChunkZ,
+                                    &LodPatches[Idx]);
+            }
         }
 
         for (int Target = 0; Target < MESH_TARGET_COUNT; Target++) {
@@ -2108,6 +2140,14 @@ bool RendererUploadFinishedMesh(void) {
     }
 
     return false;
+}
+
+bool RendererEnableLodIngest(void) {
+    LodPatch8 **Patches = LodJobPatchSlot();
+    if (*Patches == NULL) {
+        *Patches = (LodPatch8 *)malloc(sizeof(LodPatch8) * MESH_JOB_SLOT_COUNT);
+    }
+    return *Patches != NULL;
 }
 
 // ---------------------------------------------------------------------------

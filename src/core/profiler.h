@@ -63,6 +63,11 @@ typedef enum {
   PROFILE_SCRIPT_WAIT,
   PROFILE_COLUMN_BOUNDS,
   PROFILE_CULL_SWEEP,
+  // Main thread: writing chunk patches into the LOD store, propagation and
+  // clipmap moves included.
+  PROFILE_LOD_INGEST,
+  // Workers: downsampling a mesh job's snapshot into its LOD patch.
+  PROFILE_LOD_SAMPLE,
   PROFILE_SCOPE_COUNT
 } ProfileScope;
 

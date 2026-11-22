@@ -125,6 +125,26 @@ static LodVoxel ReduceGroup(const LodVoxel *In, const uint8_t *Classes, int Base
     return LOD_VOXEL_AIR;
   }
 
+  // The winner is one of the best-class members, so when they all hold one
+  // value (solid rock, open water: most groups) the ranking cannot change it.
+  LodVoxel Single = 0;
+  bool HaveSingle = false;
+  bool Mixed = false;
+  for (int M = 0; M < GROUP_MEMBERS && !Mixed; M++) {
+    if (Classes[Members[M]] != Best) {
+      continue;
+    }
+    if (!HaveSingle) {
+      Single = In[Members[M]];
+      HaveSingle = true;
+    } else if (In[Members[M]] != Single) {
+      Mixed = true;
+    }
+  }
+  if (!Mixed) {
+    return Single;
+  }
+
   GroupCandidate Winner = {0};
   bool HaveWinner = false;
   for (int M = 0; M < GROUP_MEMBERS; M++) {
@@ -166,18 +186,70 @@ void LodDownsampleVoxels(const LodVoxel In[LOD_SECTION_VOLUME], LodPatch8 *Out) 
   }
 }
 
+// The rule run on raw block ids instead of voxels. Every 2x2x2 group lies in
+// one 4^3 biome cell, so the members that can win share a biome and comparing
+// ids ranks them exactly as comparing their voxels would; an id is below 2^16,
+// so it never equals LOD_VOXEL_AIR, the value an all-air group returns. The
+// voxel is packed once per group, with the cell's biome.
 void LodDownsampleSnapshot(const ChunkSnapshot *Snap, LodPatch8 *Out) {
-  LodVoxel In[LOD_SECTION_VOLUME];
+  _Static_assert(BIOME_CELL_SIZE == 2 * 2, "a 2x2x2 group must fit a biome cell");
+  LodVoxel Ids[LOD_SECTION_VOLUME];
+  uint8_t Classes[LOD_SECTION_VOLUME];
   for (int X = 0; X < CHUNK_SIZE; X++) {
     for (int Y = 0; Y < CHUNK_SIZE; Y++) {
       for (int Z = 0; Z < CHUNK_SIZE; Z++) {
         BlockID Id = Snap->Blocks[X + 1][Y + 1][Z + 1];
-        In[LodVoxelIndex(X, Y, Z)] =
-            LodCanonicalVoxel(Id, SnapshotLocalBiome(Snap, X, Y, Z));
+        int Idx = LodVoxelIndex(X, Y, Z);
+        Ids[Idx] = Id;
+        Classes[Idx] = (uint8_t)LodClassifyBlock(Id);
       }
     }
   }
-  LodDownsampleVoxels(In, Out);
+  for (int X = 0; X < LOD_PATCH_SIZE; X++) {
+    for (int Y = 0; Y < LOD_PATCH_SIZE; Y++) {
+      for (int Z = 0; Z < LOD_PATCH_SIZE; Z++) {
+        LodVoxel Winner = ReduceGroup(Ids, Classes, X * 2, Y * 2, Z * 2);
+        LodVoxel Value = LOD_VOXEL_AIR;
+        if (Winner != LOD_VOXEL_AIR) {
+          // The chunk's own biome cells sit one in from the snapshot origin
+          // on X and Z, exactly where SnapshotLocalBiome reads them.
+          unsigned Biome = Snap->BiomeCells[(X / 2) + 1][Y / 2][(Z / 2) + 1];
+          Value = LodVoxelMake((BlockID)Winner, Biome);
+        }
+        Out->Voxels[LodPatchIndex(X, Y, Z)] = Value;
+      }
+    }
+  }
+}
+
+void LodPatchFill(LodPatch8 *Out, LodVoxel Value) {
+  for (int Idx = 0; Idx < LOD_PATCH_VOLUME; Idx++) {
+    Out->Voxels[Idx] = Value;
+  }
+}
+
+// Every 2x2x2 group lies inside one biome cell and holds one value, so the
+// rule returns that value: the cell's canonical voxel.
+void LodDownsampleUniformChunk(
+    BlockID Id,
+    const unsigned char BiomeMap[BIOME_CELLS_PER_CHUNK][BIOME_CELLS_PER_CHUNK]
+                                [BIOME_CELLS_PER_CHUNK],
+    LodPatch8 *Out) {
+  if (LodClassifyBlock(Id) == LOD_CLASS_AIR) {
+    LodPatchFill(Out, LOD_VOXEL_AIR);
+    return;
+  }
+  enum { PATCH_PER_BIOME_CELL = LOD_PATCH_SIZE / BIOME_CELLS_PER_CHUNK };
+  for (int X = 0; X < LOD_PATCH_SIZE; X++) {
+    for (int Y = 0; Y < LOD_PATCH_SIZE; Y++) {
+      for (int Z = 0; Z < LOD_PATCH_SIZE; Z++) {
+        unsigned Biome = BiomeMap[X / PATCH_PER_BIOME_CELL]
+                                 [Y / PATCH_PER_BIOME_CELL]
+                                 [Z / PATCH_PER_BIOME_CELL];
+        Out->Voxels[LodPatchIndex(X, Y, Z)] = LodVoxelMake(Id, Biome);
+      }
+    }
+  }
 }
 
 void LodDownsampleSection(const LodSection *Section, LodPatch8 *Out) {

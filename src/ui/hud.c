@@ -9,6 +9,7 @@
 #include "world/world.h"
 #include "world/biome.h"
 #include "world/block_system.h"
+#include "world/lod/lod_ingest.h"
 #include "world/worldgen_column_cache.h"
 #include "persistence/world_save.h"
 #include "core/launch_options.h"
@@ -518,6 +519,14 @@ static void DrawDebugScreen(UiContext *Ctx, Player *PlayerVal, World *WorldVal,
            (int)Caps->ClipControl, (int)Caps->ShaderDrawParameters,
            (double)Caps->MaxAnisotropy);
   Y = DrawDebugLine(Ctx, DebugText, Y);
+  if (LodIngestEnabled()) {
+    snprintf(DebugText, sizeof(DebugText),
+             "LOD: %d sections, %.1f MB, %llu chunks ingested",
+             LodIngestSectionCount(),
+             (double)LodIngestBytes() / (double)(1U << BYTES_TO_MB_SHIFT),
+             (unsigned long long)LodIngestChunkCount());
+    Y = DrawDebugLine(Ctx, DebugText, Y);
+  }
   snprintf(DebugText, sizeof(DebugText),
            "Mesh Arena: %d blocks, %lld MB used, %lld MB slack", Render.ArenaBlocks,
            (long long)(Render.UsedBytes >> BYTES_TO_MB_SHIFT),

@@ -46,6 +46,12 @@ enum {
   OUT_OF_RANGE_CHUNK = 1000,
   EVICT_SPAN = 1,
   CHECK_TEXT_CHARS = 96,
+  // Fused snapshot path check: noise grids on top of the synthetic chunks.
+  NOISE_CHUNKS = 4,
+  NOISE_BLOCK_KINDS = 9,
+  NOISE_BIOMES = 23,
+  // Hot-set limit the bounded-hot check runs with.
+  SMALL_HOT_LIMIT = 2,
   BYTE_BITS = 8
 };
 
@@ -623,6 +629,241 @@ static void LogStoreStats(const LodStore *Store, const char *Label) {
           Stats.SectionBytes, Stats.TableBytes);
 }
 
+// Writing every chunk deferred and flushing once must equal writing and
+// propagating them one at a time.
+static bool TestDeferredEqualsImmediate(LodTestScratch *S) {
+  LodStore Immediate;
+  if (!IngestPermutation(S->Real, S->RealBase, 0, &Immediate)) {
+    return false;
+  }
+  uint64_t Expected = StoreHash(&Immediate, LOD_MAX_LEVEL);
+  LodStoreFree(&Immediate);
+
+  LodStoreConfig Config;
+  LodStoreDefaultConfig(&Config);
+  LodStore Deferred;
+  if (!Check(LodStoreInit(&Deferred, &Config), "store allocation")) {
+    return false;
+  }
+  int Order[TEST_CHUNKS];
+  MakeOrder(TEST_PERMUTATIONS - 1, Order);
+  bool Passed = true;
+  for (int Idx = 0; Idx < TEST_CHUNKS && Passed; Idx++) {
+    int ChunkPos[3];
+    ChunkOfIndex(S->RealBase, Order[Idx], ChunkPos);
+    Passed = Check(LodStoreWritePatchDeferred(&Deferred, 1, ChunkPos[0],
+                                              ChunkPos[1], ChunkPos[2],
+                                              &S->Real[Order[Idx]],
+                                              LOD_ORIGIN_INGESTED) ==
+                       LOD_WRITE_APPLIED,
+                   "deferred write applied");
+  }
+  Passed = Passed && Check(LodStoreFlush(&Deferred), "flush") &&
+           Check(Deferred.PendingCount == 0, "flush empties the pending set") &&
+           Check(StoreHash(&Deferred, LOD_MAX_LEVEL) == Expected,
+                 "one flush after 8 deferred writes equals 8 immediate writes");
+  LodStoreFree(&Deferred);
+
+  // The batch path: every chunk first written as stone, then (later Sequence,
+  // earlier in the array) with its real patch; the later write must win.
+  LodPatch8 Stone;
+  LodPatchFill(&Stone, Solid(S->Blocks.Stone));
+  LodChunkWrite Writes[2 * TEST_CHUNKS];
+  for (int Idx = 0; Idx < TEST_CHUNKS; Idx++) {
+    int ChunkPos[3];
+    ChunkOfIndex(S->RealBase, Order[Idx], ChunkPos);
+    Writes[Idx] = (LodChunkWrite){.ChunkX = ChunkPos[0],
+                                  .ChunkY = ChunkPos[1],
+                                  .ChunkZ = ChunkPos[2],
+                                  .Sequence = TEST_CHUNKS + Idx,
+                                  .Patch = &S->Real[Order[Idx]]};
+    Writes[TEST_CHUNKS + Idx] = (LodChunkWrite){.ChunkX = ChunkPos[0],
+                                                .ChunkY = ChunkPos[1],
+                                                .ChunkZ = ChunkPos[2],
+                                                .Sequence = Idx,
+                                                .Patch = &Stone};
+  }
+  LodStore Batched;
+  if (!Check(LodStoreInit(&Batched, &Config), "store allocation")) {
+    return false;
+  }
+  LodBatchResult Result;
+  LodStoreWriteChunksDeferred(&Batched, Writes, 2 * TEST_CHUNKS, &Result);
+  Passed = Passed &&
+           Check(Result.Applied == 2 * TEST_CHUNKS && Result.Failed == 0 &&
+                     Result.OutOfRange == 0,
+                 "batch writes applied") &&
+           Check(LodStoreFlush(&Batched), "batch flush") &&
+           Check(StoreHash(&Batched, LOD_MAX_LEVEL) == Expected,
+                 "a batch with superseded writes equals immediate writes");
+  LodStoreFree(&Batched);
+  if (Passed) {
+    Ok("deferred and batched writes with a single flush equal immediate "
+       "propagation");
+  }
+  return Passed;
+}
+
+// A snapshot holding Ids (a callback per cell) and per-cell biomes, interior
+// only, like the mesher's capture.
+typedef BlockID (*CellBlockFn)(const TestBlocks *B, int X, int Y, int Z);
+
+static void FillSnapshot(ChunkSnapshot *Snap, const TestBlocks *B,
+                         CellBlockFn Block, int ChunkX, int ChunkY, int ChunkZ,
+                         unsigned BiomeSalt) {
+  memset(Snap, 0, sizeof(*Snap));
+  Snap->ChunkX = ChunkX;
+  Snap->ChunkY = ChunkY;
+  Snap->ChunkZ = ChunkZ;
+  for (int X = 0; X < CHUNK_SIZE; X++) {
+    for (int Y = 0; Y < CHUNK_SIZE; Y++) {
+      for (int Z = 0; Z < CHUNK_SIZE; Z++) {
+        Snap->Blocks[X + 1][Y + 1][Z + 1] =
+            Block(B, (ChunkX * CHUNK_SIZE) + X, (ChunkY * CHUNK_SIZE) + Y,
+                  (ChunkZ * CHUNK_SIZE) + Z);
+      }
+    }
+  }
+  for (int Cx = 0; Cx < BIOME_CELLS_PER_CHUNK; Cx++) {
+    for (int Cy = 0; Cy < BIOME_CELLS_PER_CHUNK; Cy++) {
+      for (int Cz = 0; Cz < BIOME_CELLS_PER_CHUNK; Cz++) {
+        Snap->BiomeCells[Cx + 1][Cy][Cz + 1] = (unsigned char)(
+            ColumnNoise(Cx + (int)BiomeSalt, (Cy * BIOME_CELLS_PER_CHUNK) + Cz) %
+            (uint32_t)NOISE_BIOMES);
+        Snap->BiomeCellPresent[Cx + 1][Cy][Cz + 1] = 1;
+      }
+    }
+  }
+}
+
+// Every block kind the rule distinguishes, scattered with no structure, so
+// most groups are mixed and every tie-break is exercised.
+static BlockID NoiseBlock(const TestBlocks *B, int X, int Y, int Z) {
+  BlockID Kinds[NOISE_BLOCK_KINDS] = {
+      BLOCK_ID_AIR, B->Stone,  B->Dirt,   B->Grass,    B->Sand,
+      B->Water,     B->Leaves, B->Flower, B->TallGrass};
+  uint32_t Noise = ColumnNoise(X + (Y * CHUNK_SIZE), Z - Y);
+  return Kinds[Noise % (uint32_t)NOISE_BLOCK_KINDS];
+}
+
+// The per-voxel reference: canonical voxels with their own biome, through
+// LodDownsampleVoxels.
+static void ReferencePatch(const ChunkSnapshot *Snap, LodVoxel *Grid,
+                           LodPatch8 *Out) {
+  for (int X = 0; X < CHUNK_SIZE; X++) {
+    for (int Y = 0; Y < CHUNK_SIZE; Y++) {
+      for (int Z = 0; Z < CHUNK_SIZE; Z++) {
+        Grid[LodVoxelIndex(X, Y, Z)] =
+            LodCanonicalVoxel(Snap->Blocks[X + 1][Y + 1][Z + 1],
+                              SnapshotLocalBiome(Snap, X, Y, Z));
+      }
+    }
+  }
+  LodDownsampleVoxels(Grid, Out);
+}
+
+static bool TestFusedSnapshotPath(LodTestScratch *S) {
+  int Checked = 0;
+  for (int Kind = 0; Kind < 2; Kind++) {
+    CellBlockFn Block = (Kind == 0) ? SyntheticBlock : NoiseBlock;
+    int Count = (Kind == 0) ? TEST_CHUNKS : NOISE_CHUNKS;
+    for (int Idx = 0; Idx < Count; Idx++) {
+      FillSnapshot(S->Snapshot, &S->Blocks, Block, Idx & 1, (Idx >> 1) & 1,
+                   (Idx >> 2) & 1, (unsigned)((Kind * TEST_CHUNKS) + Idx));
+      LodPatch8 Fused;
+      LodPatch8 Reference;
+      LodDownsampleSnapshot(S->Snapshot, &Fused);
+      ReferencePatch(S->Snapshot, S->Grid, &Reference);
+      if (!Check(memcmp(&Fused, &Reference, sizeof(LodPatch8)) == 0,
+                 "fused snapshot downsample equals the per-voxel rule")) {
+        return false;
+      }
+      Checked++;
+    }
+  }
+  LogInfo("LOD_TEST: ok fused snapshot downsample equals the per-voxel rule on "
+          "%d chunks (terrain and noise, varied biomes)",
+          Checked);
+  return true;
+}
+
+// Sections stay DENSE while writes arrive and are compacted later: the content
+// hash must not depend on whether a section is hot, and once compacted every
+// section must hold exactly the storage an immediate write would have given.
+static bool TestHotSections(LodTestScratch *S) {
+  LodStore Immediate;
+  if (!IngestPermutation(S->Real, S->RealBase, 0, &Immediate)) {
+    return false;
+  }
+  uint64_t Expected = StoreHash(&Immediate, LOD_MAX_LEVEL);
+  LodStoreStats Reference;
+  LodStoreGetStats(&Immediate, &Reference);
+  LodStoreFree(&Immediate);
+
+  bool Passed = true;
+  for (int Bounded = 0; Bounded < 2 && Passed; Bounded++) {
+    LodStoreConfig Config;
+    LodStoreDefaultConfig(&Config);
+    if (Bounded != 0) {
+      Config.HotLimit = SMALL_HOT_LIMIT;
+    }
+    LodStore Store;
+    if (!Check(LodStoreInit(&Store, &Config), "store allocation")) {
+      return false;
+    }
+    int MaxHot = 0;
+    for (int Idx = 0; Idx < TEST_CHUNKS && Passed; Idx++) {
+      int ChunkPos[3];
+      ChunkOfIndex(S->RealBase, Idx, ChunkPos);
+      Passed = Check(LodStoreWritePatchDeferred(&Store, 1, ChunkPos[0],
+                                                ChunkPos[1], ChunkPos[2],
+                                                &S->Real[Idx],
+                                                LOD_ORIGIN_INGESTED) ==
+                         LOD_WRITE_APPLIED,
+                     "hot write applied");
+      MaxHot = (Store.HotLive > MaxHot) ? Store.HotLive : MaxHot;
+    }
+    while (Passed && Store.PendingCount > 0) {
+      Passed = Check(LodStoreFlushSome(&Store, Store.PendingCount),
+                     "propagation without compaction");
+      MaxHot = (Store.HotLive > MaxHot) ? Store.HotLive : MaxHot;
+    }
+    LodStoreStats Hot;
+    LodStoreGetStats(&Store, &Hot);
+    Passed = Passed &&
+             Check(StoreHash(&Store, LOD_MAX_LEVEL) == Expected,
+                   "hot sections hash like compacted ones") &&
+             Check(Bounded == 0 || MaxHot <= SMALL_HOT_LIMIT,
+                   "the hot set never exceeds its limit");
+    if (Bounded == 0) {
+      Passed = Passed && Check(Hot.HotSections > 0 &&
+                                   Hot.SectionsPerMode[LOD_STORAGE_DENSE] > 0,
+                               "unbounded writes leave sections hot");
+    }
+    Passed = Passed && Check(LodStoreCompactAll(&Store), "compaction");
+    LodStoreStats Compacted;
+    LodStoreGetStats(&Store, &Compacted);
+    Passed =
+        Passed && Check(Compacted.HotSections == 0, "compaction empties the hot set") &&
+        Check(StoreHash(&Store, LOD_MAX_LEVEL) == Expected,
+              "compaction keeps the content hash") &&
+        Check(Compacted.SectionBytes == Reference.SectionBytes &&
+                  memcmp(Compacted.SectionsPerMode, Reference.SectionsPerMode,
+                         sizeof(Reference.SectionsPerMode)) == 0,
+              "compacted storage equals an immediate write's") &&
+        Check(LodStoreBytes(&Store) == Compacted.TotalBytes,
+              "running byte count matches after compaction");
+    if (Passed) {
+      LogInfo("LOD_TEST: ok %s hot set: peak %d dense sections, hash and "
+              "compacted storage (%zu bytes) equal immediate writes",
+              (Bounded != 0) ? "bounded" : "unbounded", MaxHot,
+              Compacted.SectionBytes);
+    }
+    LodStoreFree(&Store);
+  }
+  return Passed;
+}
+
 static bool TestRealOrder(LodTestScratch *S) {
   uint64_t Hash = 0;
   if (!CheckOrderIndependence(S->Real, S->RealBase, LOD_MAX_LEVEL, &Hash)) {
@@ -637,6 +878,38 @@ static bool TestRealOrder(LodTestScratch *S) {
   LogInfo("LOD_TEST: ok real terrain hash %016llx over levels 1-%d, same for %d "
           "ingestion orders",
           (unsigned long long)Hash, LOD_MAX_LEVEL, TEST_PERMUTATIONS);
+  return true;
+}
+
+// --- uniform fast path ---------------------------------------------------------
+
+// The patch of a chunk the mesher never builds (uniform rock, all air) must be
+// the one its snapshot would have produced.
+static bool TestUniformFastPath(LodTestScratch *S) {
+  enum { BIOME_STRIDE_Y = 2, BIOME_STRIDE_Z = 3, BIOME_MODULUS = 7 };
+  Chunk *Uniform = S->Generated;
+  BlockID Ids[2] = {S->Blocks.Stone, BLOCK_ID_AIR};
+  for (int Case = 0; Case < 2; Case++) {
+    ChunkResetStorage(Uniform, Ids[Case]);
+    for (int X = 0; X < BIOME_CELLS_PER_CHUNK; X++) {
+      for (int Y = 0; Y < BIOME_CELLS_PER_CHUNK; Y++) {
+        for (int Z = 0; Z < BIOME_CELLS_PER_CHUNK; Z++) {
+          Uniform->BiomeMap[X][Y][Z] = (unsigned char)(
+              (X + (BIOME_STRIDE_Y * Y) + (BIOME_STRIDE_Z * Z)) % BIOME_MODULUS);
+        }
+      }
+    }
+    LodPatch8 ViaSnapshot;
+    LodPatch8 Fast;
+    SnapshotFromChunk(Uniform, S->Snapshot);
+    LodDownsampleSnapshot(S->Snapshot, &ViaSnapshot);
+    LodDownsampleUniformChunk(Ids[Case], Uniform->BiomeMap, &Fast);
+    if (!Check(memcmp(&ViaSnapshot, &Fast, sizeof(LodPatch8)) == 0,
+               "uniform fast path equals the snapshot path")) {
+      return false;
+    }
+  }
+  Ok("uniform fast path (rock with varied biomes, air) equals the snapshot path");
   return true;
 }
 
@@ -880,12 +1153,16 @@ static bool TestClipmap(const TestBlocks *B) {
   LodStoreStats Before;
   LodStoreGetStats(&Store, &Before);
   LogStoreStats(&Store, "clipmap before eviction");
+  Passed = Passed && Check(LodStoreBytes(&Store) == Before.TotalBytes,
+                           "running byte count matches a full walk");
 
   LodStoreSetAnchor(&Store, FAR_CHUNK, 0, FAR_CHUNK);
   LodStoreStats After;
   LodStoreGetStats(&Store, &After);
   Passed = Passed && Check(Before.Sections > 0, "clipmap filled") &&
-           Check(After.Sections == 0 && After.SectionBytes == 0,
+           Check(After.Sections == 0 && After.SectionBytes == 0 &&
+                     Store.HeapBytes == 0 &&
+                     LodStoreBytes(&Store) == After.TotalBytes,
                  "moving the anchor away evicts every section") &&
            Check(After.Evicted == (uint64_t)Before.Sections,
                  "eviction count matches");
@@ -930,6 +1207,8 @@ bool RunLodSelfTest(void) {
            TestClassPriority(&S.Blocks, S.Grid) &&
            TestThinSurface(&S.Blocks, S.Grid) && TestStorage(S.Grid) &&
            TestSyntheticHash(&S) && BuildRealPatches(&S) && TestRealOrder(&S) &&
+           TestUniformFastPath(&S) && TestFusedSnapshotPath(&S) &&
+           TestDeferredEqualsImmediate(&S) && TestHotSections(&S) &&
            TestEditPropagation(&S.Blocks, S.RealBase) &&
            TestIncrementalEqualsRebuild(&S) && TestPrecedence(&S) &&
            TestClipmap(&S.Blocks);

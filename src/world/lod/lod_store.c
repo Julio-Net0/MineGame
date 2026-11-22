@@ -12,6 +12,10 @@ enum {
   LOAD_NUMERATOR = 3,
   LOAD_DENOMINATOR = 4,
   OCTANT_CELLS = 8,
+  PENDING_INITIAL = 256,
+  DEFAULT_HOT_LIMIT = 512,
+  // Spare dense buffers kept (1 MB); more are freed.
+  DENSE_POOL_MAX = 64,
   CELL_SPAN_IN_OCTANT = 2
 };
 
@@ -28,6 +32,7 @@ void LodStoreDefaultConfig(LodStoreConfig *Config) {
     Config->Radius[Level] = DEFAULT_RADIUS;
     Config->VerticalRadius[Level] = 0;
   }
+  Config->HotLimit = DEFAULT_HOT_LIMIT;
 }
 
 static uint64_t HashKey(int Level, int X, int Y, int Z) {
@@ -42,18 +47,34 @@ static LodStoreSlot *AllocSlots(int Capacity) {
   return (LodStoreSlot *)calloc((size_t)Capacity, sizeof(LodStoreSlot));
 }
 
+// Workspace for one write and its propagation, owned by the store so writes
+// allocate nothing but section storage.
+struct LodStoreScratch {
+  LodVoxel Voxels[LOD_SECTION_VOLUME];
+  LodPatch8 Patch;
+};
+
 bool LodStoreInit(LodStore *Store, const LodStoreConfig *Config) {
   *Store = (LodStore){0};
   Store->Config = *Config;
   Store->Slots = AllocSlots(INITIAL_CAPACITY);
-  if (Store->Slots == NULL) {
+  Store->Scratch = (LodStoreScratch *)malloc(sizeof(LodStoreScratch));
+  Store->Encode = LodEncodeScratchCreate();
+  Store->DensePool = (LodVoxel **)calloc(DENSE_POOL_MAX, sizeof(LodVoxel *));
+  if (Store->Slots == NULL || Store->Scratch == NULL || Store->Encode == NULL ||
+      Store->DensePool == NULL) {
+    LodStoreFree(Store);
     return false;
   }
   Store->Capacity = INITIAL_CAPACITY;
   return true;
 }
 
-static void FreeSlotSection(LodStoreSlot *Slot) {
+static void FreeSlotSection(LodStore *Store, LodStoreSlot *Slot) {
+  Store->HeapBytes -= LodSectionHeapBytes(Slot->Section);
+  if (Slot->Section->Hot) {
+    Store->HotLive--;
+  }
   LodSectionFree(Slot->Section);
   free(Slot->Section);
   Slot->Section = NULL;
@@ -63,12 +84,26 @@ void LodStoreFree(LodStore *Store) {
   if (Store->Slots != NULL) {
     for (int Idx = 0; Idx < Store->Capacity; Idx++) {
       if (Store->Slots[Idx].Level > 0) {
-        FreeSlotSection(&Store->Slots[Idx]);
+        FreeSlotSection(Store, &Store->Slots[Idx]);
       }
     }
   }
+  if (Store->DensePool != NULL) {
+    for (int Idx = 0; Idx < Store->DensePoolCount; Idx++) {
+      free(Store->DensePool[Idx]);
+    }
+  }
+  free((void *)Store->DensePool);
   free(Store->Slots);
+  free(Store->Scratch);
+  free(Store->Pending);
+  free(Store->Hot);
+  LodEncodeScratchFree(Store->Encode);
   *Store = (LodStore){0};
+}
+
+size_t LodStoreScratchBytes(void) {
+  return sizeof(LodStoreScratch) + LodEncodeScratchBytes();
 }
 
 static int FindSlot(const LodStore *Store, int Level, int X, int Y, int Z) {
@@ -181,22 +216,161 @@ bool LodStoreInRange(const LodStore *Store, int Level, int X, int Y, int Z) {
   return true;
 }
 
-void LodStoreSetAnchor(LodStore *Store, int ChunkX, int ChunkY, int ChunkZ) {
-  Store->HasAnchor = true;
-  Store->AnchorChunkX = ChunkX;
-  Store->AnchorChunkY = ChunkY;
-  Store->AnchorChunkZ = ChunkZ;
+static void EvictOutOfRange(LodStore *Store) {
   for (int Idx = 0; Idx < Store->Capacity; Idx++) {
     LodStoreSlot *Slot = &Store->Slots[Idx];
     if (Slot->Level > 0 &&
         !LodStoreInRange(Store, Slot->Level, Slot->X, Slot->Y, Slot->Z)) {
-      FreeSlotSection(Slot);
+      FreeSlotSection(Store, Slot);
       Slot->Level = LOD_SLOT_TOMBSTONE;
       Store->Count--;
       Store->Tombstones++;
       Store->Evicted++;
     }
   }
+}
+
+void LodStoreSetAnchor(LodStore *Store, int ChunkX, int ChunkY, int ChunkZ) {
+  Store->HasAnchor = true;
+  Store->AnchorChunkX = ChunkX;
+  Store->AnchorChunkY = ChunkY;
+  Store->AnchorChunkZ = ChunkZ;
+  EvictOutOfRange(Store);
+}
+
+void LodStoreSetConfig(LodStore *Store, const LodStoreConfig *Config) {
+  Store->Config = *Config;
+  if (Store->HasAnchor) {
+    EvictOutOfRange(Store);
+  }
+}
+
+size_t LodStoreBytes(const LodStore *Store) {
+  size_t Sections =
+      ((size_t)Store->Count * sizeof(LodSection)) + Store->HeapBytes;
+  size_t Table = (size_t)Store->Capacity * sizeof(LodStoreSlot);
+  size_t Scratch = (Store->Scratch != NULL) ? LodStoreScratchBytes() : 0U;
+  size_t Pool = (size_t)Store->DensePoolCount * (size_t)LOD_DENSE_BYTES;
+  return Sections + Table + Scratch + Pool;
+}
+
+static LodVoxel *AcquireDense(LodStore *Store) {
+  if (Store->DensePoolCount > 0) {
+    return Store->DensePool[--Store->DensePoolCount];
+  }
+  return (LodVoxel *)malloc((size_t)LOD_DENSE_BYTES);
+}
+
+static void ReleaseDense(LodStore *Store, LodVoxel *Buffer) {
+  if (Store->DensePoolCount < DENSE_POOL_MAX) {
+    Store->DensePool[Store->DensePoolCount++] = Buffer;
+  } else {
+    free(Buffer);
+  }
+}
+
+static bool AppendKey(LodStoreKey **List, int *Count, int *Capacity,
+                      LodStoreKey Key) {
+  if (*Count == *Capacity) {
+    int Grown = (*Capacity > 0) ? *Capacity * 2 : PENDING_INITIAL;
+    LodStoreKey *Resized =
+        (LodStoreKey *)realloc(*List, (size_t)Grown * sizeof(LodStoreKey));
+    if (Resized == NULL) {
+      return false;
+    }
+    *List = Resized;
+    *Capacity = Grown;
+  }
+  (*List)[(*Count)++] = Key;
+  return true;
+}
+
+// Compacts the hot section at the front of the list, if that entry is still
+// live. False only when compaction ran out of memory; the entry then stays.
+static bool CompactFront(LodStore *Store) {
+  LodStoreKey Key = Store->Hot[Store->HotHead];
+  int Found = FindSlot(Store, Key.Level, Key.X, Key.Y, Key.Z);
+  LodSection *Section = (Found >= 0) ? Store->Slots[Found].Section : NULL;
+  if (Section != NULL && Section->Hot) {
+    size_t OldBytes = LodSectionHeapBytes(Section);
+    LodVoxel *Released = NULL;
+    if (!LodSectionCompactDense(Section, Store->Encode, &Released)) {
+      return false;
+    }
+    Store->HeapBytes = Store->HeapBytes - OldBytes + LodSectionHeapBytes(Section);
+    if (Released != NULL) {
+      ReleaseDense(Store, Released);
+    }
+    Section->Hot = false;
+    Store->HotLive--;
+  }
+  Store->HotHead++;
+  // Slide the live tail down once the consumed head is the larger part.
+  if (Store->HotHead == Store->HotCount) {
+    Store->HotHead = 0;
+    Store->HotCount = 0;
+  } else if (Store->HotHead * 2 > Store->HotCount) {
+    int Remaining = Store->HotCount - Store->HotHead;
+    memmove(Store->Hot, Store->Hot + Store->HotHead,
+            (size_t)Remaining * sizeof(LodStoreKey));
+    Store->HotHead = 0;
+    Store->HotCount = Remaining;
+  }
+  return true;
+}
+
+bool LodStoreCompactSome(LodStore *Store, int MaxEntries) {
+  for (int Done = 0; Done < MaxEntries && Store->HotHead < Store->HotCount;
+       Done++) {
+    if (!CompactFront(Store)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void LodStoreTrimPool(LodStore *Store, int Keep) {
+  while (Store->DensePoolCount > Keep && Store->DensePoolCount > 0) {
+    free(Store->DensePool[--Store->DensePoolCount]);
+  }
+}
+
+bool LodStoreCompactAll(LodStore *Store) {
+  return LodStoreCompactSome(Store, Store->HotCount - Store->HotHead);
+}
+
+// Registers a section that just turned (or stayed) DENSE under writes, then
+// keeps the hot set within its limit by compacting the oldest.
+static bool MarkHot(LodStore *Store, LodSection *Section, LodStoreKey Key) {
+  if (!Section->Hot) {
+    if (!AppendKey(&Store->Hot, &Store->HotCount, &Store->HotCapacity, Key)) {
+      return false;
+    }
+    Section->Hot = true;
+    Store->HotLive++;
+  }
+  while (Store->HotLive > Store->Config.HotLimit &&
+         Store->HotHead < Store->HotCount) {
+    if (!CompactFront(Store)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Gives a section whose content just changed in Voxels (scratch) DENSE
+// storage holding that content, from the pool when possible.
+static bool PromoteDense(LodStore *Store, LodSection *Section,
+                         const LodVoxel *Voxels) {
+  LodVoxel *Buffer = AcquireDense(Store);
+  if (Buffer == NULL) {
+    return false;
+  }
+  memcpy(Buffer, Voxels, (size_t)LOD_DENSE_BYTES);
+  size_t OldBytes = LodSectionHeapBytes(Section);
+  LodSectionAdoptDense(Section, Buffer);
+  Store->HeapBytes = Store->HeapBytes - OldBytes + LodSectionHeapBytes(Section);
+  return true;
 }
 
 // The 64-bit cell mask of one octant (each octant is 2x2x2 cells).
@@ -220,10 +394,35 @@ typedef struct {
   unsigned IngestedMask;
 } OctantWrite;
 
-// Copies the patch's cells selected by the write into the voxel array and
-// updates provenance. Returns whether voxels or provenance changed.
-static bool ApplyOctant(LodSection *Section, LodVoxel *Voxels,
-                        const LodPatch8 *Patch, const OctantWrite *Write) {
+// Marks the written cells present, and real or not as the write says.
+// Returns whether either mask changed.
+static bool UpdateProvenance(LodSection *Section, const OctantWrite *Write) {
+  bool Changed = false;
+  for (int Local = 0; Local < OCTANT_CELLS; Local++) {
+    if ((Write->WriteMask & (1U << (unsigned)Local)) == 0U) {
+      continue;
+    }
+    uint64_t Bit =
+        LodCellBit((Write->OctX * CELL_SPAN_IN_OCTANT) + (Local & 1),
+                   (Write->OctY * CELL_SPAN_IN_OCTANT) + ((Local >> 1) & 1),
+                   (Write->OctZ * CELL_SPAN_IN_OCTANT) + ((Local >> 2) & 1));
+    bool Ingested = (Write->IngestedMask & (1U << (unsigned)Local)) != 0U;
+    uint64_t Present = Section->PresentCells | Bit;
+    uint64_t Real = Ingested ? (Section->IngestedCells | Bit)
+                             : (Section->IngestedCells & ~Bit);
+    if (Present != Section->PresentCells || Real != Section->IngestedCells) {
+      Changed = true;
+    }
+    Section->PresentCells = Present;
+    Section->IngestedCells = Real;
+  }
+  return Changed;
+}
+
+// Copies the patch's cells selected by the write into the voxel array.
+// Returns whether any voxel changed; provenance is the caller's.
+static bool ApplyCells(LodVoxel *Voxels, const LodPatch8 *Patch,
+                       const OctantWrite *Write) {
   bool Changed = false;
   for (int Local = 0; Local < OCTANT_CELLS; Local++) {
     if ((Write->WriteMask & (1U << (unsigned)Local)) == 0U) {
@@ -249,20 +448,42 @@ static bool ApplyOctant(LodSection *Section, LodVoxel *Voxels,
         }
       }
     }
-    uint64_t Bit = LodCellBit((Write->OctX * CELL_SPAN_IN_OCTANT) + CellX,
-                              (Write->OctY * CELL_SPAN_IN_OCTANT) + CellY,
-                              (Write->OctZ * CELL_SPAN_IN_OCTANT) + CellZ);
-    bool Ingested = (Write->IngestedMask & (1U << (unsigned)Local)) != 0U;
-    uint64_t Present = Section->PresentCells | Bit;
-    uint64_t Real = Ingested ? (Section->IngestedCells | Bit)
-                             : (Section->IngestedCells & ~Bit);
-    if (Present != Section->PresentCells || Real != Section->IngestedCells) {
-      Changed = true;
-    }
-    Section->PresentCells = Present;
-    Section->IngestedCells = Real;
   }
   return Changed;
+}
+
+// Whether every cell the write covers holds Value throughout in the patch.
+static bool PatchCellsEqual(const LodPatch8 *Patch, unsigned WriteMask,
+                            LodVoxel Value) {
+  for (int Local = 0; Local < OCTANT_CELLS; Local++) {
+    if ((WriteMask & (1U << (unsigned)Local)) == 0U) {
+      continue;
+    }
+    int BaseX = (Local & 1) * LOD_CELL_SIZE;
+    int BaseY = ((Local >> 1) & 1) * LOD_CELL_SIZE;
+    int BaseZ = ((Local >> 2) & 1) * LOD_CELL_SIZE;
+    for (int X = 0; X < LOD_CELL_SIZE; X++) {
+      for (int Y = 0; Y < LOD_CELL_SIZE; Y++) {
+        for (int Z = 0; Z < LOD_CELL_SIZE; Z++) {
+          if (Patch->Voxels[LodPatchIndex(BaseX + X, BaseY + Y, BaseZ + Z)] !=
+              Value) {
+            return false;
+          }
+        }
+      }
+    }
+  }
+  return true;
+}
+
+// The patch a uniform section hands its parent: the rule maps a uniform grid
+// to the same value everywhere.
+static void FillUniformPatch(const LodSection *Section, LodPatch8 *Patch) {
+  LodVoxel Value =
+      (LodClassifyBlock(LodVoxelBlock(Section->Uniform)) == LOD_CLASS_AIR)
+          ? LOD_VOXEL_AIR
+          : Section->Uniform;
+  LodPatchFill(Patch, Value);
 }
 
 // Cells of the octant already holding real data refuse synthetic writes.
@@ -280,18 +501,33 @@ static unsigned ProtectedCells(const LodSection *Section, int OctX, int OctY,
   return Protected;
 }
 
-typedef struct {
-  LodVoxel Voxels[LOD_SECTION_VOLUME];
-  LodPatch8 Patch;
-} WriteScratch;
+// Adds a changed section to the pending set, once. Top-level sections have
+// no parent and never wait.
+static bool MarkPending(LodStore *Store, LodSection *Section, LodStoreKey Key) {
+  if (Key.Level >= LOD_MAX_LEVEL || Section->PendingPropagation) {
+    return true;
+  }
+  if (Store->PendingCount == Store->PendingCapacity) {
+    int Capacity =
+        (Store->PendingCapacity > 0) ? Store->PendingCapacity * 2 : PENDING_INITIAL;
+    LodStoreKey *Grown = (LodStoreKey *)realloc(
+        Store->Pending, (size_t)Capacity * sizeof(LodStoreKey));
+    if (Grown == NULL) {
+      return false;
+    }
+    Store->Pending = Grown;
+    Store->PendingCapacity = Capacity;
+  }
+  Store->Pending[Store->PendingCount++] = Key;
+  Section->PendingPropagation = true;
+  return true;
+}
 
-// One level of a write. On success *OutChanged says whether the section
-// changed, and Scratch->Patch holds the section's downsampled patch for the
-// level above.
+// One level of a write, from Scratch->Patch. A changed section joins the
+// pending set so its parent is rebuilt at the next flush.
 static LodWriteResult WriteLevel(LodStore *Store, int Level, int ChildX,
                                  int ChildY, int ChildZ, OctantWrite Write,
-                                 WriteScratch *Scratch, bool *OutChanged) {
-  *OutChanged = false;
+                                 LodStoreScratch *Scratch) {
   int X = LodFloorShift(ChildX, 1);
   int Y = LodFloorShift(ChildY, 1);
   int Z = LodFloorShift(ChildZ, 1);
@@ -317,22 +553,47 @@ static LodWriteResult WriteLevel(LodStore *Store, int Level, int ChildX,
   if (Section == NULL) {
     return LOD_WRITE_NO_MEMORY;
   }
-  LodSectionDecode(Section, Scratch->Voxels);
-  uint64_t OldPresent = Section->PresentCells;
-  uint64_t OldIngested = Section->IngestedCells;
-  if (!ApplyOctant(Section, Scratch->Voxels, &Scratch->Patch, &Write)) {
+
+  // A uniform section receiving its own value (air into air, rock into rock,
+  // the bulk of any load) keeps its content: only provenance can change, and
+  // the parent gets the same uniform patch it would get after a full rebuild.
+  LodStoreKey Key = {.X = X, .Y = Y, .Z = Z, .Level = Level};
+  if (Section->Mode == LOD_STORAGE_UNIFORM &&
+      PatchCellsEqual(&Scratch->Patch, Write.WriteMask, Section->Uniform)) {
+    if (!UpdateProvenance(Section, &Write)) {
+      return LOD_WRITE_UNCHANGED;
+    }
+    return MarkPending(Store, Section, Key) ? LOD_WRITE_APPLIED
+                                            : LOD_WRITE_NO_MEMORY;
+  }
+
+  // A section already DENSE (hot) is written in place. Any other is decoded
+  // once and, if its content changes, turns hot instead of being re-encoded:
+  // compaction happens once, later, however many writes follow.
+  bool ContentChanged = false;
+  LodVoxel *Dense = LodSectionDenseVoxels(Section);
+  if (Dense != NULL) {
+    ContentChanged = ApplyCells(Dense, &Scratch->Patch, &Write);
+  } else {
+    LodSectionDecode(Section, Scratch->Voxels);
+    ContentChanged = ApplyCells(Scratch->Voxels, &Scratch->Patch, &Write);
+    if (ContentChanged && !PromoteDense(Store, Section, Scratch->Voxels)) {
+      return LOD_WRITE_NO_MEMORY;
+    }
+  }
+  bool ProvenanceChanged = UpdateProvenance(Section, &Write);
+  if (!ContentChanged && !ProvenanceChanged) {
     return LOD_WRITE_UNCHANGED;
   }
-  if (!LodSectionEncode(Section, Scratch->Voxels)) {
-    Section->PresentCells = OldPresent;
-    Section->IngestedCells = OldIngested;
-    return LOD_WRITE_NO_MEMORY;
+  if (ContentChanged) {
+    Section->Revision++;
+    Section->Dirty = true;
+    if (!MarkHot(Store, Section, Key)) {
+      return LOD_WRITE_NO_MEMORY;
+    }
   }
-  Section->Revision++;
-  Section->Dirty = true;
-  *OutChanged = true;
-  LodDownsampleVoxels(Scratch->Voxels, &Scratch->Patch);
-  return LOD_WRITE_APPLIED;
+  return MarkPending(Store, Section, Key) ? LOD_WRITE_APPLIED
+                                          : LOD_WRITE_NO_MEMORY;
 }
 
 // The octant write a changed level-L section hands its parent: one parent cell
@@ -352,45 +613,198 @@ static OctantWrite ParentWrite(const LodSection *Section) {
   return Write;
 }
 
-LodWriteResult LodStoreWritePatch(LodStore *Store, int Level, int ChildX,
-                                  int ChildY, int ChildZ,
-                                  const LodPatch8 *Patch, LodOrigin Origin) {
+LodWriteResult LodStoreWritePatchDeferred(LodStore *Store, int Level,
+                                          int ChildX, int ChildY, int ChildZ,
+                                          const LodPatch8 *Patch,
+                                          LodOrigin Origin) {
   if (Level < 1 || Level > LOD_MAX_LEVEL) {
     return LOD_WRITE_OUT_OF_RANGE;
   }
-  WriteScratch *Scratch = (WriteScratch *)malloc(sizeof(WriteScratch));
-  if (Scratch == NULL) {
-    return LOD_WRITE_NO_MEMORY;
-  }
+  LodStoreScratch *Scratch = Store->Scratch;
   Scratch->Patch = *Patch;
-
   bool Ingested = Origin == LOD_ORIGIN_INGESTED;
   OctantWrite Write = {.WriteMask = (1U << OCTANT_CELLS) - 1U,
                        .IngestedMask = Ingested ? (1U << OCTANT_CELLS) - 1U : 0U};
-  bool Changed = false;
-  LodWriteResult Result = WriteLevel(Store, Level, ChildX, ChildY, ChildZ, Write,
-                                     Scratch, &Changed);
+  return WriteLevel(Store, Level, ChildX, ChildY, ChildZ, Write, Scratch);
+}
 
-  int CellX = ChildX;
-  int CellY = ChildY;
-  int CellZ = ChildZ;
-  for (int Upper = Level + 1; Changed && Upper <= LOD_MAX_LEVEL; Upper++) {
-    CellX = LodFloorShift(CellX, 1);
-    CellY = LodFloorShift(CellY, 1);
-    CellZ = LodFloorShift(CellZ, 1);
-    const LodSection *Child = LodStoreFind(Store, Upper - 1, CellX, CellY, CellZ);
-    if (Child == NULL) {
-      break;
+static int CompareChunkWrites(const void *A, const void *B) {
+  const LodChunkWrite *WriteA = (const LodChunkWrite *)A;
+  const LodChunkWrite *WriteB = (const LodChunkWrite *)B;
+  int Keys[2][4] = {{LodFloorShift(WriteA->ChunkX, 1),
+                     LodFloorShift(WriteA->ChunkY, 1),
+                     LodFloorShift(WriteA->ChunkZ, 1), WriteA->Sequence},
+                    {LodFloorShift(WriteB->ChunkX, 1),
+                     LodFloorShift(WriteB->ChunkY, 1),
+                     LodFloorShift(WriteB->ChunkZ, 1), WriteB->Sequence}};
+  for (int Key = 0; Key < 4; Key++) {
+    if (Keys[0][Key] != Keys[1][Key]) {
+      return (Keys[0][Key] < Keys[1][Key]) ? -1 : 1;
+    }
+  }
+  return 0;
+}
+
+static OctantWrite RealOctantWrite(const LodChunkWrite *Write, int X, int Y,
+                                   int Z) {
+  return (OctantWrite){.OctX = Write->ChunkX - (X * 2),
+                       .OctY = Write->ChunkY - (Y * 2),
+                       .OctZ = Write->ChunkZ - (Z * 2),
+                       .WriteMask = (1U << OCTANT_CELLS) - 1U,
+                       .IngestedMask = (1U << OCTANT_CELLS) - 1U};
+}
+
+// Applies Writes[First, Last), all in one level-1 section, in Sequence order.
+static void WriteSectionGroup(LodStore *Store, const LodChunkWrite *Writes,
+                              int First, int Last, LodBatchResult *Out) {
+  int X = LodFloorShift(Writes[First].ChunkX, 1);
+  int Y = LodFloorShift(Writes[First].ChunkY, 1);
+  int Z = LodFloorShift(Writes[First].ChunkZ, 1);
+  int Count = Last - First;
+  if (!LodStoreInRange(Store, 1, X, Y, Z)) {
+    Out->OutOfRange += Count;
+    return;
+  }
+  LodSection *Section = GetOrCreate(Store, 1, X, Y, Z);
+  if (Section == NULL) {
+    Out->Failed += Count;
+    return;
+  }
+  LodStoreKey Key = {.X = X, .Y = Y, .Z = Z, .Level = 1};
+
+  // Real data replaces anything, so no cell is protected; a uniform section
+  // that every write leaves as it was only gains provenance.
+  bool KeepsContent = Section->Mode == LOD_STORAGE_UNIFORM;
+  for (int Idx = First; Idx < Last && KeepsContent; Idx++) {
+    KeepsContent = PatchCellsEqual(Writes[Idx].Patch, (1U << OCTANT_CELLS) - 1U,
+                                   Section->Uniform);
+  }
+  bool Changed = false;
+  if (KeepsContent) {
+    for (int Idx = First; Idx < Last; Idx++) {
+      OctantWrite Write = RealOctantWrite(&Writes[Idx], X, Y, Z);
+      Changed = UpdateProvenance(Section, &Write) || Changed;
+    }
+  } else {
+    LodVoxel *Dense = LodSectionDenseVoxels(Section);
+    LodVoxel *Voxels = Dense;
+    if (Voxels == NULL) {
+      Voxels = Store->Scratch->Voxels;
+      LodSectionDecode(Section, Voxels);
+    }
+    bool ContentChanged = false;
+    for (int Idx = First; Idx < Last; Idx++) {
+      OctantWrite Write = RealOctantWrite(&Writes[Idx], X, Y, Z);
+      ContentChanged =
+          ApplyCells(Voxels, Writes[Idx].Patch, &Write) || ContentChanged;
+      Changed = UpdateProvenance(Section, &Write) || Changed;
+    }
+    if (ContentChanged) {
+      if (Dense == NULL && !PromoteDense(Store, Section, Voxels)) {
+        Out->Failed += Count;
+        return;
+      }
+      Section->Revision++;
+      Section->Dirty = true;
+      Changed = true;
+      if (!MarkHot(Store, Section, Key)) {
+        Out->Failed += Count;
+        return;
+      }
+    }
+  }
+  if (Changed && !MarkPending(Store, Section, Key)) {
+    Out->Failed += Count;
+    return;
+  }
+  Out->Applied += Count;
+}
+
+void LodStoreWriteChunksDeferred(LodStore *Store, LodChunkWrite *Writes,
+                                 int Count, LodBatchResult *Out) {
+  *Out = (LodBatchResult){0};
+  if (Count <= 0) {
+    return;
+  }
+  qsort((void *)Writes, (size_t)Count, sizeof(LodChunkWrite),
+        CompareChunkWrites);
+  int First = 0;
+  for (int Idx = 1; Idx <= Count; Idx++) {
+    bool SameSection =
+        Idx < Count &&
+        LodFloorShift(Writes[Idx].ChunkX, 1) ==
+            LodFloorShift(Writes[First].ChunkX, 1) &&
+        LodFloorShift(Writes[Idx].ChunkY, 1) ==
+            LodFloorShift(Writes[First].ChunkY, 1) &&
+        LodFloorShift(Writes[Idx].ChunkZ, 1) ==
+            LodFloorShift(Writes[First].ChunkZ, 1);
+    if (!SameSection) {
+      WriteSectionGroup(Store, Writes, First, Idx, Out);
+      First = Idx;
+    }
+  }
+}
+
+// Entries are taken in order while the list grows: a parent changed by its
+// children is appended behind them, so draining the list reaches the top. A
+// section changed again after it was processed is appended again.
+bool LodStoreFlushSome(LodStore *Store, int MaxEntries) {
+  LodStoreScratch *Scratch = Store->Scratch;
+  bool Passed = true;
+  int Processed = 0;
+  for (; Processed < MaxEntries && Processed < Store->PendingCount;
+       Processed++) {
+    LodStoreKey Key = Store->Pending[Processed];
+    int Found = FindSlot(Store, Key.Level, Key.X, Key.Y, Key.Z);
+    if (Found < 0) {
+      continue;
+    }
+    LodSection *Child = Store->Slots[Found].Section;
+    if (!Child->PendingPropagation) {
+      continue;
+    }
+    Child->PendingPropagation = false;
+    const LodVoxel *Dense = LodSectionDenseVoxels(Child);
+    if (Child->Mode == LOD_STORAGE_UNIFORM) {
+      FillUniformPatch(Child, &Scratch->Patch);
+    } else if (Dense != NULL) {
+      LodDownsampleVoxels(Dense, &Scratch->Patch);
+    } else {
+      LodSectionDecode(Child, Scratch->Voxels);
+      LodDownsampleVoxels(Scratch->Voxels, &Scratch->Patch);
     }
     // A parent cell built from synthetic child cells only is synthetic, and
     // so gives way to real data already there.
-    LodWriteResult UpResult = WriteLevel(Store, Upper, CellX, CellY, CellZ,
-                                         ParentWrite(Child), Scratch, &Changed);
-    if (UpResult == LOD_WRITE_NO_MEMORY) {
-      Result = LOD_WRITE_NO_MEMORY;
+    if (WriteLevel(Store, Key.Level + 1, Key.X, Key.Y, Key.Z, ParentWrite(Child),
+                   Scratch) == LOD_WRITE_NO_MEMORY) {
+      Passed = false;
     }
   }
-  free(Scratch);
+  int Remaining = Store->PendingCount - Processed;
+  if (Remaining > 0) {
+    memmove(Store->Pending, Store->Pending + Processed,
+            (size_t)Remaining * sizeof(LodStoreKey));
+  }
+  Store->PendingCount = Remaining;
+  return Passed;
+}
+
+bool LodStoreFlush(LodStore *Store) {
+  bool Passed = true;
+  while (Store->PendingCount > 0) {
+    Passed = LodStoreFlushSome(Store, Store->PendingCount) && Passed;
+  }
+  return LodStoreCompactAll(Store) && Passed;
+}
+
+LodWriteResult LodStoreWritePatch(LodStore *Store, int Level, int ChildX,
+                                  int ChildY, int ChildZ,
+                                  const LodPatch8 *Patch, LodOrigin Origin) {
+  LodWriteResult Result = LodStoreWritePatchDeferred(Store, Level, ChildX, ChildY,
+                                                     ChildZ, Patch, Origin);
+  if (!LodStoreFlush(Store)) {
+    Result = LOD_WRITE_NO_MEMORY;
+  }
   return Result;
 }
 
@@ -408,8 +822,12 @@ void LodStoreGetStats(const LodStore *Store, LodStoreStats *Out) {
         sizeof(LodSection) + LodSectionHeapBytes(Slot->Section);
   }
   Out->TableBytes = (size_t)Store->Capacity * sizeof(LodStoreSlot);
-  Out->TotalBytes = Out->SectionBytes + Out->TableBytes;
+  Out->ScratchBytes = (Store->Scratch != NULL) ? LodStoreScratchBytes() : 0U;
+  Out->PoolBytes = (size_t)Store->DensePoolCount * (size_t)LOD_DENSE_BYTES;
+  Out->TotalBytes =
+      Out->SectionBytes + Out->TableBytes + Out->ScratchBytes + Out->PoolBytes;
   Out->Evicted = Store->Evicted;
+  Out->HotSections = Store->HotLive;
 }
 
 static int CompareSlotCoords(const void *A, const void *B) {

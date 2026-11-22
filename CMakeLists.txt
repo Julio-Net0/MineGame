@@ -102,6 +102,7 @@ set(MINEGAME_SIM_SOURCES
   src/world/lod/lod_section.c
   src/world/lod/lod_downsample.c
   src/world/lod/lod_store.c
+  src/world/lod/lod_ingest.c
   src/persistence/world_save.c
   src/persistence/chunk_serial.c
   src/player/player.c

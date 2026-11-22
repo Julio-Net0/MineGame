@@ -19,12 +19,20 @@ enum {
 #define PALETTE_HASH_MULTIPLIER 0x9E3779B1U
 #define FNV_PRIME 0x100000001B3ULL
 
-typedef struct {
+struct LodEncodeScratch {
   uint16_t Slots[PALETTE_TABLE_SIZE];
   LodVoxel Palette[LOD_SECTION_VOLUME];
   uint16_t Indices[LOD_SECTION_VOLUME];
   int Count;
-} PaletteBuild;
+};
+
+LodEncodeScratch *LodEncodeScratchCreate(void) {
+  return (LodEncodeScratch *)malloc(sizeof(LodEncodeScratch));
+}
+
+void LodEncodeScratchFree(LodEncodeScratch *Scratch) { free(Scratch); }
+
+size_t LodEncodeScratchBytes(void) { return sizeof(LodEncodeScratch); }
 
 void LodSectionInit(LodSection *Section) {
   *Section = (LodSection){.Mode = LOD_STORAGE_UNIFORM, .Uniform = LOD_VOXEL_AIR};
@@ -77,19 +85,37 @@ void LodSectionDecode(const LodSection *Section,
     memcpy(Out, Section->Storage, sizeof(LodVoxel) * LOD_SECTION_VOLUME);
     return;
   }
-  for (int Idx = 0; Idx < LOD_SECTION_VOLUME; Idx++) {
-    Out[Idx] = GetByIndex(Section, Idx);
+  const LodVoxel *Palette = SectionPalette(Section);
+  const uint8_t *Indices = SectionIndices(Section);
+  if (Section->Mode == LOD_STORAGE_PACKED8) {
+    for (int Idx = 0; Idx < LOD_SECTION_VOLUME; Idx++) {
+      Out[Idx] = Palette[Indices[Idx]];
+    }
+    return;
+  }
+  for (int Even = 0; Even < LOD_SECTION_VOLUME; Even += 2) {
+    unsigned Pair = Indices[Even >> 1];
+    Out[Even] = Palette[Pair & NIBBLE_MASK];
+    Out[Even + 1] = Palette[Pair >> NIBBLE_BITS];
   }
 }
 
 // Palette in order of first occurrence, so equal content always encodes to
 // equal bytes.
-static void BuildPalette(const LodVoxel *Voxels, PaletteBuild *Build) {
+static void BuildPalette(const LodVoxel *Voxels, LodEncodeScratch *Build) {
   // Every byte 0xFF makes every slot PALETTE_EMPTY.
   memset(Build->Slots, BYTE_MASK, sizeof(Build->Slots));
   Build->Count = 0;
+  // Runs of equal voxels are the rule along Z, so the previous voxel's entry
+  // answers most lookups without hashing.
+  LodVoxel Previous = 0;
+  uint16_t PreviousEntry = PALETTE_EMPTY;
   for (int Idx = 0; Idx < LOD_SECTION_VOLUME; Idx++) {
     LodVoxel Value = Voxels[Idx];
+    if (PreviousEntry != PALETTE_EMPTY && Value == Previous) {
+      Build->Indices[Idx] = PreviousEntry;
+      continue;
+    }
     unsigned Slot = (Value * PALETTE_HASH_MULTIPLIER) >>
                     (unsigned)(VOXEL_BITS - PALETTE_TABLE_BITS);
     for (;;) {
@@ -107,10 +133,12 @@ static void BuildPalette(const LodVoxel *Voxels, PaletteBuild *Build) {
       }
       Slot = (Slot + 1U) & (unsigned)(PALETTE_TABLE_SIZE - 1);
     }
+    Previous = Value;
+    PreviousEntry = Build->Indices[Idx];
   }
 }
 
-static void *EncodePacked(const PaletteBuild *Build, bool FourBit,
+static void *EncodePacked(const LodEncodeScratch *Build, bool FourBit,
                           size_t *OutBytes) {
   size_t PaletteBytes = (size_t)Build->Count * sizeof(LodVoxel);
   size_t IndexBytes = FourBit ? (size_t)LOD_SECTION_VOLUME / 2
@@ -136,11 +164,28 @@ static void *EncodePacked(const PaletteBuild *Build, bool FourBit,
   return Block;
 }
 
-bool LodSectionEncode(LodSection *Section,
-                      const LodVoxel Voxels[LOD_SECTION_VOLUME]) {
-  PaletteBuild *Build = (PaletteBuild *)malloc(sizeof(PaletteBuild));
-  if (Build == NULL) {
-    return false;
+static bool AllEqual(const LodVoxel *Voxels) {
+  for (int Idx = 1; Idx < LOD_SECTION_VOLUME; Idx++) {
+    if (Voxels[Idx] != Voxels[0]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool LodSectionEncodeWithScratch(LodSection *Section,
+                                 const LodVoxel Voxels[LOD_SECTION_VOLUME],
+                                 LodEncodeScratch *Build) {
+  // Most sections of a load are all air or all rock; one compare pass settles
+  // them without building a palette.
+  if (AllEqual(Voxels)) {
+    free(Section->Storage);
+    Section->Mode = LOD_STORAGE_UNIFORM;
+    Section->Uniform = Voxels[0];
+    Section->PaletteCount = 0;
+    Section->Storage = NULL;
+    Section->StorageBytes = 0;
+    return true;
   }
   BuildPalette(Voxels, Build);
 
@@ -148,9 +193,7 @@ bool LodSectionEncode(LodSection *Section,
   void *Storage = NULL;
   size_t Bytes = 0;
   int PaletteCount = 0;
-  if (Build->Count == 1) {
-    Mode = LOD_STORAGE_UNIFORM;
-  } else if (Build->Count <= LOD_PACKED4_MAX_PALETTE) {
+  if (Build->Count <= LOD_PACKED4_MAX_PALETTE) {
     Mode = LOD_STORAGE_PACKED4;
     PaletteCount = Build->Count;
     Storage = EncodePacked(Build, true, &Bytes);
@@ -165,18 +208,80 @@ bool LodSectionEncode(LodSection *Section,
       memcpy(Storage, Voxels, Bytes);
     }
   }
-  free(Build);
-  if (Mode != LOD_STORAGE_UNIFORM && Storage == NULL) {
+  if (Storage == NULL) {
     return false;
   }
 
   free(Section->Storage);
   Section->Mode = Mode;
-  Section->Uniform = (Mode == LOD_STORAGE_UNIFORM) ? Voxels[0] : LOD_VOXEL_AIR;
+  Section->Uniform = LOD_VOXEL_AIR;
   Section->PaletteCount = PaletteCount;
   Section->Storage = Storage;
   Section->StorageBytes = Bytes;
   return true;
+}
+
+LodVoxel *LodSectionDenseVoxels(LodSection *Section) {
+  return (Section->Mode == LOD_STORAGE_DENSE) ? (LodVoxel *)Section->Storage
+                                              : NULL;
+}
+
+void LodSectionAdoptDense(LodSection *Section, LodVoxel *Buffer) {
+  if (Section->Storage != (void *)Buffer) {
+    free(Section->Storage);
+  }
+  Section->Mode = LOD_STORAGE_DENSE;
+  Section->Uniform = LOD_VOXEL_AIR;
+  Section->PaletteCount = 0;
+  Section->Storage = Buffer;
+  Section->StorageBytes = LOD_DENSE_BYTES;
+}
+
+bool LodSectionCompactDense(LodSection *Section, LodEncodeScratch *Build,
+                            LodVoxel **OutReleased) {
+  *OutReleased = NULL;
+  LodVoxel *Voxels = LodSectionDenseVoxels(Section);
+  if (Voxels == NULL) {
+    return true;
+  }
+  if (AllEqual(Voxels)) {
+    Section->Mode = LOD_STORAGE_UNIFORM;
+    Section->Uniform = Voxels[0];
+    Section->PaletteCount = 0;
+    Section->Storage = NULL;
+    Section->StorageBytes = 0;
+    *OutReleased = Voxels;
+    return true;
+  }
+  BuildPalette(Voxels, Build);
+  if (Build->Count > LOD_PACKED8_MAX_PALETTE) {
+    // Genuinely dense: the buffer it already has is its storage.
+    return true;
+  }
+  bool FourBit = Build->Count <= LOD_PACKED4_MAX_PALETTE;
+  size_t Bytes = 0;
+  void *Storage = EncodePacked(Build, FourBit, &Bytes);
+  if (Storage == NULL) {
+    return false;
+  }
+  Section->Mode = FourBit ? LOD_STORAGE_PACKED4 : LOD_STORAGE_PACKED8;
+  Section->Uniform = LOD_VOXEL_AIR;
+  Section->PaletteCount = Build->Count;
+  Section->Storage = Storage;
+  Section->StorageBytes = Bytes;
+  *OutReleased = Voxels;
+  return true;
+}
+
+bool LodSectionEncode(LodSection *Section,
+                      const LodVoxel Voxels[LOD_SECTION_VOLUME]) {
+  LodEncodeScratch *Scratch = LodEncodeScratchCreate();
+  if (Scratch == NULL) {
+    return false;
+  }
+  bool Encoded = LodSectionEncodeWithScratch(Section, Voxels, Scratch);
+  LodEncodeScratchFree(Scratch);
+  return Encoded;
 }
 
 size_t LodSectionHeapBytes(const LodSection *Section) {

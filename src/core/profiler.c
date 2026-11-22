@@ -15,7 +15,7 @@ static const char *const SCOPE_NAMES[PROFILE_SCOPE_COUNT] = {
     "Frame setup", "UI build",  "UI submit",   "Present",     "Player",
     "Worker gen",  "Gen column", "Gen terrain", "Gen features", "Mesh vis",
     "Occlusion",   "Chunk submit", "Chunk events", "Mesh queue", "Script wait",
-    "Col bounds",  "Cull sweep"};
+    "Col bounds",  "Cull sweep", "LOD ingest", "LOD sample"};
 
 // Kept beside the names so the two cannot drift: a scope that changes threads
 // has to be updated here, and the overlay and any analysis read it rather than
@@ -42,7 +42,9 @@ static const bool SCOPE_IS_WORKER_SIDE[PROFILE_SCOPE_COUNT] = {
     false, /* Mesh queue   */
     false, /* Script wait  */
     false, /* Col bounds   */
-    false  /* Cull sweep   */
+    false, /* Cull sweep   */
+    false, /* LOD ingest   */
+    true   /* LOD sample   */
 };
 
 // Every scope is CPU-bound except Present, whose wall time is waiting on the
@@ -76,7 +78,9 @@ static const bool SCOPE_IS_CPU_BOUND[PROFILE_SCOPE_COUNT] = {
     // Nested inside World update.
     false, /* Col bounds   */
     // Nested inside World draw.
-    false  /* Cull sweep   */
+    false, /* Cull sweep   */
+    true,  /* LOD ingest   */
+    true   /* LOD sample   */
 };
 
 static const bool SCOPE_IS_NESTED[PROFILE_SCOPE_COUNT] = {
@@ -101,7 +105,9 @@ static const bool SCOPE_IS_NESTED[PROFILE_SCOPE_COUNT] = {
     false, /* Mesh queue   */
     false, /* Script wait  */
     true,  /* Col bounds   */
-    true   /* Cull sweep   */
+    true,  /* Cull sweep   */
+    false, /* LOD ingest   */
+    false  /* LOD sample   */
 };
 
 bool IsProfileScopeWorkerSide(ProfileScope Scope) {

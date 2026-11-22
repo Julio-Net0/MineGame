@@ -26,6 +26,9 @@ typedef struct {
   int Radius[LOD_MAX_LEVEL + 1];
   // Vertical radius per level in sections of that level; 0 is unbounded.
   int VerticalRadius[LOD_MAX_LEVEL + 1];
+  // Most sections held DENSE at once while writes arrive (16 KB each); past
+  // it the oldest is compacted immediately.
+  int HotLimit;
 } LodStoreConfig;
 
 typedef struct {
@@ -37,9 +40,38 @@ typedef struct {
   LodSection *Section;
 } LodStoreSlot;
 
+typedef struct LodStoreScratch LodStoreScratch;
+
+typedef struct {
+  int32_t X;
+  int32_t Y;
+  int32_t Z;
+  int32_t Level;
+} LodStoreKey;
+
 typedef struct {
   LodStoreConfig Config;
   LodStoreSlot *Slots;
+  // Write and palette workspaces, allocated once with the store.
+  LodStoreScratch *Scratch;
+  LodEncodeScratch *Encode;
+  // Storage bytes of every resident section, kept current on each change.
+  size_t HeapBytes;
+  // Sections changed since their parent was last rebuilt, in change order;
+  // each appears once however many writes it took.
+  LodStoreKey *Pending;
+  int PendingCount;
+  int PendingCapacity;
+  // Sections held DENSE since their last write, oldest first from HotHead;
+  // HotLive counts the ones still hot (entries can go stale on eviction).
+  LodStoreKey *Hot;
+  int HotHead;
+  int HotCount;
+  int HotCapacity;
+  int HotLive;
+  // Dense buffers kept for reuse, so a section turning hot allocates nothing.
+  LodVoxel **DensePool;
+  int DensePoolCount;
   int Capacity;
   int Count;
   int Tombstones;
@@ -64,14 +96,20 @@ typedef struct {
   int Sections;
   int SectionsPerLevel[LOD_MAX_LEVEL + 1];
   int SectionsPerMode[LOD_STORAGE_COUNT];
-  // Section structs plus their storage, the slot table, and the two summed.
+  // Section structs plus their storage, the slot table, the write workspaces,
+  // and all of them summed.
   size_t SectionBytes;
   size_t TableBytes;
+  size_t ScratchBytes;
+  // Spare dense buffers kept for reuse.
+  size_t PoolBytes;
   size_t TotalBytes;
   uint64_t Evicted;
+  // Sections still DENSE waiting to be compacted.
+  int HotSections;
 } LodStoreStats;
 
-// Radius 32 sections at every level, vertically unbounded.
+// Radius 32 sections at every level, vertically unbounded, 512 hot sections.
 void LodStoreDefaultConfig(LodStoreConfig *Config);
 
 // False when the slot table cannot be allocated.
@@ -81,6 +119,13 @@ void LodStoreFree(LodStore *Store);
 // Moves the clipmap centre and evicts every section now out of range. Before
 // the first call every position is in range.
 void LodStoreSetAnchor(LodStore *Store, int ChunkX, int ChunkY, int ChunkZ);
+
+// Replaces the radii, evicting what falls outside them once anchored.
+void LodStoreSetConfig(LodStore *Store, const LodStoreConfig *Config);
+
+// Everything the store holds, in O(1): what LodStoreGetStats totals.
+size_t LodStoreBytes(const LodStore *Store);
+size_t LodStoreScratchBytes(void);
 
 bool LodStoreInRange(const LodStore *Store, int Level, int X, int Y, int Z);
 
@@ -94,6 +139,56 @@ const LodSection *LodStoreFind(const LodStore *Store, int Level, int X, int Y,
 LodWriteResult LodStoreWritePatch(LodStore *Store, int Level, int ChildX,
                                   int ChildY, int ChildZ,
                                   const LodPatch8 *Patch, LodOrigin Origin);
+
+// The same write without the propagation: the section joins the pending set
+// and LodStoreFlush carries it up. Many writes into one region between flushes
+// then rebuild each parent once instead of once per write.
+LodWriteResult LodStoreWritePatchDeferred(LodStore *Store, int Level,
+                                          int ChildX, int ChildY, int ChildZ,
+                                          const LodPatch8 *Patch,
+                                          LodOrigin Origin);
+
+// One real chunk's patch for LodStoreWriteChunksDeferred. Sequence orders
+// writes to the same chunk: the highest wins.
+typedef struct {
+  int32_t ChunkX;
+  int32_t ChunkY;
+  int32_t ChunkZ;
+  int32_t Sequence;
+  const LodPatch8 *Patch;
+} LodChunkWrite;
+
+typedef struct {
+  int Applied;
+  int OutOfRange;
+  int Failed;
+} LodBatchResult;
+
+// Deferred level-1 writes of many real chunks at once. Writes into the same
+// section share one decode and one encode, which is most of a write's cost.
+// Reorders Writes in place. The result equals writing them one at a time in
+// Sequence order.
+void LodStoreWriteChunksDeferred(LodStore *Store, LodChunkWrite *Writes,
+                                 int Count, LodBatchResult *Out);
+
+// Propagates every pending section to the top and compacts every hot section.
+// The result does not depend on the order writes were made in. False when
+// memory ran out on the way.
+bool LodStoreFlush(LodStore *Store);
+
+// Compacts at most MaxEntries hot sections, oldest first, back to their
+// smallest storage. Content and hashes are unchanged; only memory shrinks.
+bool LodStoreCompactSome(LodStore *Store, int MaxEntries);
+bool LodStoreCompactAll(LodStore *Store);
+
+// Frees spare dense buffers beyond Keep, for when no writes are expected soon.
+void LodStoreTrimPool(LodStore *Store, int Keep);
+
+// Propagates at most MaxEntries pending sections, oldest first, leaving the
+// rest pending. A caller with a time budget calls it in small batches; what
+// stays pending keeps collecting changes, so each section is still rebuilt once
+// however many writes reach it before its turn.
+bool LodStoreFlushSome(LodStore *Store, int MaxEntries);
 
 static inline LodWriteResult LodStoreWriteChunk(LodStore *Store, int ChunkX,
                                                 int ChunkY, int ChunkZ,

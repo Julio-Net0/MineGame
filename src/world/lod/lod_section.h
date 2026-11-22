@@ -61,6 +61,11 @@ typedef struct {
   // mesh was built from.
   uint32_t Revision;
   bool Dirty;
+  // Changed since its parent was last rebuilt from it; owned by the store.
+  bool PendingPropagation;
+  // Held DENSE while writes keep arriving, waiting to be compacted; owned by
+  // the store.
+  bool Hot;
 } LodSection;
 
 static inline int LodVoxelIndex(int X, int Y, int Z) {
@@ -84,11 +89,41 @@ LodVoxel LodSectionGet(const LodSection *Section, int X, int Y, int Z);
 void LodSectionDecode(const LodSection *Section,
                       LodVoxel Out[LOD_SECTION_VOLUME]);
 
+// Palette-building workspace (about 40 KB). A long-lived owner keeps one so
+// encoding allocates nothing but the section's own storage.
+typedef struct LodEncodeScratch LodEncodeScratch;
+LodEncodeScratch *LodEncodeScratchCreate(void);
+void LodEncodeScratchFree(LodEncodeScratch *Scratch);
+size_t LodEncodeScratchBytes(void);
+
 // Replaces the content with Voxels in the smallest storage form. On allocation
 // failure returns false and leaves the section exactly as it was. Provenance,
 // revision and dirty state are the caller's.
+bool LodSectionEncodeWithScratch(LodSection *Section,
+                                 const LodVoxel Voxels[LOD_SECTION_VOLUME],
+                                 LodEncodeScratch *Scratch);
+
+// The same with a temporary workspace, for callers outside the hot path.
 bool LodSectionEncode(LodSection *Section,
                       const LodVoxel Voxels[LOD_SECTION_VOLUME]);
+
+enum {
+  LOD_DENSE_BYTES = (int)(sizeof(LodVoxel) * LOD_SECTION_VOLUME)
+};
+
+// The raw voxels of a DENSE section, writable in place; NULL otherwise.
+LodVoxel *LodSectionDenseVoxels(LodSection *Section);
+
+// Makes Buffer (LOD_DENSE_BYTES, already holding the section's new content)
+// its DENSE storage, freeing what it held before.
+void LodSectionAdoptDense(LodSection *Section, LodVoxel *Buffer);
+
+// Re-encodes a DENSE section in its smallest form, exactly as LodSectionEncode
+// would from the same voxels. When the dense buffer stops being used it is
+// handed back in *OutReleased (else NULL) for the caller to reuse or free. On
+// allocation failure returns false and leaves the section as it was.
+bool LodSectionCompactDense(LodSection *Section, LodEncodeScratch *Scratch,
+                            LodVoxel **OutReleased);
 
 // Heap bytes the content occupies (zero when uniform).
 size_t LodSectionHeapBytes(const LodSection *Section);

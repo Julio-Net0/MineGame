@@ -25,6 +25,11 @@ void CloseRenderer(void);
 // ran out, in which case only that many workers may be started.
 int RendererInitMesherSlots(int Count);
 void RendererFreeMesherSlots(void);
+
+// Gives every mesh job a LOD patch the worker fills from its snapshot and the
+// upload hands to the LOD store. Main thread, after LodIngestInit succeeded and
+// before the workers start; false when the patches cannot be allocated.
+bool RendererEnableLodIngest(void);
 // Main thread: capture the chunk's snapshot into a free job slot and return its
 // id, or -1 when the chunk needs no mesh or no slot is free.
 int RendererQueueMeshJob(World *WorldVal, Chunk *ChunkVal);

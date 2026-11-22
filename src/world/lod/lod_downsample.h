@@ -53,6 +53,17 @@ LodVoxel LodCanonicalVoxel(BlockID Id, unsigned Biome);
 // Level 0 -> 1: the snapshot's own 16^3 cells, margins ignored.
 void LodDownsampleSnapshot(const ChunkSnapshot *Snap, LodPatch8 *Out);
 
+// Level 0 -> 1 for a chunk held as one block id (all air, or uniform rock
+// the mesher skips): the patch LodDownsampleSnapshot would give, without a
+// snapshot. BiomeMap is the chunk's own.
+void LodDownsampleUniformChunk(
+    BlockID Id,
+    const unsigned char BiomeMap[BIOME_CELLS_PER_CHUNK][BIOME_CELLS_PER_CHUNK]
+                                [BIOME_CELLS_PER_CHUNK],
+    LodPatch8 *Out);
+
+void LodPatchFill(LodPatch8 *Out, LodVoxel Value);
+
 // Level L -> L+1.
 void LodDownsampleSection(const LodSection *Section, LodPatch8 *Out);
 
