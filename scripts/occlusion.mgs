@@ -12,6 +12,9 @@
 # of wall time, so each capture waits 100 ticks (five seconds) for it to fade;
 # otherwise the two screenshots differ by the message alone.
 
+# The teleports leave earlier terrain behind as LOD on the horizon, where this
+# 1:1 check expects open sky: LOD drawing stays off for the whole scenario.
+lod off
 /noclip 1
 
 # Eye level at spawn, looking along the terrain: hills hide what lies behind.

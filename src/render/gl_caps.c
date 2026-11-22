@@ -215,7 +215,10 @@ static void LoadOptionalProcs(CapsState *State, VersionGate Gate) {
 }
 
 static const char *FindLodBlocker(const RenderCapabilities *Caps,
-                                  int Effective) {
+                                  int Effective, bool LodAllowed) {
+  if (!LodAllowed) {
+    return "disabled by --lod off";
+  }
   if (Effective < LOD_REQUIRED_VERSION) {
     return (Caps->VersionCapped) ? "OpenGL version capped below 4.3"
                                  : "OpenGL 4.3 not available";
@@ -232,7 +235,7 @@ static const char *FindLodBlocker(const RenderCapabilities *Caps,
   return "";
 }
 
-void GlCapsDetect(int VersionCap) {
+void GlCapsDetect(int VersionCap, bool LodAllowed) {
   CapsState *State = GetCapsState();
   RenderCapabilities *Caps = &State->Caps;
   *Caps = (RenderCapabilities){0};
@@ -279,7 +282,7 @@ void GlCapsDetect(int VersionCap) {
 
   LoadOptionalProcs(State, Gate);
 
-  Caps->LodUnavailableReason = FindLodBlocker(Caps, Gate.Effective);
+  Caps->LodUnavailableReason = FindLodBlocker(Caps, Gate.Effective, LodAllowed);
   Caps->LodSupported = Caps->LodUnavailableReason[0] == '\0';
 
   LogInfo("RENDER: OpenGL %d.%d requested, %d.%d provided, %d.%d effective%s; "

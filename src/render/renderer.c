@@ -1,6 +1,7 @@
 #include "render/renderer.h"
 #include "render/backend.h"
 #include "render/chunk_visibility.h"
+#include "render/lod_renderer.h"
 #include "render/voxel_mesher.h"
 #include "world/biome.h"
 #include "world/block_system.h"
@@ -1073,6 +1074,8 @@ bool RendererResolveEmptyChunk(World *WorldVal, Chunk *ChunkVal) {
     // No mesh job carries this chunk, so its (empty) patch goes in here; an
     // edit that hollows a chunk out reaches the LOD this way.
     LodIngestUniformChunk(ChunkVal);
+    LodRendererSetChunkCovered(ChunkVal->ChunkX, ChunkVal->ChunkY,
+                               ChunkVal->ChunkZ, true);
     return true;
 }
 
@@ -1091,6 +1094,8 @@ int RendererQueueMeshJob(World *WorldVal, Chunk *ChunkVal) {
         // Buried rock still has to exist in the LOD, or the coarse levels
         // would show caves where the world has none.
         LodIngestUniformChunk(ChunkVal);
+    LodRendererSetChunkCovered(ChunkVal->ChunkX, ChunkVal->ChunkY,
+                               ChunkVal->ChunkZ, true);
         return -1;
     }
 
@@ -1262,6 +1267,8 @@ bool RendererUploadFinishedMesh(void) {
                 LodIngestChunkPatch(Job->ChunkX, Job->ChunkY, Job->ChunkZ,
                                     &LodPatches[Idx]);
             }
+            LodRendererSetChunkCovered(Job->ChunkX, Job->ChunkY, Job->ChunkZ,
+                                       true);
         }
 
         for (int Target = 0; Target < MESH_TARGET_COUNT; Target++) {
@@ -1856,6 +1863,9 @@ static int ResolveNeighbor(World *WorldVal, const TraversalFrustum *Frustum,
 
 void RendererForgetChunk(Chunk *ChunkVal) {
     UnloadChunkMesh(ChunkVal);
+    // Leaving the 1:1 set hands the place back to the LOD.
+    LodRendererSetChunkCovered(ChunkVal->ChunkX, ChunkVal->ChunkY,
+                               ChunkVal->ChunkZ, false);
     int Slot = ChunkVisibilitySlot(ChunkVal);
     if (Slot < 0) { return; }
     OcclusionState *State = GetOcclusionState();
@@ -2831,6 +2841,11 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
     }
     RenderEndChunkPass();
     PROFILE_END(CutoutSubmitStart, PROFILE_CHUNK_SUBMIT);
+
+    // The LOD beyond the 1:1 chunks: after their opaque depth exists (it is
+    // tested against it) and before the translucent pass (which blends over
+    // it).
+    LodRendererDraw(CameraVal);
 
     // Immediate-mode, and it binds its own shader and texture, so it stays
     // outside the chunk passes rather than being interleaved with them. It

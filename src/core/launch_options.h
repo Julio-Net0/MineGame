@@ -75,6 +75,9 @@ typedef struct {
   bool Hidden;
   // LAUNCH_MONITOR_DEFAULT unless --monitor was given.
   int Monitor;
+  // --lod off: the device is treated as unable to draw LOD, so no LOD store,
+  // worker downsampling or GPU resource is ever created. Defaults to on.
+  bool LodDisabled;
 } LaunchOptions;
 
 void ParseLaunchOptions(int Argc, char **Argv);

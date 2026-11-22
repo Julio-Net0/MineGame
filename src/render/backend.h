@@ -186,6 +186,67 @@ typedef struct {
 // Valid after RenderBackendInit; zeroed before it.
 const RenderCapabilities *RenderGetCapabilities(void);
 
+// ---------------------------------------------------------------------------
+// LOD
+// ---------------------------------------------------------------------------
+//
+// Coarse sections beyond the 1:1 chunks, drawn between the 1:1 opaque passes
+// and the translucent pass. Available only when the device can draw LOD (see
+// RenderCapabilities); otherwise every call below is a no-op and nothing is
+// allocated.
+
+// Whether LOD is drawn this run.
+bool RenderLodActive(void);
+
+// A LOD section's mesh in GPU memory, or RENDER_LOD_MESH_INVALID.
+typedef int RenderLodMesh;
+#define RENDER_LOD_MESH_INVALID (-1)
+
+// Vertices are section-local voxel units, packed like chunk vertices. Invalid
+// when the LOD arena is full.
+RenderLodMesh RenderLodUploadMesh(const ChunkVertex *Vertices, int VertexCount);
+void RenderLodFreeMesh(RenderLodMesh Mesh);
+
+// One section to draw: its mesh, its origin in blocks and its blocks per
+// voxel (2^level).
+typedef struct {
+  RenderLodMesh Mesh;
+  int OriginX;
+  int OriginY;
+  int OriginZ;
+  int Scale;
+  int VertexCount;
+} RenderLodDraw;
+
+// Which chunks are drawn 1:1, one bit per chunk: a toroidal grid of columns
+// (x and z modulo RENDER_LOD_COVERAGE_SPAN), each holding chunk layers
+// -RENDER_LOD_COVERAGE_LAYER_BIAS .. +127-BIAS over four 32-bit words.
+enum {
+  RENDER_LOD_COVERAGE_SPAN = 512,
+  RENDER_LOD_COVERAGE_WORDS = 4,
+  RENDER_LOD_COVERAGE_LAYER_BIAS = 64,
+  RENDER_LOD_COVERAGE_LAYERS = 128
+};
+void RenderLodSetCoverage(int ColumnX, int ColumnZ,
+                          const uint32_t Words[RENDER_LOD_COVERAGE_WORDS]);
+
+// Draws[0, OpaqueCount) lie wholly outside the 1:1 chunks; the BorderCount
+// after them overlap some, and their fragments inside 1:1 chunks are dropped.
+// Call between the 1:1 cutout pass and the translucent pass.
+void RenderDrawLod(const RenderLodDraw *Draws, int OpaqueCount, int BorderCount);
+
+typedef struct {
+  int Meshes;
+  int64_t ArenaUsedBytes;
+  int64_t ArenaCapacityBytes;
+  int OpaqueDraws;
+  int BorderDraws;
+  int64_t DrawnVertices;
+  // First GL error seen after a LOD pass (0 = none).
+  unsigned GlError;
+} RenderLodStats;
+void RenderGetLodStats(RenderLodStats *Out);
+
 // Translucent pass state (depth-mask off, color blend on, batch flush).
 void RenderBeginTranslucentPass(void);
 void RenderEndTranslucentPass(void);

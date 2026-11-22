@@ -80,7 +80,15 @@ typedef struct {
   int AnchorChunkY;
   int AnchorChunkZ;
   uint64_t Evicted;
+  // Every content change and eviction, as a ring that readers poll: slot
+  // Seq & (LOD_JOURNAL_SIZE - 1) holds change number Seq. A reader that fell
+  // more than LOD_JOURNAL_SIZE changes behind has lost some and must treat
+  // every section as changed.
+  LodStoreKey *Journal;
+  uint64_t JournalSeq;
 } LodStore;
+
+enum { LOD_JOURNAL_SIZE = 8192 };
 
 typedef enum {
   LOD_WRITE_APPLIED = 0,

@@ -2,6 +2,7 @@
 #include "player/player.h"
 #include "core/color.h"
 #include "platform/platform.h"
+#include "render/lod_renderer.h"
 #include "render/renderer.h"
 #include "render/backend.h"
 #include "ui/block_icon.h"
@@ -525,6 +526,14 @@ static void DrawDebugScreen(UiContext *Ctx, Player *PlayerVal, World *WorldVal,
              LodIngestSectionCount(),
              (double)LodIngestBytes() / (double)(1U << BYTES_TO_MB_SHIFT),
              (unsigned long long)LodIngestChunkCount());
+    Y = DrawDebugLine(Ctx, DebugText, Y);
+    LodRenderStats Lod;
+    LodRendererGetStats(&Lod);
+    snprintf(DebugText, sizeof(DebugText),
+             "LOD draw: %d opaque + %d border, %lld verts, %d meshes %.0f MB",
+             Lod.OpaqueSections, Lod.BorderSections,
+             (long long)Lod.DrawnVertices, Lod.CachedMeshes,
+             (double)Lod.ArenaUsedBytes / (double)(1U << BYTES_TO_MB_SHIFT));
     Y = DrawDebugLine(Ctx, DebugText, Y);
   }
   snprintf(DebugText, sizeof(DebugText),

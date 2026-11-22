@@ -10,6 +10,9 @@
 # (304, 160) is the nearest Deep Ocean column for the deterministic script seed
 # (from "/locate biome deep_ocean").
 
+# The teleports leave earlier terrain behind as LOD on the horizon, where this
+# 1:1 check expects open sky: LOD drawing stays off for the whole scenario.
+lod off
 /noclip 1
 /tp 304 40 160
 look 0 -60

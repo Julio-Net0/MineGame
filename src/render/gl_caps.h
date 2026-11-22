@@ -22,8 +22,9 @@ typedef struct {
 } GlOptionalProcs;
 
 // Detects everything once, with the context current. VersionCap is
-// major * 10 + minor, or 0 for no cap. Leaves no GL binding changed.
-void GlCapsDetect(int VersionCap);
+// major * 10 + minor, or 0 for no cap. LodAllowed false (--lod off) reports
+// LOD as unsupported whatever the driver offers. Leaves no GL binding changed.
+void GlCapsDetect(int VersionCap, bool LodAllowed);
 
 const GlOptionalProcs *GlCapsProcs(void);
 

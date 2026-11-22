@@ -1,6 +1,8 @@
 #include "render/backend.h"
 #include "render/gl_api.h"
 #include "render/gl_caps.h"
+#include "render/gl_internal.h"
+#include "render/gl_lod.h"
 #include "render/gl_math.h"
 #include "render/gl_mesh_arena.h"
 #include "core/fileio.h"
@@ -140,6 +142,11 @@ typedef struct {
   int MipCheckFailures;
   int MipNaiveDrifts;
   float LodAnisotropy;
+  // The frame being built, for the LOD pass.
+  RenderCamera FrameCamera;
+  int FrameWidth;
+  int FrameHeight;
+  bool Wireframe;
   GLuint BlockAtlasTex;
   GLuint UiAtlasTex;
   int BlockIconGrid;
@@ -325,6 +332,10 @@ static GLuint LinkProgram(const char *VertexPath, const char *FragmentPath,
 
 // Uniform values persist on the program, so the sampler unit and the overlay
 // table are set once here rather than per chunk pass.
+GLuint GlLinkShaderProgram(const char *VertexPath, const char *FragmentPath) {
+  return LinkProgram(VertexPath, FragmentPath, NULL, 0);
+}
+
 static ChunkProgram LoadChunkProgram(const char *FragmentPath) {
   ChunkProgram Result = {0};
   Result.Program = LinkProgram("assets/shaders/chunk.vert", FragmentPath, NULL, 0);
@@ -944,7 +955,8 @@ static void SelectRenderTier(BackendState *State) {
 void RenderBackendInit(void) {
   BackendState *State = GetBackendState();
 
-  GlCapsDetect(GetLaunchOptions()->GlVersionCap);
+  GlCapsDetect(GetLaunchOptions()->GlVersionCap,
+               !GetLaunchOptions()->LodDisabled);
   LoadBlockTextureArray();
 
   State->ChunkOpaque = LoadChunkProgram("assets/shaders/chunk_opaque.frag");
@@ -970,6 +982,11 @@ void RenderBackendInit(void) {
     exit(EXIT_FAILURE);
   }
   SelectRenderTier(State);
+  // The LOD pipeline exists only where LOD can be drawn; elsewhere frames go
+  // straight to the default framebuffer as they always did.
+  if (RenderGetCapabilities()->LodSupported) {
+    (void)GlLodInit(State->ChunkSharedEbo);
+  }
 
   State->FreeCount = MESH_POOL_CAPACITY;
   for (int IdxI = 0; IdxI < MESH_POOL_CAPACITY; IdxI++) {
@@ -1014,6 +1031,7 @@ void RenderBackendShutdown(void) {
     State->MeshPool[IdxI] = (ChunkGpuMesh){0};
     State->MeshSlotUsed[IdxI] = false;
   }
+  GlLodShutdown();
   ArenaShutdown();
   if (State->IndirectBuffer != 0) {
     glDeleteBuffers(1, &State->IndirectBuffer);
@@ -1561,6 +1579,9 @@ void RenderBeginFrame(RenderCamera Camera) {
   GlMat4ToColumnMajor(GlMat4ScreenProjection(PlatformGetScreenWidth(),
                                              PlatformGetScreenHeight()),
                       State->Mvp2D);
+  State->FrameCamera = Camera;
+  State->FrameWidth = Width;
+  State->FrameHeight = Height;
 
   // Every piece of fixed-function state the frame relies on, set here rather
   // than assumed: nothing that ran before this frame is trusted to have left
@@ -1569,6 +1590,7 @@ void RenderBeginFrame(RenderCamera Camera) {
   glViewport(0, 0, Width, Height);
   glDisable(GL_SCISSOR_TEST);
   glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+  State->Wireframe = false;
   glDepthMask(GL_TRUE);
   glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
   glClearColor((float)COLOR_CLEAR.R / COLOR8_CHANNEL_MAX,
@@ -1675,7 +1697,44 @@ void RenderEndFrame(void) {
   PROFILE_END(PresentStart, PROFILE_PRESENT);
 
   ArenaEndFrame();
+  GlLodEndFrame();
 }
+
+bool RenderLodActive(void) { return GlLodActive(); }
+
+RenderLodMesh RenderLodUploadMesh(const ChunkVertex *Vertices, int VertexCount) {
+  return GlLodUploadMesh(Vertices, VertexCount);
+}
+
+void RenderLodFreeMesh(RenderLodMesh Mesh) { GlLodFreeMesh(Mesh); }
+
+void RenderLodSetCoverage(int ColumnX, int ColumnZ,
+                          const uint32_t Words[RENDER_LOD_COVERAGE_WORDS]) {
+  GlLodSetCoverage(ColumnX, ColumnZ, Words);
+}
+
+void RenderDrawLod(const RenderLodDraw *Draws, int OpaqueCount, int BorderCount) {
+  BackendState *State = GetBackendState();
+  if (!GlLodActive()) {
+    return;
+  }
+  // Debug geometry queued so far belongs to the 1:1 target before the LOD.
+  FlushDebugBatch();
+  double Top = GL_MATH_CULL_NEAR;
+  GlMat4 Near = GlMat4Frustum(-Top, Top, -Top, Top, GL_MATH_CULL_NEAR,
+                              GL_MATH_CULL_FAR);
+  GlLodFrame Frame = {.Camera = State->FrameCamera,
+                      .Width = State->FrameWidth,
+                      .Height = State->FrameHeight,
+                      .NearM10 = Near.m10,
+                      .NearM14 = Near.m14,
+                      .BlockArrayTex = State->BlockArrayTex,
+                      .LodSampler = State->LodSampler,
+                      .Wireframe = State->Wireframe};
+  GlLodDraw(&Frame, Draws, OpaqueCount, BorderCount);
+}
+
+void RenderGetLodStats(RenderLodStats *Out) { GlLodGetStats(Out); }
 
 void RenderBeginTranslucentPass(void) {
   FlushDebugBatch();
@@ -1691,6 +1750,7 @@ void RenderEndTranslucentPass(void) {
 }
 
 void RenderSetWireframe(bool Enabled) {
+  GetBackendState()->Wireframe = Enabled;
   glPolygonMode(GL_FRONT_AND_BACK, Enabled ? GL_LINE : GL_FILL);
 }
 

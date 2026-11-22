@@ -1,4 +1,5 @@
 #include "ui/commands.h"
+#include "render/lod_renderer.h"
 #include "world/block_system.h"
 #include "world/biome.h"
 #include "world/chunk.h"
@@ -41,6 +42,7 @@ static void CommandBiome(const char *Args, CommandContext *Ctx);
 static void CommandLocate(const char *Args, CommandContext *Ctx);
 static void CommandGuiScale(const char *Args, CommandContext *Ctx);
 static void CommandFillChat(const char *Args, CommandContext *Ctx);
+static void CommandLod(const char *Args, CommandContext *Ctx);
 #ifdef MINEGAME_PROFILE
 static void CommandProfile(const char *Args, CommandContext *Ctx);
 #endif
@@ -75,6 +77,9 @@ static const CommandInfo AVAILABLECOMMANDS[] = {
     {"/fillchat", "Use: /fillchat [lines]",
      "Fills the chat history with identical test lines (20 by default)",
      CommandFillChat},
+    {"/lod", "Use: /lod <on|off>",
+     "Shows or hides the distant LOD terrain (needs an OpenGL 4.3 device)",
+     CommandLod},
 #ifdef MINEGAME_PROFILE
     {"/profile", "Use: /profile <start [seconds] | stop | dump | reset>",
      "Streams per-frame timings to CSV, dumps the window, or resets it",
@@ -614,6 +619,24 @@ static void CommandGuiScale(const char *Args, CommandContext *Ctx) {
     snprintf(Msg, sizeof(Msg), "GUI scale set to %d", Setting);
   }
   ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
+}
+
+static void CommandLod(const char *Args, CommandContext *Ctx) {
+  if (!LodRendererEnabled()) {
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR,
+                  "LOD is not available on this device or was turned off "
+                  "with --lod off");
+    return;
+  }
+  bool On = false;
+  if (Args != (void *)0 && CompareString(Args, "on") == 0) {
+    On = true;
+  } else if (Args == (void *)0 || CompareString(Args, "off") != 0) {
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR, "Incorrect Format. try: /lod <on|off>");
+    return;
+  }
+  LodRendererSetDrawOn(On);
+  ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, On ? "LOD drawing on" : "LOD drawing off");
 }
 
 // Identical lines, accents included, so chat-cost captures always draw the
@@ -1250,6 +1273,9 @@ int CommandAutocomplete(const char *Buffer, int CursorPos, char *OutCompleted,
            Idx++) {
         Candidates[CandidateCount++] = SpeedVals[Idx];
       }
+    } else if (CompareString(FirstToken, "/lod") == 0) {
+      Candidates[CandidateCount++] = "on";
+      Candidates[CandidateCount++] = "off";
     } else if (CompareString(FirstToken, "/guiscale") == 0) {
       static const char *GuiScales[] = {"0", "1", "2", "3", "4"};
       int ScaleCount = (int)(sizeof(GuiScales) / sizeof(GuiScales[0]));

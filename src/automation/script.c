@@ -9,6 +9,7 @@
 #include "platform/platform.h"
 #include "render/backend.h"
 #include "render/camera.h"
+#include "render/lod_renderer.h"
 #include "render/renderer.h"
 #include "third_party/cJSON.h"
 #include "ui/commands.h"
@@ -101,6 +102,7 @@ typedef enum {
   SCRIPT_OP_PRESS,
   SCRIPT_OP_HOTBAR,
   SCRIPT_OP_DEBUG_SCREEN,
+  SCRIPT_OP_LOD,
   SCRIPT_OP_SCREENSHOT,
   SCRIPT_OP_STATE,
   SCRIPT_OP_LOD_MESH_CHECK,
@@ -745,6 +747,25 @@ static bool ParseStatement(char *Statement, int LineNumber) {
                            "", LineText);
   }
 
+  if (CompareString(Tokens[0], "lod") == 0) {
+    int On = -1;
+    if (TokenCount == 2) {
+      if (CompareString(Tokens[1], "on") == 0) {
+        On = 1;
+      } else if (CompareString(Tokens[1], "off") == 0) {
+        On = 0;
+      }
+    }
+    if (On < 0) {
+      ParseError(LineNumber, "expected \"lod <on|off>\"");
+      return false;
+    }
+    return AppendStatement((ScriptStatement){.Kind = SCRIPT_OP_LOD,
+                                             .Line = LineNumber,
+                                             .Index = On},
+                           "", LineText);
+  }
+
   if (CompareString(Tokens[0], "inventory") == 0) {
     return ParseInventoryStatement(Tokens, TokenCount, LineNumber, LineText);
   }
@@ -969,7 +990,8 @@ static bool ScriptWorldSettled(const ScriptContext *Ctx) {
   PROFILE_BEGIN(SettleStart);
   bool Settled = WorldIsSettled(Ctx->WorldVal, ScriptLoadCenter(Ctx),
                                 Ctx->RenderDistance) &&
-                 !RendererHasPendingMeshWork() && LodIngestIdle();
+                 !RendererHasPendingMeshWork() && LodIngestIdle() &&
+                 LodRendererIdle();
   PROFILE_END(SettleStart, PROFILE_SCRIPT_WAIT);
   return Settled;
 }
@@ -1098,6 +1120,21 @@ static void ScriptAddLodJson(cJSON *Root) {
   cJSON_AddNumberToObject(Node, "uniformChunks", (double)Stats.UniformChunks);
   cJSON_AddNumberToObject(Node, "outOfRange", (double)Stats.OutOfRange);
   cJSON_AddNumberToObject(Node, "failed", (double)Stats.Failed);
+  LodRenderStats Render;
+  LodRendererGetStats(&Render);
+  cJSON_AddBoolToObject(Node, "drawEnabled", Render.Enabled);
+  cJSON_AddBoolToObject(Node, "drawOn", Render.DrawOn);
+  cJSON_AddNumberToObject(Node, "drawSelected", Render.Selected);
+  cJSON_AddNumberToObject(Node, "lodOpaqueSections", Render.OpaqueSections);
+  cJSON_AddNumberToObject(Node, "lodBorderSections", Render.BorderSections);
+  cJSON_AddNumberToObject(Node, "lodVertices", (double)Render.DrawnVertices);
+  cJSON_AddNumberToObject(Node, "gpuMeshes", Render.CachedMeshes);
+  cJSON_AddNumberToObject(Node, "meshWaiting", Render.WaitingSections);
+  cJSON_AddNumberToObject(Node, "arenaStarved", Render.StarvedSections);
+  cJSON_AddNumberToObject(Node, "arenaUsedBytes", (double)Render.ArenaUsedBytes);
+  cJSON_AddNumberToObject(Node, "arenaCapacityBytes",
+                          (double)Render.ArenaCapacityBytes);
+  cJSON_AddNumberToObject(Node, "glError", (double)Render.GlError);
   cJSON_AddItemToObject(Root, "lod", Node);
 }
 
@@ -1816,6 +1853,9 @@ void ScriptStep(ChatState *Chat, GameCamera *Camera, Player *PlayerVal,
       break;
     case SCRIPT_OP_DEBUG_SCREEN:
       State->DebugScreen = Step->Index != 0;
+      break;
+    case SCRIPT_OP_LOD:
+      LodRendererSetDrawOn(Step->Index != 0);
       break;
     case SCRIPT_OP_INVENTORY:
       if (!ScriptRunInventory(Step, PlayerVal)) {

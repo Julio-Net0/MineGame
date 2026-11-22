@@ -129,6 +129,8 @@ add_executable(${PROJECT_NAME}
   src/render/chunk_visibility.c
   src/render/gl_backend.c
   src/render/gl_caps.c
+  src/render/gl_lod.c
+  src/render/lod_renderer.c
   src/render/gl_mesh_arena.c
   src/render/camera.c
   src/ui/hud.c

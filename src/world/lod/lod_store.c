@@ -61,8 +61,9 @@ bool LodStoreInit(LodStore *Store, const LodStoreConfig *Config) {
   Store->Scratch = (LodStoreScratch *)malloc(sizeof(LodStoreScratch));
   Store->Encode = LodEncodeScratchCreate();
   Store->DensePool = (LodVoxel **)calloc(DENSE_POOL_MAX, sizeof(LodVoxel *));
+  Store->Journal = (LodStoreKey *)malloc(sizeof(LodStoreKey) * LOD_JOURNAL_SIZE);
   if (Store->Slots == NULL || Store->Scratch == NULL || Store->Encode == NULL ||
-      Store->DensePool == NULL) {
+      Store->DensePool == NULL || Store->Journal == NULL) {
     LodStoreFree(Store);
     return false;
   }
@@ -98,6 +99,7 @@ void LodStoreFree(LodStore *Store) {
   free(Store->Scratch);
   free(Store->Pending);
   free(Store->Hot);
+  free(Store->Journal);
   LodEncodeScratchFree(Store->Encode);
   *Store = (LodStore){0};
 }
@@ -216,11 +218,18 @@ bool LodStoreInRange(const LodStore *Store, int Level, int X, int Y, int Z) {
   return true;
 }
 
+static void JournalChange(LodStore *Store, LodStoreKey Key) {
+  Store->Journal[Store->JournalSeq & (LOD_JOURNAL_SIZE - 1U)] = Key;
+  Store->JournalSeq++;
+}
+
 static void EvictOutOfRange(LodStore *Store) {
   for (int Idx = 0; Idx < Store->Capacity; Idx++) {
     LodStoreSlot *Slot = &Store->Slots[Idx];
     if (Slot->Level > 0 &&
         !LodStoreInRange(Store, Slot->Level, Slot->X, Slot->Y, Slot->Z)) {
+      JournalChange(Store, (LodStoreKey){.X = Slot->X, .Y = Slot->Y,
+                                         .Z = Slot->Z, .Level = Slot->Level});
       FreeSlotSection(Store, Slot);
       Slot->Level = LOD_SLOT_TOMBSTONE;
       Store->Count--;
@@ -588,6 +597,7 @@ static LodWriteResult WriteLevel(LodStore *Store, int Level, int ChildX,
   if (ContentChanged) {
     Section->Revision++;
     Section->Dirty = true;
+    JournalChange(Store, Key);
     if (!MarkHot(Store, Section, Key)) {
       return LOD_WRITE_NO_MEMORY;
     }
@@ -706,6 +716,7 @@ static void WriteSectionGroup(LodStore *Store, const LodChunkWrite *Writes,
       }
       Section->Revision++;
       Section->Dirty = true;
+      JournalChange(Store, Key);
       Changed = true;
       if (!MarkHot(Store, Section, Key)) {
         Out->Failed += Count;

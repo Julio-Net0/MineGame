@@ -26,6 +26,7 @@
 #include "pthread.h"
 #include "render/backend.h"
 #include "render/chunk_visibility.h"
+#include "render/lod_renderer.h"
 #include "render/renderer.h"
 #include "server/server.h"
 #include "core/launch_options.h"
@@ -214,7 +215,9 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
   // never allocated and the workers never downsample.
   if (RenderGetCapabilities()->LodSupported) {
     LodDownsampleInit();
-    if (!LodIngestInit(RenderDistance) || !RendererEnableLodIngest()) {
+    if (LodIngestInit(RenderDistance) && RendererEnableLodIngest()) {
+      LodRendererInit();
+    } else {
       LodIngestShutdown();
       LogWarn("MAIN: LOD ingestion could not be set up; running without LOD");
     }
@@ -238,6 +241,7 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
 
 static void CleanupGame(World *WorldVal) {
   CloseChunkWorker();
+  LodRendererShutdown();
   LodIngestShutdown();
 #ifdef MINEGAME_PROFILE
   (void)RendererCheckRenderableSet(WorldVal);

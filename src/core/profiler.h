@@ -68,6 +68,11 @@ typedef enum {
   PROFILE_LOD_INGEST,
   // Workers: downsampling a mesh job's snapshot into its LOD patch.
   PROFILE_LOD_SAMPLE,
+  // Main thread, inside World draw: LOD selection, depth remap and the LOD
+  // multi-draws.
+  PROFILE_LOD_DRAW,
+  // Main thread, inside LOD draw: meshing and uploading LOD sections.
+  PROFILE_LOD_MESH,
   PROFILE_SCOPE_COUNT
 } ProfileScope;
 

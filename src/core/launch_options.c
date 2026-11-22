@@ -50,6 +50,7 @@ static LaunchOptions *GetMutableLaunchOptions(void) {
       .GlVersionCap = GL_VERSION_CAP_NONE,
       .Hidden = false,
       .Monitor = LAUNCH_MONITOR_DEFAULT,
+      .LodDisabled = false,
   };
   return &Options;
 }
@@ -272,6 +273,16 @@ static void ParseGlMaxValue(const char *ValueStr, LaunchOptions *Options) {
   }
 }
 
+static void ParseLodValue(const char *ValueStr, LaunchOptions *Options) {
+  if (strcmp(ValueStr, "on") == 0) {
+    Options->LodDisabled = false;
+  } else if (strcmp(ValueStr, "off") == 0) {
+    Options->LodDisabled = true;
+  } else {
+    LogWarn("MAIN: --lod must be on or off; ignoring \"%s\"", ValueStr);
+  }
+}
+
 static void ParseMonitorValue(const char *ValueStr, LaunchOptions *Options) {
   long Value = 0;
   if (!ParseStrictLong(ValueStr, &Value) || Value < 1 ||
@@ -317,6 +328,7 @@ void ParseLaunchOptions(int Argc, char **Argv) {
       .GlVersionCap = GL_VERSION_CAP_NONE,
       .Hidden = false,
       .Monitor = LAUNCH_MONITOR_DEFAULT,
+      .LodDisabled = false,
   };
 
   if (Argc <= 1 || Argv == (char **)0) {
@@ -350,6 +362,7 @@ void ParseLaunchOptions(int Argc, char **Argv) {
                      (strcmp(Arg, "--render-distance") == 0) ||
                      (strcmp(Arg, "--gl-tier") == 0) ||
                      (strcmp(Arg, "--gl-max") == 0) ||
+                     (strcmp(Arg, "--lod") == 0) ||
                      (strcmp(Arg, "--monitor") == 0) ||
                      (strcmp(Arg, "--script") == 0) ||
                      (strcmp(Arg, "--script-out") == 0) ||
@@ -385,6 +398,8 @@ void ParseLaunchOptions(int Argc, char **Argv) {
       ParseGlTierValue(ValueStr, Options);
     } else if (strcmp(Arg, "--gl-max") == 0) {
       ParseGlMaxValue(ValueStr, Options);
+    } else if (strcmp(Arg, "--lod") == 0) {
+      ParseLodValue(ValueStr, Options);
     } else if (strcmp(Arg, "--monitor") == 0) {
       ParseMonitorValue(ValueStr, Options);
     } else if (strcmp(Arg, "--script") == 0) {
