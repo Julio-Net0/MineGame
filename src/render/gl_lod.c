@@ -42,23 +42,42 @@ enum {
   // and a record of its first vertex, run count, first slot and packed runs
   // (see lod_cull.comp, whose constants must match).
   LOD_RUNS = RENDER_LOD_MAX_RUNS,
-  CULL_RECORD_HEADER = 3,
+  CULL_RECORD_HEADER = 4,
   CULL_RECORD_UINTS = CULL_RECORD_HEADER + LOD_RUNS,
   CULL_RUN_GROUP_SHIFT = 16,
   CULL_WORKGROUP = 64,
-  // Counters (see lod_cull.comp): opaque and border draw counts, then stats.
+  // Counters (see lod_cull.comp, whose indices must match): the opaque and
+  // border draw counts of phase 1 (or the single pass) and of phase 2, then
+  // statistics.
   COUNTER_OPAQUE = 0,
   COUNTER_BORDER = 1,
-  COUNTER_FRUSTUM_CULLED = 2,
-  COUNTER_CANDIDATE_RUNS = 3,
-  COUNTER_FACING_CULLED = 4,
-  COUNTER_DRAWN_COMMANDS = 5,
-  COUNTER_DRAWN_QUADS = 6,
-  COUNTER_UINTS = 8,
+  COUNTER_PHASE2_OPAQUE = 2,
+  COUNTER_PHASE2_BORDER = 3,
+  COUNTER_FRUSTUM_CULLED = 4,
+  COUNTER_CANDIDATE_RUNS = 5,
+  COUNTER_FACING_CULLED = 6,
+  COUNTER_PHASE1_COMMANDS = 7,
+  COUNTER_PHASE1_QUADS = 8,
+  COUNTER_PHASE2_COMMANDS = 9,
+  COUNTER_PHASE2_QUADS = 10,
+  COUNTER_HIZ_CULLED = 11,
+  COUNTER_UINTS = 16,
   BINDING_META = 0,
   BINDING_CULL = 1,
   BINDING_COMMANDS = 2,
-  BINDING_COUNTERS = 3
+  BINDING_COUNTERS = 3,
+  BINDING_VISIBILITY = 4,
+  // uPhase in lod_cull.comp.
+  PHASE_SINGLE = 0,
+  PHASE_FIRST = 1,
+  PHASE_SECOND = 2,
+  // Hi-Z: levels 1..HIZ_MAX_LEVELS-1 in one R32F atlas (see lod_hiz.comp).
+  HIZ_MAX_LEVELS = 16,
+  HIZ_LEVEL_FIELDS = 4,
+  // lod_hiz.comp: a 16x16 workgroup writes five levels from one source level.
+  HIZ_WORKGROUP = 16,
+  HIZ_LEVELS_PER_DISPATCH = 5,
+  HIZ_IMAGE_UNIT = 0
 };
 
 // ARB_indirect_parameters / GL 4.6 tokens, absent from the 4.3 loader.
@@ -111,12 +130,25 @@ typedef struct {
   GLint Total;
   GLint Compact;
   GLint CullEnabled;
+  GLint Phase;
+  GLint PhaseBase;
+  GLint Viewport;
+  GLint HizTop;
+  GLint HizLevels;
 } CullProgram;
+
+typedef struct {
+  GLuint Program;
+  GLint Source;
+  GLint Top;
+  GLint Levels;
+} HizProgram;
 
 typedef struct {
   bool Active;
   bool UseIndirectCount;
   bool CullEnabled;
+  bool HizEnabled;
   GLuint SharedIndexBuffer;
 
   GLuint Vbo;
@@ -128,6 +160,14 @@ typedef struct {
   GLuint CounterBuffer;
   GLuint CoverageTex;
   CullProgram Cull;
+  // Per mesh: visible when last tested (see lod_cull.comp).
+  GLuint VisibilitySsbo;
+  HizProgram Hiz;
+  // The Hi-Z atlas and, per level, its first row, width and height; level 0
+  // is unused (level k covers 2^k x 2^k pixels).
+  GLuint HizTex;
+  int HizTop;
+  GLint HizLevels[HIZ_MAX_LEVELS][HIZ_LEVEL_FIELDS];
 
   // The section list last sent to the GPU.
   bool HasList;
@@ -154,9 +194,10 @@ typedef struct {
   // Copy of the default framebuffer's depth, the remap's input.
   GLuint DepthCopyTex;
   GLuint FboCopy;
-  // The LOD pass's own colour (zero alpha where it drew nothing) and depth.
+  // The LOD pass's own colour (zero alpha where it drew nothing) and depth,
+  // a texture so the Hi-Z pyramid can read it.
   GLuint LodColorTex;
-  GLuint DepthLodRbo;
+  GLuint DepthLodTex;
   GLuint FboLod;
   int Width;
   int Height;
@@ -219,6 +260,23 @@ static CullProgram LoadCullProgram(void) {
   Result.Total = glGetUniformLocation(Result.Program, "uTotal");
   Result.Compact = glGetUniformLocation(Result.Program, "uCompact");
   Result.CullEnabled = glGetUniformLocation(Result.Program, "uCullEnabled");
+  Result.Phase = glGetUniformLocation(Result.Program, "uPhase");
+  Result.PhaseBase = glGetUniformLocation(Result.Program, "uPhaseBase");
+  Result.Viewport = glGetUniformLocation(Result.Program, "uViewport");
+  Result.HizTop = glGetUniformLocation(Result.Program, "uHizTop");
+  Result.HizLevels = glGetUniformLocation(Result.Program, "uHizLevels");
+  return Result;
+}
+
+static HizProgram LoadHizProgram(void) {
+  HizProgram Result = {0};
+  Result.Program = GlLinkComputeProgram("assets/shaders/lod_hiz.comp");
+  Result.Source = glGetUniformLocation(Result.Program, "uSource");
+  Result.Top = glGetUniformLocation(Result.Program, "uTop");
+  Result.Levels = glGetUniformLocation(Result.Program, "uHizLevels");
+  glUseProgram(Result.Program);
+  glUniform1i(glGetUniformLocation(Result.Program, "uDepth"), DEPTH_NEAR_UNIT);
+  glUseProgram(0);
   return Result;
 }
 
@@ -229,18 +287,18 @@ static void DeleteTargets(GlLodState *State) {
       glDeleteFramebuffers(1, &Framebuffers[Idx]);
     }
   }
-  if (State->DepthLodRbo != 0) {
-    glDeleteRenderbuffers(1, &State->DepthLodRbo);
-  }
-  GLuint Textures[2] = {State->DepthCopyTex, State->LodColorTex};
-  for (int Idx = 0; Idx < 2; Idx++) {
+  GLuint Textures[] = {State->DepthCopyTex, State->LodColorTex,
+                       State->DepthLodTex, State->HizTex};
+  for (size_t Idx = 0; Idx < sizeof(Textures) / sizeof(Textures[0]); Idx++) {
     if (Textures[Idx] != 0) {
       glDeleteTextures(1, &Textures[Idx]);
     }
   }
   State->FboCopy = 0;
   State->FboLod = 0;
-  State->DepthLodRbo = 0;
+  State->DepthLodTex = 0;
+  State->HizTex = 0;
+  State->HizTop = 0;
   State->DepthCopyTex = 0;
   State->LodColorTex = 0;
   State->Width = 0;
@@ -261,18 +319,46 @@ static GLuint CreateTargetTexture(GLenum Internal, GLenum Format, GLenum Type,
   return Texture;
 }
 
+// Lays out levels 1.. of the Hi-Z pyramid for a Width x Height frame, one
+// under the other in the atlas: level k is ceil(Width / 2^k) x
+// ceil(Height / 2^k), down to the level where both are 1. Creates the atlas.
+static void CreateHizAtlas(GlLodState *State, int Width, int Height) {
+  memset(State->HizLevels, 0, sizeof(State->HizLevels));
+  State->HizLevels[0][1] = Width;
+  State->HizLevels[0][2] = Height;
+  int Rows = 0;
+  int Level = 1;
+  for (; Level < HIZ_MAX_LEVELS; Level++) {
+    int Size = 1 << Level;
+    int LevelWidth = (Width + Size - 1) >> Level;
+    int LevelHeight = (Height + Size - 1) >> Level;
+    State->HizLevels[Level][0] = Rows;
+    State->HizLevels[Level][1] = LevelWidth;
+    State->HizLevels[Level][2] = LevelHeight;
+    State->HizLevels[Level][3] = 0;
+    Rows += LevelHeight;
+    if (LevelWidth == 1 && LevelHeight == 1) {
+      break;
+    }
+  }
+  State->HizTop = (Level < HIZ_MAX_LEVELS) ? Level : HIZ_MAX_LEVELS - 1;
+  State->HizTex = CreateTargetTexture(GL_R32F, GL_RED, GL_FLOAT,
+                                      State->HizLevels[1][1], Rows);
+}
+
 // The depth copy matches the default framebuffer's 24/8 depth-stencil, which
-// a depth blit requires; the LOD depth is 32-bit float and never sampled.
+// a depth blit requires; the LOD depth is 32-bit float, read only by Hi-Z.
 static bool CreateTargets(GlLodState *State, int Width, int Height) {
   DeleteTargets(State);
   State->DepthCopyTex = CreateTargetTexture(
       GL_DEPTH24_STENCIL8, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, Width, Height);
   State->LodColorTex =
       CreateTargetTexture(GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE, Width, Height);
-  glGenRenderbuffers(1, &State->DepthLodRbo);
-  glBindRenderbuffer(GL_RENDERBUFFER, State->DepthLodRbo);
-  glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT32F, Width, Height);
-  glBindRenderbuffer(GL_RENDERBUFFER, 0);
+  State->DepthLodTex = CreateTargetTexture(GL_DEPTH_COMPONENT32F, GL_DEPTH_COMPONENT,
+                                           GL_FLOAT, Width, Height);
+  if (State->HizEnabled) {
+    CreateHizAtlas(State, Width, Height);
+  }
 
   glGenFramebuffers(1, &State->FboCopy);
   glBindFramebuffer(GL_FRAMEBUFFER, State->FboCopy);
@@ -287,8 +373,8 @@ static bool CreateTargets(GlLodState *State, int Width, int Height) {
   glBindFramebuffer(GL_FRAMEBUFFER, State->FboLod);
   glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
                          State->LodColorTex, 0);
-  glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
-                            GL_RENDERBUFFER, State->DepthLodRbo);
+  glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D,
+                         State->DepthLodTex, 0);
   bool LodComplete =
       glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -347,6 +433,22 @@ static bool CreateArena(GlLodState *State) {
                NULL, GL_DYNAMIC_DRAW);
   glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
   glGenVertexArrays(1, &State->RemapVao);
+  if (State->HizEnabled) {
+    // Every mesh starts visible, so a section is never hidden before a test.
+    uint32_t *Ones = (uint32_t *)malloc(sizeof(uint32_t) * LOD_MAX_MESHES);
+    if (Ones == NULL) {
+      return false;
+    }
+    for (int Idx = 0; Idx < LOD_MAX_MESHES; Idx++) {
+      Ones[Idx] = 1U;
+    }
+    glGenBuffers(1, &State->VisibilitySsbo);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, State->VisibilitySsbo);
+    glBufferData(GL_SHADER_STORAGE_BUFFER,
+                 (GLsizeiptr)(sizeof(uint32_t) * LOD_MAX_MESHES), Ones, GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    free(Ones);
+  }
   return true;
 }
 
@@ -395,12 +497,13 @@ static bool EnsureListCapacity(GlLodState *State, int Count) {
   return true;
 }
 
-bool GlLodInit(GLuint SharedIndexBuffer, bool UseIndirectCount, bool Cull) {
+bool GlLodInit(GLuint SharedIndexBuffer, const GlLodOptions *Options) {
   GlLodState *State = GetLodState();
   *State = (GlLodState){0};
   State->SharedIndexBuffer = SharedIndexBuffer;
-  State->UseIndirectCount = UseIndirectCount;
-  State->CullEnabled = Cull;
+  State->UseIndirectCount = Options->UseIndirectCount;
+  State->CullEnabled = Options->Cull;
+  State->HizEnabled = Options->Cull && Options->HiZ;
   State->PageUsed = (uint8_t *)calloc(LOD_ARENA_PAGES, sizeof(uint8_t));
   State->Meshes = (LodMeshRecord *)calloc(LOD_MAX_MESHES, sizeof(LodMeshRecord));
   State->FreeMeshes = (int *)malloc(sizeof(int) * LOD_MAX_MESHES);
@@ -433,18 +536,23 @@ bool GlLodInit(GLuint SharedIndexBuffer, bool UseIndirectCount, bool Cull) {
   State->Opaque = LoadLodProgram("assets/shaders/lod_opaque.frag");
   State->Border = LoadLodProgram("assets/shaders/lod_border.frag");
   State->Cull = LoadCullProgram();
+  if (State->HizEnabled) {
+    State->Hiz = LoadHizProgram();
+  }
 
   State->Stats.ArenaCapacityBytes =
       (int64_t)LOD_ARENA_PAGES * LOD_PAGE_VERTICES * (int64_t)sizeof(ChunkVertex);
   State->Active = true;
   LogInfo("RENDER: LOD pipeline on: %d-page arena (%lld MB), projection %.0f..%.0f, "
           "standard depth (32-bit float LOD depth), 1:1 left in the default "
-          "framebuffer, GPU cull%s into a %s command list",
+          "framebuffer, GPU cull%s into a %s command list, Hi-Z occlusion %s",
           LOD_ARENA_PAGES,
           (long long)(State->Stats.ArenaCapacityBytes >> BYTES_TO_MB_SHIFT), LOD_NEAR_PLANE,
-          LOD_FAR_PLANE, Cull ? "" : " (off: --lod-cull off)",
-          UseIndirectCount ? "compacted (indirect count)" : "fixed (zeroed)");
-  State->Stats.IndirectCount = UseIndirectCount;
+          LOD_FAR_PLANE, Options->Cull ? "" : " (off: --lod-cull off)",
+          Options->UseIndirectCount ? "compacted (indirect count)" : "fixed (zeroed)",
+          State->HizEnabled ? "on (two phases)" : "off");
+  State->Stats.IndirectCount = Options->UseIndirectCount;
+  State->Stats.HiZ = State->HizEnabled;
   return true;
 }
 
@@ -464,6 +572,7 @@ void GlLodShutdown(void) {
   DeleteBuffer(&State->CullSsbo);
   DeleteBuffer(&State->CommandBuffer);
   DeleteBuffer(&State->CounterBuffer);
+  DeleteBuffer(&State->VisibilitySsbo);
   if (State->Vao != 0) {
     glDeleteVertexArrays(1, &State->Vao);
   }
@@ -475,7 +584,7 @@ void GlLodShutdown(void) {
   }
   GLuint Programs[] = {State->RemapProgram, State->CompositeProgram,
                        State->Opaque.Program, State->Border.Program,
-                       State->Cull.Program};
+                       State->Cull.Program, State->Hiz.Program};
   for (size_t Idx = 0; Idx < sizeof(Programs) / sizeof(Programs[0]); Idx++) {
     if (Programs[Idx] != 0) {
       glDeleteProgram(Programs[Idx]);
@@ -546,6 +655,13 @@ RenderLodMesh GlLodUploadMesh(const ChunkVertex *Vertices,
                         (uint32_t)Runs[Run].Quads;
   }
   State->LiveMeshes++;
+  if (State->HizEnabled) {
+    uint32_t Visible = 1U;
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, State->VisibilitySsbo);
+    glBufferSubData(GL_SHADER_STORAGE_BUFFER, (GLintptr)((size_t)Mesh * sizeof(uint32_t)),
+                    (GLsizeiptr)sizeof(Visible), &Visible);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+  }
   return Mesh;
 }
 
@@ -691,6 +807,7 @@ static int64_t BuildSectionRecords(GlLodState *State, const RenderLodDraw *Draws
     Cull[0] = (uint32_t)(Record->FirstPage * LOD_PAGE_VERTICES);
     Cull[1] = (uint32_t)Record->RunCount;
     Cull[2] = (uint32_t)Slots;
+    Cull[3] = (uint32_t)Draw->Mesh;
     memcpy(&Cull[CULL_RECORD_HEADER], Record->Runs,
            sizeof(uint32_t) * (size_t)Record->RunCount);
     Slots += Record->RunCount;
@@ -725,7 +842,8 @@ static void UploadSectionList(GlLodState *State, const RenderLodDraw *Draws,
   glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
   glBindBuffer(GL_DRAW_INDIRECT_BUFFER, State->CommandBuffer);
   glBufferData(GL_DRAW_INDIRECT_BUFFER,
-               (GLsizeiptr)(sizeof(LodIndirectCommand) * (size_t)State->ListRuns),
+               (GLsizeiptr)(sizeof(LodIndirectCommand) * (size_t)State->ListRuns *
+                            (State->HizEnabled ? 2U : 1U)),
                NULL, GL_DYNAMIC_DRAW);
   glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
   State->HasList = true;
@@ -741,24 +859,43 @@ void GlLodReadCullStats(void) {
   glBindBuffer(GL_COPY_READ_BUFFER, State->CounterBuffer);
   glGetBufferSubData(GL_COPY_READ_BUFFER, 0, (GLsizeiptr)sizeof(Counters), Counters);
   glBindBuffer(GL_COPY_READ_BUFFER, 0);
-  State->Stats.CullValid = true;
-  State->Stats.FrustumCulledSections = (int)Counters[COUNTER_FRUSTUM_CULLED];
-  State->Stats.CandidateRuns = (int)Counters[COUNTER_CANDIDATE_RUNS];
-  State->Stats.FacingCulledRuns = (int)Counters[COUNTER_FACING_CULLED];
-  State->Stats.DrawnCommands = (int)Counters[COUNTER_DRAWN_COMMANDS];
-  State->Stats.DrawnVertices =
-      (int64_t)Counters[COUNTER_DRAWN_QUADS] * LOD_VERTICES_PER_QUAD;
+  RenderLodStats *Stats = &State->Stats;
+  Stats->CullValid = true;
+  Stats->FrustumCulledSections = (int)Counters[COUNTER_FRUSTUM_CULLED];
+  Stats->CandidateRuns = (int)Counters[COUNTER_CANDIDATE_RUNS];
+  Stats->FacingCulledRuns = (int)Counters[COUNTER_FACING_CULLED];
+  Stats->HizCulledSections = (int)Counters[COUNTER_HIZ_CULLED];
+  Stats->Phase1Commands = (int)Counters[COUNTER_PHASE1_COMMANDS];
+  Stats->Phase2Commands = (int)Counters[COUNTER_PHASE2_COMMANDS];
+  Stats->Phase1Vertices = (int64_t)Counters[COUNTER_PHASE1_QUADS] * LOD_VERTICES_PER_QUAD;
+  Stats->Phase2Vertices = (int64_t)Counters[COUNTER_PHASE2_QUADS] * LOD_VERTICES_PER_QUAD;
+  Stats->DrawnCommands = Stats->Phase1Commands + Stats->Phase2Commands;
+  Stats->DrawnVertices = Stats->Phase1Vertices + Stats->Phase2Vertices;
 }
 
-// Runs lod_cull.comp over every section, writing the indirect commands and the
-// counters, and makes them visible to the draws that follow.
-static void CullSections(GlLodState *State, const float ViewProj[MAT4_FLOATS],
-                         const int CameraBlock[3], const float CameraFrac[3]) {
-  int Total = State->ListOpaque + State->ListBorder;
+static void ClearCounters(const GlLodState *State) {
   glBindBuffer(GL_SHADER_STORAGE_BUFFER, State->CounterBuffer);
   glClearBufferData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, GL_RED_INTEGER,
                     GL_UNSIGNED_INT, NULL);
   glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+}
+
+// The frame's view for the cull and the draws.
+typedef struct {
+  float ViewProj[MAT4_FLOATS];
+  int CameraBlock[3];
+  float CameraFrac[3];
+} LodView;
+
+// Runs one phase of lod_cull.comp over every section, writing that phase's
+// indirect commands and the counters, and makes them visible to the draws and
+// the phase that follow.
+static void CullSections(GlLodState *State, const LodView *View, int Phase,
+                         const GlLodFrame *Frame) {
+  int Total = State->ListOpaque + State->ListBorder;
+  const float *ViewProj = View->ViewProj;
+  const int *CameraBlock = View->CameraBlock;
+  const float *CameraFrac = View->CameraFrac;
   glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_META, State->MetaSsbo);
   glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_CULL, State->CullSsbo);
   glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_COMMANDS, State->CommandBuffer);
@@ -773,6 +910,17 @@ static void CullSections(GlLodState *State, const float ViewProj[MAT4_FLOATS],
   glUniform1ui(Cull->Total, (GLuint)Total);
   glUniform1i(Cull->Compact, State->UseIndirectCount ? 1 : 0);
   glUniform1i(Cull->CullEnabled, State->CullEnabled ? 1 : 0);
+  glUniform1i(Cull->Phase, Phase);
+  glUniform1ui(Cull->PhaseBase,
+               (Phase == PHASE_SECOND) ? (GLuint)State->ListRuns : 0U);
+  if (State->HizEnabled) {
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_VISIBILITY, State->VisibilitySsbo);
+    glUniform2f(Cull->Viewport, (float)Frame->Width, (float)Frame->Height);
+    glUniform1i(Cull->HizTop, State->HizTop);
+    glUniform4iv(Cull->HizLevels, HIZ_MAX_LEVELS, &State->HizLevels[0][0]);
+    glBindImageTexture(HIZ_IMAGE_UNIT, State->HizTex, 0, GL_FALSE, 0, GL_READ_ONLY,
+                       GL_R32F);
+  }
   glDispatchCompute((GLuint)((Total + CULL_WORKGROUP - 1) / CULL_WORKGROUP), 1, 1);
   GLbitfield Barriers = GL_COMMAND_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT |
                         GL_BUFFER_UPDATE_BARRIER_BIT;
@@ -780,9 +928,37 @@ static void CullSections(GlLodState *State, const float ViewProj[MAT4_FLOATS],
     Barriers |= LOD_PARAMETER_BUFFER_BARRIER_BIT;
   }
   glMemoryBarrier(Barriers);
-  for (int Binding = BINDING_CULL; Binding <= BINDING_COUNTERS; Binding++) {
+  for (int Binding = BINDING_CULL; Binding <= BINDING_VISIBILITY; Binding++) {
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, (GLuint)Binding, 0);
   }
+  if (State->HizEnabled) {
+    glBindImageTexture(HIZ_IMAGE_UNIT, 0, 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32F);
+  }
+}
+
+// Max-reduces the LOD depth into the Hi-Z atlas, five levels per dispatch.
+// The LOD framebuffer is unbound first, so its depth is only read, never at
+// once a render target.
+static void BuildHizPyramid(const GlLodState *State) {
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  glUseProgram(State->Hiz.Program);
+  glUniform1i(State->Hiz.Top, State->HizTop);
+  glUniform4iv(State->Hiz.Levels, HIZ_MAX_LEVELS, &State->HizLevels[0][0]);
+  glActiveTexture(GL_TEXTURE0 + DEPTH_NEAR_UNIT);
+  glBindTexture(GL_TEXTURE_2D, State->DepthLodTex);
+  glBindImageTexture(HIZ_IMAGE_UNIT, State->HizTex, 0, GL_FALSE, 0, GL_READ_WRITE,
+                     GL_R32F);
+  for (int Source = 0; Source < State->HizTop; Source += HIZ_LEVELS_PER_DISPATCH) {
+    const GLint *First = State->HizLevels[Source + 1];
+    glUniform1i(State->Hiz.Source, Source);
+    glDispatchCompute((GLuint)((First[1] + HIZ_WORKGROUP - 1) / HIZ_WORKGROUP),
+                      (GLuint)((First[2] + HIZ_WORKGROUP - 1) / HIZ_WORKGROUP), 1);
+    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+  }
+  glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT);
+  glBindImageTexture(HIZ_IMAGE_UNIT, 0, 0, GL_FALSE, 0, GL_READ_WRITE, GL_R32F);
+  glBindTexture(GL_TEXTURE_2D, 0);
+  glActiveTexture(GL_TEXTURE0 + BLOCK_UNIT);
 }
 
 // One pass's commands: Count slots from slot First on.
@@ -800,6 +976,43 @@ static void DrawPass(const GlLodState *State, int First, int Count,
                                 BufferOffset(Offset), MaxDraws,
                                 (GLsizei)sizeof(LodIndirectCommand));
   }
+}
+
+// One phase's opaque and border multi-draws into the LOD target: its commands
+// start at slot PhaseBase and its draw counts at counter CounterBase.
+static void DrawPhase(const GlLodState *State, const GlLodFrame *Frame,
+                      const LodView *View, int PhaseBase, int CounterBase) {
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_META, State->MetaSsbo);
+  glBindBuffer(GL_DRAW_INDIRECT_BUFFER, State->CommandBuffer);
+  if (State->UseIndirectCount) {
+    glBindBuffer(LOD_PARAMETER_BUFFER, State->CounterBuffer);
+  }
+  glBindVertexArray(State->Vao);
+  glActiveTexture(GL_TEXTURE0 + BLOCK_UNIT);
+  glBindTexture(GL_TEXTURE_2D_ARRAY, Frame->BlockArrayTex);
+  glBindSampler(BLOCK_UNIT, Frame->LodSampler);
+  glActiveTexture(GL_TEXTURE0 + COVERAGE_UNIT);
+  glBindTexture(GL_TEXTURE_2D, State->CoverageTex);
+
+  if (State->ListOpaque > 0) {
+    UseLodProgram(&State->Opaque, View->ViewProj, View->CameraBlock, View->CameraFrac);
+    DrawPass(State, PhaseBase, State->ListOpaqueRuns, CounterBase);
+  }
+  if (State->ListBorder > 0) {
+    UseLodProgram(&State->Border, View->ViewProj, View->CameraBlock, View->CameraFrac);
+    DrawPass(State, PhaseBase + State->ListOpaqueRuns,
+             State->ListRuns - State->ListOpaqueRuns, CounterBase + 1);
+  }
+  if (State->UseIndirectCount) {
+    glBindBuffer(LOD_PARAMETER_BUFFER, 0);
+  }
+  glBindTexture(GL_TEXTURE_2D, 0);
+  glActiveTexture(GL_TEXTURE0 + BLOCK_UNIT);
+  glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+  glBindSampler(BLOCK_UNIT, 0);
+  glBindVertexArray(0);
+  glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_META, 0);
 }
 
 void GlLodDraw(const GlLodFrame *Frame, const RenderLodDraw *Draws,
@@ -844,9 +1057,11 @@ void GlLodDraw(const GlLodFrame *Frame, const RenderLodDraw *Draws,
   double Right = Top * Aspect;
   GlMat4 Projection =
       GlMat4Frustum(-Right, Right, -Top, Top, LOD_NEAR_PLANE, LOD_FAR_PLANE);
-  GlMat4 View = GlMat4LookAt((Vec3){0.0F, 0.0F, 0.0F}, Forward, Frame->Camera.Up);
-  float ViewProj[GL_MAT4_ELEMENTS];
-  GlMat4ToColumnMajor(GlMat4Multiply(View, Projection), ViewProj);
+  GlMat4 LookAt = GlMat4LookAt((Vec3){0.0F, 0.0F, 0.0F}, Forward, Frame->Camera.Up);
+  LodView View;
+  GlMat4ToColumnMajor(GlMat4Multiply(LookAt, Projection), View.ViewProj);
+  memcpy(View.CameraBlock, CameraBlock, sizeof(CameraBlock));
+  memcpy(View.CameraFrac, CameraFrac, sizeof(CameraFrac));
 
   // The LOD is always drawn filled. Under the wireframe debug view its edges
   // would land exactly on chunk-column borders, where the border shader's
@@ -863,40 +1078,15 @@ void GlLodDraw(const GlLodFrame *Frame, const RenderLodDraw *Draws,
   }
   RemapDepth(State, Projection.m10, Projection.m14, Frame);
   State->Stats.CandidateVertices = State->ListVertices;
-  CullSections(State, ViewProj, CameraBlock, CameraFrac);
-  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_META, State->MetaSsbo);
-  glBindBuffer(GL_DRAW_INDIRECT_BUFFER, State->CommandBuffer);
-  if (State->UseIndirectCount) {
-    glBindBuffer(LOD_PARAMETER_BUFFER, State->CounterBuffer);
+  ClearCounters(State);
+  CullSections(State, &View, State->HizEnabled ? PHASE_FIRST : PHASE_SINGLE, Frame);
+  DrawPhase(State, Frame, &View, 0, COUNTER_OPAQUE);
+  if (State->HizEnabled) {
+    BuildHizPyramid(State);
+    CullSections(State, &View, PHASE_SECOND, Frame);
+    glBindFramebuffer(GL_FRAMEBUFFER, State->FboLod);
+    DrawPhase(State, Frame, &View, State->ListRuns, COUNTER_PHASE2_OPAQUE);
   }
-
-  glBindVertexArray(State->Vao);
-  glActiveTexture(GL_TEXTURE0 + BLOCK_UNIT);
-  glBindTexture(GL_TEXTURE_2D_ARRAY, Frame->BlockArrayTex);
-  glBindSampler(BLOCK_UNIT, Frame->LodSampler);
-  glActiveTexture(GL_TEXTURE0 + COVERAGE_UNIT);
-  glBindTexture(GL_TEXTURE_2D, State->CoverageTex);
-
-  if (OpaqueCount > 0) {
-    UseLodProgram(&State->Opaque, ViewProj, CameraBlock, CameraFrac);
-    DrawPass(State, 0, State->ListOpaqueRuns, COUNTER_OPAQUE);
-  }
-  if (BorderCount > 0) {
-    UseLodProgram(&State->Border, ViewProj, CameraBlock, CameraFrac);
-    DrawPass(State, State->ListOpaqueRuns, State->ListRuns - State->ListOpaqueRuns,
-             COUNTER_BORDER);
-  }
-  if (State->UseIndirectCount) {
-    glBindBuffer(LOD_PARAMETER_BUFFER, 0);
-  }
-
-  glBindTexture(GL_TEXTURE_2D, 0);
-  glActiveTexture(GL_TEXTURE0 + BLOCK_UNIT);
-  glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
-  glBindSampler(BLOCK_UNIT, 0);
-  glBindVertexArray(0);
-  glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
-  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, 0);
   CompositeOntoFrame(State, Frame);
   if (Frame->Wireframe) {
     glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);

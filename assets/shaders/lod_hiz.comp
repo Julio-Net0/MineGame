@@ -1,0 +1,84 @@
+#version 430 core
+
+// Builds up to five levels of the LOD pass's Hi-Z pyramid in one dispatch: a
+// max reduction of the LOD depth (standard Z, larger is farther), so a texel
+// holds the farthest depth of every pixel it covers.
+//
+// Level k (k >= 1) covers 2^k x 2^k depth pixels per texel and is
+// ceil(W / 2^k) x ceil(H / 2^k) texels: texel t covers pixels
+// [t * 2^k, (t + 1) * 2^k), clipped to the screen. Its children at level k - 1
+// are 2t and 2t + 1 on each axis. A child past the source level's edge lies
+// outside the screen and counts as 0, the reduction's neutral value, so odd
+// sizes (45 -> 23, 5 -> 3) lose no pixel on the right or top edge.
+//
+// Each workgroup reads a 32x32 block of level uSource (level 0 is the depth
+// texture itself), writes its 16x16 texels of level uSource + 1, and reduces
+// them in shared memory into levels uSource + 2 .. uSource + 5.
+//
+// All levels share one R32F atlas, stacked by rows (see uHizLevels in
+// lod_cull.comp).
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+uniform sampler2D uDepth;
+layout(r32f, binding = 0) uniform image2D uHiz;
+
+uniform int uSource;
+uniform int uTop;
+// Per level x: first atlas row, y: width, z: height; level 0 is the screen.
+uniform ivec4 uHizLevels[16];
+
+const int TILE = 16;
+const int LEVELS_PER_DISPATCH = 5;
+
+shared float Tile[TILE][TILE];
+
+float ReadSource(ivec2 texel) {
+    ivec4 info = uHizLevels[uSource];
+    if (any(greaterThanEqual(texel, info.yz))) {
+        return 0.0;
+    }
+    return (uSource == 0) ? texelFetch(uDepth, texel, 0).r
+                          : imageLoad(uHiz, ivec2(texel.x, info.x + texel.y)).r;
+}
+
+void Write(int level, ivec2 texel, float value) {
+    ivec4 info = uHizLevels[level];
+    if (all(lessThan(texel, info.yz))) {
+        imageStore(uHiz, ivec2(texel.x, info.x + texel.y), vec4(value));
+    }
+}
+
+void main() {
+    ivec2 local = ivec2(gl_LocalInvocationID.xy);
+    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 child = texel * 2;
+    float farthest = max(max(ReadSource(child), ReadSource(child + ivec2(1, 0))),
+                         max(ReadSource(child + ivec2(0, 1)), ReadSource(child + ivec2(1, 1))));
+    // A texel outside its level holds no screen pixel and stays neutral.
+    if (any(greaterThanEqual(texel, uHizLevels[uSource + 1].yz))) {
+        farthest = 0.0;
+    }
+    Write(uSource + 1, texel, farthest);
+    Tile[local.y][local.x] = farthest;
+
+    ivec2 group = ivec2(gl_WorkGroupID.xy);
+    int size = TILE;
+    for (int step = 2; step <= LEVELS_PER_DISPATCH; step++) {
+        barrier();
+        size /= 2;
+        float reduced = 0.0;
+        bool reducing = all(lessThan(local, ivec2(size)));
+        if (reducing) {
+            ivec2 base = local * 2;
+            reduced = max(max(Tile[base.y][base.x], Tile[base.y][base.x + 1]),
+                          max(Tile[base.y + 1][base.x], Tile[base.y + 1][base.x + 1]));
+        }
+        barrier();
+        int level = uSource + step;
+        if (reducing && level <= uTop) {
+            Tile[local.y][local.x] = reduced;
+            Write(level, group * size + local, reduced);
+        }
+    }
+}

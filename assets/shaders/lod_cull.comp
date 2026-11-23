@@ -13,17 +13,29 @@
 // other in the arena share one command, and the order of the quads is never
 // changed, so equal-depth fragments resolve exactly as without culling.
 //
+// Occlusion (uPhase 1 and 2) is two-phase over the LOD depth, which already
+// holds the 1:1 chunks' depth before any LOD is drawn:
+//   phase 1 draws the sections that were visible last frame (PrevVisible,
+//           kept per mesh, so it survives reselection; new meshes start at 1);
+//   the Hi-Z pyramid is then built from the depth after phase 1;
+//   phase 2 tests every section in the frustum against it: one drawn in
+//           phase 1 only records the result, one not drawn is drawn now if it
+//           passes. Nothing visible is ever missing from the frame: a section
+//           is skipped only when the depth already in place is nearer than all
+//           of it.
+// uPhase 0 is the single pass without occlusion (--lod-hiz off).
+//
 // Positions are camera-relative and formed in integers first, exactly as in
 // lod.vert, so far sections keep full precision.
 //
-// Two output layouts:
+// Two output layouts, per phase region (phase 2's starts at slot uPhaseBase):
 //   uCompact true:  each pass's kept commands are packed from its region's
-//                   start and counted in DrawCount (ARB_indirect_parameters);
+//                   start and counted in Counts (ARB_indirect_parameters);
 //   uCompact false: a section owns one slot per run from its first slot and
 //                   unused ones get instanceCount 0, for drivers without the
 //                   extension.
 // Opaque sections are [0, uOpaqueCount), border sections the rest; the border
-// region starts at slot uOpaqueRuns in both layouts.
+// region starts uOpaqueRuns slots into the phase region in both layouts.
 
 layout(local_size_x = 64) in;
 
@@ -37,8 +49,19 @@ struct DrawCommand {
 
 // Must match RENDER_LOD_MAX_RUNS and gl_lod.c's cull record.
 const uint MAX_RUNS = 24u;
-const uint RECORD_HEADER = 3u;
+const uint RECORD_HEADER = 4u;
 const uint RECORD_WORDS = RECORD_HEADER + MAX_RUNS;
+
+// Must match gl_lod.c's COUNTER_* indices.
+const uint COUNTER_DRAWS = 0u;
+const uint COUNTER_FRUSTUM_CULLED = 4u;
+const uint COUNTER_CANDIDATE_RUNS = 5u;
+const uint COUNTER_FACING_CULLED = 6u;
+const uint COUNTER_PHASE1_COMMANDS = 7u;
+const uint COUNTER_PHASE1_QUADS = 8u;
+const uint COUNTER_PHASE2_COMMANDS = 9u;
+const uint COUNTER_PHASE2_QUADS = 10u;
+const uint COUNTER_HIZ_CULLED = 11u;
 
 // xyz: section origin in blocks; w: blocks per voxel (2^L).
 layout(std430, binding = 0) readonly buffer SectionMeta {
@@ -46,8 +69,8 @@ layout(std430, binding = 0) readonly buffer SectionMeta {
 };
 
 // RECORD_WORDS per section: first vertex in the arena, run count, first
-// command slot (opaque sections' slots first), then one word per run:
-// group << 16 | quads.
+// command slot (opaque sections' slots first), mesh index, then one word per
+// run: group << 16 | quads.
 layout(std430, binding = 1) readonly buffer SectionCull {
     uint CullWords[];
 };
@@ -56,15 +79,18 @@ layout(std430, binding = 2) writeonly buffer Commands {
     DrawCommand Cmds[];
 };
 
+// [0..1] phase 1 (or single pass) opaque and border draw counts, [2..3]
+// phase 2's, then statistics.
 layout(std430, binding = 3) buffer Counters {
-    uint DrawCount[2];
-    uint FrustumCulled;
-    uint CandidateRuns;
-    uint FacingCulled;
-    uint DrawnCommands;
-    uint DrawnQuads;
-    uint Unused;
+    uint Counts[];
 };
+
+// Per mesh: visible when last tested. Read in phase 1, written in phase 2.
+layout(std430, binding = 4) buffer Visibility {
+    uint PrevVisible[];
+};
+
+layout(r32f, binding = 0) readonly uniform image2D uHiz;
 
 uniform mat4 uViewProj;
 uniform ivec3 uCameraBlock;
@@ -76,6 +102,13 @@ uniform uint uTotal;
 uniform bool uCompact;
 // False (--lod-cull off, a test aid) keeps every run of every section.
 uniform bool uCullEnabled;
+uniform int uPhase;
+// First slot of this phase's command region.
+uniform uint uPhaseBase;
+uniform vec2 uViewport;
+// Hi-Z levels 1..uHizTop; per level x: first atlas row, y: width, z: height.
+uniform int uHizTop;
+uniform ivec4 uHizLevels[16];
 
 const uint AXIS_GROUPS = 6u;
 const float SECTION_VOXELS = 16.0;
@@ -85,6 +118,13 @@ const float FRUSTUM_MARGIN = 0.5;
 // In blocks: a face direction is kept while the camera is within this
 // distance of the side of the box it could be seen from.
 const float FACING_MARGIN = 1.0;
+// The LOD projection's near plane (gl_lod.c's LOD_NEAR_PLANE): a box corner
+// this close to the camera's plane, or behind it, makes the box visible.
+const float NEAR_W = 8.0;
+// Window-space depth slack: a box counts as hidden only when it is farther
+// than this beyond the farthest occluder depth, so neither a 24-bit 1:1 depth
+// nor a 32-bit LOD depth tie can flip the result.
+const float DEPTH_MARGIN = 2e-6;
 const uint INDICES_PER_QUAD = 6u;
 const uint VERTICES_PER_QUAD = 4u;
 
@@ -121,6 +161,56 @@ bool FacingCamera(uint group, vec3 boxMin, vec3 boxMax) {
     }
 }
 
+// True unless the depth already drawn is nearer than every point of the box.
+// The box's nearest depth is at a corner (depth grows with view distance), and
+// every fragment it could produce lies inside its corners' screen rectangle,
+// widened by a pixel; the pyramid level is the finest where that rectangle
+// spans at most 2x2 texels.
+bool HizVisible(vec3 boxMin, vec3 boxMax) {
+    vec3 lo = boxMin - vec3(FRUSTUM_MARGIN);
+    vec3 hi = boxMax + vec3(FRUSTUM_MARGIN);
+    vec2 ndcMin = vec2(1e30);
+    vec2 ndcMax = vec2(-1e30);
+    float nearestZ = 1e30;
+    for (int corner = 0; corner < 8; corner++) {
+        vec3 point = vec3(((corner & 1) != 0) ? hi.x : lo.x,
+                          ((corner & 2) != 0) ? hi.y : lo.y,
+                          ((corner & 4) != 0) ? hi.z : lo.z);
+        vec4 clip = uViewProj * vec4(point, 1.0);
+        if (clip.w <= NEAR_W) {
+            return true;
+        }
+        vec3 ndc = clip.xyz / clip.w;
+        ndcMin = min(ndcMin, ndc.xy);
+        ndcMax = max(ndcMax, ndc.xy);
+        nearestZ = min(nearestZ, ndc.z);
+    }
+    ivec2 screen = ivec2(uViewport);
+    ivec2 pixelMin = ivec2(floor((ndcMin * 0.5 + 0.5) * uViewport)) - ivec2(1);
+    ivec2 pixelMax = ivec2(floor((ndcMax * 0.5 + 0.5) * uViewport)) + ivec2(1);
+    pixelMin = max(pixelMin, ivec2(0));
+    pixelMax = min(pixelMax, screen - ivec2(1));
+    if (any(greaterThan(pixelMin, pixelMax))) {
+        return true;
+    }
+    int level = 1;
+    while (level < uHizTop &&
+           (((pixelMax.x >> level) - (pixelMin.x >> level)) > 1 ||
+            ((pixelMax.y >> level) - (pixelMin.y >> level)) > 1)) {
+        level++;
+    }
+    ivec4 info = uHizLevels[level];
+    ivec2 first = pixelMin >> level;
+    ivec2 last = min(pixelMax >> level, info.yz - ivec2(1));
+    float farthest = 0.0;
+    for (int y = first.y; y <= last.y; y++) {
+        for (int x = first.x; x <= last.x; x++) {
+            farthest = max(farthest, imageLoad(uHiz, ivec2(x, info.x + y)).r);
+        }
+    }
+    return nearestZ * 0.5 + 0.5 <= farthest + DEPTH_MARGIN;
+}
+
 void main() {
     uint section = gl_GlobalInvocationID.x;
     if (section >= uTotal) {
@@ -130,10 +220,28 @@ void main() {
     uint record = section * RECORD_WORDS;
     uint firstVertex = CullWords[record];
     uint runTotal = min(CullWords[record + 1u], MAX_RUNS);
+    uint firstSlot = CullWords[record + 2u];
+    uint mesh = CullWords[record + 3u];
 
     vec3 boxMin = vec3(meta.xyz - uCameraBlock) - vec3(0.5) - uCameraFrac;
     vec3 boxMax = boxMin + vec3(SECTION_VOXELS * float(meta.w));
-    bool visible = !uCullEnabled || !OutsideFrustum(boxMin, boxMax);
+    bool inFrustum = !uCullEnabled || !OutsideFrustum(boxMin, boxMax);
+
+    bool draw = inFrustum;
+    if (uPhase == 1) {
+        draw = inFrustum && PrevVisible[mesh] != 0u;
+    } else if (uPhase == 2) {
+        draw = false;
+        if (inFrustum) {
+            bool wasDrawn = PrevVisible[mesh] != 0u;
+            bool seen = HizVisible(boxMin, boxMax);
+            draw = !wasDrawn && seen;
+            PrevVisible[mesh] = seen ? 1u : 0u;
+            if (!wasDrawn && !seen) {
+                atomicAdd(Counts[COUNTER_HIZ_CULLED], 1u);
+            }
+        }
+    }
 
     // Kept ranges, as (first quad, quad count).
     uvec2 ranges[MAX_RUNS];
@@ -146,9 +254,12 @@ void main() {
         uint packedRun = CullWords[record + RECORD_HEADER + run];
         uint group = packedRun >> 16u;
         uint count = packedRun & 0xFFFFu;
-        bool keep = visible && (!uCullEnabled || group >= AXIS_GROUPS ||
-                                FacingCamera(group, boxMin, boxMax));
-        if (keep) {
+        bool facing = !uCullEnabled || group >= AXIS_GROUPS ||
+                      FacingCamera(group, boxMin, boxMax);
+        if (inFrustum && !facing) {
+            facingCulled++;
+        }
+        if (draw && facing) {
             if (rangeOpen) {
                 ranges[rangeCount - 1u].y += count;
             } else {
@@ -159,20 +270,17 @@ void main() {
             drawnQuads += count;
         } else {
             rangeOpen = false;
-            if (visible) {
-                facingCulled++;
-            }
         }
         start += count;
     }
 
     bool border = section >= uOpaqueCount;
-    uint slot = CullWords[record + 2u];
+    uint regionBase = uPhaseBase + (border ? uOpaqueRuns : 0u);
+    uint slot = uPhaseBase + firstSlot;
     if (uCompact) {
-        uint regionBase = border ? uOpaqueRuns : 0u;
-        slot = (rangeCount > 0u)
-                   ? regionBase + atomicAdd(DrawCount[border ? 1u : 0u], rangeCount)
-                   : 0u;
+        uint counter = COUNTER_DRAWS + (uPhase == 2 ? 2u : 0u) + (border ? 1u : 0u);
+        slot = (rangeCount > 0u) ? regionBase + atomicAdd(Counts[counter], rangeCount)
+                                 : 0u;
     }
     for (uint range = 0u; range < rangeCount; range++) {
         Cmds[slot + range] = DrawCommand(
@@ -185,11 +293,15 @@ void main() {
         }
     }
 
-    atomicAdd(CandidateRuns, runTotal);
-    if (!visible) {
-        atomicAdd(FrustumCulled, 1u);
+    if (uPhase != 2) {
+        atomicAdd(Counts[COUNTER_CANDIDATE_RUNS], runTotal);
+        if (!inFrustum) {
+            atomicAdd(Counts[COUNTER_FRUSTUM_CULLED], 1u);
+        }
+        atomicAdd(Counts[COUNTER_FACING_CULLED], facingCulled);
     }
-    atomicAdd(FacingCulled, facingCulled);
-    atomicAdd(DrawnCommands, rangeCount);
-    atomicAdd(DrawnQuads, drawnQuads);
+    uint commandsCounter = (uPhase == 2) ? COUNTER_PHASE2_COMMANDS : COUNTER_PHASE1_COMMANDS;
+    uint quadsCounter = (uPhase == 2) ? COUNTER_PHASE2_QUADS : COUNTER_PHASE1_QUADS;
+    atomicAdd(Counts[commandsCounter], rangeCount);
+    atomicAdd(Counts[quadsCounter], drawnQuads);
 }

@@ -53,6 +53,7 @@ static LaunchOptions *GetMutableLaunchOptions(void) {
       .LodDisabled = false,
       .LodNoIndirectCount = false,
       .LodNoCull = false,
+      .LodNoHiz = false,
   };
   return &Options;
 }
@@ -307,6 +308,16 @@ static void ParseLodCullValue(const char *ValueStr, LaunchOptions *Options) {
   }
 }
 
+static void ParseLodHizValue(const char *ValueStr, LaunchOptions *Options) {
+  if (strcmp(ValueStr, "on") == 0) {
+    Options->LodNoHiz = false;
+  } else if (strcmp(ValueStr, "off") == 0) {
+    Options->LodNoHiz = true;
+  } else {
+    LogWarn("MAIN: --lod-hiz must be on or off; ignoring \"%s\"", ValueStr);
+  }
+}
+
 static void ParseMonitorValue(const char *ValueStr, LaunchOptions *Options) {
   long Value = 0;
   if (!ParseStrictLong(ValueStr, &Value) || Value < 1 ||
@@ -355,6 +366,7 @@ void ParseLaunchOptions(int Argc, char **Argv) {
       .LodDisabled = false,
       .LodNoIndirectCount = false,
       .LodNoCull = false,
+      .LodNoHiz = false,
   };
 
   if (Argc <= 1 || Argv == (char **)0) {
@@ -391,6 +403,7 @@ void ParseLaunchOptions(int Argc, char **Argv) {
                      (strcmp(Arg, "--lod") == 0) ||
                      (strcmp(Arg, "--lod-indirect-count") == 0) ||
                      (strcmp(Arg, "--lod-cull") == 0) ||
+                     (strcmp(Arg, "--lod-hiz") == 0) ||
                      (strcmp(Arg, "--monitor") == 0) ||
                      (strcmp(Arg, "--script") == 0) ||
                      (strcmp(Arg, "--script-out") == 0) ||
@@ -432,6 +445,8 @@ void ParseLaunchOptions(int Argc, char **Argv) {
       ParseLodIndirectCountValue(ValueStr, Options);
     } else if (strcmp(Arg, "--lod-cull") == 0) {
       ParseLodCullValue(ValueStr, Options);
+    } else if (strcmp(Arg, "--lod-hiz") == 0) {
+      ParseLodHizValue(ValueStr, Options);
     } else if (strcmp(Arg, "--monitor") == 0) {
       ParseMonitorValue(ValueStr, Options);
     } else if (strcmp(Arg, "--script") == 0) {

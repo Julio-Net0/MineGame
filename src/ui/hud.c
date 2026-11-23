@@ -542,6 +542,14 @@ static void DrawDebugScreen(UiContext *Ctx, Player *PlayerVal, World *WorldVal,
              Lod.Gpu.DrawnCommands, Lod.Gpu.FrustumCulledSections,
              Lod.Gpu.FacingCulledRuns);
     Y = DrawDebugLine(Ctx, DebugText, Y);
+    if (Lod.Gpu.HiZ) {
+      snprintf(DebugText, sizeof(DebugText),
+               "LOD hi-z: %d hidden, phase 1 %d cmds %lld verts, phase 2 %d cmds %lld verts",
+               Lod.Gpu.HizCulledSections, Lod.Gpu.Phase1Commands,
+               (long long)Lod.Gpu.Phase1Vertices, Lod.Gpu.Phase2Commands,
+               (long long)Lod.Gpu.Phase2Vertices);
+      Y = DrawDebugLine(Ctx, DebugText, Y);
+    }
   }
   snprintf(DebugText, sizeof(DebugText),
            "Mesh Arena: %d blocks, %lld MB used, %lld MB slack", Render.ArenaBlocks,

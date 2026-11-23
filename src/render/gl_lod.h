@@ -36,12 +36,19 @@ typedef struct {
   bool Wireframe;
 } GlLodFrame;
 
+typedef struct {
+  // The compacted command list drawn through ARB_indirect_parameters; without
+  // it the cull writes a fixed list with culled commands zeroed.
+  bool UseIndirectCount;
+  // False keeps every command (--lod-cull off, a test aid); also turns HiZ off.
+  bool Cull;
+  // Two-phase Hi-Z occlusion (--lod-hiz).
+  bool HiZ;
+} GlLodOptions;
+
 // Creates every LOD resource. False (and LOD stays off) when any of them
-// cannot be created; nothing is left allocated then. UseIndirectCount picks the
-// compacted command list drawn through ARB_indirect_parameters; without it the
-// cull writes a fixed list with culled commands zeroed. Cull false keeps every
-// command (a test aid).
-bool GlLodInit(GLuint SharedIndexBuffer, bool UseIndirectCount, bool Cull);
+// cannot be created; nothing is left allocated then.
+bool GlLodInit(GLuint SharedIndexBuffer, const GlLodOptions *Options);
 void GlLodShutdown(void);
 bool GlLodActive(void);
 
@@ -54,9 +61,10 @@ void GlLodFreeMesh(RenderLodMesh Mesh);
 void GlLodSetCoverage(int ColumnX, int ColumnZ,
                       const uint32_t Words[RENDER_LOD_COVERAGE_WORDS]);
 
-// The GPU cull (lod_cull.comp), depth copy and remap, the opaque and border
-// multi-draws, and the composite. Leaves the default framebuffer bound with the
-// frame's usual state.
+// Depth copy and remap, the GPU cull (lod_cull.comp) and the opaque and border
+// multi-draws (twice with HiZ: last frame's visible sections, then the Hi-Z
+// pyramid and whatever it shows was missing), and the composite. Leaves the
+// default framebuffer bound with the frame's usual state.
 void GlLodDraw(const GlLodFrame *Frame, const RenderLodDraw *Draws,
                int OpaqueCount, int BorderCount, uint32_t ListRevision);
 

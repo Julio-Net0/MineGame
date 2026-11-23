@@ -1148,6 +1148,14 @@ static void ScriptAddLodJson(cJSON *Root) {
   cJSON_AddNumberToObject(Cull, "drawnCommands", Gpu->DrawnCommands);
   cJSON_AddNumberToObject(Cull, "candidateVertices", (double)Gpu->CandidateVertices);
   cJSON_AddNumberToObject(Cull, "drawnVertices", (double)Gpu->DrawnVertices);
+  cJSON_AddBoolToObject(Cull, "hiz", Gpu->HiZ);
+  cJSON_AddNumberToObject(Cull, "hizCulled", Gpu->HizCulledSections);
+  cJSON_AddNumberToObject(Cull, "phase1Commands", Gpu->Phase1Commands);
+  cJSON_AddNumberToObject(Cull, "phase2Commands", Gpu->Phase2Commands);
+  cJSON_AddNumberToObject(Cull, "phase1Quads",
+                          (double)Gpu->Phase1Vertices / (double)CHUNK_VERTICES_PER_QUAD);
+  cJSON_AddNumberToObject(Cull, "phase2Quads",
+                          (double)Gpu->Phase2Vertices / (double)CHUNK_VERTICES_PER_QUAD);
   cJSON_AddItemToObject(Node, "cull", Cull);
   cJSON_AddItemToObject(Root, "lod", Node);
 }

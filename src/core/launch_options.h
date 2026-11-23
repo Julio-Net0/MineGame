@@ -85,6 +85,8 @@ typedef struct {
   // --lod-cull off: the LOD cull keeps everything (same command layout), so
   // culled and unculled frames can be compared pixel for pixel.
   bool LodNoCull;
+  // --lod-hiz off: no two-phase Hi-Z occlusion in the LOD cull.
+  bool LodNoHiz;
 } LaunchOptions;
 
 void ParseLaunchOptions(int Argc, char **Argv);

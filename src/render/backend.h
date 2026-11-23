@@ -274,6 +274,14 @@ typedef struct {
   int FacingCulledRuns;
   int DrawnCommands;
   int64_t DrawnVertices;
+  // Two-phase Hi-Z occlusion: sections in the frustum skipped because the
+  // depth drawn before them hid them, and what each phase drew.
+  bool HiZ;
+  int HizCulledSections;
+  int Phase1Commands;
+  int Phase2Commands;
+  int64_t Phase1Vertices;
+  int64_t Phase2Vertices;
   // First GL error seen after a LOD pass (0 = none).
   unsigned GlError;
 } RenderLodStats;

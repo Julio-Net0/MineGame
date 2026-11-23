@@ -998,10 +998,13 @@ void RenderBackendInit(void) {
   // The LOD pipeline exists only where LOD can be drawn; elsewhere frames go
   // straight to the default framebuffer as they always did.
   if (RenderGetCapabilities()->LodSupported) {
-    bool IndirectCount = RenderGetCapabilities()->IndirectCount &&
-                         !GetLaunchOptions()->LodNoIndirectCount;
-    (void)GlLodInit(State->ChunkSharedEbo, IndirectCount,
-                    !GetLaunchOptions()->LodNoCull);
+    const LaunchOptions *Options = GetLaunchOptions();
+    GlLodOptions Lod = {
+        .UseIndirectCount =
+            RenderGetCapabilities()->IndirectCount && !Options->LodNoIndirectCount,
+        .Cull = !Options->LodNoCull,
+        .HiZ = !Options->LodNoCull && !Options->LodNoHiz};
+    (void)GlLodInit(State->ChunkSharedEbo, &Lod);
   }
 
   State->FreeCount = MESH_POOL_CAPACITY;
