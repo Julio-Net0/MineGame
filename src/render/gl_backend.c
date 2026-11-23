@@ -297,6 +297,19 @@ static GLuint CompileStage(GLenum Stage, const char *Path) {
   return Shader;
 }
 
+static GLuint CheckLinked(GLuint Program, const char *Label) {
+  GLint Linked = GL_FALSE;
+  glGetProgramiv(Program, GL_LINK_STATUS, &Linked);
+  if (Linked != GL_TRUE) {
+    char Log[INFO_LOG_CAPACITY];
+    glGetProgramInfoLog(Program, (GLsizei)sizeof(Log), NULL, Log);
+    glDeleteProgram(Program);
+    FailShader("failed to link", Label, Log);
+    return 0;
+  }
+  return Program;
+}
+
 static GLuint LinkStages(GLuint Vertex, GLuint Fragment, const char *Label,
                          const AttribBinding *Bindings, int BindingCount) {
   GLuint Program = glCreateProgram();
@@ -310,17 +323,7 @@ static GLuint LinkStages(GLuint Vertex, GLuint Fragment, const char *Label,
   glDetachShader(Program, Fragment);
   glDeleteShader(Vertex);
   glDeleteShader(Fragment);
-
-  GLint Linked = GL_FALSE;
-  glGetProgramiv(Program, GL_LINK_STATUS, &Linked);
-  if (Linked != GL_TRUE) {
-    char Log[INFO_LOG_CAPACITY];
-    glGetProgramInfoLog(Program, (GLsizei)sizeof(Log), NULL, Log);
-    glDeleteProgram(Program);
-    FailShader("failed to link", Label, Log);
-    return 0;
-  }
-  return Program;
+  return CheckLinked(Program, Label);
 }
 
 static GLuint LinkProgram(const char *VertexPath, const char *FragmentPath,
@@ -334,6 +337,16 @@ static GLuint LinkProgram(const char *VertexPath, const char *FragmentPath,
 // table are set once here rather than per chunk pass.
 GLuint GlLinkShaderProgram(const char *VertexPath, const char *FragmentPath) {
   return LinkProgram(VertexPath, FragmentPath, NULL, 0);
+}
+
+GLuint GlLinkComputeProgram(const char *Path) {
+  GLuint Shader = CompileStage(GL_COMPUTE_SHADER, Path);
+  GLuint Program = glCreateProgram();
+  glAttachShader(Program, Shader);
+  glLinkProgram(Program);
+  glDetachShader(Program, Shader);
+  glDeleteShader(Shader);
+  return CheckLinked(Program, Path);
 }
 
 static ChunkProgram LoadChunkProgram(const char *FragmentPath) {
@@ -985,7 +998,10 @@ void RenderBackendInit(void) {
   // The LOD pipeline exists only where LOD can be drawn; elsewhere frames go
   // straight to the default framebuffer as they always did.
   if (RenderGetCapabilities()->LodSupported) {
-    (void)GlLodInit(State->ChunkSharedEbo);
+    bool IndirectCount = RenderGetCapabilities()->IndirectCount &&
+                         !GetLaunchOptions()->LodNoIndirectCount;
+    (void)GlLodInit(State->ChunkSharedEbo, IndirectCount,
+                    !GetLaunchOptions()->LodNoCull);
   }
 
   State->FreeCount = MESH_POOL_CAPACITY;
@@ -1702,8 +1718,9 @@ void RenderEndFrame(void) {
 
 bool RenderLodActive(void) { return GlLodActive(); }
 
-RenderLodMesh RenderLodUploadMesh(const ChunkVertex *Vertices, int VertexCount) {
-  return GlLodUploadMesh(Vertices, VertexCount);
+RenderLodMesh RenderLodUploadMesh(const ChunkVertex *Vertices,
+                                  const RenderLodRun *Runs, int RunCount) {
+  return GlLodUploadMesh(Vertices, Runs, RunCount);
 }
 
 void RenderLodFreeMesh(RenderLodMesh Mesh) { GlLodFreeMesh(Mesh); }
@@ -1713,7 +1730,8 @@ void RenderLodSetCoverage(int ColumnX, int ColumnZ,
   GlLodSetCoverage(ColumnX, ColumnZ, Words);
 }
 
-void RenderDrawLod(const RenderLodDraw *Draws, int OpaqueCount, int BorderCount) {
+void RenderDrawLod(const RenderLodDraw *Draws, int OpaqueCount, int BorderCount,
+                   uint32_t ListRevision) {
   BackendState *State = GetBackendState();
   if (!GlLodActive()) {
     return;
@@ -1731,10 +1749,12 @@ void RenderDrawLod(const RenderLodDraw *Draws, int OpaqueCount, int BorderCount)
                       .BlockArrayTex = State->BlockArrayTex,
                       .LodSampler = State->LodSampler,
                       .Wireframe = State->Wireframe};
-  GlLodDraw(&Frame, Draws, OpaqueCount, BorderCount);
+  GlLodDraw(&Frame, Draws, OpaqueCount, BorderCount, ListRevision);
 }
 
 void RenderGetLodStats(RenderLodStats *Out) { GlLodGetStats(Out); }
+
+void RenderLodReadCullStats(void) { GlLodReadCullStats(); }
 
 void RenderBeginTranslucentPass(void) {
   FlushDebugBatch();

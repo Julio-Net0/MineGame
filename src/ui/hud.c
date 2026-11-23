@@ -527,13 +527,20 @@ static void DrawDebugScreen(UiContext *Ctx, Player *PlayerVal, World *WorldVal,
              (double)LodIngestBytes() / (double)(1U << BYTES_TO_MB_SHIFT),
              (unsigned long long)LodIngestChunkCount());
     Y = DrawDebugLine(Ctx, DebugText, Y);
+    LodRendererReadCullStats(false);
     LodRenderStats Lod;
     LodRendererGetStats(&Lod);
     snprintf(DebugText, sizeof(DebugText),
-             "LOD draw: %d opaque + %d border, %lld verts, %d meshes %.0f MB",
-             Lod.OpaqueSections, Lod.BorderSections,
-             (long long)Lod.DrawnVertices, Lod.CachedMeshes,
-             (double)Lod.ArenaUsedBytes / (double)(1U << BYTES_TO_MB_SHIFT));
+             "LOD draw: %d opaque + %d border, %d meshes %.0f MB",
+             Lod.OpaqueSections, Lod.BorderSections, Lod.CachedMeshes,
+             (double)Lod.Gpu.ArenaUsedBytes / (double)(1U << BYTES_TO_MB_SHIFT));
+    Y = DrawDebugLine(Ctx, DebugText, Y);
+    snprintf(DebugText, sizeof(DebugText),
+             "LOD cull%s: %lld/%lld verts, %d cmds, %d out, %d back",
+             Lod.Gpu.IndirectCount ? " (count)" : " (fixed)",
+             (long long)Lod.Gpu.DrawnVertices, (long long)Lod.Gpu.CandidateVertices,
+             Lod.Gpu.DrawnCommands, Lod.Gpu.FrustumCulledSections,
+             Lod.Gpu.FacingCulledRuns);
     Y = DrawDebugLine(Ctx, DebugText, Y);
   }
   snprintf(DebugText, sizeof(DebugText),

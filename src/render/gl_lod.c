@@ -1,6 +1,7 @@
 #include "render/gl_lod.h"
 
 #include "core/log.h"
+#include "render/gl_caps.h"
 #include "render/gl_internal.h"
 #include "render/gl_math.h"
 #include "world/block_system.h"
@@ -14,7 +15,9 @@ enum {
   LOD_PAGE_SHIFT = 8,
   LOD_PAGE_VERTICES = 1 << LOD_PAGE_SHIFT,
   LOD_ARENA_PAGES = 16384,
-  LOD_MAX_MESHES = 65536,
+  // Every mesh holds at least one page, so no more can be live at once.
+  LOD_MAX_MESHES = LOD_ARENA_PAGES,
+  LIST_INITIAL_CAPACITY = 1024,
   LOD_MAX_DRAWS = 32768,
   // A freed run stays reserved this many presented frames, so no upload can
   // overwrite vertices a frame still queued on the GPU reads.
@@ -34,8 +37,33 @@ enum {
   ERROR_CHECK_FRAMES = 8,
   PENDING_INITIAL = 64,
   MAT4_FLOATS = 16,
-  BYTES_TO_MB_SHIFT = 20
+  BYTES_TO_MB_SHIFT = 20,
+  // Cull: per section one command slot per face run (the most it can need)
+  // and a record of its first vertex, run count, first slot and packed runs
+  // (see lod_cull.comp, whose constants must match).
+  LOD_RUNS = RENDER_LOD_MAX_RUNS,
+  CULL_RECORD_HEADER = 3,
+  CULL_RECORD_UINTS = CULL_RECORD_HEADER + LOD_RUNS,
+  CULL_RUN_GROUP_SHIFT = 16,
+  CULL_WORKGROUP = 64,
+  // Counters (see lod_cull.comp): opaque and border draw counts, then stats.
+  COUNTER_OPAQUE = 0,
+  COUNTER_BORDER = 1,
+  COUNTER_FRUSTUM_CULLED = 2,
+  COUNTER_CANDIDATE_RUNS = 3,
+  COUNTER_FACING_CULLED = 4,
+  COUNTER_DRAWN_COMMANDS = 5,
+  COUNTER_DRAWN_QUADS = 6,
+  COUNTER_UINTS = 8,
+  BINDING_META = 0,
+  BINDING_CULL = 1,
+  BINDING_COMMANDS = 2,
+  BINDING_COUNTERS = 3
 };
+
+// ARB_indirect_parameters / GL 4.6 tokens, absent from the 4.3 loader.
+#define LOD_PARAMETER_BUFFER 0x80EEU
+#define LOD_PARAMETER_BUFFER_BARRIER_BIT 0x00001000U
 
 // The LOD projection: its near plane well inside the 1:1 disc and its far
 // plane past the largest view distance (2048 chunks = 32768 blocks).
@@ -54,6 +82,9 @@ typedef struct {
   int FirstPage;
   int PageCount;
   int VertexCount;
+  int RunCount;
+  // Group << CULL_RUN_GROUP_SHIFT | quads, per run.
+  uint32_t Runs[LOD_RUNS];
   bool Used;
 } LodMeshRecord;
 
@@ -71,15 +102,42 @@ typedef struct {
 } LodProgram;
 
 typedef struct {
+  GLuint Program;
+  GLint ViewProj;
+  GLint CameraBlock;
+  GLint CameraFrac;
+  GLint OpaqueCount;
+  GLint OpaqueRuns;
+  GLint Total;
+  GLint Compact;
+  GLint CullEnabled;
+} CullProgram;
+
+typedef struct {
   bool Active;
+  bool UseIndirectCount;
+  bool CullEnabled;
   GLuint SharedIndexBuffer;
 
   GLuint Vbo;
   GLuint Vao;
   GLuint InstanceVbo;
   GLuint MetaSsbo;
-  GLuint IndirectBuffer;
+  GLuint CullSsbo;
+  GLuint CommandBuffer;
+  GLuint CounterBuffer;
   GLuint CoverageTex;
+  CullProgram Cull;
+
+  // The section list last sent to the GPU.
+  bool HasList;
+  uint32_t ListRevision;
+  int ListOpaque;
+  int ListBorder;
+  int64_t ListVertices;
+  // Command slots: one per face run, opaque sections' first.
+  int ListOpaqueRuns;
+  int ListRuns;
 
   uint8_t *PageUsed;
   int UsedPages;
@@ -112,7 +170,9 @@ typedef struct {
   LodProgram Border;
 
   int32_t *Meta;
-  LodIndirectCommand *Commands;
+  uint32_t *CullRecords;
+  // Sections Meta and CullRecords have room for; grown on demand.
+  int ListCapacity;
 
   RenderLodStats Stats;
   int CheckedFrames;
@@ -145,6 +205,20 @@ static LodProgram LoadLodProgram(const char *FragmentPath) {
   glUniform1iv(glGetUniformLocation(Result.Program, "uOverlayLayers"),
                OVERLAY_SLOT_COUNT, GetOverlaySlotLayers());
   glUseProgram(0);
+  return Result;
+}
+
+static CullProgram LoadCullProgram(void) {
+  CullProgram Result = {0};
+  Result.Program = GlLinkComputeProgram("assets/shaders/lod_cull.comp");
+  Result.ViewProj = glGetUniformLocation(Result.Program, "uViewProj");
+  Result.CameraBlock = glGetUniformLocation(Result.Program, "uCameraBlock");
+  Result.CameraFrac = glGetUniformLocation(Result.Program, "uCameraFrac");
+  Result.OpaqueCount = glGetUniformLocation(Result.Program, "uOpaqueCount");
+  Result.OpaqueRuns = glGetUniformLocation(Result.Program, "uOpaqueRuns");
+  Result.Total = glGetUniformLocation(Result.Program, "uTotal");
+  Result.Compact = glGetUniformLocation(Result.Program, "uCompact");
+  Result.CullEnabled = glGetUniformLocation(Result.Program, "uCullEnabled");
   return Result;
 }
 
@@ -265,7 +339,13 @@ static bool CreateArena(GlLodState *State) {
   glBindBuffer(GL_ARRAY_BUFFER, 0);
 
   glGenBuffers(1, &State->MetaSsbo);
-  glGenBuffers(1, &State->IndirectBuffer);
+  glGenBuffers(1, &State->CullSsbo);
+  glGenBuffers(1, &State->CommandBuffer);
+  glGenBuffers(1, &State->CounterBuffer);
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, State->CounterBuffer);
+  glBufferData(GL_SHADER_STORAGE_BUFFER, (GLsizeiptr)(sizeof(uint32_t) * COUNTER_UINTS),
+               NULL, GL_DYNAMIC_DRAW);
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
   glGenVertexArrays(1, &State->RemapVao);
   return true;
 }
@@ -289,20 +369,44 @@ static bool CreateCoverage(GlLodState *State) {
   return true;
 }
 
-bool GlLodInit(GLuint SharedIndexBuffer) {
+// Grows the section record buffers to hold Count sections; false (and the
+// buffers unchanged) when memory runs out.
+static bool EnsureListCapacity(GlLodState *State, int Count) {
+  if (Count <= State->ListCapacity) {
+    return true;
+  }
+  int Capacity = (State->ListCapacity > 0) ? State->ListCapacity : LIST_INITIAL_CAPACITY;
+  while (Capacity < Count) {
+    Capacity *= 2;
+  }
+  int32_t *Meta = (int32_t *)realloc(
+      State->Meta, sizeof(int32_t) * LOD_META_COMPONENTS * (size_t)Capacity);
+  if (Meta == NULL) {
+    return false;
+  }
+  State->Meta = Meta;
+  uint32_t *Records = (uint32_t *)realloc(
+      State->CullRecords, sizeof(uint32_t) * CULL_RECORD_UINTS * (size_t)Capacity);
+  if (Records == NULL) {
+    return false;
+  }
+  State->CullRecords = Records;
+  State->ListCapacity = Capacity;
+  return true;
+}
+
+bool GlLodInit(GLuint SharedIndexBuffer, bool UseIndirectCount, bool Cull) {
   GlLodState *State = GetLodState();
   *State = (GlLodState){0};
   State->SharedIndexBuffer = SharedIndexBuffer;
+  State->UseIndirectCount = UseIndirectCount;
+  State->CullEnabled = Cull;
   State->PageUsed = (uint8_t *)calloc(LOD_ARENA_PAGES, sizeof(uint8_t));
   State->Meshes = (LodMeshRecord *)calloc(LOD_MAX_MESHES, sizeof(LodMeshRecord));
   State->FreeMeshes = (int *)malloc(sizeof(int) * LOD_MAX_MESHES);
-  State->Meta = (int32_t *)malloc(sizeof(int32_t) * LOD_META_COMPONENTS *
-                                  LOD_MAX_DRAWS);
-  State->Commands =
-      (LodIndirectCommand *)malloc(sizeof(LodIndirectCommand) * LOD_MAX_DRAWS);
   if (State->PageUsed == NULL || State->Meshes == NULL ||
-      State->FreeMeshes == NULL || State->Meta == NULL ||
-      State->Commands == NULL || !CreateArena(State) || !CreateCoverage(State)) {
+      State->FreeMeshes == NULL || !EnsureListCapacity(State, LIST_INITIAL_CAPACITY) ||
+      !CreateArena(State) || !CreateCoverage(State)) {
     GlLodShutdown();
     LogWarn("RENDER: could not create the LOD resources; LOD stays off");
     return false;
@@ -328,16 +432,19 @@ bool GlLodInit(GLuint SharedIndexBuffer) {
   glUseProgram(0);
   State->Opaque = LoadLodProgram("assets/shaders/lod_opaque.frag");
   State->Border = LoadLodProgram("assets/shaders/lod_border.frag");
+  State->Cull = LoadCullProgram();
 
   State->Stats.ArenaCapacityBytes =
       (int64_t)LOD_ARENA_PAGES * LOD_PAGE_VERTICES * (int64_t)sizeof(ChunkVertex);
   State->Active = true;
   LogInfo("RENDER: LOD pipeline on: %d-page arena (%lld MB), projection %.0f..%.0f, "
           "standard depth (32-bit float LOD depth), 1:1 left in the default "
-          "framebuffer",
+          "framebuffer, GPU cull%s into a %s command list",
           LOD_ARENA_PAGES,
           (long long)(State->Stats.ArenaCapacityBytes >> BYTES_TO_MB_SHIFT), LOD_NEAR_PLANE,
-          LOD_FAR_PLANE);
+          LOD_FAR_PLANE, Cull ? "" : " (off: --lod-cull off)",
+          UseIndirectCount ? "compacted (indirect count)" : "fixed (zeroed)");
+  State->Stats.IndirectCount = UseIndirectCount;
   return true;
 }
 
@@ -354,7 +461,9 @@ void GlLodShutdown(void) {
   DeleteBuffer(&State->Vbo);
   DeleteBuffer(&State->InstanceVbo);
   DeleteBuffer(&State->MetaSsbo);
-  DeleteBuffer(&State->IndirectBuffer);
+  DeleteBuffer(&State->CullSsbo);
+  DeleteBuffer(&State->CommandBuffer);
+  DeleteBuffer(&State->CounterBuffer);
   if (State->Vao != 0) {
     glDeleteVertexArrays(1, &State->Vao);
   }
@@ -364,9 +473,10 @@ void GlLodShutdown(void) {
   if (State->CoverageTex != 0) {
     glDeleteTextures(1, &State->CoverageTex);
   }
-  GLuint Programs[4] = {State->RemapProgram, State->CompositeProgram,
-                        State->Opaque.Program, State->Border.Program};
-  for (int Idx = 0; Idx < 4; Idx++) {
+  GLuint Programs[] = {State->RemapProgram, State->CompositeProgram,
+                       State->Opaque.Program, State->Border.Program,
+                       State->Cull.Program};
+  for (size_t Idx = 0; Idx < sizeof(Programs) / sizeof(Programs[0]); Idx++) {
     if (Programs[Idx] != 0) {
       glDeleteProgram(Programs[Idx]);
     }
@@ -376,7 +486,7 @@ void GlLodShutdown(void) {
   free(State->FreeMeshes);
   free(State->Pending);
   free(State->Meta);
-  free(State->Commands);
+  free(State->CullRecords);
   *State = (GlLodState){0};
 }
 
@@ -402,9 +512,15 @@ static void MarkPages(GlLodState *State, int First, int Count, uint8_t Value) {
   State->UsedPages += (Value != 0U) ? Count : -Count;
 }
 
-RenderLodMesh GlLodUploadMesh(const ChunkVertex *Vertices, int VertexCount) {
+RenderLodMesh GlLodUploadMesh(const ChunkVertex *Vertices,
+                              const RenderLodRun *Runs, int RunCount) {
   GlLodState *State = GetLodState();
-  if (!State->Active || VertexCount <= 0 || State->FreeMeshCount == 0) {
+  int VertexCount = 0;
+  for (int Run = 0; Run < RunCount; Run++) {
+    VertexCount += Runs[Run].Quads * LOD_VERTICES_PER_QUAD;
+  }
+  if (!State->Active || VertexCount <= 0 || RunCount > LOD_RUNS ||
+      State->FreeMeshCount == 0) {
     return RENDER_LOD_MESH_INVALID;
   }
   int Pages = (VertexCount + LOD_PAGE_VERTICES - 1) >> LOD_PAGE_SHIFT;
@@ -423,6 +539,12 @@ RenderLodMesh GlLodUploadMesh(const ChunkVertex *Vertices, int VertexCount) {
   int Mesh = State->FreeMeshes[--State->FreeMeshCount];
   State->Meshes[Mesh] = (LodMeshRecord){
       .FirstPage = First, .PageCount = Pages, .VertexCount = VertexCount, .Used = true};
+  LodMeshRecord *Record = &State->Meshes[Mesh];
+  Record->RunCount = RunCount;
+  for (int Run = 0; Run < RunCount; Run++) {
+    Record->Runs[Run] = ((uint32_t)Runs[Run].Group << CULL_RUN_GROUP_SHIFT) |
+                        (uint32_t)Runs[Run].Quads;
+  }
   State->LiveMeshes++;
   return Mesh;
 }
@@ -548,11 +670,16 @@ static void CompositeOntoFrame(const GlLodState *State, const GlLodFrame *Frame)
   glEnable(GL_CULL_FACE);
 }
 
-// Fills the section records and indirect commands; returns the vertices drawn.
-static int64_t BuildCommands(GlLodState *State, const RenderLodDraw *Draws,
-                             int Count) {
+// Fills the section records the vertex shader and the cull read; returns the
+// vertices of every section, before culling.
+static int64_t BuildSectionRecords(GlLodState *State, const RenderLodDraw *Draws,
+                                   int Count) {
   int64_t Vertices = 0;
+  int Slots = 0;
   for (int Idx = 0; Idx < Count; Idx++) {
+    if (Idx == State->ListOpaque) {
+      State->ListOpaqueRuns = Slots;
+    }
     const RenderLodDraw *Draw = &Draws[Idx];
     const LodMeshRecord *Record = &State->Meshes[Draw->Mesh];
     int32_t *Meta = &State->Meta[(size_t)Idx * LOD_META_COMPONENTS];
@@ -560,38 +687,144 @@ static int64_t BuildCommands(GlLodState *State, const RenderLodDraw *Draws,
     Meta[1] = Draw->OriginY;
     Meta[2] = Draw->OriginZ;
     Meta[3] = Draw->Scale;
-    State->Commands[Idx] = (LodIndirectCommand){
-        .Count = (GLuint)((Record->VertexCount / LOD_VERTICES_PER_QUAD) *
-                          LOD_INDICES_PER_QUAD),
-        .InstanceCount = 1,
-        .FirstIndex = 0,
-        .BaseVertex = Record->FirstPage * LOD_PAGE_VERTICES,
-        .BaseInstance = (GLuint)Idx};
+    uint32_t *Cull = &State->CullRecords[(size_t)Idx * CULL_RECORD_UINTS];
+    Cull[0] = (uint32_t)(Record->FirstPage * LOD_PAGE_VERTICES);
+    Cull[1] = (uint32_t)Record->RunCount;
+    Cull[2] = (uint32_t)Slots;
+    memcpy(&Cull[CULL_RECORD_HEADER], Record->Runs,
+           sizeof(uint32_t) * (size_t)Record->RunCount);
+    Slots += Record->RunCount;
     Vertices += Record->VertexCount;
   }
+  if (Count == State->ListOpaque) {
+    State->ListOpaqueRuns = Slots;
+  }
+  State->ListRuns = Slots;
   return Vertices;
 }
 
+static void UploadSectionList(GlLodState *State, const RenderLodDraw *Draws,
+                              int OpaqueCount, int BorderCount,
+                              uint32_t ListRevision) {
+  int Total = OpaqueCount + BorderCount;
+  if (!EnsureListCapacity(State, Total)) {
+    State->HasList = false;
+    return;
+  }
+  State->ListOpaque = OpaqueCount;
+  State->ListBorder = BorderCount;
+  State->ListVertices = BuildSectionRecords(State, Draws, Total);
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, State->MetaSsbo);
+  glBufferData(GL_SHADER_STORAGE_BUFFER,
+               (GLsizeiptr)(sizeof(int32_t) * LOD_META_COMPONENTS * (size_t)Total),
+               State->Meta, GL_STATIC_DRAW);
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, State->CullSsbo);
+  glBufferData(GL_SHADER_STORAGE_BUFFER,
+               (GLsizeiptr)(sizeof(uint32_t) * CULL_RECORD_UINTS * (size_t)Total),
+               State->CullRecords, GL_STATIC_DRAW);
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+  glBindBuffer(GL_DRAW_INDIRECT_BUFFER, State->CommandBuffer);
+  glBufferData(GL_DRAW_INDIRECT_BUFFER,
+               (GLsizeiptr)(sizeof(LodIndirectCommand) * (size_t)State->ListRuns),
+               NULL, GL_DYNAMIC_DRAW);
+  glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
+  State->HasList = true;
+  State->ListRevision = ListRevision;
+}
+
+void GlLodReadCullStats(void) {
+  GlLodState *State = GetLodState();
+  if (!State->Active || !State->HasList) {
+    return;
+  }
+  uint32_t Counters[COUNTER_UINTS];
+  glBindBuffer(GL_COPY_READ_BUFFER, State->CounterBuffer);
+  glGetBufferSubData(GL_COPY_READ_BUFFER, 0, (GLsizeiptr)sizeof(Counters), Counters);
+  glBindBuffer(GL_COPY_READ_BUFFER, 0);
+  State->Stats.CullValid = true;
+  State->Stats.FrustumCulledSections = (int)Counters[COUNTER_FRUSTUM_CULLED];
+  State->Stats.CandidateRuns = (int)Counters[COUNTER_CANDIDATE_RUNS];
+  State->Stats.FacingCulledRuns = (int)Counters[COUNTER_FACING_CULLED];
+  State->Stats.DrawnCommands = (int)Counters[COUNTER_DRAWN_COMMANDS];
+  State->Stats.DrawnVertices =
+      (int64_t)Counters[COUNTER_DRAWN_QUADS] * LOD_VERTICES_PER_QUAD;
+}
+
+// Runs lod_cull.comp over every section, writing the indirect commands and the
+// counters, and makes them visible to the draws that follow.
+static void CullSections(GlLodState *State, const float ViewProj[MAT4_FLOATS],
+                         const int CameraBlock[3], const float CameraFrac[3]) {
+  int Total = State->ListOpaque + State->ListBorder;
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, State->CounterBuffer);
+  glClearBufferData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, GL_RED_INTEGER,
+                    GL_UNSIGNED_INT, NULL);
+  glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_META, State->MetaSsbo);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_CULL, State->CullSsbo);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_COMMANDS, State->CommandBuffer);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_COUNTERS, State->CounterBuffer);
+  const CullProgram *Cull = &State->Cull;
+  glUseProgram(Cull->Program);
+  glUniformMatrix4fv(Cull->ViewProj, 1, GL_FALSE, ViewProj);
+  glUniform3i(Cull->CameraBlock, CameraBlock[0], CameraBlock[1], CameraBlock[2]);
+  glUniform3f(Cull->CameraFrac, CameraFrac[0], CameraFrac[1], CameraFrac[2]);
+  glUniform1ui(Cull->OpaqueCount, (GLuint)State->ListOpaque);
+  glUniform1ui(Cull->OpaqueRuns, (GLuint)State->ListOpaqueRuns);
+  glUniform1ui(Cull->Total, (GLuint)Total);
+  glUniform1i(Cull->Compact, State->UseIndirectCount ? 1 : 0);
+  glUniform1i(Cull->CullEnabled, State->CullEnabled ? 1 : 0);
+  glDispatchCompute((GLuint)((Total + CULL_WORKGROUP - 1) / CULL_WORKGROUP), 1, 1);
+  GLbitfield Barriers = GL_COMMAND_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT |
+                        GL_BUFFER_UPDATE_BARRIER_BIT;
+  if (State->UseIndirectCount) {
+    Barriers |= LOD_PARAMETER_BUFFER_BARRIER_BIT;
+  }
+  glMemoryBarrier(Barriers);
+  for (int Binding = BINDING_CULL; Binding <= BINDING_COUNTERS; Binding++) {
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, (GLuint)Binding, 0);
+  }
+}
+
+// One pass's commands: Count slots from slot First on.
+static void DrawPass(const GlLodState *State, int First, int Count,
+                     int CounterIndex) {
+  size_t Offset = (size_t)First * sizeof(LodIndirectCommand);
+  GLsizei MaxDraws = (GLsizei)Count;
+  if (State->UseIndirectCount) {
+    GlCapsProcs()->MultiDrawElementsIndirectCount(
+        GL_TRIANGLES, GL_UNSIGNED_SHORT, BufferOffset(Offset),
+        (GLintptr)((size_t)CounterIndex * sizeof(uint32_t)), MaxDraws,
+        (GLsizei)sizeof(LodIndirectCommand));
+  } else {
+    glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_SHORT,
+                                BufferOffset(Offset), MaxDraws,
+                                (GLsizei)sizeof(LodIndirectCommand));
+  }
+}
+
 void GlLodDraw(const GlLodFrame *Frame, const RenderLodDraw *Draws,
-               int OpaqueCount, int BorderCount) {
+               int OpaqueCount, int BorderCount, uint32_t ListRevision) {
   GlLodState *State = GetLodState();
   State->Stats.OpaqueDraws = 0;
   State->Stats.BorderDraws = 0;
-  State->Stats.DrawnVertices = 0;
+  State->Stats.CandidateVertices = 0;
   int Total = OpaqueCount + BorderCount;
-  if (!State->Active || Total <= 0) {
+  if (!State->Active) {
+    return;
+  }
+  if (Total <= 0) {
+    State->Stats.DrawnVertices = 0;
+    State->Stats.DrawnCommands = 0;
     return;
   }
   if ((State->Width != Frame->Width || State->Height != Frame->Height) &&
       !CreateTargets(State, Frame->Width, Frame->Height)) {
     return;
   }
+  // The section index reaches the shader through the identity instance
+  // buffer, which holds LOD_MAX_DRAWS entries (lod_renderer never selects more).
   if (Total > LOD_MAX_DRAWS) {
-    BorderCount = (BorderCount > Total - LOD_MAX_DRAWS)
-                      ? BorderCount - (Total - LOD_MAX_DRAWS)
-                      : 0;
-    OpaqueCount = LOD_MAX_DRAWS - BorderCount;
-    Total = LOD_MAX_DRAWS;
+    return;
   }
 
   // Camera at the origin; the camera's block goes to the shader as an int.
@@ -618,21 +851,24 @@ void GlLodDraw(const GlLodFrame *Frame, const RenderLodDraw *Draws,
   // The LOD is always drawn filled. Under the wireframe debug view its edges
   // would land exactly on chunk-column borders, where the border shader's
   // coverage lookup cannot tell which column a line belongs to.
+  if (!State->HasList || State->ListRevision != ListRevision ||
+      State->ListOpaque != OpaqueCount || State->ListBorder != BorderCount) {
+    UploadSectionList(State, Draws, OpaqueCount, BorderCount, ListRevision);
+    if (!State->HasList) {
+      return;
+    }
+  }
   if (Frame->Wireframe) {
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
   }
   RemapDepth(State, Projection.m10, Projection.m14, Frame);
-
-  State->Stats.DrawnVertices = BuildCommands(State, Draws, Total);
-  glBindBuffer(GL_SHADER_STORAGE_BUFFER, State->MetaSsbo);
-  glBufferData(GL_SHADER_STORAGE_BUFFER,
-               (GLsizeiptr)(sizeof(int32_t) * LOD_META_COMPONENTS * (size_t)Total),
-               State->Meta, GL_STREAM_DRAW);
-  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, State->MetaSsbo);
-  glBindBuffer(GL_DRAW_INDIRECT_BUFFER, State->IndirectBuffer);
-  glBufferData(GL_DRAW_INDIRECT_BUFFER,
-               (GLsizeiptr)(sizeof(LodIndirectCommand) * (size_t)Total),
-               State->Commands, GL_STREAM_DRAW);
+  State->Stats.CandidateVertices = State->ListVertices;
+  CullSections(State, ViewProj, CameraBlock, CameraFrac);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_META, State->MetaSsbo);
+  glBindBuffer(GL_DRAW_INDIRECT_BUFFER, State->CommandBuffer);
+  if (State->UseIndirectCount) {
+    glBindBuffer(LOD_PARAMETER_BUFFER, State->CounterBuffer);
+  }
 
   glBindVertexArray(State->Vao);
   glActiveTexture(GL_TEXTURE0 + BLOCK_UNIT);
@@ -643,15 +879,15 @@ void GlLodDraw(const GlLodFrame *Frame, const RenderLodDraw *Draws,
 
   if (OpaqueCount > 0) {
     UseLodProgram(&State->Opaque, ViewProj, CameraBlock, CameraFrac);
-    glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_SHORT, BufferOffset(0),
-                                OpaqueCount, 0);
+    DrawPass(State, 0, State->ListOpaqueRuns, COUNTER_OPAQUE);
   }
   if (BorderCount > 0) {
     UseLodProgram(&State->Border, ViewProj, CameraBlock, CameraFrac);
-    glMultiDrawElementsIndirect(
-        GL_TRIANGLES, GL_UNSIGNED_SHORT,
-        BufferOffset((size_t)OpaqueCount * sizeof(LodIndirectCommand)),
-        BorderCount, 0);
+    DrawPass(State, State->ListOpaqueRuns, State->ListRuns - State->ListOpaqueRuns,
+             COUNTER_BORDER);
+  }
+  if (State->UseIndirectCount) {
+    glBindBuffer(LOD_PARAMETER_BUFFER, 0);
   }
 
   glBindTexture(GL_TEXTURE_2D, 0);

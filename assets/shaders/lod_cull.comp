@@ -1,0 +1,195 @@
+#version 430 core
+
+// Culls the LOD sections against the frame's camera and writes the indirect
+// commands the LOD passes draw. One invocation per section.
+//
+// A section's mesh is a sequence of face runs (see RenderLodUploadMesh): quads
+// of one face group, in the mesher's order. Groups 0..5 are top, bottom, -X,
+// +X, +Z, -Z; group 6 is never culled by direction. A section outside the
+// frustum draws nothing; inside it, an axis run whose faces all point away
+// from the camera is dropped. Both tests are conservative (a margin keeps
+// anything on the edge), so culling never removes a pixel: what it drops would
+// have been clipped or back-face culled anyway. Kept runs that follow each
+// other in the arena share one command, and the order of the quads is never
+// changed, so equal-depth fragments resolve exactly as without culling.
+//
+// Positions are camera-relative and formed in integers first, exactly as in
+// lod.vert, so far sections keep full precision.
+//
+// Two output layouts:
+//   uCompact true:  each pass's kept commands are packed from its region's
+//                   start and counted in DrawCount (ARB_indirect_parameters);
+//   uCompact false: a section owns one slot per run from its first slot and
+//                   unused ones get instanceCount 0, for drivers without the
+//                   extension.
+// Opaque sections are [0, uOpaqueCount), border sections the rest; the border
+// region starts at slot uOpaqueRuns in both layouts.
+
+layout(local_size_x = 64) in;
+
+struct DrawCommand {
+    uint count;
+    uint instanceCount;
+    uint firstIndex;
+    int baseVertex;
+    uint baseInstance;
+};
+
+// Must match RENDER_LOD_MAX_RUNS and gl_lod.c's cull record.
+const uint MAX_RUNS = 24u;
+const uint RECORD_HEADER = 3u;
+const uint RECORD_WORDS = RECORD_HEADER + MAX_RUNS;
+
+// xyz: section origin in blocks; w: blocks per voxel (2^L).
+layout(std430, binding = 0) readonly buffer SectionMeta {
+    ivec4 Sections[];
+};
+
+// RECORD_WORDS per section: first vertex in the arena, run count, first
+// command slot (opaque sections' slots first), then one word per run:
+// group << 16 | quads.
+layout(std430, binding = 1) readonly buffer SectionCull {
+    uint CullWords[];
+};
+
+layout(std430, binding = 2) writeonly buffer Commands {
+    DrawCommand Cmds[];
+};
+
+layout(std430, binding = 3) buffer Counters {
+    uint DrawCount[2];
+    uint FrustumCulled;
+    uint CandidateRuns;
+    uint FacingCulled;
+    uint DrawnCommands;
+    uint DrawnQuads;
+    uint Unused;
+};
+
+uniform mat4 uViewProj;
+uniform ivec3 uCameraBlock;
+uniform vec3 uCameraFrac;
+uniform uint uOpaqueCount;
+// Command slots of the opaque sections: where the border region starts.
+uniform uint uOpaqueRuns;
+uniform uint uTotal;
+uniform bool uCompact;
+// False (--lod-cull off, a test aid) keeps every run of every section.
+uniform bool uCullEnabled;
+
+const uint AXIS_GROUPS = 6u;
+const float SECTION_VOXELS = 16.0;
+// In blocks: a box this far outside a plane still counts as inside it, which
+// absorbs float rounding at 40000-block distances many times over.
+const float FRUSTUM_MARGIN = 0.5;
+// In blocks: a face direction is kept while the camera is within this
+// distance of the side of the box it could be seen from.
+const float FACING_MARGIN = 1.0;
+const uint INDICES_PER_QUAD = 6u;
+const uint VERTICES_PER_QUAD = 4u;
+
+bool OutsideFrustum(vec3 boxMin, vec3 boxMax) {
+    vec4 row0 = vec4(uViewProj[0][0], uViewProj[1][0], uViewProj[2][0], uViewProj[3][0]);
+    vec4 row1 = vec4(uViewProj[0][1], uViewProj[1][1], uViewProj[2][1], uViewProj[3][1]);
+    vec4 row2 = vec4(uViewProj[0][2], uViewProj[1][2], uViewProj[2][2], uViewProj[3][2]);
+    vec4 row3 = vec4(uViewProj[0][3], uViewProj[1][3], uViewProj[2][3], uViewProj[3][3]);
+    vec4 planes[6] = vec4[6](row3 + row0, row3 - row0, row3 + row1,
+                             row3 - row1, row3 + row2, row3 - row2);
+    for (int idx = 0; idx < 6; idx++) {
+        vec4 plane = planes[idx];
+        // The box corner furthest along the plane's normal.
+        vec3 corner = mix(boxMin, boxMax, greaterThanEqual(plane.xyz, vec3(0.0)));
+        float distance = dot(plane.xyz, corner) + plane.w;
+        if (distance < -FRUSTUM_MARGIN * length(plane.xyz)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Faces of a group lie inside the box and face one way, so all of them point
+// away from a camera behind the box's opposite side.
+bool FacingCamera(uint group, vec3 boxMin, vec3 boxMax) {
+    switch (group) {
+        case 0u: return boxMin.y < FACING_MARGIN;
+        case 1u: return boxMax.y > -FACING_MARGIN;
+        case 2u: return boxMax.x > -FACING_MARGIN;
+        case 3u: return boxMin.x < FACING_MARGIN;
+        case 4u: return boxMin.z < FACING_MARGIN;
+        case 5u: return boxMax.z > -FACING_MARGIN;
+        default: return true;
+    }
+}
+
+void main() {
+    uint section = gl_GlobalInvocationID.x;
+    if (section >= uTotal) {
+        return;
+    }
+    ivec4 meta = Sections[section];
+    uint record = section * RECORD_WORDS;
+    uint firstVertex = CullWords[record];
+    uint runTotal = min(CullWords[record + 1u], MAX_RUNS);
+
+    vec3 boxMin = vec3(meta.xyz - uCameraBlock) - vec3(0.5) - uCameraFrac;
+    vec3 boxMax = boxMin + vec3(SECTION_VOXELS * float(meta.w));
+    bool visible = !uCullEnabled || !OutsideFrustum(boxMin, boxMax);
+
+    // Kept ranges, as (first quad, quad count).
+    uvec2 ranges[MAX_RUNS];
+    uint rangeCount = 0u;
+    bool rangeOpen = false;
+    uint start = 0u;
+    uint facingCulled = 0u;
+    uint drawnQuads = 0u;
+    for (uint run = 0u; run < runTotal; run++) {
+        uint packedRun = CullWords[record + RECORD_HEADER + run];
+        uint group = packedRun >> 16u;
+        uint count = packedRun & 0xFFFFu;
+        bool keep = visible && (!uCullEnabled || group >= AXIS_GROUPS ||
+                                FacingCamera(group, boxMin, boxMax));
+        if (keep) {
+            if (rangeOpen) {
+                ranges[rangeCount - 1u].y += count;
+            } else {
+                ranges[rangeCount] = uvec2(start, count);
+                rangeCount++;
+                rangeOpen = true;
+            }
+            drawnQuads += count;
+        } else {
+            rangeOpen = false;
+            if (visible) {
+                facingCulled++;
+            }
+        }
+        start += count;
+    }
+
+    bool border = section >= uOpaqueCount;
+    uint slot = CullWords[record + 2u];
+    if (uCompact) {
+        uint regionBase = border ? uOpaqueRuns : 0u;
+        slot = (rangeCount > 0u)
+                   ? regionBase + atomicAdd(DrawCount[border ? 1u : 0u], rangeCount)
+                   : 0u;
+    }
+    for (uint range = 0u; range < rangeCount; range++) {
+        Cmds[slot + range] = DrawCommand(
+            ranges[range].y * INDICES_PER_QUAD, 1u, 0u,
+            int(firstVertex + ranges[range].x * VERTICES_PER_QUAD), section);
+    }
+    if (!uCompact) {
+        for (uint range = rangeCount; range < runTotal; range++) {
+            Cmds[slot + range] = DrawCommand(0u, 0u, 0u, 0, section);
+        }
+    }
+
+    atomicAdd(CandidateRuns, runTotal);
+    if (!visible) {
+        atomicAdd(FrustumCulled, 1u);
+    }
+    atomicAdd(FacingCulled, facingCulled);
+    atomicAdd(DrawnCommands, rangeCount);
+    atomicAdd(DrawnQuads, drawnQuads);
+}

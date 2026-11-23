@@ -78,6 +78,13 @@ typedef struct {
   // --lod off: the device is treated as unable to draw LOD, so no LOD store,
   // worker downsampling or GPU resource is ever created. Defaults to on.
   bool LodDisabled;
+  // --lod-indirect-count off: the LOD cull writes a fixed command list with
+  // culled draws zeroed instead of a compacted list drawn through
+  // ARB_indirect_parameters, as on drivers without it. For testing that path.
+  bool LodNoIndirectCount;
+  // --lod-cull off: the LOD cull keeps everything (same command layout), so
+  // culled and unculled frames can be compared pixel for pixel.
+  bool LodNoCull;
 } LaunchOptions;
 
 void ParseLaunchOptions(int Argc, char **Argv);

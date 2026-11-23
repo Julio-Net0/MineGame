@@ -11,4 +11,7 @@
 // draw without, so a failure ends the process with the driver's log.
 GLuint GlLinkShaderProgram(const char *VertexPath, const char *FragmentPath);
 
+// The same for a compute program from one shader file.
+GLuint GlLinkComputeProgram(const char *Path);
+
 #endif

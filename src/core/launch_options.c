@@ -51,6 +51,8 @@ static LaunchOptions *GetMutableLaunchOptions(void) {
       .Hidden = false,
       .Monitor = LAUNCH_MONITOR_DEFAULT,
       .LodDisabled = false,
+      .LodNoIndirectCount = false,
+      .LodNoCull = false,
   };
   return &Options;
 }
@@ -283,6 +285,28 @@ static void ParseLodValue(const char *ValueStr, LaunchOptions *Options) {
   }
 }
 
+static void ParseLodIndirectCountValue(const char *ValueStr,
+                                       LaunchOptions *Options) {
+  if (strcmp(ValueStr, "on") == 0) {
+    Options->LodNoIndirectCount = false;
+  } else if (strcmp(ValueStr, "off") == 0) {
+    Options->LodNoIndirectCount = true;
+  } else {
+    LogWarn("MAIN: --lod-indirect-count must be on or off; ignoring \"%s\"",
+            ValueStr);
+  }
+}
+
+static void ParseLodCullValue(const char *ValueStr, LaunchOptions *Options) {
+  if (strcmp(ValueStr, "on") == 0) {
+    Options->LodNoCull = false;
+  } else if (strcmp(ValueStr, "off") == 0) {
+    Options->LodNoCull = true;
+  } else {
+    LogWarn("MAIN: --lod-cull must be on or off; ignoring \"%s\"", ValueStr);
+  }
+}
+
 static void ParseMonitorValue(const char *ValueStr, LaunchOptions *Options) {
   long Value = 0;
   if (!ParseStrictLong(ValueStr, &Value) || Value < 1 ||
@@ -329,6 +353,8 @@ void ParseLaunchOptions(int Argc, char **Argv) {
       .Hidden = false,
       .Monitor = LAUNCH_MONITOR_DEFAULT,
       .LodDisabled = false,
+      .LodNoIndirectCount = false,
+      .LodNoCull = false,
   };
 
   if (Argc <= 1 || Argv == (char **)0) {
@@ -363,6 +389,8 @@ void ParseLaunchOptions(int Argc, char **Argv) {
                      (strcmp(Arg, "--gl-tier") == 0) ||
                      (strcmp(Arg, "--gl-max") == 0) ||
                      (strcmp(Arg, "--lod") == 0) ||
+                     (strcmp(Arg, "--lod-indirect-count") == 0) ||
+                     (strcmp(Arg, "--lod-cull") == 0) ||
                      (strcmp(Arg, "--monitor") == 0) ||
                      (strcmp(Arg, "--script") == 0) ||
                      (strcmp(Arg, "--script-out") == 0) ||
@@ -400,6 +428,10 @@ void ParseLaunchOptions(int Argc, char **Argv) {
       ParseGlMaxValue(ValueStr, Options);
     } else if (strcmp(Arg, "--lod") == 0) {
       ParseLodValue(ValueStr, Options);
+    } else if (strcmp(Arg, "--lod-indirect-count") == 0) {
+      ParseLodIndirectCountValue(ValueStr, Options);
+    } else if (strcmp(Arg, "--lod-cull") == 0) {
+      ParseLodCullValue(ValueStr, Options);
     } else if (strcmp(Arg, "--monitor") == 0) {
       ParseMonitorValue(ValueStr, Options);
     } else if (strcmp(Arg, "--script") == 0) {

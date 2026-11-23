@@ -202,9 +202,28 @@ bool RenderLodActive(void);
 typedef int RenderLodMesh;
 #define RENDER_LOD_MESH_INVALID (-1)
 
-// Vertices are section-local voxel units, packed like chunk vertices. Invalid
-// when the LOD arena is full.
-RenderLodMesh RenderLodUploadMesh(const ChunkVertex *Vertices, int VertexCount);
+// A LOD mesh is a sequence of face runs: consecutive quads of one face group,
+// in the order the mesher emitted them. The order is never changed, so culling
+// whole runs cannot change which of two equal-depth fragments wins. Groups 0..5
+// are the six axis directions in the packed normal's order (top, bottom, -X,
+// +X, +Z, -Z); group 6 holds every other quad (cross billboards) and is never
+// culled by direction. A mesh has at most RENDER_LOD_MAX_RUNS runs; the
+// mesher's per-direction passes need far fewer.
+enum {
+  RENDER_LOD_FACE_GROUPS = 7,
+  RENDER_LOD_AXIS_GROUPS = 6,
+  RENDER_LOD_MAX_RUNS = 24
+};
+
+typedef struct {
+  int Group;
+  int Quads;
+} RenderLodRun;
+
+// Vertices are section-local voxel units, packed like chunk vertices, laid out
+// as Runs describe. Invalid when the LOD arena is full.
+RenderLodMesh RenderLodUploadMesh(const ChunkVertex *Vertices,
+                                  const RenderLodRun *Runs, int RunCount);
 void RenderLodFreeMesh(RenderLodMesh Mesh);
 
 // One section to draw: its mesh, its origin in blocks and its blocks per
@@ -232,8 +251,11 @@ void RenderLodSetCoverage(int ColumnX, int ColumnZ,
 
 // Draws[0, OpaqueCount) lie wholly outside the 1:1 chunks; the BorderCount
 // after them overlap some, and their fragments inside 1:1 chunks are dropped.
+// ListRevision changes whenever the list's content does: an unchanged list is
+// not sent to the GPU again, only culled again for the frame's camera.
 // Call between the 1:1 cutout pass and the translucent pass.
-void RenderDrawLod(const RenderLodDraw *Draws, int OpaqueCount, int BorderCount);
+void RenderDrawLod(const RenderLodDraw *Draws, int OpaqueCount, int BorderCount,
+                   uint32_t ListRevision);
 
 typedef struct {
   int Meshes;
@@ -241,11 +263,25 @@ typedef struct {
   int64_t ArenaCapacityBytes;
   int OpaqueDraws;
   int BorderDraws;
+  // Vertices of every section handed to the last LOD pass, before culling.
+  int64_t CandidateVertices;
+  // The GPU cull's results as of the last RenderLodReadCullStats; CullValid
+  // is false until the first one.
+  bool CullValid;
+  bool IndirectCount;
+  int CandidateRuns;
+  int FrustumCulledSections;
+  int FacingCulledRuns;
+  int DrawnCommands;
   int64_t DrawnVertices;
   // First GL error seen after a LOD pass (0 = none).
   unsigned GlError;
 } RenderLodStats;
 void RenderGetLodStats(RenderLodStats *Out);
+// Reads the last LOD cull's counters back from the GPU. It waits for the GPU
+// and the driver, so it is for automation dumps and debug views only; a normal
+// frame never reads anything back.
+void RenderLodReadCullStats(void);
 
 // Translucent pass state (depth-mask off, color blend on, batch flush).
 void RenderBeginTranslucentPass(void);

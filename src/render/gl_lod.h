@@ -37,24 +37,31 @@ typedef struct {
 } GlLodFrame;
 
 // Creates every LOD resource. False (and LOD stays off) when any of them
-// cannot be created; nothing is left allocated then.
-bool GlLodInit(GLuint SharedIndexBuffer);
+// cannot be created; nothing is left allocated then. UseIndirectCount picks the
+// compacted command list drawn through ARB_indirect_parameters; without it the
+// cull writes a fixed list with culled commands zeroed. Cull false keeps every
+// command (a test aid).
+bool GlLodInit(GLuint SharedIndexBuffer, bool UseIndirectCount, bool Cull);
 void GlLodShutdown(void);
 bool GlLodActive(void);
 
 // Once per presented frame: recycles arena pages freed three frames ago.
 void GlLodEndFrame(void);
 
-RenderLodMesh GlLodUploadMesh(const ChunkVertex *Vertices, int VertexCount);
+RenderLodMesh GlLodUploadMesh(const ChunkVertex *Vertices,
+                              const RenderLodRun *Runs, int RunCount);
 void GlLodFreeMesh(RenderLodMesh Mesh);
 void GlLodSetCoverage(int ColumnX, int ColumnZ,
                       const uint32_t Words[RENDER_LOD_COVERAGE_WORDS]);
 
-// Depth copy and remap, the opaque and border multi-draws, and the composite.
-// Leaves the default framebuffer bound with the frame's usual state.
+// The GPU cull (lod_cull.comp), depth copy and remap, the opaque and border
+// multi-draws, and the composite. Leaves the default framebuffer bound with the
+// frame's usual state.
 void GlLodDraw(const GlLodFrame *Frame, const RenderLodDraw *Draws,
-               int OpaqueCount, int BorderCount);
+               int OpaqueCount, int BorderCount, uint32_t ListRevision);
 
+// Reads the last cull's counters into the stats; stalls (see backend.h).
+void GlLodReadCullStats(void);
 void GlLodGetStats(RenderLodStats *Out);
 
 #endif

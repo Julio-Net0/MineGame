@@ -1120,6 +1120,7 @@ static void ScriptAddLodJson(cJSON *Root) {
   cJSON_AddNumberToObject(Node, "uniformChunks", (double)Stats.UniformChunks);
   cJSON_AddNumberToObject(Node, "outOfRange", (double)Stats.OutOfRange);
   cJSON_AddNumberToObject(Node, "failed", (double)Stats.Failed);
+  LodRendererReadCullStats(true);
   LodRenderStats Render;
   LodRendererGetStats(&Render);
   cJSON_AddBoolToObject(Node, "drawEnabled", Render.Enabled);
@@ -1127,14 +1128,27 @@ static void ScriptAddLodJson(cJSON *Root) {
   cJSON_AddNumberToObject(Node, "drawSelected", Render.Selected);
   cJSON_AddNumberToObject(Node, "lodOpaqueSections", Render.OpaqueSections);
   cJSON_AddNumberToObject(Node, "lodBorderSections", Render.BorderSections);
-  cJSON_AddNumberToObject(Node, "lodVertices", (double)Render.DrawnVertices);
+  const RenderLodStats *Gpu = &Render.Gpu;
+  cJSON_AddNumberToObject(Node, "lodVertices", (double)Gpu->CandidateVertices);
   cJSON_AddNumberToObject(Node, "gpuMeshes", Render.CachedMeshes);
   cJSON_AddNumberToObject(Node, "meshWaiting", Render.WaitingSections);
   cJSON_AddNumberToObject(Node, "arenaStarved", Render.StarvedSections);
-  cJSON_AddNumberToObject(Node, "arenaUsedBytes", (double)Render.ArenaUsedBytes);
+  cJSON_AddNumberToObject(Node, "arenaUsedBytes", (double)Gpu->ArenaUsedBytes);
   cJSON_AddNumberToObject(Node, "arenaCapacityBytes",
-                          (double)Render.ArenaCapacityBytes);
-  cJSON_AddNumberToObject(Node, "glError", (double)Render.GlError);
+                          (double)Gpu->ArenaCapacityBytes);
+  cJSON_AddNumberToObject(Node, "glError", (double)Gpu->GlError);
+  cJSON *Cull = cJSON_CreateObject();
+  cJSON_AddBoolToObject(Cull, "valid", Gpu->CullValid);
+  cJSON_AddBoolToObject(Cull, "indirectCount", Gpu->IndirectCount);
+  cJSON_AddNumberToObject(Cull, "candidateSections",
+                          Render.OpaqueSections + Render.BorderSections);
+  cJSON_AddNumberToObject(Cull, "frustumCulledSections", Gpu->FrustumCulledSections);
+  cJSON_AddNumberToObject(Cull, "candidateRuns", Gpu->CandidateRuns);
+  cJSON_AddNumberToObject(Cull, "facingCulledRuns", Gpu->FacingCulledRuns);
+  cJSON_AddNumberToObject(Cull, "drawnCommands", Gpu->DrawnCommands);
+  cJSON_AddNumberToObject(Cull, "candidateVertices", (double)Gpu->CandidateVertices);
+  cJSON_AddNumberToObject(Cull, "drawnVertices", (double)Gpu->DrawnVertices);
+  cJSON_AddItemToObject(Node, "cull", Cull);
   cJSON_AddItemToObject(Root, "lod", Node);
 }
 

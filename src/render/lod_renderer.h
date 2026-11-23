@@ -47,12 +47,16 @@ typedef struct {
   // Selected sections left without a mesh because the vertex arena was full.
   int StarvedSections;
   int CachedMeshes;
-  int64_t DrawnVertices;
-  int64_t ArenaUsedBytes;
-  int64_t ArenaCapacityBytes;
-  unsigned GlError;
+  // The backend's view of the last pass: arena use, candidate vertices and the
+  // GPU cull's (late) results.
+  RenderLodStats Gpu;
 } LodRenderStats;
 
 void LodRendererGetStats(LodRenderStats *Out);
+
+// Refreshes the GPU cull's counters in the stats, which stalls the frame (see
+// RenderLodReadCullStats). Unless Force, at most every half second, for the
+// debug overlay.
+void LodRendererReadCullStats(bool Force);
 
 #endif

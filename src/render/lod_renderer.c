@@ -47,10 +47,14 @@ enum {
   LOAD_DENOMINATOR = 4,
   // A section and its six face neighbours.
   NEIGHBOURHOOD = 7,
+  // The packed vertex's face normal (see ChunkVertex).
+  VERTEX_NORMAL_SHIFT = 27,
+  VERTEX_NORMAL_MASK = 7,
   HALF_SECTION = LOD_SECTION_SIZE / 2
 };
 
 #define MESH_BUDGET_SECONDS 0.002
+#define CULL_STATS_INTERVAL 0.5
 // Blocks are centred on integers, so a box of blocks starts half a block low.
 #define BLOCK_CENTRE_OFFSET 0.5F
 #define CACHE_HASH_X 0x9E3779B97F4A7C15ULL
@@ -107,6 +111,9 @@ typedef struct {
   int SelectChunkX;
   int SelectChunkY;
   int SelectChunkZ;
+  // Bumped by every selection pass, so the backend re-sends the list only
+  // when it changed.
+  uint32_t ListRevision;
   int OpaqueCount;
   int BorderCount;
   LodRenderStats Stats;
@@ -438,6 +445,32 @@ static bool ConsumeJournal(LodRendererState *State, const LodStore *Store) {
   return Changed;
 }
 
+static int QuadGroup(const ChunkVertex *Vertex) {
+  int Normal = (int)((Vertex->Word0 >> VERTEX_NORMAL_SHIFT) & VERTEX_NORMAL_MASK);
+  return (Normal < RENDER_LOD_AXIS_GROUPS) ? Normal : RENDER_LOD_AXIS_GROUPS;
+}
+
+// Splits the quads, in the order the mesher emitted them, into runs of one
+// face group (see RenderLodUploadMesh). Past the run limit the rest becomes
+// one run of the never-culled group, which only costs culling, not pixels.
+static int BuildFaceRuns(const ChunkVertex *Vertices, int Count,
+                         RenderLodRun Runs[RENDER_LOD_MAX_RUNS]) {
+  int RunCount = 0;
+  for (int Vertex = 0; Vertex < Count; Vertex += CHUNK_VERTICES_PER_QUAD) {
+    int Group = QuadGroup(&Vertices[Vertex]);
+    if (RunCount > 0 && (Runs[RunCount - 1].Group == Group ||
+                         RunCount == RENDER_LOD_MAX_RUNS)) {
+      if (Runs[RunCount - 1].Group != Group) {
+        Runs[RunCount - 1].Group = RENDER_LOD_AXIS_GROUPS;
+      }
+      Runs[RunCount - 1].Quads++;
+      continue;
+    }
+    Runs[RunCount++] = (RenderLodRun){.Group = Group, .Quads = 1};
+  }
+  return RunCount;
+}
+
 // Meshes the section (with its same-level neighbours as margin) and uploads
 // it. Returns the vertex count, or -1 when the arena had no room.
 static int MeshSection(LodRendererState *State, const LodStore *Store,
@@ -466,7 +499,9 @@ static int MeshSection(LodRendererState *State, const LodStore *Store,
   *OutMesh = RENDER_LOD_MESH_INVALID;
   int Result = Count;
   if (Count > 0) {
-    *OutMesh = RenderLodUploadMesh(State->Upload, Count);
+    RenderLodRun Runs[RENDER_LOD_MAX_RUNS];
+    int RunCount = BuildFaceRuns(State->Upload, Count, Runs);
+    *OutMesh = RenderLodUploadMesh(State->Upload, Runs, RunCount);
     if (*OutMesh == RENDER_LOD_MESH_INVALID) {
       Result = -1;
     }
@@ -644,6 +679,7 @@ void LodRendererDraw(RenderCamera Camera) {
   bool Owed = State->Stats.WaitingSections > 0 || State->Stats.StarvedSections > 0;
   if (!State->HasSelection || CoverageChanged || StoreChanged || Moved || Owed) {
     State->Frame++;
+    State->ListRevision++;
     if (State->Frame % EVICT_INTERVAL == 0U) {
       EvictStale(State, Store, (uint32_t)EVICT_AGE);
     }
@@ -682,22 +718,31 @@ void LodRendererDraw(RenderCamera Camera) {
       EvictStale(State, Store, 0U);
     }
   }
-  RenderDrawLod(State->Draws, State->OpaqueCount, State->BorderCount);
+  RenderDrawLod(State->Draws, State->OpaqueCount, State->BorderCount,
+                State->ListRevision);
 
-  RenderLodStats Backend;
-  RenderGetLodStats(&Backend);
+  RenderGetLodStats(&State->Stats.Gpu);
   State->Stats.Enabled = true;
   State->Stats.CachedMeshes = State->Count;
-  State->Stats.DrawnVertices = Backend.DrawnVertices;
-  State->Stats.ArenaUsedBytes = Backend.ArenaUsedBytes;
-  State->Stats.ArenaCapacityBytes = Backend.ArenaCapacityBytes;
-  State->Stats.GlError = Backend.GlError;
   PROFILE_END(DrawStart, PROFILE_LOD_DRAW);
 }
 
 bool LodRendererIdle(void) {
   const LodRendererState *State = GetLodRendererState();
   return !State->Enabled || State->Stats.WaitingSections == 0;
+}
+
+void LodRendererReadCullStats(bool Force) {
+  static double LastRead = -1.0;
+  LodRendererState *State = GetLodRendererState();
+  double Now = OsGetTimeSeconds();
+  if (!State->Enabled || !State->DrawOn ||
+      (!Force && LastRead >= 0.0 && Now - LastRead < CULL_STATS_INTERVAL)) {
+    return;
+  }
+  LastRead = Now;
+  RenderLodReadCullStats();
+  RenderGetLodStats(&State->Stats.Gpu);
 }
 
 void LodRendererGetStats(LodRenderStats *Out) {
