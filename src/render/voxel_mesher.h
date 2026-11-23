@@ -76,8 +76,23 @@ void VoxelMesherInit(void);
 // cross billboards. Worker-safe: reads only Snap and writes only Mesher.
 void VoxelMeshChunk(VoxelMesher *Mesher, const ChunkSnapshot *Snap);
 
+enum {
+  // Horizontal margin of neighbour biomes around a section, in voxels: what
+  // a level-1 voxel's tint blend reads (see VoxelMeshLodSection).
+  VOXEL_LOD_BIOME_MARGIN = 2,
+  VOXEL_LOD_BIOME_SPAN = CHUNK_SIZE + (2 * VOXEL_LOD_BIOME_MARGIN)
+};
+
 typedef struct VoxelLodBiomes {
-  unsigned char Cells[CHUNK_SIZE][CHUNK_SIZE][CHUNK_SIZE];
+  // [X + MARGIN][Y][Z + MARGIN]: the section's voxel biomes and, around them,
+  // the nearest layers of its four side neighbours (its own edge repeated
+  // where a neighbour is absent, and at the corners).
+  unsigned char Cells[VOXEL_LOD_BIOME_SPAN][CHUNK_SIZE][VOXEL_LOD_BIOME_SPAN];
+  // Level 1 blends tints across biome cells exactly as chunks do; the
+  // section's world origin in blocks places the cells.
+  bool Blend;
+  int OriginX;
+  int OriginZ;
 } VoxelLodBiomes;
 
 // Workspace for meshing a LOD section: its voxels laid out as a snapshot grid
@@ -94,14 +109,27 @@ enum {
   VOXEL_LOD_NEIGHBOURS = 6
 };
 
+// Where a section sits: its level and section coordinates on that level.
+typedef struct {
+  int Level;
+  int X;
+  int Y;
+  int Z;
+} VoxelLodPlace;
+
 // Meshes a LOD section (any level) into the same 8-byte vertices as a chunk,
 // in section-local voxel units: the caller scales by 2^L. Neighbours fill the
 // one-voxel margin, so faces between two resident sections are culled and AO
 // reads across the border; an absent neighbour reads as air. Section voxels
-// hold no cross plants (they downsample to air), so only cube faces come out:
-// opaque, and translucent for water, leaves and glass.
+// hold no cross plants (they downsample to air), so only cube faces come out.
+// The LOD draws see-through blocks (water, ice, glass: textures with partial
+// alpha or mostly transparent, see RenderBlockLayerSeeThrough) blended, from
+// the translucent target; every other face, leaves included, goes to the
+// opaque target. Level-1 tints blend across biome cells like a chunk's, so
+// the LOD next to the 1:1 chunks carries the colour of the blocks it stands
+// for; coarser levels take each voxel's own biome.
 void VoxelMeshLodSection(VoxelMesher *Mesher, VoxelLodScratch *Scratch,
-                         const LodSection *Section,
+                         const LodSection *Section, const VoxelLodPlace *Place,
                          const LodSection *const Neighbours[VOXEL_LOD_NEIGHBOURS]);
 
 #endif

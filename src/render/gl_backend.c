@@ -139,6 +139,9 @@ typedef struct {
   GLuint LodSampler;
   int MipLevels;
   int MipAlphaLayers;
+  // Per block texture layer: see-through (RenderBlockLayerSeeThrough).
+  bool SeeThrough[MAX_BLOCK_TEXTURES];
+  int SeeThroughLayers;
   int MipCheckFailures;
   int MipNaiveDrifts;
   float LodAnisotropy;
@@ -680,6 +683,27 @@ static void CreateChunkSamplers(BackendState *State, bool WithLod) {
   }
 }
 
+// See-through: a texel only partly opaque, or more transparent texels than
+// opaque ones. Leaves are cut out (all-or-nothing alpha) and mostly opaque.
+static bool TileIsSeeThrough(const CoreImage *Tile) {
+  enum { CHANNEL_A = 3, ALPHA_MAX = 255 };
+  int Pixels = Tile->Width * Tile->Height;
+  int Transparent = 0;
+  for (int Idx = 0; Idx < Pixels; Idx++) {
+    unsigned char Alpha = Tile->Pixels[((size_t)Idx * RGBA_CHANNELS) + CHANNEL_A];
+    if (Alpha != 0U && Alpha != ALPHA_MAX) {
+      return true;
+    }
+    Transparent += (Alpha == 0U) ? 1 : 0;
+  }
+  return Transparent * 2 > Pixels;
+}
+
+bool RenderBlockLayerSeeThrough(int Layer) {
+  const BackendState *State = GetBackendState();
+  return Layer >= 0 && Layer < MAX_BLOCK_TEXTURES && State->SeeThrough[Layer];
+}
+
 static void LoadBlockTextureArray(void) {
   BackendState *State = GetBackendState();
 
@@ -720,6 +744,8 @@ static void LoadBlockTextureArray(void) {
   bool WithLod = RenderGetCapabilities()->LodSupported;
   State->MipLevels = WithLod ? MipLevelsFor(TileSize) : 1;
   State->MipAlphaLayers = 0;
+  memset(State->SeeThrough, 0, sizeof(State->SeeThrough));
+  State->SeeThroughLayers = 0;
   State->MipCheckFailures = 0;
   State->MipNaiveDrifts = 0;
   unsigned char *MipScratch = NULL;
@@ -746,6 +772,10 @@ static void LoadBlockTextureArray(void) {
       (void)CoreImageResizeNearest(Tile, TileSize, TileSize);
     }
     if (Tile->Pixels != NULL) {
+      if (WithLod && TileIsSeeThrough(Tile)) {
+        State->SeeThrough[Idx] = true;
+        State->SeeThroughLayers++;
+      }
       glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, Idx, TileSize, TileSize, 1,
                       GL_RGBA, GL_UNSIGNED_BYTE, Tile->Pixels);
       if (MipScratch != NULL) {
@@ -772,10 +802,11 @@ static void LoadBlockTextureArray(void) {
   glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
   CreateChunkSamplers(State, WithLod);
   LogInfo("RENDER: block textures: %d layers of %dx%d, %d mip level%s "
-          "(%d with alpha, %d failed the mip check, %d would drift with a "
-          "plain mean), LOD sampler anisotropy %.0f",
+          "(%d with alpha, %d see-through for the LOD, %d failed the mip "
+          "check, %d would drift with a plain mean), LOD sampler anisotropy %.0f",
           LayerCount, TileSize, TileSize, State->MipLevels,
           (State->MipLevels == 1) ? "" : "s", State->MipAlphaLayers,
+          State->SeeThroughLayers,
           State->MipCheckFailures, State->MipNaiveDrifts,
           (double)State->LodAnisotropy);
 
@@ -1003,7 +1034,13 @@ void RenderBackendInit(void) {
         .UseIndirectCount =
             RenderGetCapabilities()->IndirectCount && !Options->LodNoIndirectCount,
         .Cull = !Options->LodNoCull,
-        .HiZ = !Options->LodNoCull && !Options->LodNoHiz};
+        .HiZ = !Options->LodNoCull && !Options->LodNoHiz,
+        .Fog = !Options->LodNoFog,
+        .FogEnd = (float)((Options->LodFogEnd > 0) ? Options->LodFogEnd
+                                                   : LOD_FOG_END_DEFAULT),
+        .FogColor = {(float)COLOR_CLEAR.R / COLOR8_CHANNEL_MAX,
+                     (float)COLOR_CLEAR.G / COLOR8_CHANNEL_MAX,
+                     (float)COLOR_CLEAR.B / COLOR8_CHANNEL_MAX}};
     (void)GlLodInit(State->ChunkSharedEbo, &Lod);
   }
 
@@ -1722,8 +1759,9 @@ void RenderEndFrame(void) {
 bool RenderLodActive(void) { return GlLodActive(); }
 
 RenderLodMesh RenderLodUploadMesh(const ChunkVertex *Vertices,
-                                  const RenderLodRun *Runs, int RunCount) {
-  return GlLodUploadMesh(Vertices, Runs, RunCount);
+                                  const RenderLodRun *Runs, int RunCount,
+                                  int OpaqueRunCount) {
+  return GlLodUploadMesh(Vertices, Runs, RunCount, OpaqueRunCount);
 }
 
 void RenderLodFreeMesh(RenderLodMesh Mesh) { GlLodFreeMesh(Mesh); }

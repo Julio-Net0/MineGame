@@ -1154,6 +1154,9 @@ static void ScriptAddLodJson(cJSON *Root) {
   cJSON_AddNumberToObject(Cull, "phase2Commands", Gpu->Phase2Commands);
   cJSON_AddNumberToObject(Cull, "phase1Quads",
                           (double)Gpu->Phase1Vertices / (double)CHUNK_VERTICES_PER_QUAD);
+  cJSON_AddNumberToObject(Cull, "translucentCommands", Gpu->TranslucentCommands);
+  cJSON_AddNumberToObject(Cull, "translucentQuads",
+                          (double)Gpu->TranslucentVertices / (double)CHUNK_VERTICES_PER_QUAD);
   cJSON_AddNumberToObject(Cull, "phase2Quads",
                           (double)Gpu->Phase2Vertices / (double)CHUNK_VERTICES_PER_QUAD);
   cJSON_AddItemToObject(Node, "cull", Cull);

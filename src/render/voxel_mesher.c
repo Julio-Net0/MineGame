@@ -583,11 +583,45 @@ static bool MasksCompatible(const FaceMaskData *A, const FaceMaskData *B) {
 // a rectangle never mixes the two; its target follows from its block id at emit
 // time. Rows[U] receives the slice's faces as bits along V. Returns how many
 // faces the slice holds.
-// A LOD voxel's tint: its own biome, with the same per-block rules a chunk
-// face follows (no tint, a constant one, and white grass bottoms on opaque
-// faces), but no blend across biome cells.
-static Color8 LodFaceTint(unsigned Biome, const BlockType *Def, BlockFace Face,
-                          bool Translucent) {
+static unsigned char LodBiomeAt(const VoxelLodBiomes *Biomes, int X, int Y, int Z) {
+    return Biomes->Cells[X + VOXEL_LOD_BIOME_MARGIN][Y][Z + VOXEL_LOD_BIOME_MARGIN];
+}
+
+// A level-1 voxel's biome-blended tint. Biome cells are 4 blocks wide and a
+// level-1 voxel 2, aligned, so a voxel lies inside one cell column and all
+// four of its blocks share the same four surrounding cells; the bilinear blend
+// is separable, so the mean of the four blocks' chunk tints is the blend at
+// their mean weights. A cell's biome is its voxels' (a voxel never straddles
+// two cells).
+static Color8 LodBlendedTint(const VoxelLodBiomes *Biomes, int Lx, int Ly, int Lz,
+                             TintSource Source) {
+    enum { VOXEL_BLOCKS = 2, CELL_VOXELS = BIOME_CELL_SIZE / VOXEL_BLOCKS };
+    int Wx = Biomes->OriginX + (Lx * VOXEL_BLOCKS);
+    int Wz = Biomes->OriginZ + (Lz * VOXEL_BLOCKS);
+    int LatX = FloorDivCells(Wx - BIOME_CELL_CENTER, BIOME_CELL_SIZE);
+    int LatZ = FloorDivCells(Wz - BIOME_CELL_CENTER, BIOME_CELL_SIZE);
+    int Vx = (LatX * CELL_VOXELS) - (Biomes->OriginX / VOXEL_BLOCKS);
+    int Vz = (LatZ * CELL_VOXELS) - (Biomes->OriginZ / VOXEL_BLOCKS);
+    unsigned char B00 = LodBiomeAt(Biomes, Vx, Ly, Vz);
+    unsigned char B10 = LodBiomeAt(Biomes, Vx + CELL_VOXELS, Ly, Vz);
+    unsigned char B01 = LodBiomeAt(Biomes, Vx, Ly, Vz + CELL_VOXELS);
+    unsigned char B11 = LodBiomeAt(Biomes, Vx + CELL_VOXELS, Ly, Vz + CELL_VOXELS);
+    if (B00 == B10 && B00 == B01 && B00 == B11) {
+        return GetBiomeTint(B00, Source);
+    }
+    float Fx = ((float)(Wx - BIOME_CELL_CENTER - (LatX * BIOME_CELL_SIZE)) + ROUND_BIAS) /
+               (float)BIOME_CELL_SIZE;
+    float Fz = ((float)(Wz - BIOME_CELL_CENTER - (LatZ * BIOME_CELL_SIZE)) + ROUND_BIAS) /
+               (float)BIOME_CELL_SIZE;
+    return BilinearTint(GetBiomeTint(B00, Source), GetBiomeTint(B10, Source),
+                        GetBiomeTint(B01, Source), GetBiomeTint(B11, Source),
+                        Fx, Fz);
+}
+
+// A LOD voxel's tint, with the same per-block rules a chunk face follows (no
+// tint, a constant one, and white grass bottoms on opaque faces).
+static Color8 LodFaceTint(const VoxelLodBiomes *Biomes, int Lx, int Ly, int Lz,
+                          const BlockType *Def, BlockFace Face, bool Translucent) {
     if (Def->Tint == TINT_NONE) {
         return COLOR_WHITE;
     }
@@ -597,7 +631,10 @@ static Color8 LodFaceTint(unsigned Biome, const BlockType *Def, BlockFace Face,
     if (!Translucent && Def->Tint == TINT_GRASS && Face == FACE_BOTTOM) {
         return COLOR_WHITE;
     }
-    return GetBiomeTint((int)Biome, Def->Tint);
+    if (Biomes->Blend) {
+        return LodBlendedTint(Biomes, Lx, Ly, Lz, Def->Tint);
+    }
+    return GetBiomeTint((int)LodBiomeAt(Biomes, Lx, Ly, Lz), Def->Tint);
 }
 
 static int BuildSliceMask(const ChunkSnapshot *Snap, const CullColumns *Cols,
@@ -637,7 +674,7 @@ static int BuildSliceMask(const ChunkSnapshot *Snap, const CullColumns *Cols,
             // bottom-face exception GetFaceTint applies.
             Color8 Tint;
             if (LodBiomes != NULL) {
-                Tint = LodFaceTint(LodBiomes->Cells[Lx][Ly][Lz], Def, Fd->Face,
+                Tint = LodFaceTint(LodBiomes, Lx, Ly, Lz, Def, Fd->Face,
                                    Translucent);
             } else {
                 Tint = Translucent ? ComputeBlockTint(Snap, Wx, Wy, Wz, Def)
@@ -702,6 +739,12 @@ static void ScanGreedyMask(FaceMaskData Mask[CHUNK_SIZE][CHUNK_SIZE],
             const BlockType *Def = GetBlockDef(Origin->BlockId);
             MeshTarget Target = Def->IsTransparent ? MESH_TARGET_TRANSLUCENT
                                                    : MESH_TARGET_OPAQUE;
+            // The LOD blends only what a viewer sees through; leaves stay
+            // opaque (see VoxelMeshLodSection).
+            if (State->LodBiomes != NULL && Target == MESH_TARGET_TRANSLUCENT &&
+                !RenderBlockLayerSeeThrough(Origin->TexIndex)) {
+                Target = MESH_TARGET_OPAQUE;
+            }
 
             AddGreedyFaceToMeshBuilder(State, Target, Fd->Face,
                                        FirstLpos[0], FirstLpos[1],
@@ -922,8 +965,55 @@ static void FillMargin(ChunkSnapshot *Grid, const LodSection *Neighbour,
     }
 }
 
+// The biome margin side Face (0..3: -X, +X, -Z, +Z) from that neighbour: its
+// MARGIN layers nearest the section, or the section's own edge repeated.
+static void FillBiomeMargin(VoxelLodBiomes *Biomes, const LodSection *Neighbour,
+                            int Face) {
+    int Axis = (Face < 2) ? 0 : 2;
+    bool Positive = (Face % 2) == 1;
+    for (int Layer = 0; Layer < VOXEL_LOD_BIOME_MARGIN; Layer++) {
+        int Target = Positive ? LOD_SECTION_SIZE + Layer : -1 - Layer;
+        int Source = Positive ? Layer : LOD_SECTION_SIZE - 1 - Layer;
+        int OwnEdge = Positive ? LOD_SECTION_SIZE - 1 : 0;
+        for (int A = 0; A < LOD_SECTION_SIZE; A++) {
+            for (int Y = 0; Y < LOD_SECTION_SIZE; Y++) {
+                int Tx = (Axis == 0) ? Target : A;
+                int Tz = (Axis == 0) ? A : Target;
+                unsigned char Biome;
+                if (Neighbour != NULL) {
+                    int Sx = (Axis == 0) ? Source : A;
+                    int Sz = (Axis == 0) ? A : Source;
+                    Biome = (unsigned char)LodVoxelBiome(LodSectionGet(Neighbour, Sx, Y, Sz));
+                } else {
+                    Biome = (Axis == 0) ? LodBiomeAt(Biomes, OwnEdge, Y, A)
+                                        : LodBiomeAt(Biomes, A, Y, OwnEdge);
+                }
+                Biomes->Cells[Tx + VOXEL_LOD_BIOME_MARGIN][Y][Tz + VOXEL_LOD_BIOME_MARGIN] = Biome;
+            }
+        }
+    }
+}
+
+// Corners of the biome margin: the nearest -X/+X margin cell along Z.
+static void FillBiomeCorners(VoxelLodBiomes *Biomes) {
+    for (int X = 0; X < VOXEL_LOD_BIOME_SPAN; X++) {
+        bool OutsideX = X < VOXEL_LOD_BIOME_MARGIN ||
+                        X >= VOXEL_LOD_BIOME_MARGIN + LOD_SECTION_SIZE;
+        if (!OutsideX) {
+            continue;
+        }
+        for (int Z = 0; Z < VOXEL_LOD_BIOME_MARGIN; Z++) {
+            for (int Y = 0; Y < LOD_SECTION_SIZE; Y++) {
+                Biomes->Cells[X][Y][Z] = Biomes->Cells[X][Y][VOXEL_LOD_BIOME_MARGIN];
+                Biomes->Cells[X][Y][VOXEL_LOD_BIOME_SPAN - 1 - Z] =
+                    Biomes->Cells[X][Y][VOXEL_LOD_BIOME_MARGIN + LOD_SECTION_SIZE - 1];
+            }
+        }
+    }
+}
+
 void VoxelMeshLodSection(VoxelMesher *Mesher, VoxelLodScratch *Scratch,
-                         const LodSection *Section,
+                         const LodSection *Section, const VoxelLodPlace *Place,
                          const LodSection *const Neighbours[VOXEL_LOD_NEIGHBOURS]) {
     ChunkSnapshot *Grid = &Scratch->Grid;
     // Air margins, no rock faces, a local origin: the grid stands alone.
@@ -934,7 +1024,9 @@ void VoxelMeshLodSection(VoxelMesher *Mesher, VoxelLodScratch *Scratch,
             for (int Z = 0; Z < LOD_SECTION_SIZE; Z++) {
                 LodVoxel Voxel = Scratch->Voxels[LodVoxelIndex(X, Y, Z)];
                 Grid->Blocks[X + 1][Y + 1][Z + 1] = LodVoxelBlock(Voxel);
-                Scratch->Biomes.Cells[X][Y][Z] = (unsigned char)LodVoxelBiome(Voxel);
+                Scratch->Biomes.Cells[X + VOXEL_LOD_BIOME_MARGIN][Y]
+                                     [Z + VOXEL_LOD_BIOME_MARGIN] =
+                    (unsigned char)LodVoxelBiome(Voxel);
             }
         }
     }
@@ -945,6 +1037,18 @@ void VoxelMeshLodSection(VoxelMesher *Mesher, VoxelLodScratch *Scratch,
             }
         }
     }
+    // Margin faces in ChunkFace order: -X, +X, then (skipping Y) -Z, +Z.
+    static const int SIDE_FACES[4] = {0, 1, 4, 5};
+    for (int Side = 0; Side < 4; Side++) {
+        int Face = SIDE_FACES[Side];
+        FillBiomeMargin(&Scratch->Biomes, (Neighbours != NULL) ? Neighbours[Face] : NULL,
+                        Side);
+    }
+    FillBiomeCorners(&Scratch->Biomes);
+    int SectionBlocks = LOD_SECTION_SIZE << Place->Level;
+    Scratch->Biomes.Blend = Place->Level == 1;
+    Scratch->Biomes.OriginX = Place->X * SectionBlocks;
+    Scratch->Biomes.OriginZ = Place->Z * SectionBlocks;
     ResetMesher(Mesher, &Scratch->Biomes);
     BuildCubeFaces(Mesher, Grid);
 }

@@ -54,6 +54,8 @@ static LaunchOptions *GetMutableLaunchOptions(void) {
       .LodNoIndirectCount = false,
       .LodNoCull = false,
       .LodNoHiz = false,
+      .LodNoFog = false,
+      .LodFogEnd = 0,
   };
   return &Options;
 }
@@ -318,6 +320,27 @@ static void ParseLodHizValue(const char *ValueStr, LaunchOptions *Options) {
   }
 }
 
+static void ParseLodFogValue(const char *ValueStr, LaunchOptions *Options) {
+  if (strcmp(ValueStr, "on") == 0) {
+    Options->LodNoFog = false;
+  } else if (strcmp(ValueStr, "off") == 0) {
+    Options->LodNoFog = true;
+  } else {
+    LogWarn("MAIN: --lod-fog must be on or off; ignoring \"%s\"", ValueStr);
+  }
+}
+
+static void ParseLodFogEndValue(const char *ValueStr, LaunchOptions *Options) {
+  long Value = 0;
+  if (!ParseStrictLong(ValueStr, &Value) || Value < LOD_FOG_END_MIN ||
+      Value > LOD_FOG_END_MAX) {
+    LogWarn("MAIN: --lod-fog-end must be an integer in [%d, %d]; ignoring \"%s\"",
+            LOD_FOG_END_MIN, LOD_FOG_END_MAX, ValueStr);
+    return;
+  }
+  Options->LodFogEnd = (int)Value;
+}
+
 static void ParseMonitorValue(const char *ValueStr, LaunchOptions *Options) {
   long Value = 0;
   if (!ParseStrictLong(ValueStr, &Value) || Value < 1 ||
@@ -367,6 +390,8 @@ void ParseLaunchOptions(int Argc, char **Argv) {
       .LodNoIndirectCount = false,
       .LodNoCull = false,
       .LodNoHiz = false,
+      .LodNoFog = false,
+      .LodFogEnd = 0,
   };
 
   if (Argc <= 1 || Argv == (char **)0) {
@@ -404,6 +429,8 @@ void ParseLaunchOptions(int Argc, char **Argv) {
                      (strcmp(Arg, "--lod-indirect-count") == 0) ||
                      (strcmp(Arg, "--lod-cull") == 0) ||
                      (strcmp(Arg, "--lod-hiz") == 0) ||
+                     (strcmp(Arg, "--lod-fog") == 0) ||
+                     (strcmp(Arg, "--lod-fog-end") == 0) ||
                      (strcmp(Arg, "--monitor") == 0) ||
                      (strcmp(Arg, "--script") == 0) ||
                      (strcmp(Arg, "--script-out") == 0) ||
@@ -447,6 +474,10 @@ void ParseLaunchOptions(int Argc, char **Argv) {
       ParseLodCullValue(ValueStr, Options);
     } else if (strcmp(Arg, "--lod-hiz") == 0) {
       ParseLodHizValue(ValueStr, Options);
+    } else if (strcmp(Arg, "--lod-fog") == 0) {
+      ParseLodFogValue(ValueStr, Options);
+    } else if (strcmp(Arg, "--lod-fog-end") == 0) {
+      ParseLodFogEndValue(ValueStr, Options);
     } else if (strcmp(Arg, "--monitor") == 0) {
       ParseMonitorValue(ValueStr, Options);
     } else if (strcmp(Arg, "--script") == 0) {

@@ -44,6 +44,11 @@ typedef struct {
   bool Cull;
   // Two-phase Hi-Z occlusion (--lod-hiz).
   bool HiZ;
+  // Fog toward FogColor (the sky) over the last quarter of FogEnd, the
+  // horizontal distance in blocks (--lod-fog, --lod-fog-end).
+  bool Fog;
+  float FogEnd;
+  float FogColor[3];
 } GlLodOptions;
 
 // Creates every LOD resource. False (and LOD stays off) when any of them
@@ -56,14 +61,16 @@ bool GlLodActive(void);
 void GlLodEndFrame(void);
 
 RenderLodMesh GlLodUploadMesh(const ChunkVertex *Vertices,
-                              const RenderLodRun *Runs, int RunCount);
+                              const RenderLodRun *Runs, int RunCount,
+                              int OpaqueRunCount);
 void GlLodFreeMesh(RenderLodMesh Mesh);
 void GlLodSetCoverage(int ColumnX, int ColumnZ,
                       const uint32_t Words[RENDER_LOD_COVERAGE_WORDS]);
 
 // Depth copy and remap, the GPU cull (lod_cull.comp) and the opaque and border
 // multi-draws (twice with HiZ: last frame's visible sections, then the Hi-Z
-// pyramid and whatever it shows was missing), and the composite. Leaves the
+// pyramid and whatever it shows was missing), the blended pass of see-through
+// faces, and the composite. Leaves the
 // default framebuffer bound with the frame's usual state.
 void GlLodDraw(const GlLodFrame *Frame, const RenderLodDraw *Draws,
                int OpaqueCount, int BorderCount, uint32_t ListRevision);

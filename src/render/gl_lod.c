@@ -42,7 +42,14 @@ enum {
   // and a record of its first vertex, run count, first slot and packed runs
   // (see lod_cull.comp, whose constants must match).
   LOD_RUNS = RENDER_LOD_MAX_RUNS,
-  CULL_RECORD_HEADER = 4,
+  // Cull record header fields (lod_cull.comp reads them by position).
+  RECORD_FIRST_VERTEX = 0,
+  RECORD_RUN_COUNT = 1,
+  RECORD_FIRST_SLOT = 2,
+  RECORD_MESH = 3,
+  RECORD_OPAQUE_RUNS = 4,
+  RECORD_BLENDED_SLOT = 5,
+  CULL_RECORD_HEADER = 6,
   CULL_RECORD_UINTS = CULL_RECORD_HEADER + LOD_RUNS,
   CULL_RUN_GROUP_SHIFT = 16,
   CULL_WORKGROUP = 64,
@@ -61,6 +68,8 @@ enum {
   COUNTER_PHASE2_COMMANDS = 9,
   COUNTER_PHASE2_QUADS = 10,
   COUNTER_HIZ_CULLED = 11,
+  COUNTER_TRANSLUCENT_COMMANDS = 13,
+  COUNTER_TRANSLUCENT_QUADS = 14,
   COUNTER_UINTS = 16,
   BINDING_META = 0,
   BINDING_CULL = 1,
@@ -71,6 +80,7 @@ enum {
   PHASE_SINGLE = 0,
   PHASE_FIRST = 1,
   PHASE_SECOND = 2,
+  PHASE_TRANSLUCENT = 3,
   // Hi-Z: levels 1..HIZ_MAX_LEVELS-1 in one R32F atlas (see lod_hiz.comp).
   HIZ_MAX_LEVELS = 16,
   HIZ_LEVEL_FIELDS = 4,
@@ -88,6 +98,7 @@ enum {
 // plane past the largest view distance (2048 chunks = 32768 blocks).
 #define LOD_NEAR_PLANE 8.0
 #define LOD_FAR_PLANE 40000.0
+#define LOD_FOG_START_FRACTION 0.75F
 
 typedef struct {
   GLuint Count;
@@ -102,6 +113,8 @@ typedef struct {
   int PageCount;
   int VertexCount;
   int RunCount;
+  // Runs from this one on are see-through faces, drawn blended.
+  int OpaqueRunCount;
   // Group << CULL_RUN_GROUP_SHIFT | quads, per run.
   uint32_t Runs[LOD_RUNS];
   bool Used;
@@ -120,6 +133,14 @@ typedef struct {
   GLint CameraFrac;
 } LodProgram;
 
+// The fog every LOD shader applies (see lod_opaque.frag).
+typedef struct {
+  bool Enabled;
+  float Start;
+  float End;
+  float Color[3];
+} LodFog;
+
 typedef struct {
   GLuint Program;
   GLint ViewProj;
@@ -135,6 +156,7 @@ typedef struct {
   GLint Viewport;
   GLint HizTop;
   GLint HizLevels;
+  GLint UseHiz;
 } CullProgram;
 
 typedef struct {
@@ -175,9 +197,11 @@ typedef struct {
   int ListOpaque;
   int ListBorder;
   int64_t ListVertices;
-  // Command slots: one per face run, opaque sections' first.
+  // Command slots: one per face run, opaque sections' first; and one per
+  // see-through run for the blended pass.
   int ListOpaqueRuns;
   int ListRuns;
+  int ListBlendedRuns;
 
   uint8_t *PageUsed;
   int UsedPages;
@@ -209,6 +233,7 @@ typedef struct {
   GLint RemapLod;
   LodProgram Opaque;
   LodProgram Border;
+  LodProgram Translucent;
 
   int32_t *Meta;
   uint32_t *CullRecords;
@@ -234,7 +259,7 @@ static const void *BufferOffset(size_t Offset) {
   return Converted.Pointer;
 }
 
-static LodProgram LoadLodProgram(const char *FragmentPath) {
+static LodProgram LoadLodProgram(const char *FragmentPath, const LodFog *Fog) {
   LodProgram Result = {0};
   Result.Program = GlLinkShaderProgram("assets/shaders/lod.vert", FragmentPath);
   Result.ViewProj = glGetUniformLocation(Result.Program, "uViewProj");
@@ -245,6 +270,9 @@ static LodProgram LoadLodProgram(const char *FragmentPath) {
   glUniform1i(glGetUniformLocation(Result.Program, "uCoverage"), COVERAGE_UNIT);
   glUniform1iv(glGetUniformLocation(Result.Program, "uOverlayLayers"),
                OVERLAY_SLOT_COUNT, GetOverlaySlotLayers());
+  glUniform1i(glGetUniformLocation(Result.Program, "uFogEnabled"), Fog->Enabled ? 1 : 0);
+  glUniform2f(glGetUniformLocation(Result.Program, "uFogRange"), Fog->Start, Fog->End);
+  glUniform3fv(glGetUniformLocation(Result.Program, "uFogColor"), 1, Fog->Color);
   glUseProgram(0);
   return Result;
 }
@@ -265,6 +293,7 @@ static CullProgram LoadCullProgram(void) {
   Result.Viewport = glGetUniformLocation(Result.Program, "uViewport");
   Result.HizTop = glGetUniformLocation(Result.Program, "uHizTop");
   Result.HizLevels = glGetUniformLocation(Result.Program, "uHizLevels");
+  Result.UseHiz = glGetUniformLocation(Result.Program, "uUseHiz");
   return Result;
 }
 
@@ -533,8 +562,15 @@ bool GlLodInit(GLuint SharedIndexBuffer, const GlLodOptions *Options) {
   glUniform1i(glGetUniformLocation(State->RemapProgram, "uDepthNear"),
               DEPTH_NEAR_UNIT);
   glUseProgram(0);
-  State->Opaque = LoadLodProgram("assets/shaders/lod_opaque.frag");
-  State->Border = LoadLodProgram("assets/shaders/lod_border.frag");
+  // The fog reaches the sky colour at FogEnd and starts a quarter before it.
+  LodFog Fog = {.Enabled = Options->Fog,
+                .Start = Options->FogEnd * LOD_FOG_START_FRACTION,
+                .End = Options->FogEnd,
+                .Color = {Options->FogColor[0], Options->FogColor[1],
+                          Options->FogColor[2]}};
+  State->Opaque = LoadLodProgram("assets/shaders/lod_opaque.frag", &Fog);
+  State->Border = LoadLodProgram("assets/shaders/lod_border.frag", &Fog);
+  State->Translucent = LoadLodProgram("assets/shaders/lod_translucent.frag", &Fog);
   State->Cull = LoadCullProgram();
   if (State->HizEnabled) {
     State->Hiz = LoadHizProgram();
@@ -545,12 +581,14 @@ bool GlLodInit(GLuint SharedIndexBuffer, const GlLodOptions *Options) {
   State->Active = true;
   LogInfo("RENDER: LOD pipeline on: %d-page arena (%lld MB), projection %.0f..%.0f, "
           "standard depth (32-bit float LOD depth), 1:1 left in the default "
-          "framebuffer, GPU cull%s into a %s command list, Hi-Z occlusion %s",
+          "framebuffer, GPU cull%s into a %s command list, Hi-Z occlusion %s, "
+          "fog %s (%.0f..%.0f blocks)",
           LOD_ARENA_PAGES,
           (long long)(State->Stats.ArenaCapacityBytes >> BYTES_TO_MB_SHIFT), LOD_NEAR_PLANE,
           LOD_FAR_PLANE, Options->Cull ? "" : " (off: --lod-cull off)",
           Options->UseIndirectCount ? "compacted (indirect count)" : "fixed (zeroed)",
-          State->HizEnabled ? "on (two phases)" : "off");
+          State->HizEnabled ? "on (two phases)" : "off", Options->Fog ? "on" : "off",
+          (double)Fog.Start, (double)Fog.End);
   State->Stats.IndirectCount = Options->UseIndirectCount;
   State->Stats.HiZ = State->HizEnabled;
   return true;
@@ -584,7 +622,8 @@ void GlLodShutdown(void) {
   }
   GLuint Programs[] = {State->RemapProgram, State->CompositeProgram,
                        State->Opaque.Program, State->Border.Program,
-                       State->Cull.Program, State->Hiz.Program};
+                       State->Cull.Program, State->Hiz.Program,
+                       State->Translucent.Program};
   for (size_t Idx = 0; Idx < sizeof(Programs) / sizeof(Programs[0]); Idx++) {
     if (Programs[Idx] != 0) {
       glDeleteProgram(Programs[Idx]);
@@ -622,7 +661,8 @@ static void MarkPages(GlLodState *State, int First, int Count, uint8_t Value) {
 }
 
 RenderLodMesh GlLodUploadMesh(const ChunkVertex *Vertices,
-                              const RenderLodRun *Runs, int RunCount) {
+                              const RenderLodRun *Runs, int RunCount,
+                              int OpaqueRunCount) {
   GlLodState *State = GetLodState();
   int VertexCount = 0;
   for (int Run = 0; Run < RunCount; Run++) {
@@ -650,6 +690,7 @@ RenderLodMesh GlLodUploadMesh(const ChunkVertex *Vertices,
       .FirstPage = First, .PageCount = Pages, .VertexCount = VertexCount, .Used = true};
   LodMeshRecord *Record = &State->Meshes[Mesh];
   Record->RunCount = RunCount;
+  Record->OpaqueRunCount = OpaqueRunCount;
   for (int Run = 0; Run < RunCount; Run++) {
     Record->Runs[Run] = ((uint32_t)Runs[Run].Group << CULL_RUN_GROUP_SHIFT) |
                         (uint32_t)Runs[Run].Quads;
@@ -763,13 +804,16 @@ static void RemapDepth(const GlLodState *State, float LodM10, float LodM14,
   glEnable(GL_CULL_FACE);
 }
 
-// Copies the LOD's pixels onto the default framebuffer and restores the
-// frame's state for the passes after it.
+// Lays the LOD's pixels over the default framebuffer and restores the frame's
+// state for the passes after it. The LOD target holds colour premultiplied by
+// its coverage alpha: opaque pixels (alpha 1) replace the frame exactly, empty
+// ones (alpha 0) leave it untouched, and blended water over nothing mixes
+// with whatever the frame holds there.
 static void CompositeOntoFrame(const GlLodState *State, const GlLodFrame *Frame) {
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
   glDisable(GL_DEPTH_TEST);
   glDepthMask(GL_FALSE);
-  glDisable(GL_BLEND);
+  glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
   glDisable(GL_CULL_FACE);
   glUseProgram(State->CompositeProgram);
   glActiveTexture(GL_TEXTURE0 + LOD_COLOR_UNIT);
@@ -782,7 +826,7 @@ static void CompositeOntoFrame(const GlLodState *State, const GlLodFrame *Frame)
   glUseProgram(0);
   glEnable(GL_DEPTH_TEST);
   glDepthMask(GL_TRUE);
-  glEnable(GL_BLEND);
+  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
   glEnable(GL_CULL_FACE);
 }
 
@@ -792,6 +836,7 @@ static int64_t BuildSectionRecords(GlLodState *State, const RenderLodDraw *Draws
                                    int Count) {
   int64_t Vertices = 0;
   int Slots = 0;
+  int BlendedSlots = 0;
   for (int Idx = 0; Idx < Count; Idx++) {
     if (Idx == State->ListOpaque) {
       State->ListOpaqueRuns = Slots;
@@ -804,10 +849,13 @@ static int64_t BuildSectionRecords(GlLodState *State, const RenderLodDraw *Draws
     Meta[2] = Draw->OriginZ;
     Meta[3] = Draw->Scale;
     uint32_t *Cull = &State->CullRecords[(size_t)Idx * CULL_RECORD_UINTS];
-    Cull[0] = (uint32_t)(Record->FirstPage * LOD_PAGE_VERTICES);
-    Cull[1] = (uint32_t)Record->RunCount;
-    Cull[2] = (uint32_t)Slots;
-    Cull[3] = (uint32_t)Draw->Mesh;
+    Cull[RECORD_FIRST_VERTEX] = (uint32_t)(Record->FirstPage * LOD_PAGE_VERTICES);
+    Cull[RECORD_RUN_COUNT] = (uint32_t)Record->RunCount;
+    Cull[RECORD_FIRST_SLOT] = (uint32_t)Slots;
+    Cull[RECORD_MESH] = (uint32_t)Draw->Mesh;
+    Cull[RECORD_OPAQUE_RUNS] = (uint32_t)Record->OpaqueRunCount;
+    Cull[RECORD_BLENDED_SLOT] = (uint32_t)BlendedSlots;
+    BlendedSlots += Record->RunCount - Record->OpaqueRunCount;
     memcpy(&Cull[CULL_RECORD_HEADER], Record->Runs,
            sizeof(uint32_t) * (size_t)Record->RunCount);
     Slots += Record->RunCount;
@@ -817,6 +865,7 @@ static int64_t BuildSectionRecords(GlLodState *State, const RenderLodDraw *Draws
     State->ListOpaqueRuns = Slots;
   }
   State->ListRuns = Slots;
+  State->ListBlendedRuns = BlendedSlots;
   return Vertices;
 }
 
@@ -842,8 +891,9 @@ static void UploadSectionList(GlLodState *State, const RenderLodDraw *Draws,
   glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
   glBindBuffer(GL_DRAW_INDIRECT_BUFFER, State->CommandBuffer);
   glBufferData(GL_DRAW_INDIRECT_BUFFER,
-               (GLsizeiptr)(sizeof(LodIndirectCommand) * (size_t)State->ListRuns *
-                            (State->HizEnabled ? 2U : 1U)),
+               (GLsizeiptr)(sizeof(LodIndirectCommand) *
+                            (((size_t)State->ListRuns * (State->HizEnabled ? 2U : 1U)) +
+                             (size_t)State->ListBlendedRuns)),
                NULL, GL_DYNAMIC_DRAW);
   glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
   State->HasList = true;
@@ -869,8 +919,26 @@ void GlLodReadCullStats(void) {
   Stats->Phase2Commands = (int)Counters[COUNTER_PHASE2_COMMANDS];
   Stats->Phase1Vertices = (int64_t)Counters[COUNTER_PHASE1_QUADS] * LOD_VERTICES_PER_QUAD;
   Stats->Phase2Vertices = (int64_t)Counters[COUNTER_PHASE2_QUADS] * LOD_VERTICES_PER_QUAD;
-  Stats->DrawnCommands = Stats->Phase1Commands + Stats->Phase2Commands;
-  Stats->DrawnVertices = Stats->Phase1Vertices + Stats->Phase2Vertices;
+  Stats->TranslucentCommands = (int)Counters[COUNTER_TRANSLUCENT_COMMANDS];
+  Stats->TranslucentVertices =
+      (int64_t)Counters[COUNTER_TRANSLUCENT_QUADS] * LOD_VERTICES_PER_QUAD;
+  Stats->DrawnCommands =
+      Stats->Phase1Commands + Stats->Phase2Commands + Stats->TranslucentCommands;
+  Stats->DrawnVertices =
+      Stats->Phase1Vertices + Stats->Phase2Vertices + Stats->TranslucentVertices;
+}
+
+// First command slot of a phase's region: the single pass or phase 1, then
+// phase 2 (with HiZ), ListRuns slots each, then the blended pass's
+// ListBlendedRuns.
+static int PhaseBase(const GlLodState *State, int Phase) {
+  if (Phase == PHASE_SECOND) {
+    return State->ListRuns;
+  }
+  if (Phase == PHASE_TRANSLUCENT) {
+    return State->ListRuns * (State->HizEnabled ? 2 : 1);
+  }
+  return 0;
 }
 
 static void ClearCounters(const GlLodState *State) {
@@ -911,8 +979,8 @@ static void CullSections(GlLodState *State, const LodView *View, int Phase,
   glUniform1i(Cull->Compact, State->UseIndirectCount ? 1 : 0);
   glUniform1i(Cull->CullEnabled, State->CullEnabled ? 1 : 0);
   glUniform1i(Cull->Phase, Phase);
-  glUniform1ui(Cull->PhaseBase,
-               (Phase == PHASE_SECOND) ? (GLuint)State->ListRuns : 0U);
+  glUniform1ui(Cull->PhaseBase, (GLuint)PhaseBase(State, Phase));
+  glUniform1i(Cull->UseHiz, State->HizEnabled ? 1 : 0);
   if (State->HizEnabled) {
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_VISIBILITY, State->VisibilitySsbo);
     glUniform2f(Cull->Viewport, (float)Frame->Width, (float)Frame->Height);
@@ -1015,6 +1083,44 @@ static void DrawPhase(const GlLodState *State, const GlLodFrame *Frame,
   glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_META, 0);
 }
 
+// The blended pass of see-through faces over the opaque LOD: depth tested
+// against it, never written. Colour blends like the 1:1 translucent pass;
+// alpha accumulates coverage, so the composite lays water over an empty pixel
+// exactly as it would over the sky. Blending depends on draw order, so this
+// pass always draws its fixed list (sections in list order, culled commands
+// zeroed), never a compacted one whose order would vary between frames.
+static void DrawTranslucent(const GlLodState *State, const GlLodFrame *Frame,
+                            const LodView *View) {
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_META, State->MetaSsbo);
+  glBindBuffer(GL_DRAW_INDIRECT_BUFFER, State->CommandBuffer);
+  glBindVertexArray(State->Vao);
+  glActiveTexture(GL_TEXTURE0 + BLOCK_UNIT);
+  glBindTexture(GL_TEXTURE_2D_ARRAY, Frame->BlockArrayTex);
+  glBindSampler(BLOCK_UNIT, Frame->LodSampler);
+  glActiveTexture(GL_TEXTURE0 + COVERAGE_UNIT);
+  glBindTexture(GL_TEXTURE_2D, State->CoverageTex);
+  glDepthMask(GL_FALSE);
+  glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE,
+                      GL_ONE_MINUS_SRC_ALPHA);
+  UseLodProgram(&State->Translucent, View->ViewProj, View->CameraBlock,
+                View->CameraFrac);
+  if (State->ListBlendedRuns > 0) {
+    glMultiDrawElementsIndirect(
+        GL_TRIANGLES, GL_UNSIGNED_SHORT,
+        BufferOffset((size_t)PhaseBase(State, PHASE_TRANSLUCENT) * sizeof(LodIndirectCommand)),
+        State->ListBlendedRuns, (GLsizei)sizeof(LodIndirectCommand));
+  }
+  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+  glDepthMask(GL_TRUE);
+  glBindTexture(GL_TEXTURE_2D, 0);
+  glActiveTexture(GL_TEXTURE0 + BLOCK_UNIT);
+  glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
+  glBindSampler(BLOCK_UNIT, 0);
+  glBindVertexArray(0);
+  glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
+  glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_META, 0);
+}
+
 void GlLodDraw(const GlLodFrame *Frame, const RenderLodDraw *Draws,
                int OpaqueCount, int BorderCount, uint32_t ListRevision) {
   GlLodState *State = GetLodState();
@@ -1087,6 +1193,9 @@ void GlLodDraw(const GlLodFrame *Frame, const RenderLodDraw *Draws,
     glBindFramebuffer(GL_FRAMEBUFFER, State->FboLod);
     DrawPhase(State, Frame, &View, State->ListRuns, COUNTER_PHASE2_OPAQUE);
   }
+  CullSections(State, &View, PHASE_TRANSLUCENT, Frame);
+  glBindFramebuffer(GL_FRAMEBUFFER, State->FboLod);
+  DrawTranslucent(State, Frame, &View);
   CompositeOntoFrame(State, Frame);
   if (Frame->Wireframe) {
     glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);

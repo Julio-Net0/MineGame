@@ -221,9 +221,17 @@ typedef struct {
 } RenderLodRun;
 
 // Vertices are section-local voxel units, packed like chunk vertices, laid out
-// as Runs describe. Invalid when the LOD arena is full.
+// as Runs describe: Runs[0, OpaqueRunCount) hold the faces drawn opaque, the
+// rest the see-through faces drawn blended after them. Invalid when the LOD
+// arena is full.
 RenderLodMesh RenderLodUploadMesh(const ChunkVertex *Vertices,
-                                  const RenderLodRun *Runs, int RunCount);
+                                  const RenderLodRun *Runs, int RunCount,
+                                  int OpaqueRunCount);
+
+// Whether a block texture layer is see-through: some texel only partly
+// opaque, or most texels fully transparent (water, ice, glass, but not
+// leaves). Known only on a device that draws LOD; false elsewhere.
+bool RenderBlockLayerSeeThrough(int Layer);
 void RenderLodFreeMesh(RenderLodMesh Mesh);
 
 // One section to draw: its mesh, its origin in blocks and its blocks per
@@ -282,6 +290,9 @@ typedef struct {
   int Phase2Commands;
   int64_t Phase1Vertices;
   int64_t Phase2Vertices;
+  // The blended pass of see-through LOD faces (water, ice, glass).
+  int TranslucentCommands;
+  int64_t TranslucentVertices;
   // First GL error seen after a LOD pass (0 = none).
   unsigned GlError;
 } RenderLodStats;

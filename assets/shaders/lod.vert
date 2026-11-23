@@ -54,6 +54,14 @@ void main() {
 
     uint aoLevel = (w0 >> 25u) & 3u;
     float ao = float(255u - (aoLevel * 45u)) * (1.0 / 255.0);
+    // Level 1 keeps the chunks' ambient occlusion, so the 1:1 seam shows no
+    // brightness step. Coarser voxels are 4 to 128 blocks wide, where full
+    // corner shading turns into dark blotches: it fades by a fifth per level,
+    // keeping at least 30% for relief.
+    if (meta.w > 2) {
+        float strength = clamp(1.0 - 0.2 * (log2(float(meta.w)) - 1.0), 0.3, 1.0);
+        ao = 1.0 - (1.0 - ao) * strength;
+    }
     vec3 tint = vec3(
         float((w1 >> 27u) & 31u) * (1.0 / 31.0),
         float((w1 >> 21u) & 63u) * (1.0 / 63.0),

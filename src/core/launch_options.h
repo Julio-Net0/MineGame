@@ -87,7 +87,17 @@ typedef struct {
   bool LodNoCull;
   // --lod-hiz off: no two-phase Hi-Z occlusion in the LOD cull.
   bool LodNoHiz;
+  // --lod-fog off: no fog at the LOD's edge. --lod-fog-end N: the horizontal
+  // distance in blocks where the fog reaches the sky colour (it starts at
+  // three quarters of it); 0 keeps LOD_FOG_END_DEFAULT.
+  bool LodNoFog;
+  int LodFogEnd;
 } LaunchOptions;
+
+// 512 chunks: the shortest LOD view distance planned.
+#define LOD_FOG_END_DEFAULT 8192
+#define LOD_FOG_END_MIN 64
+#define LOD_FOG_END_MAX 65536
 
 void ParseLaunchOptions(int Argc, char **Argv);
 const LaunchOptions *GetLaunchOptions(void);

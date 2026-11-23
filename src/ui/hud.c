@@ -542,6 +542,9 @@ static void DrawDebugScreen(UiContext *Ctx, Player *PlayerVal, World *WorldVal,
              Lod.Gpu.DrawnCommands, Lod.Gpu.FrustumCulledSections,
              Lod.Gpu.FacingCulledRuns);
     Y = DrawDebugLine(Ctx, DebugText, Y);
+    snprintf(DebugText, sizeof(DebugText), "LOD blended: %d cmds, %lld verts",
+             Lod.Gpu.TranslucentCommands, (long long)Lod.Gpu.TranslucentVertices);
+    Y = DrawDebugLine(Ctx, DebugText, Y);
     if (Lod.Gpu.HiZ) {
       snprintf(DebugText, sizeof(DebugText),
                "LOD hi-z: %d hidden, phase 1 %d cmds %lld verts, phase 2 %d cmds %lld verts",

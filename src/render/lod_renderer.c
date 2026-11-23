@@ -47,6 +47,8 @@ enum {
   LOAD_DENOMINATOR = 4,
   // A section and its six face neighbours.
   NEIGHBOURHOOD = 7,
+  // Runs kept free for a section's translucent faces: one per direction.
+  TRANSLUCENT_RUN_RESERVE = 6,
   // The packed vertex's face normal (see ChunkVertex).
   VERTEX_NORMAL_SHIFT = 27,
   VERTEX_NORMAL_MASK = 7,
@@ -453,13 +455,12 @@ static int QuadGroup(const ChunkVertex *Vertex) {
 // Splits the quads, in the order the mesher emitted them, into runs of one
 // face group (see RenderLodUploadMesh). Past the run limit the rest becomes
 // one run of the never-culled group, which only costs culling, not pixels.
-static int BuildFaceRuns(const ChunkVertex *Vertices, int Count,
-                         RenderLodRun Runs[RENDER_LOD_MAX_RUNS]) {
+static int BuildFaceRuns(const ChunkVertex *Vertices, int Count, RenderLodRun *Runs,
+                         int MaxRuns) {
   int RunCount = 0;
   for (int Vertex = 0; Vertex < Count; Vertex += CHUNK_VERTICES_PER_QUAD) {
     int Group = QuadGroup(&Vertices[Vertex]);
-    if (RunCount > 0 && (Runs[RunCount - 1].Group == Group ||
-                         RunCount == RENDER_LOD_MAX_RUNS)) {
+    if (RunCount > 0 && (Runs[RunCount - 1].Group == Group || RunCount == MaxRuns)) {
       if (Runs[RunCount - 1].Group != Group) {
         Runs[RunCount - 1].Group = RENDER_LOD_AXIS_GROUPS;
       }
@@ -484,9 +485,12 @@ static int MeshSection(LodRendererState *State, const LodStore *Store,
                                     Y + OFFSETS[Face][1], Z + OFFSETS[Face][2]);
   }
   PROFILE_BEGIN(MeshStart);
-  VoxelMeshLodSection(State->Mesher, State->Scratch, Section, Neighbours);
-  // Opaque and translucent faces share one mesh: the LOD draws both opaque.
+  VoxelLodPlace Place = {.Level = Level, .X = X, .Y = Y, .Z = Z};
+  VoxelMeshLodSection(State->Mesher, State->Scratch, Section, &Place, Neighbours);
+  // One mesh: the opaque (and cutout) faces, then the translucent ones,
+  // which the LOD draws blended after every opaque face.
   int Count = 0;
+  int OpaqueCount = 0;
   for (int Target = 0; Target < MESH_TARGET_COUNT; Target++) {
     const MeshScratch *Set = &State->Mesher->Sets[Target];
     int Take = Set->VCount;
@@ -495,13 +499,21 @@ static int MeshSection(LodRendererState *State, const LodStore *Store,
     }
     memcpy(&State->Upload[Count], Set->Vertices, (size_t)Take * sizeof(ChunkVertex));
     Count += Take;
+    if (Target < MESH_TARGET_TRANSLUCENT) {
+      OpaqueCount = Count;
+    }
   }
   *OutMesh = RENDER_LOD_MESH_INVALID;
   int Result = Count;
   if (Count > 0) {
     RenderLodRun Runs[RENDER_LOD_MAX_RUNS];
-    int RunCount = BuildFaceRuns(State->Upload, Count, Runs);
-    *OutMesh = RenderLodUploadMesh(State->Upload, Runs, RunCount);
+    int Reserve = (Count > OpaqueCount) ? TRANSLUCENT_RUN_RESERVE : 0;
+    int OpaqueRuns =
+        BuildFaceRuns(State->Upload, OpaqueCount, Runs, RENDER_LOD_MAX_RUNS - Reserve);
+    int RunCount = OpaqueRuns + BuildFaceRuns(&State->Upload[OpaqueCount],
+                                              Count - OpaqueCount, &Runs[OpaqueRuns],
+                                              RENDER_LOD_MAX_RUNS - OpaqueRuns);
+    *OutMesh = RenderLodUploadMesh(State->Upload, Runs, RunCount, OpaqueRuns);
     if (*OutMesh == RENDER_LOD_MESH_INVALID) {
       Result = -1;
     }
