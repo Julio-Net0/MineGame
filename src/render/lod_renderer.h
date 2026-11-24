@@ -32,8 +32,14 @@ bool LodRendererDrawOn(void);
 void LodRendererSetRefineFactor(int Factor);
 int LodRendererRefineFactor(void);
 
-// A chunk now drawn 1:1 (meshed, or resolved without a mesh) or no longer.
+// The 1:1 coverage of chunk columns. A column cuts the LOD away only once it is
+// whole: every chunk the world created in it has resolved and some hold
+// terrain. Expect: the world created the chunk. SetChunkCovered: it resolved,
+// meshed or without a mesh, with terrain (Covered) or without. Forget: it left
+// the world.
+void LodRendererExpectChunk(int ChunkX, int ChunkY, int ChunkZ);
 void LodRendererSetChunkCovered(int ChunkX, int ChunkY, int ChunkZ, bool Covered);
+void LodRendererForgetChunk(int ChunkX, int ChunkY, int ChunkZ);
 
 // Between the 1:1 cutout pass and the translucent pass.
 void LodRendererDraw(RenderCamera Camera);

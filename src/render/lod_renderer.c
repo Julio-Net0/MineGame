@@ -29,6 +29,10 @@ enum {
   CELL_FULL = CELL_COLUMNS * CELL_COLUMNS,
   CELL_SPAN = RENDER_LOD_COVERAGE_SPAN >> CELL_SHIFT,
   CELL_MASK = CELL_SPAN - 1,
+  // Per-column flags: the column counts as 1:1 (see RefreshColumn), and its top
+  // terrain chunk left while chunks under it stay.
+  COLUMN_READY = 1,
+  COLUMN_STRIPPED = 2,
   CACHE_INITIAL = 4096,
   MAX_DRAWS = 32768,
   // Sections meshed per frame at most, on top of the time budget.
@@ -108,6 +112,9 @@ typedef struct {
   // The mesh carries skirts: only border draws use them, so only their
   // sections pay for them.
   bool Skirted;
+  // Kept only to stand in for its children (see SelectSection), not drawn:
+  // the first to go when the arena is full.
+  bool Retained;
 } CacheEntry;
 
 // A selected section whose mesh is missing or out of date, queued so the
@@ -123,6 +130,14 @@ typedef struct {
   uint32_t Key;
   bool Border;
   uint8_t Transitions;
+  // Queued only to be meshed: a child its parent stands in for (see
+  // ChildrenMeshed).
+  bool Prefetch;
+  // Drawn with the mesh it has, current or not, in place of its children.
+  bool StandIn;
+  // A refined section's kept mesh brought up to date with its content, with
+  // whatever meshing time the frame has left, so it can stand in.
+  bool Refresh;
 } PendingMesh;
 
 // A draw with its position in the selection walk.
@@ -132,7 +147,11 @@ typedef struct {
 } KeyedDraw;
 
 typedef struct {
+  // One bit per chunk drawn 1:1 with terrain, and per chunk the world created
+  // that has not resolved yet; see RefreshColumn.
   uint32_t *Coverage;
+  uint32_t *Pending;
+  uint8_t *ColumnFlags;
   uint16_t *CellCounts;
   uint8_t *ColumnDirty;
   int *DirtyColumns;
@@ -185,6 +204,10 @@ typedef struct {
   // change instead of retrying on every freed page.
   bool StarvedParked;
   bool HasSelection;
+  // The last pass meshed children stood in for: the next pass refines them.
+  bool PrefetchOwed;
+  // Kept meshes still to refresh; they never hold back the idle state.
+  bool RefreshOwed;
 } LodRendererState;
 
 typedef struct {
@@ -209,6 +232,8 @@ typedef struct {
   int StarvedVertices;
   // Meshing attempts, the per-frame budget, and successful uploads.
   int Attempts;
+  int PrefetchMeshed;
+  int RefreshWaiting;
   bool ArenaFull;
 } SelectContext;
 
@@ -221,6 +246,8 @@ bool LodRendererEnabled(void) { return GetLodRendererState()->Enabled; }
 
 static void FreeRendererState(LodRendererState *State) {
   free(State->Coverage);
+  free(State->Pending);
+  free(State->ColumnFlags);
   free(State->CellCounts);
   free(State->ColumnDirty);
   free(State->DirtyColumns);
@@ -246,6 +273,8 @@ void LodRendererInit(void) {
   }
   size_t Columns = (size_t)COVERAGE_SPAN * COVERAGE_SPAN;
   State->Coverage = (uint32_t *)calloc(Columns * COVERAGE_WORDS, sizeof(uint32_t));
+  State->Pending = (uint32_t *)calloc(Columns * COVERAGE_WORDS, sizeof(uint32_t));
+  State->ColumnFlags = (uint8_t *)calloc(Columns, sizeof(uint8_t));
   State->CellCounts = (uint16_t *)calloc((size_t)CELL_SPAN * CELL_SPAN, sizeof(uint16_t));
   State->ColumnDirty = (uint8_t *)calloc(Columns, sizeof(uint8_t));
   State->DirtyColumns = (int *)malloc(Columns * sizeof(int));
@@ -261,7 +290,8 @@ void LodRendererInit(void) {
   State->WalkKeys = (uint64_t *)calloc(WALK_SET_INITIAL, sizeof(uint64_t));
   State->WalkKinds = (uint8_t *)calloc(WALK_SET_INITIAL, sizeof(uint8_t));
   State->WalkCapacity = WALK_SET_INITIAL;
-  if (State->Coverage == NULL || State->CellCounts == NULL ||
+  if (State->Coverage == NULL || State->Pending == NULL ||
+      State->ColumnFlags == NULL || State->CellCounts == NULL ||
       State->Walked == NULL || State->WalkKeys == NULL || State->WalkKinds == NULL ||
       State->ColumnDirty == NULL ||
       State->DirtyColumns == NULL || State->Cache == NULL ||
@@ -329,45 +359,137 @@ static int CellIndex(int ChunkX, int ChunkZ) {
 }
 
 static bool ColumnCovered(const LodRendererState *State, int Column) {
-  const uint32_t *Words = &State->Coverage[(size_t)Column * COVERAGE_WORDS];
+  return (State->ColumnFlags[Column] & COLUMN_READY) != 0U;
+}
+
+static uint32_t *ColumnWords(uint32_t *Bits, int Column) {
+  return &Bits[(size_t)Column * COVERAGE_WORDS];
+}
+
+static bool AnyWord(const uint32_t *Words) {
   return (Words[0] | Words[1] | Words[2] | Words[3]) != 0U;
 }
 
-void LodRendererSetChunkCovered(int ChunkX, int ChunkY, int ChunkZ, bool Covered) {
-  LodRendererState *State = GetLodRendererState();
-  int Layer = ChunkY + COVERAGE_BIAS;
-  if (!State->Enabled || Layer < 0 || Layer >= COVERAGE_LAYERS) {
-    return;
+// Whether any bit above Layer is set.
+static bool AnyAbove(const uint32_t *Words, int Layer) {
+  int Word = Layer / WORD_BITS;
+  unsigned Shift = ((unsigned)Layer % WORD_BITS) + 1U;
+  uint32_t Higher = (Shift < (unsigned)WORD_BITS) ? (Words[Word] >> Shift) : 0U;
+  for (int Next = Word + 1; Next < COVERAGE_WORDS; Next++) {
+    Higher |= Words[Next];
   }
-  int Column = ColumnIndex(ChunkX, ChunkZ);
-  uint32_t *Word = &State->Coverage[((size_t)Column * COVERAGE_WORDS) +
-                                    ((size_t)Layer / WORD_BITS)];
+  return Higher != 0U;
+}
+
+static void SetBit(uint32_t *Words, int Layer, bool On) {
   uint32_t Bit = 1U << ((unsigned)Layer % WORD_BITS);
-  uint32_t Updated = Covered ? (*Word | Bit) : (*Word & ~Bit);
-  if (Updated == *Word) {
+  if (On) {
+    Words[Layer / WORD_BITS] |= Bit;
+  } else {
+    Words[Layer / WORD_BITS] &= ~Bit;
+  }
+}
+
+static bool BitSet(const uint32_t *Words, int Layer) {
+  return ((Words[Layer / WORD_BITS] >> ((unsigned)Layer % WORD_BITS)) & 1U) != 0U;
+}
+
+// A column hands its place over to the 1:1 chunks only once it is whole: it
+// holds terrain and every chunk the world created in it has resolved. Cutting
+// the LOD at the first resolved chunk (buried rock resolves at once, the
+// surface waits for its neighbours and the workers) left the column hollow,
+// sky showing through, for as long as the surface took. Once ready it stays
+// so while chunks are added (a raised band, the vertical window moving), and
+// it gives up only when its terrain empties or its top terrain chunk leaves:
+// a column leaving the load volume loses its chunks over several frames, in
+// any order, and the LOD has to be back before the surface is gone.
+static void RefreshColumn(LodRendererState *State, int Column, int ChunkX,
+                          int ChunkZ) {
+  uint8_t Flags = State->ColumnFlags[Column];
+  uint8_t Updated = Flags;
+  if (!AnyWord(ColumnWords(State->Coverage, Column))) {
+    Updated = 0U;
+  } else if ((Updated & COLUMN_STRIPPED) != 0U) {
+    Updated &= (uint8_t)~COLUMN_READY;
+  } else if (!AnyWord(ColumnWords(State->Pending, Column))) {
+    Updated |= COLUMN_READY;
+  }
+  State->ColumnFlags[Column] = Updated;
+  bool Before = (Flags & COLUMN_READY) != 0U;
+  bool After = (Updated & COLUMN_READY) != 0U;
+  if (Before == After) {
     return;
   }
-  bool Before = ColumnCovered(State, Column);
-  *Word = Updated;
-  bool After = ColumnCovered(State, Column);
-  if (Before != After) {
-    uint16_t *Cell = &State->CellCounts[CellIndex(ChunkX, ChunkZ)];
-    *Cell = After ? (uint16_t)(*Cell + 1U) : (uint16_t)(*Cell - 1U);
-  }
+  uint16_t *Cell = &State->CellCounts[CellIndex(ChunkX, ChunkZ)];
+  *Cell = After ? (uint16_t)(*Cell + 1U) : (uint16_t)(*Cell - 1U);
   if (State->ColumnDirty[Column] == 0U) {
     State->ColumnDirty[Column] = 1U;
     State->DirtyColumns[State->DirtyCount++] = Column;
   }
 }
 
-// True when any column changed.
+static int CoverageLayer(const LodRendererState *State, int ChunkY) {
+  int Layer = ChunkY + COVERAGE_BIAS;
+  return (State->Enabled && Layer >= 0 && Layer < COVERAGE_LAYERS) ? Layer : -1;
+}
+
+void LodRendererExpectChunk(int ChunkX, int ChunkY, int ChunkZ) {
+  LodRendererState *State = GetLodRendererState();
+  int Layer = CoverageLayer(State, ChunkY);
+  if (Layer < 0) {
+    return;
+  }
+  int Column = ColumnIndex(ChunkX, ChunkZ);
+  SetBit(ColumnWords(State->Pending, Column), Layer, true);
+  // Coming back into the volume: ready again once the new chunks resolve.
+  State->ColumnFlags[Column] &= (uint8_t)~COLUMN_STRIPPED;
+  RefreshColumn(State, Column, ChunkX, ChunkZ);
+}
+
+void LodRendererSetChunkCovered(int ChunkX, int ChunkY, int ChunkZ, bool Covered) {
+  LodRendererState *State = GetLodRendererState();
+  int Layer = CoverageLayer(State, ChunkY);
+  if (Layer < 0) {
+    return;
+  }
+  int Column = ColumnIndex(ChunkX, ChunkZ);
+  SetBit(ColumnWords(State->Pending, Column), Layer, false);
+  SetBit(ColumnWords(State->Coverage, Column), Layer, Covered);
+  RefreshColumn(State, Column, ChunkX, ChunkZ);
+}
+
+void LodRendererForgetChunk(int ChunkX, int ChunkY, int ChunkZ) {
+  LodRendererState *State = GetLodRendererState();
+  int Layer = CoverageLayer(State, ChunkY);
+  if (Layer < 0) {
+    return;
+  }
+  int Column = ColumnIndex(ChunkX, ChunkZ);
+  uint32_t *Coverage = ColumnWords(State->Coverage, Column);
+  SetBit(ColumnWords(State->Pending, Column), Layer, false);
+  if (BitSet(Coverage, Layer)) {
+    SetBit(Coverage, Layer, false);
+    // Rock under the terrain let go of (the window moving up) leaves the
+    // surface above it drawn; the top terrain chunk leaving does not.
+    if (!AnyAbove(Coverage, Layer)) {
+      State->ColumnFlags[Column] |= COLUMN_STRIPPED;
+    }
+  }
+  RefreshColumn(State, Column, ChunkX, ChunkZ);
+}
+
+// True when any column changed. The texture only tells covered columns from
+// the others (lod_border.frag tests for any bit), so a column that is not
+// ready yet goes up empty.
 static bool FlushCoverage(LodRendererState *State) {
+  static const uint32_t NONE[COVERAGE_WORDS] = {0U, 0U, 0U, 0U};
   bool Changed = State->DirtyCount > 0;
   for (int Idx = 0; Idx < State->DirtyCount; Idx++) {
     int Column = State->DirtyColumns[Idx];
     State->ColumnDirty[Column] = 0U;
-    RenderLodSetCoverage(Column % COVERAGE_SPAN, Column / COVERAGE_SPAN,
-                         &State->Coverage[(size_t)Column * COVERAGE_WORDS]);
+    const uint32_t *Words =
+        ColumnCovered(State, Column) ? ColumnWords(State->Coverage, Column) : NONE;
+    RenderLodSetCoverage(Column % COVERAGE_SPAN, Column / COVERAGE_SPAN, Words);
   }
   State->DirtyCount = 0;
   return Changed;
@@ -538,14 +660,15 @@ static CacheEntry *CacheInsert(LodRendererState *State, int Level, int X, int Y,
 }
 
 static void EvictStale(LodRendererState *State, const LodStore *Store,
-                       uint32_t MaxAge) {
+                       uint32_t MaxAge, bool DropRetained) {
   for (int Idx = 0; Idx < State->Capacity; Idx++) {
     CacheEntry *Entry = &State->Cache[Idx];
     if (Entry->Level <= 0) {
       continue;
     }
     bool Gone = LodStoreFind(Store, Entry->Level, Entry->X, Entry->Y, Entry->Z) == NULL;
-    if (Gone || State->Frame - Entry->LastFrame > MaxAge) {
+    if (Gone || State->Frame - Entry->LastFrame > MaxAge ||
+        (DropRetained && Entry->Retained)) {
       RenderLodFreeMesh(Entry->Mesh);
       Entry->Level = SLOT_TOMBSTONE;
       State->Count--;
@@ -905,12 +1028,16 @@ static void SectionNearFarRange(const SelectContext *Ctx, int Level, int X,
   *OutReaches = FarDistSq >= Low * Low;
 }
 
-static void SelectSection(LodRendererState *State, SelectContext *Ctx, int Level,
-                          int X, int Y, int Z) {
-  const LodSection *Section = LodStoreFind(Ctx->Store, Level, X, Y, Z);
-  if (Section == NULL) {
-    return;
-  }
+typedef struct {
+  SectionCoverage Coverage;
+  // Wholly under 1:1 chunks, short of the 1:1 far plane: not drawn at all.
+  bool Hidden;
+  // Drawn by the border pass.
+  bool Border;
+} SectionRole;
+
+static SectionRole RoleOf(const LodRendererState *State, const SelectContext *Ctx,
+                          int Level, int X, int Y, int Z) {
   SectionCoverage Coverage = CoverageOf(State, Ctx, Level, X, Z);
   bool Beside = Coverage == COVERAGE_NONE && BesideCoverage(State, Ctx, Level, X, Z);
   bool FarStraddles = false;
@@ -924,18 +1051,94 @@ static void SelectSection(LodRendererState *State, SelectContext *Ctx, int Level
       FarStraddles = true;
     }
   }
-  if (Coverage == COVERAGE_FULL && !FarStraddles) {
+  return (SectionRole){
+      .Coverage = Coverage,
+      .Hidden = Coverage == COVERAGE_FULL && !FarStraddles,
+      .Border = Coverage == COVERAGE_PARTIAL || FarStraddles || Beside};
+}
+
+static void WalkAppend(LodRendererState *State, SelectContext *Ctx,
+                       PendingMesh Walk) {
+  if (Ctx->WalkedCount < MAX_DRAWS) {
+    State->Walked[Ctx->WalkedCount++] = Walk;
+  }
+}
+
+// Whether every child that would be drawn already has a mesh, old or not.
+// Those without one are queued (not drawn) so a later pass can refine. A
+// region refines the moment 1:1 coverage reaches it or the camera nears it;
+// children without meshes then left it empty, sky showing through, for as
+// many frames as meshing them took.
+static bool ChildrenMeshed(LodRendererState *State, SelectContext *Ctx,
+                           const LodSection *Section, int Level, int X, int Y,
+                           int Z) {
+  bool Meshed = true;
+  for (int Octant = 0; Octant < OCTANTS; Octant++) {
+    if ((Section->PresentCells & OctantCells(Octant)) == 0U) {
+      continue;
+    }
+    int ChildX = (X * 2) + (Octant & 1);
+    int ChildY = (Y * 2) + ((Octant >> 1) & 1);
+    int ChildZ = (Z * 2) + ((Octant >> 2) & 1);
+    const LodSection *Child = LodStoreFind(Ctx->Store, Level - 1, ChildX, ChildY, ChildZ);
+    if (Child == NULL || Child->PresentCells == 0U ||
+        CacheFind(State, Level - 1, ChildX, ChildY, ChildZ) != NULL) {
+      continue;
+    }
+    SectionRole Role = RoleOf(State, Ctx, Level - 1, ChildX, ChildY, ChildZ);
+    if (Role.Hidden) {
+      continue;
+    }
+    Meshed = false;
+    WalkAppend(State, Ctx,
+               (PendingMesh){.Section = Child, .Level = Level - 1, .X = ChildX,
+                             .Y = ChildY, .Z = ChildZ,
+                             .DistSq = SectionDistSq(Ctx, Level - 1, ChildX, ChildY, ChildZ),
+                             .Border = Role.Border, .Prefetch = true});
+  }
+  return Meshed;
+}
+
+static void SelectSection(LodRendererState *State, SelectContext *Ctx, int Level,
+                          int X, int Y, int Z) {
+  const LodSection *Section = LodStoreFind(Ctx->Store, Level, X, Y, Z);
+  if (Section == NULL) {
     return;
   }
-  bool Refine = Coverage == COVERAGE_PARTIAL || CameraIsNear(Ctx, Level, X, Y, Z);
+  SectionRole Role = RoleOf(State, Ctx, Level, X, Y, Z);
+  if (Role.Hidden) {
+    return;
+  }
+  bool Refine = Role.Coverage == COVERAGE_PARTIAL || CameraIsNear(Ctx, Level, X, Y, Z);
+  bool StandIn = false;
   if (Level > 1 && Refine &&
       ChildrenResident(Ctx->Store, Section, Level, X, Y, Z)) {
-    WalkMark(State, Level, X, Y, Z, WALK_REFINED);
-    for (int Octant = 0; Octant < OCTANTS; Octant++) {
-      SelectSection(State, Ctx, Level - 1, (X * 2) + (Octant & 1),
-                    (Y * 2) + ((Octant >> 1) & 1), (Z * 2) + ((Octant >> 2) & 1));
+    // A section with a mesh stands in for its children until they have
+    // theirs, and keeps that mesh while refined for the next time. Only a
+    // mesh of its current content: one kept from before the section filled
+    // in would show holes of its own.
+    CacheEntry *Own = CacheFind(State, Level, X, Y, Z);
+    if (Own != NULL) {
+      Own->LastFrame = State->Frame;
+      Own->Retained = true;
     }
-    return;
+    bool OwnCurrent = Own != NULL && Own->Revision == Section->Revision;
+    StandIn = OwnCurrent && Own->Mesh != RENDER_LOD_MESH_INVALID &&
+              !ChildrenMeshed(State, Ctx, Section, Level, X, Y, Z);
+    if (Own != NULL && !OwnCurrent && Section->PresentCells != 0U) {
+      WalkAppend(State, Ctx,
+                 (PendingMesh){.Section = Section, .Level = Level, .X = X, .Y = Y,
+                               .Z = Z, .DistSq = SectionDistSq(Ctx, Level, X, Y, Z),
+                               .Border = Role.Border, .Refresh = true});
+    }
+    if (!StandIn) {
+      WalkMark(State, Level, X, Y, Z, WALK_REFINED);
+      for (int Octant = 0; Octant < OCTANTS; Octant++) {
+        SelectSection(State, Ctx, Level - 1, (X * 2) + (Octant & 1),
+                      (Y * 2) + ((Octant >> 1) & 1), (Z * 2) + ((Octant >> 2) & 1));
+      }
+      return;
+    }
   }
   // Nothing worth drawing at this level (buried rock), but it is still walked
   // above: a coarse synthetic section can read as buried where its finer
@@ -946,12 +1149,10 @@ static void SelectSection(LodRendererState *State, SelectContext *Ctx, int Level
   Ctx->Selected++;
   uint32_t Key = Ctx->WalkIndex++;
   WalkMark(State, Level, X, Y, Z, WALK_SELECTED);
-  if (Ctx->WalkedCount < MAX_DRAWS) {
-    State->Walked[Ctx->WalkedCount++] = (PendingMesh){
-        .Section = Section, .Level = Level, .X = X, .Y = Y, .Z = Z,
-        .DistSq = SectionDistSq(Ctx, Level, X, Y, Z), .Key = Key,
-        .Border = Coverage == COVERAGE_PARTIAL || FarStraddles || Beside};
-  }
+  WalkAppend(State, Ctx,
+             (PendingMesh){.Section = Section, .Level = Level, .X = X, .Y = Y,
+                           .Z = Z, .DistSq = SectionDistSq(Ctx, Level, X, Y, Z),
+                           .Key = Key, .Border = Role.Border, .StandIn = StandIn});
 }
 
 // Side faces of a selected section whose neighbour on its level is not drawn
@@ -986,18 +1187,23 @@ static unsigned TransitionFaces(const LodRendererState *State, const PendingMesh
   return Faces;
 }
 
-// After the walk: draws the selected sections whose mesh is current and
-// queues the others, now that each one's level transitions are known.
+// After the walk: draws the selected sections whose mesh is current, and the
+// stand-ins with whatever mesh they hold, and queues the others (prefetched
+// children, which have no mesh yet, among them), now that each one's level
+// transitions are known.
 static void ResolveWalk(LodRendererState *State, SelectContext *Ctx) {
   for (int Idx = 0; Idx < Ctx->WalkedCount; Idx++) {
     PendingMesh Walk = State->Walked[Idx];
     Walk.Transitions = (uint8_t)TransitionFaces(State, &Walk);
     CacheEntry *Entry = CacheFind(State, Walk.Level, Walk.X, Walk.Y, Walk.Z);
-    if (Entry != NULL) {
+    if (Entry != NULL && !Walk.Refresh) {
       Entry->LastFrame = State->Frame;
       Entry->DistSq = Walk.DistSq;
+      Entry->Retained = false;
     }
-    if (MeshCurrent(Entry, Walk.Section, Walk.Transitions, Walk.Border)) {
+    if (Walk.StandIn ||
+        (!Walk.Refresh &&
+         MeshCurrent(Entry, Walk.Section, Walk.Transitions, Walk.Border))) {
       AddDraw(State, Ctx, Entry, Walk.Level, Walk.X, Walk.Y, Walk.Z, Walk.Border,
               Walk.Key);
     } else if (Ctx->PendingCount < MAX_DRAWS) {
@@ -1011,6 +1217,9 @@ static void ResolveWalk(LodRendererState *State, SelectContext *Ctx) {
 static int ComparePending(const void *Left, const void *Right) {
   const PendingMesh *A = (const PendingMesh *)Left;
   const PendingMesh *B = (const PendingMesh *)Right;
+  if (A->Refresh != B->Refresh) {
+    return A->Refresh ? 1 : -1;
+  }
   if (A->DistSq != B->DistSq) {
     return (A->DistSq < B->DistSq) ? -1 : 1;
   }
@@ -1035,6 +1244,19 @@ static void MeshQueued(LodRendererState *State, SelectContext *Ctx) {
     const PendingMesh *Pending = &State->PendingMeshes[Idx];
     CacheEntry *Entry =
         CacheFind(State, Pending->Level, Pending->X, Pending->Y, Pending->Z);
+    if (Pending->Refresh) {
+      // Last in the queue: only time no drawn section needed. A full arena
+      // ends the refreshing instead of evicting for it.
+      bool OutOfTime = Ctx->Attempts >= MESH_BUDGET_SECTIONS ||
+                       (Ctx->Attempts > 0 && OsGetTimeSeconds() > Deadline);
+      if (OutOfTime && !Ctx->ArenaFull) {
+        Ctx->RefreshWaiting = Ctx->PendingCount - Idx;
+      }
+      if (OutOfTime || Ctx->ArenaFull || !MeshPending(State, Ctx, Pending, &Entry)) {
+        break;
+      }
+      continue;
+    }
     if (Ctx->ArenaFull) {
       Ctx->Starved++;
     } else if (Ctx->Attempts >= MESH_BUDGET_SECTIONS ||
@@ -1046,12 +1268,16 @@ static void MeshQueued(LodRendererState *State, SelectContext *Ctx) {
       // it is tried either, so no farther section takes the room it needs.
       Ctx->ArenaFull = true;
       Ctx->Starved++;
+    } else if (Pending->Prefetch) {
+      Ctx->PrefetchMeshed++;
     }
     if (Ctx->ArenaFull && Ctx->NearestStarved < 0.0F) {
       Ctx->NearestStarved = Pending->DistSq;
     }
-    AddDraw(State, Ctx, Entry, Pending->Level, Pending->X, Pending->Y, Pending->Z,
-            Pending->Border, Pending->Key);
+    if (!Pending->Prefetch) {
+      AddDraw(State, Ctx, Entry, Pending->Level, Pending->X, Pending->Y, Pending->Z,
+              Pending->Border, Pending->Key);
+    }
   }
 }
 
@@ -1131,14 +1357,15 @@ void LodRendererDraw(RenderCamera Camera) {
   }
   // Starved sections are retried only once the arena has gained room and
   // while eviction rounds remain, so a full arena costs nothing per frame.
-  bool Owed = State->Stats.WaitingSections > 0 ||
+  bool Owed = State->Stats.WaitingSections > 0 || State->PrefetchOwed ||
+              State->RefreshOwed ||
               (State->Stats.StarvedSections > 0 && !State->StarvedParked &&
                RenderLodArenaGeneration() != State->StarvedGeneration);
   if (Anchored || Owed) {
     State->Frame++;
     State->ListRevision++;
     if (State->Frame % EVICT_INTERVAL == 0U) {
-      EvictStale(State, Store, (uint32_t)EVICT_AGE);
+      EvictStale(State, Store, (uint32_t)EVICT_AGE, false);
     }
     float Half = (float)HALF_SECTION;
     SelectContext Ctx = {
@@ -1161,6 +1388,8 @@ void LodRendererDraw(RenderCamera Camera) {
     MeshQueued(State, &Ctx);
     AssembleDraws(State, &Ctx);
     State->HasSelection = true;
+    State->PrefetchOwed = Ctx.PrefetchMeshed > 0;
+    State->RefreshOwed = Ctx.RefreshWaiting > 0;
     State->SelectChunkX = ChunkX;
     State->SelectChunkY = ChunkY;
     State->SelectChunkZ = ChunkZ;
@@ -1176,7 +1405,7 @@ void LodRendererDraw(RenderCamera Camera) {
       // Every mesh this pass did not select goes, then, if starved sections
       // remain nearer than selected ones, the farthest selected meshes; the
       // starved are retried once the arena's delayed frees land.
-      EvictStale(State, Store, 0U);
+      EvictStale(State, Store, 0U, true);
       int Freed = 0;
       if (State->EvictionRounds < MAX_EVICTION_ROUNDS) {
         State->EvictionRounds++;
@@ -1199,7 +1428,8 @@ void LodRendererDraw(RenderCamera Camera) {
 
 bool LodRendererIdle(void) {
   const LodRendererState *State = GetLodRendererState();
-  return !State->Enabled || State->Stats.WaitingSections == 0;
+  return !State->Enabled ||
+         (State->Stats.WaitingSections == 0 && !State->PrefetchOwed);
 }
 
 void LodRendererReadCullStats(bool Force) {

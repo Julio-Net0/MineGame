@@ -95,6 +95,10 @@ void RendererAttachWorld(const World *WorldVal);
 // renderer keeps for it, so nothing follows the slot to its next occupant.
 void RendererForgetChunk(Chunk *ChunkVal);
 
+// Creation hook: the chunk's column waits for it before the 1:1 world takes the
+// column over from the LOD.
+void RendererExpectChunk(const Chunk *ChunkVal);
+
 void DrawWorld(World *WorldVal, RenderCamera CameraVal);
 void DrawAABBDebug(World *WorldVal, Player *PlayerVal);
 void DrawPrefabSelection(Player *PlayerVal);

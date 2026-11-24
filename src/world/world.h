@@ -22,6 +22,8 @@
 #define MESH_CANDIDATE_BUCKETS (2 * MESH_CANDIDATE_TIER_BUCKETS)
 
 typedef void (*ChunkEvictCallback)(Chunk *EvictedChunk);
+// A position entered the map, still to be generated.
+typedef void (*ChunkCreateCallback)(Chunk *CreatedChunk);
 
 // The layers one column holds, one bit per layer from World.LoadMaskBase.
 #define LOAD_LAYER_MASK_WORDS 2
@@ -131,6 +133,7 @@ typedef struct World {
   RaisedTopMap RaisedTops;
 
   ChunkEvictCallback OnChunkEvict;
+  ChunkCreateCallback OnChunkCreate;
   BlockChangeCallback OnBlockChange;
   void *BlockChangeUserData;
 } World;
@@ -147,6 +150,7 @@ void InitWorld(World *WorldVal);
 // the caller's to free.
 void DestroyWorld(World *WorldVal);
 void WorldSetChunkEvictCallback(World *WorldVal, ChunkEvictCallback Callback);
+void WorldSetChunkCreateCallback(World *WorldVal, ChunkCreateCallback Callback);
 void WorldSetBlockChangeCallback(World *WorldVal, BlockChangeCallback Callback,
                                  void *UserData);
 // Clamps a requested render distance to [MIN_RENDER_DISTANCE,

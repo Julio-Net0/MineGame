@@ -110,6 +110,7 @@ typedef enum {
   SCRIPT_OP_DEBUG_SCREEN,
   SCRIPT_OP_PAUSE_MENU,
   SCRIPT_OP_LOD,
+  SCRIPT_OP_RENDER_DISTANCE,
   SCRIPT_OP_SCREENSHOT,
   SCRIPT_OP_STATE,
   SCRIPT_OP_LOD_MESH_CHECK,
@@ -806,6 +807,23 @@ static bool ParseStatement(char *Statement, int LineNumber) {
     return AppendStatement((ScriptStatement){.Kind = SCRIPT_OP_LOD,
                                              .Line = LineNumber,
                                              .Index = On},
+                           "", LineText);
+  }
+
+  // "render_distance <n>": what the pause menu's slider does, mid-run.
+  if (CompareString(Tokens[0], "render_distance") == 0) {
+    int Distance = 0;
+    if (TokenCount != 2 || !ParsePositiveInt(Tokens[1], &Distance) ||
+        Distance < MIN_RENDER_DISTANCE || Distance > MAX_RENDER_DISTANCE) {
+      char Reason[SCRIPT_LOG_LINE_CHARS];
+      (void)snprintf(Reason, sizeof(Reason), "expected \"render_distance <%d-%d>\"",
+                     MIN_RENDER_DISTANCE, MAX_RENDER_DISTANCE);
+      ParseError(LineNumber, Reason);
+      return false;
+    }
+    return AppendStatement((ScriptStatement){.Kind = SCRIPT_OP_RENDER_DISTANCE,
+                                             .Line = LineNumber,
+                                             .Count = Distance},
                            "", LineText);
   }
 
@@ -1955,7 +1973,7 @@ static bool ScriptRunInventory(const ScriptStatement *Step,
 }
 
 void ScriptStep(ChatState *Chat, GameCamera *Camera, Player *PlayerVal,
-                World *WorldVal, int RenderDistance) {
+                World *WorldVal, int *RenderDistance) {
   ScriptState *State = GetScriptState();
   if (!State->Active || State->Ended) {
     return;
@@ -1977,7 +1995,7 @@ void ScriptStep(ChatState *Chat, GameCamera *Camera, Player *PlayerVal,
       .Camera = Camera,
       .PlayerVal = PlayerVal,
       .WorldVal = WorldVal,
-      .RenderDistance = RenderDistance,
+      .RenderDistance = *RenderDistance,
   };
 
   if (ScriptIsWaiting(&Ctx)) {
@@ -2077,6 +2095,10 @@ void ScriptStep(ChatState *Chat, GameCamera *Camera, Player *PlayerVal,
       break;
     case SCRIPT_OP_LOD:
       (void)LodSettingsSetDrawOn(Step->Index != 0);
+      break;
+    case SCRIPT_OP_RENDER_DISTANCE:
+      *RenderDistance = Step->Count;
+      Ctx.RenderDistance = Step->Count;
       break;
     case SCRIPT_OP_INVENTORY:
       if (!ScriptRunInventory(Step, PlayerVal)) {

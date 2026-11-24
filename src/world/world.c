@@ -673,6 +673,7 @@ void InitWorld(World *WorldVal){
   // where the terrain bounds say the column is empty.
   WorldSaveForEachSavedChunk(RaiseSavedChunk, WorldVal);
   WorldVal->OnChunkEvict = (ChunkEvictCallback)0;
+  WorldVal->OnChunkCreate = (ChunkCreateCallback)0;
   WorldVal->OnBlockChange = (BlockChangeCallback)0;
   WorldVal->BlockChangeUserData = NULL;
 }
@@ -689,6 +690,10 @@ void DestroyWorld(World *WorldVal) {
 
 void WorldSetChunkEvictCallback(World *WorldVal, ChunkEvictCallback Callback) {
   WorldVal->OnChunkEvict = Callback;
+}
+
+void WorldSetChunkCreateCallback(World *WorldVal, ChunkCreateCallback Callback) {
+  WorldVal->OnChunkCreate = Callback;
 }
 
 void WorldSetBlockChangeCallback(World *WorldVal, BlockChangeCallback Callback,
@@ -1171,6 +1176,9 @@ static bool CreateOrRecycleChunk(World *WorldVal, GenerationBatch *Batch,
     FlushGenerationBatch(Batch);
   }
   InsertChunkIntoMap(WorldVal, IdxI);
+  if(WorldVal->OnChunkCreate != (ChunkCreateCallback)0){
+    WorldVal->OnChunkCreate(&WorldVal->Chunks[IdxI]);
+  }
 
   if(IdxI >= WorldVal->ChunkCount){
     WorldVal->ChunkCount = IdxI + 1;

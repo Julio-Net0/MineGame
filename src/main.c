@@ -90,6 +90,7 @@
 // Through the renderer rather than freeing the handles here, so the slot also
 // leaves the renderer's renderable set before it is reused.
 static void FreeEvictedChunkMeshes(Chunk *Evicted) { RendererForgetChunk(Evicted); }
+static void ExpectCreatedChunk(Chunk *Created) { RendererExpectChunk(Created); }
 
 // The LOD disk cache, once the synthetic fill is on: in --lod-cache-dir when
 // given, else in the save, which a read-only world (a script) never touches.
@@ -205,6 +206,7 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
   NoisePrepareSeed(GetWorldSeed());
   InitWorld(*WorldVal);
   WorldSetChunkEvictCallback(*WorldVal, FreeEvictedChunkMeshes);
+  WorldSetChunkCreateCallback(*WorldVal, ExpectCreatedChunk);
   RendererAttachWorld(*WorldVal);
   LogInfo("MAIN THREAD ID: %llu", (unsigned long long)pthread_self());
 
@@ -585,7 +587,7 @@ int main(int Argc, char **Argv) {
 
     // Before input is polled, so a statement takes effect on the frame it is
     // reached rather than the next one.
-    ScriptStep(&ChatVal, ActiveCamera, &PlayerVal, WorldVal, RenderDistance);
+    ScriptStep(&ChatVal, ActiveCamera, &PlayerVal, WorldVal, &RenderDistance);
 
     // Real input is ignored for the duration of a scripted run, so a key or a
     // mouse movement from whoever is watching cannot change its result. The

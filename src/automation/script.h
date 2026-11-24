@@ -40,9 +40,9 @@ bool ScriptDebugScreenShown(void);
 
 // Advances the script. Called once per frame at the top of the main loop,
 // before input is polled, and runs statements until one blocks or the script
-// ends.
+// ends. A "render_distance" statement writes *RenderDistance.
 void ScriptStep(ChatState *Chat, GameCamera *Camera, Player *PlayerVal,
-                World *WorldVal, int RenderDistance);
+                World *WorldVal, int *RenderDistance);
 
 // This frame's synthetic player intent, to be folded into the pending input
 // the same way the polled intent is. Edge actions are handed over once and

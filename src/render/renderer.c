@@ -1096,8 +1096,8 @@ int RendererQueueMeshJob(World *WorldVal, Chunk *ChunkVal) {
         // Buried rock still has to exist in the LOD, or the coarse levels
         // would show caves where the world has none.
         LodIngestUniformChunk(ChunkVal);
-    LodRendererSetChunkCovered(ChunkVal->ChunkX, ChunkVal->ChunkY,
-                               ChunkVal->ChunkZ, true);
+        LodRendererSetChunkCovered(ChunkVal->ChunkX, ChunkVal->ChunkY,
+                                   ChunkVal->ChunkZ, true);
         return -1;
     }
 
@@ -1870,13 +1870,16 @@ static int ResolveNeighbor(World *WorldVal, const TraversalFrustum *Frustum,
 void RendererForgetChunk(Chunk *ChunkVal) {
     UnloadChunkMesh(ChunkVal);
     // Leaving the 1:1 set hands the place back to the LOD.
-    LodRendererSetChunkCovered(ChunkVal->ChunkX, ChunkVal->ChunkY,
-                               ChunkVal->ChunkZ, false);
+    LodRendererForgetChunk(ChunkVal->ChunkX, ChunkVal->ChunkY, ChunkVal->ChunkZ);
     int Slot = ChunkVisibilitySlot(ChunkVal);
     if (Slot < 0) { return; }
     OcclusionState *State = GetOcclusionState();
     State->Slots[Slot].Epoch++;
     memset(State->Neighbor[Slot], 0, sizeof(State->Neighbor[Slot]));
+}
+
+void RendererExpectChunk(const Chunk *ChunkVal) {
+    LodRendererExpectChunk(ChunkVal->ChunkX, ChunkVal->ChunkY, ChunkVal->ChunkZ);
 }
 
 static void ExpandChunk(World *WorldVal, const TraversalFrustum *Frustum,
