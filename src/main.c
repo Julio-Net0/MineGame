@@ -36,6 +36,7 @@
 #include "core/resource_pack.h"
 #include "world/lod/lod_downsample.h"
 #include "world/lod/lod_ingest.h"
+#include "world/lod/lod_fill.h"
 #include "world/world.h"
 #include "persistence/world_save.h"
 #include <math.h>
@@ -217,6 +218,9 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
     LodDownsampleInit();
     if (LodIngestInit(RenderDistance) && RendererEnableLodIngest()) {
       LodRendererInit();
+      if (!GetLaunchOptions()->LodNoGen) {
+        (void)LodFillInit(LaunchLodDistance(), WorkerCount);
+      }
     } else {
       LodIngestShutdown();
       LogWarn("MAIN: LOD ingestion could not be set up; running without LOD");
@@ -241,6 +245,7 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
 
 static void CleanupGame(World *WorldVal) {
   CloseChunkWorker();
+  LodFillShutdown();
   LodRendererShutdown();
   LodIngestShutdown();
 #ifdef MINEGAME_PROFILE
@@ -639,7 +644,14 @@ int main(int Argc, char **Argv) {
     QueueMeshWork(WorldVal);
     PROFILE_END(MeshQueueStart, PROFILE_MESH_QUEUE);
     if (LodIngestEnabled()) {
-      LodIngestFlush(RendererHasPendingMeshWork());
+      bool WorldBusy = RendererHasPendingMeshWork();
+      LodIngestFlush(WorldBusy);
+      Vec3 FillCenter = (GetDebugState()->Freecam && WasFreecam)
+                            ? FreeCamera.Position
+                            : PlayerVal.Position;
+      LodFillUpdate((int)floorf(FillCenter.x / (float)CHUNK_SIZE),
+                    (int)floorf(FillCenter.z / (float)CHUNK_SIZE), RenderDistance,
+                    WorldBusy);
     }
 
     if (!PauseMenuIsOpen()) {

@@ -1036,8 +1036,7 @@ void RenderBackendInit(void) {
         .Cull = !Options->LodNoCull,
         .HiZ = !Options->LodNoCull && !Options->LodNoHiz,
         .Fog = !Options->LodNoFog,
-        .FogEnd = (float)((Options->LodFogEnd > 0) ? Options->LodFogEnd
-                                                   : LOD_FOG_END_DEFAULT),
+        .FogEnd = (float)LaunchLodFogEnd(),
         .FogColor = {(float)COLOR_CLEAR.R / COLOR8_CHANNEL_MAX,
                      (float)COLOR_CLEAR.G / COLOR8_CHANNEL_MAX,
                      (float)COLOR_CLEAR.B / COLOR8_CHANNEL_MAX},

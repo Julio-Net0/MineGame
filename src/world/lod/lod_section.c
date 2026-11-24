@@ -237,6 +237,17 @@ void LodSectionAdoptDense(LodSection *Section, LodVoxel *Buffer) {
   Section->StorageBytes = LOD_DENSE_BYTES;
 }
 
+void LodSectionAdoptContent(LodSection *Section, LodSection *Source) {
+  free(Section->Storage);
+  Section->Mode = Source->Mode;
+  Section->Uniform = Source->Uniform;
+  Section->PaletteCount = Source->PaletteCount;
+  Section->Storage = Source->Storage;
+  Section->StorageBytes = Source->StorageBytes;
+  Source->Storage = NULL;
+  LodSectionInit(Source);
+}
+
 bool LodSectionCompactDense(LodSection *Section, LodEncodeScratch *Build,
                             LodVoxel **OutReleased) {
   *OutReleased = NULL;

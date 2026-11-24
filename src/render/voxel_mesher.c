@@ -965,6 +965,32 @@ static void FillMargin(ChunkSnapshot *Grid, const LodSection *Neighbour,
     }
 }
 
+// A margin face toward a neighbour drawn at another level: seen-through
+// blocks (water, ice, glass, leaves) find their own block there, so the two
+// levels' seas and canopies meet without walls inside them, and everything
+// else finds air, so the step between the levels' surfaces is closed by this
+// section's wall instead of leaving a crack.
+static void FillTransitionMargin(ChunkSnapshot *Grid, int Axis, bool Positive) {
+    int GridLayer = Positive ? LOD_GRID_LAST : 0;
+    int OwnLayer = Positive ? LOD_SECTION_SIZE : 1;
+    for (int A = 1; A <= LOD_SECTION_SIZE; A++) {
+        for (int B = 1; B <= LOD_SECTION_SIZE; B++) {
+            int Target[3];
+            int Own[3];
+            Target[Axis] = GridLayer;
+            Own[Axis] = OwnLayer;
+            Target[(Axis + 1) % 3] = A;
+            Own[(Axis + 1) % 3] = A;
+            Target[(Axis + 2) % 3] = B;
+            Own[(Axis + 2) % 3] = B;
+            BlockID Id = Grid->Blocks[Own[0]][Own[1]][Own[2]];
+            bool SeenThrough = Id != BLOCK_ID_AIR && GetBlockDef(Id)->IsTransparent;
+            Grid->Blocks[Target[0]][Target[1]][Target[2]] =
+                SeenThrough ? Id : (BlockID)BLOCK_ID_AIR;
+        }
+    }
+}
+
 // The biome margin side Face (0..3: -X, +X, -Z, +Z) from that neighbour: its
 // MARGIN layers nearest the section, or the section's own edge repeated.
 static void FillBiomeMargin(VoxelLodBiomes *Biomes, const LodSection *Neighbour,
@@ -1014,7 +1040,8 @@ static void FillBiomeCorners(VoxelLodBiomes *Biomes) {
 
 void VoxelMeshLodSection(VoxelMesher *Mesher, VoxelLodScratch *Scratch,
                          const LodSection *Section, const VoxelLodPlace *Place,
-                         const LodSection *const Neighbours[VOXEL_LOD_NEIGHBOURS]) {
+                         const LodSection *const Neighbours[VOXEL_LOD_NEIGHBOURS],
+                         unsigned TransitionFaces) {
     ChunkSnapshot *Grid = &Scratch->Grid;
     // Air margins, no rock faces, a local origin: the grid stands alone.
     memset(Grid, 0, sizeof(*Grid));
@@ -1035,6 +1062,11 @@ void VoxelMeshLodSection(VoxelMesher *Mesher, VoxelLodScratch *Scratch,
             if (Neighbours[Face] != NULL) {
                 FillMargin(Grid, Neighbours[Face], Face / 2, (Face % 2) == 1);
             }
+        }
+    }
+    for (int Face = 0; Face < VOXEL_LOD_NEIGHBOURS; Face++) {
+        if ((TransitionFaces & (1U << (unsigned)Face)) != 0U) {
+            FillTransitionMargin(Grid, Face / 2, (Face % 2) == 1);
         }
     }
     // Margin faces in ChunkFace order: -X, +X, then (skipping Y) -Z, +Z.

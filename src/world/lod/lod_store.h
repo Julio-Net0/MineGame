@@ -104,6 +104,10 @@ typedef struct {
   int Sections;
   int SectionsPerLevel[LOD_MAX_LEVEL + 1];
   int SectionsPerMode[LOD_STORAGE_COUNT];
+  // Sections holding any real cell, and the others with present cells (all
+  // synthetic).
+  int SectionsIngested;
+  int SectionsSynthetic;
   // Section structs plus their storage, the slot table, the write workspaces,
   // and all of them summed.
   size_t SectionBytes;
@@ -204,6 +208,17 @@ static inline LodWriteResult LodStoreWriteChunk(LodStore *Store, int ChunkX,
                                                 LodOrigin Origin) {
   return LodStoreWritePatch(Store, 1, ChunkX, ChunkY, ChunkZ, Patch, Origin);
 }
+
+// Writes one whole synthetic section (see lod_gen.h) from its encoded form,
+// taking Encoded's storage when no cell of the section holds real data, so
+// the write costs no encoding. Cells holding real data keep their voxels and
+// provenance; the others become synthetic, present as PresentCells says. The
+// write is not propagated and never leaves the section hot: each level is
+// generated on its own, and the ingestion's pending and hot sets stay as
+// they were. LOD_WRITE_SKIPPED_PRECEDENCE when every cell holds real data.
+LodWriteResult LodStoreWriteSynthetic(LodStore *Store, int Level, int X, int Y,
+                                      int Z, LodSection *Encoded,
+                                      uint64_t PresentCells);
 
 void LodStoreGetStats(const LodStore *Store, LodStoreStats *Out);
 

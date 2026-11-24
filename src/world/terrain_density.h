@@ -77,4 +77,9 @@ int GetTerrainTop(int X, int Z, uint64_t Seed);
 int GetTerrainTopWithDepth(int X, int Z, uint64_t Seed, int MaxBelow,
                            int *OutSolidBelow);
 
+// GetTerrainTop for a column on the density lattice (X and Z multiples of
+// DENSITY_CELL_XZ), evaluating one column shape and one corner per row instead
+// of four; any other column falls back to GetTerrainTop.
+int GetTerrainTopOnLattice(int X, int Z, uint64_t Seed);
+
 #endif

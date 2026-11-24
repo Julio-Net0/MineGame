@@ -22,12 +22,18 @@ int ChunkWorkerThreadCount(void);
 // thing that knows what a mesh job contains, and the workers only carry its id.
 typedef void (*MeshJobRunner)(int JobId, int MesherSlot);
 
+// Runs one queued background LOD job (see lod_fill.h). A worker takes one
+// only when no mesh or generation work is queued, so it never delays 1:1
+// chunks by more than the job already running.
+typedef void (*LodJobRunner)(int JobId);
+
 // RenderDistance sizes the shared column table; see ColumnCacheInitWorkers.
 void InitChunkWorker(int ThreadCount, int RenderDistance);
 void CloseChunkWorker(void);
 
 // Wire the mesher in before any mesh job is queued.
 void SetChunkWorkerMeshRunner(MeshJobRunner Runner);
+void SetChunkWorkerLodRunner(LodJobRunner Runner);
 
 // Enqueues Count chunks for generation, in order, under one lock and one
 // wake-up: a lock and a wake per chunk made idle workers contend with the main
@@ -44,5 +50,9 @@ int DrainChunkCompletions(Chunk **Out, int Capacity, bool *OutOverflowed);
 // The job id comes from the renderer, which owns the snapshot the job carries.
 // Returns false when the queue is full, leaving the caller to retry later.
 bool EnqueueChunkMeshJob(int JobId);
+
+// Lowest priority. Jobs still queued at shutdown are dropped, not run.
+// Returns false when the queue is full.
+bool EnqueueChunkLodJob(int JobId);
 
 #endif

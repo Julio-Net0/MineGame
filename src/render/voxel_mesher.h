@@ -128,8 +128,12 @@ typedef struct {
 // opaque target. Level-1 tints blend across biome cells like a chunk's, so
 // the LOD next to the 1:1 chunks carries the colour of the blocks it stands
 // for; coarser levels take each voxel's own biome.
+// TransitionFaces (bit per face, ChunkFace order) marks neighbours drawn at
+// another level: their faces are meshed as if the neighbour held this
+// section's own see-through blocks and air elsewhere (see FillTransitionMargin).
 void VoxelMeshLodSection(VoxelMesher *Mesher, VoxelLodScratch *Scratch,
                          const LodSection *Section, const VoxelLodPlace *Place,
-                         const LodSection *const Neighbours[VOXEL_LOD_NEIGHBOURS]);
+                         const LodSection *const Neighbours[VOXEL_LOD_NEIGHBOURS],
+                         unsigned TransitionFaces);
 
 #endif

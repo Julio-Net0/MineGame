@@ -16,7 +16,7 @@ static const char *const SCOPE_NAMES[PROFILE_SCOPE_COUNT] = {
     "Worker gen",  "Gen column", "Gen terrain", "Gen features", "Mesh vis",
     "Occlusion",   "Chunk submit", "Chunk events", "Mesh queue", "Script wait",
     "Col bounds",  "Cull sweep", "LOD ingest", "LOD sample", "LOD draw",
-    "LOD mesh"};
+    "LOD mesh",   "LOD gen"};
 
 // Kept beside the names so the two cannot drift: a scope that changes threads
 // has to be updated here, and the overlay and any analysis read it rather than
@@ -47,7 +47,8 @@ static const bool SCOPE_IS_WORKER_SIDE[PROFILE_SCOPE_COUNT] = {
     false, /* LOD ingest   */
     true,  /* LOD sample   */
     false, /* LOD draw     */
-    false  /* LOD mesh     */
+    false, /* LOD mesh     */
+    true   /* LOD gen      */
 };
 
 // Every scope is CPU-bound except Present, whose wall time is waiting on the
@@ -86,7 +87,8 @@ static const bool SCOPE_IS_CPU_BOUND[PROFILE_SCOPE_COUNT] = {
     true,  /* LOD sample   */
     // Nested inside World draw, and LOD mesh inside LOD draw.
     false, /* LOD draw     */
-    false  /* LOD mesh     */
+    false, /* LOD mesh     */
+    true   /* LOD gen      */
 };
 
 static const bool SCOPE_IS_NESTED[PROFILE_SCOPE_COUNT] = {
@@ -115,7 +117,8 @@ static const bool SCOPE_IS_NESTED[PROFILE_SCOPE_COUNT] = {
     false, /* LOD ingest   */
     false, /* LOD sample   */
     true,  /* LOD draw     */
-    true   /* LOD mesh     */
+    true,  /* LOD mesh     */
+    false  /* LOD gen      */
 };
 
 bool IsProfileScopeWorkerSide(ProfileScope Scope) {

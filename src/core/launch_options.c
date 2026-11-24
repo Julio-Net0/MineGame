@@ -58,12 +58,25 @@ static LaunchOptions *GetMutableLaunchOptions(void) {
       .LodFogEnd = 0,
       .LodNoReversedZ = false,
       .LodArenaMb = 0,
+      .LodDistance = 0,
+      .LodNoGen = false,
   };
   return &Options;
 }
 
 const LaunchOptions *GetLaunchOptions(void) {
   return GetMutableLaunchOptions();
+}
+
+int LaunchLodDistance(void) {
+  const LaunchOptions *Options = GetMutableLaunchOptions();
+  return (Options->LodDistance > 0) ? Options->LodDistance : LOD_DISTANCE_DEFAULT;
+}
+
+int LaunchLodFogEnd(void) {
+  const LaunchOptions *Options = GetMutableLaunchOptions();
+  return (Options->LodFogEnd > 0) ? Options->LodFogEnd
+                                  : LaunchLodDistance() * LOD_BLOCKS_PER_CHUNK;
 }
 
 void SetAppliedCoreCount(int CoreCount) {
@@ -364,6 +377,27 @@ static void ParseLodArenaValue(const char *ValueStr, LaunchOptions *Options) {
   Options->LodArenaMb = (int)Value;
 }
 
+static void ParseLodDistanceValue(const char *ValueStr, LaunchOptions *Options) {
+  long Value = 0;
+  if (!ParseStrictLong(ValueStr, &Value) || Value < LOD_DISTANCE_MIN ||
+      Value > LOD_DISTANCE_MAX) {
+    LogWarn("MAIN: --lod-distance must be an integer in [%d, %d]; ignoring \"%s\"",
+            LOD_DISTANCE_MIN, LOD_DISTANCE_MAX, ValueStr);
+    return;
+  }
+  Options->LodDistance = (int)Value;
+}
+
+static void ParseLodGenValue(const char *ValueStr, LaunchOptions *Options) {
+  if (strcmp(ValueStr, "on") == 0) {
+    Options->LodNoGen = false;
+  } else if (strcmp(ValueStr, "off") == 0) {
+    Options->LodNoGen = true;
+  } else {
+    LogWarn("MAIN: --lod-gen must be on or off; ignoring \"%s\"", ValueStr);
+  }
+}
+
 static void ParseMonitorValue(const char *ValueStr, LaunchOptions *Options) {
   long Value = 0;
   if (!ParseStrictLong(ValueStr, &Value) || Value < 1 ||
@@ -417,6 +451,8 @@ void ParseLaunchOptions(int Argc, char **Argv) {
       .LodFogEnd = 0,
       .LodNoReversedZ = false,
       .LodArenaMb = 0,
+      .LodDistance = 0,
+      .LodNoGen = false,
   };
 
   if (Argc <= 1 || Argv == (char **)0) {
@@ -458,6 +494,8 @@ void ParseLaunchOptions(int Argc, char **Argv) {
                      (strcmp(Arg, "--lod-fog-end") == 0) ||
                      (strcmp(Arg, "--lod-reversed-z") == 0) ||
                      (strcmp(Arg, "--lod-arena-mb") == 0) ||
+                     (strcmp(Arg, "--lod-distance") == 0) ||
+                     (strcmp(Arg, "--lod-gen") == 0) ||
                      (strcmp(Arg, "--monitor") == 0) ||
                      (strcmp(Arg, "--script") == 0) ||
                      (strcmp(Arg, "--script-out") == 0) ||
@@ -509,6 +547,10 @@ void ParseLaunchOptions(int Argc, char **Argv) {
       ParseLodReversedZValue(ValueStr, Options);
     } else if (strcmp(Arg, "--lod-arena-mb") == 0) {
       ParseLodArenaValue(ValueStr, Options);
+    } else if (strcmp(Arg, "--lod-distance") == 0) {
+      ParseLodDistanceValue(ValueStr, Options);
+    } else if (strcmp(Arg, "--lod-gen") == 0) {
+      ParseLodGenValue(ValueStr, Options);
     } else if (strcmp(Arg, "--monitor") == 0) {
       ParseMonitorValue(ValueStr, Options);
     } else if (strcmp(Arg, "--script") == 0) {

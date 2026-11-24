@@ -1,5 +1,6 @@
 #include "world/terrain_density.h"
 #include "world/cave_fields.h"
+#include "world/chunk.h"
 #include "world/surface.h"
 #include "world/terrain_shape.h"
 #include "world/worldgen_strata.h"
@@ -250,4 +251,58 @@ int GetTerrainTopWithDepth(int X, int Z, uint64_t Seed, int MaxBelow,
     Y = Y0 - 1;
   }
   return (Top != INT_MIN) ? Top : Floor - 1;
+}
+
+// On a lattice column the blend weights of the three other lattice columns are
+// zero, so only this column's shape and one corner per row matter. The scan
+// starts at that shape's own bound, or at the sea level when lower, since a
+// flood barrier can only stand at or below the sea.
+int GetTerrainTopOnLattice(int X, int Z, uint64_t Seed) {
+  if (X % DENSITY_CELL_XZ != 0 || Z % DENSITY_CELL_XZ != 0) {
+    return GetTerrainTop(X, Z, Seed);
+  }
+  int Floor = INT_MIN;
+  int Unused = 0;
+  if (!GetStratumRange(STRATUM_GEN_OVERWORLD, &Floor, &Unused)) {
+    return INT_MIN;
+  }
+  ColumnShape Shape = EvaluateColumnShape(X, Z, Seed);
+  float Highest = Shape.Base + (TERRAIN_NOISE_BOUND * Shape.Variation);
+  if (Highest < (float)SEA_LEVEL) {
+    Highest = (float)SEA_LEVEL;
+  }
+  int Start = GetGenerationCeiling() - 1;
+  if (Highest < (float)Start) {
+    Start = (int)floorf(Highest);
+  }
+
+  int Surface = INT_MIN;
+  FloodProbeCell Cell = {.Valid = false};
+  int Y = Start;
+  float Upper = TerrainCornerDensity(
+      Shape.Base, Shape.Variation, Shape.ShellDepth, X,
+      FloorToMultiple(Y, DENSITY_CELL_Y) + DENSITY_CELL_Y, Z, Seed);
+  while (Y >= Floor) {
+    int Y0 = FloorToMultiple(Y, DENSITY_CELL_Y);
+    float Lower = TerrainCornerDensity(Shape.Base, Shape.Variation,
+                                       Shape.ShellDepth, X, Y0, Z, Seed);
+    // Every corner of a row holds the column's value, so the blend performs
+    // exactly the operations GetTerrainTop's does with zero X and Z weights.
+    float Corners[DENSITY_CELL_CORNERS];
+    for (int Idx = 0; Idx < DENSITY_CELL_CORNERS; Idx++) {
+      Corners[Idx] = ((Idx & CELL_X0Y1Z0) != 0) ? Upper : Lower;
+    }
+    int Stop = (Y0 > Floor) ? Y0 : Floor;
+    for (int Block = Y; Block >= Stop; Block--) {
+      float Fy = (float)(Block - Y0) / (float)DENSITY_CELL_Y;
+      float Density = ApplyProbeBarrier(TrilinearDensity(Corners, 0.0F, Fy, 0.0F),
+                                        X, Block, Z, &Surface, &Cell, Seed);
+      if (Density > 0.0F) {
+        return Block;
+      }
+    }
+    Upper = Lower;
+    Y = Y0 - 1;
+  }
+  return Floor - 1;
 }

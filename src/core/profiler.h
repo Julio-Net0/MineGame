@@ -73,6 +73,8 @@ typedef enum {
   PROFILE_LOD_DRAW,
   // Main thread, inside LOD draw: meshing and uploading LOD sections.
   PROFILE_LOD_MESH,
+  // Workers: generating synthetic LOD columns (lod_fill.c).
+  PROFILE_LOD_GEN,
   PROFILE_SCOPE_COUNT
 } ProfileScope;
 

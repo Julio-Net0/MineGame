@@ -10,6 +10,7 @@
 #include "world/world.h"
 #include "world/biome.h"
 #include "world/block_system.h"
+#include "world/lod/lod_fill.h"
 #include "world/lod/lod_ingest.h"
 #include "world/worldgen_column_cache.h"
 #include "persistence/world_save.h"
@@ -527,6 +528,18 @@ static void DrawDebugScreen(UiContext *Ctx, Player *PlayerVal, World *WorldVal,
              (double)LodIngestBytes() / (double)(1U << BYTES_TO_MB_SHIFT),
              (unsigned long long)LodIngestChunkCount());
     Y = DrawDebugLine(Ctx, DebugText, Y);
+    LodFillStats Fill;
+    LodFillGetStats(&Fill);
+    if (Fill.Enabled) {
+      snprintf(DebugText, sizeof(DebugText),
+               "LOD gen: %d chunks, %d queued, %d running, %llu cols, %.0f us/section",
+               Fill.DistanceChunks, Fill.Queued, Fill.InFlight,
+               (unsigned long long)Fill.ColumnsGenerated,
+               (Fill.SectionsGenerated > 0U)
+                   ? (double)Fill.GenMicros / (double)Fill.SectionsGenerated
+                   : 0.0);
+      Y = DrawDebugLine(Ctx, DebugText, Y);
+    }
     LodRendererReadCullStats(false);
     LodRenderStats Lod;
     LodRendererGetStats(&Lod);

@@ -1481,6 +1481,7 @@ def run_scenario(
     gl_tier: int | None = None,
     gl_max: str | None = None,
     window_flags: list[str] | None = None,
+    lod_gen: str | None = None,
 ) -> float:
     out_dir = out_root / name
     if out_dir.exists():
@@ -1498,6 +1499,7 @@ def run_scenario(
         *render_distance_flag(render_distance_arg),
         *(["--gl-tier", str(gl_tier)] if gl_tier is not None else []),
         *(["--gl-max", gl_max] if gl_max is not None else []),
+        *(["--lod-gen", lod_gen] if lod_gen is not None else []),
         *(window_flags or []),
     ]
 
@@ -1603,6 +1605,16 @@ def main() -> int:
         default=None,
         help="OpenGL version cap forwarded to MineGame as --gl-max (applied before --gl-tier).",
     )
+    parser.add_argument(
+        "--lod-gen",
+        choices=("on", "off"),
+        default=None,
+        help=(
+            "Synthetic LOD terrain, forwarded to MineGame as --lod-gen. Defaults to off with "
+            "--golden/--golden-capture (the golden suites hold only LOD built from real chunks) "
+            "and to the engine's default otherwise."
+        ),
+    )
     add_window_arguments(parser)
     args = parser.parse_args()
 
@@ -1638,6 +1650,9 @@ def main() -> int:
     out_root.mkdir(parents=True, exist_ok=True)
 
     render_distance = effective_render_distance(args.render_distance)
+    lod_gen = args.lod_gen
+    if lod_gen is None and (args.golden is not None or args.golden_capture is not None):
+        lod_gen = "off"
     print(f"Running regression suite with binary: {binary}")
     print(
         f"Render distance {render_distance} "
@@ -1728,6 +1743,7 @@ def main() -> int:
                 gl_tier=args.gl_tier,
                 gl_max=args.gl_max,
                 window_flags=window_flags(args),
+                lod_gen=lod_gen,
             )
             note = ""
             if golden_capture is not None:
@@ -1748,6 +1764,7 @@ def main() -> int:
                         gl_tier=args.gl_tier,
                         gl_max=args.gl_max,
                         window_flags=window_flags(args),
+                        lod_gen=lod_gen,
                     )
                     run_dirs.append(rerun_root / name)
                 images, variants, unstable = golden_capture.record(name, run_dirs)

@@ -63,6 +63,14 @@ void LodIngestUniformChunk(const Chunk *ChunkVal);
 // idle the backlog drains with a larger one.
 void LodIngestFlush(bool WorldBusy);
 
+// A whole synthetic section from LOD generation; see LodStoreWriteSynthetic.
+LodWriteResult LodIngestWriteSynthetic(int Level, int X, int Y, int Z,
+                                       LodSection *Encoded, uint64_t PresentCells);
+
+// Whether the clipmap holds the level-Level section column (X, Z) around the
+// current anchor (false when off).
+bool LodIngestColumnInRange(int Level, int X, int Z);
+
 // Nothing queued, waiting to propagate or waiting to be compacted (always
 // true when off).
 bool LodIngestIdle(void);

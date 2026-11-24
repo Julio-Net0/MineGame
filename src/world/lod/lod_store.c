@@ -819,6 +819,63 @@ LodWriteResult LodStoreWritePatch(LodStore *Store, int Level, int ChildX,
   return Result;
 }
 
+// Copies the incoming voxels of every cell real data does not hold.
+static void MergeUnprotected(LodVoxel *Target, const LodSection *Incoming,
+                             uint64_t Protected) {
+  for (int X = 0; X < LOD_SECTION_SIZE; X++) {
+    for (int Y = 0; Y < LOD_SECTION_SIZE; Y++) {
+      for (int Z = 0; Z < LOD_SECTION_SIZE; Z++) {
+        uint64_t Bit = LodCellBit(X / LOD_CELL_SIZE, Y / LOD_CELL_SIZE,
+                                  Z / LOD_CELL_SIZE);
+        if ((Protected & Bit) == 0U) {
+          Target[LodVoxelIndex(X, Y, Z)] = LodSectionGet(Incoming, X, Y, Z);
+        }
+      }
+    }
+  }
+}
+
+LodWriteResult LodStoreWriteSynthetic(LodStore *Store, int Level, int X, int Y,
+                                      int Z, LodSection *Encoded,
+                                      uint64_t PresentCells) {
+  if (!LodStoreInRange(Store, Level, X, Y, Z)) {
+    return LOD_WRITE_OUT_OF_RANGE;
+  }
+  const LodSection *Existing = LodStoreFind(Store, Level, X, Y, Z);
+  uint64_t Protected = (Existing != NULL) ? Existing->IngestedCells : 0U;
+  if (Protected == ~(uint64_t)0U) {
+    return LOD_WRITE_SKIPPED_PRECEDENCE;
+  }
+  LodSection *Section = GetOrCreate(Store, Level, X, Y, Z);
+  if (Section == NULL) {
+    return LOD_WRITE_NO_MEMORY;
+  }
+  size_t OldBytes = LodSectionHeapBytes(Section);
+  LodVoxel *Dense = LodSectionDenseVoxels(Section);
+  if (Protected != 0U || Dense != NULL) {
+    // A section holding real cells, or hot under real writes, is merged in
+    // place and keeps its storage path; real cells stay as they are.
+    LodVoxel *Target = (Dense != NULL) ? Dense : Store->Scratch->Voxels;
+    if (Dense == NULL) {
+      LodSectionDecode(Section, Target);
+    }
+    MergeUnprotected(Target, Encoded, Protected);
+    if (Dense == NULL &&
+        !LodSectionEncodeWithScratch(Section, Target, Store->Encode)) {
+      return LOD_WRITE_NO_MEMORY;
+    }
+  } else {
+    LodSectionAdoptContent(Section, Encoded);
+  }
+  Store->HeapBytes = Store->HeapBytes - OldBytes + LodSectionHeapBytes(Section);
+  Section->PresentCells =
+      (Section->PresentCells & Protected) | (PresentCells & ~Protected);
+  Section->Revision++;
+  Section->Dirty = true;
+  JournalChange(Store, (LodStoreKey){.X = X, .Y = Y, .Z = Z, .Level = Level});
+  return LOD_WRITE_APPLIED;
+}
+
 void LodStoreGetStats(const LodStore *Store, LodStoreStats *Out) {
   *Out = (LodStoreStats){0};
   for (int Idx = 0; Idx < Store->Capacity; Idx++) {
@@ -829,6 +886,11 @@ void LodStoreGetStats(const LodStore *Store, LodStoreStats *Out) {
     Out->Sections++;
     Out->SectionsPerLevel[Slot->Level]++;
     Out->SectionsPerMode[Slot->Section->Mode]++;
+    if (Slot->Section->IngestedCells != 0U) {
+      Out->SectionsIngested++;
+    } else if (Slot->Section->PresentCells != 0U) {
+      Out->SectionsSynthetic++;
+    }
     Out->SectionBytes +=
         sizeof(LodSection) + LodSectionHeapBytes(Slot->Section);
   }

@@ -1,4 +1,5 @@
 #include "server/lod_selftest.h"
+#include "server/lod_gen_selftest.h"
 
 #include "core/log.h"
 #include "persistence/world_save.h"
@@ -1211,7 +1212,7 @@ bool RunLodSelfTest(void) {
            TestDeferredEqualsImmediate(&S) && TestHotSections(&S) &&
            TestEditPropagation(&S.Blocks, S.RealBase) &&
            TestIncrementalEqualsRebuild(&S) && TestPrecedence(&S) &&
-           TestClipmap(&S.Blocks);
+           TestClipmap(&S.Blocks) && RunLodGenSelfTest();
   FreeScratch(&S);
   return Passed;
 }

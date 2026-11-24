@@ -1321,7 +1321,7 @@ static void CheckLodSection(VoxelMesher *Mesher, VoxelLodScratch *Scratch,
                                         Slot->Z + OFFSETS[Face][2]);
     }
     VoxelLodPlace Place = {.Level = Slot->Level, .X = Slot->X, .Y = Slot->Y, .Z = Slot->Z};
-    VoxelMeshLodSection(Mesher, Scratch, Slot->Section, &Place, Neighbours);
+    VoxelMeshLodSection(Mesher, Scratch, Slot->Section, &Place, Neighbours, 0U);
 
     int SectionQuads = 0;
     int64_t *Quads[MESH_TARGET_COUNT] = {&Out->OpaqueQuads, &Out->CutoutQuads,

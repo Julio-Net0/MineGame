@@ -118,6 +118,11 @@ LodVoxel *LodSectionDenseVoxels(LodSection *Section);
 // its DENSE storage, freeing what it held before.
 void LodSectionAdoptDense(LodSection *Section, LodVoxel *Buffer);
 
+// Moves Source's content (storage form and voxels) into Section, freeing what
+// Section held; Source is left empty. Provenance and revisions are the
+// caller's.
+void LodSectionAdoptContent(LodSection *Section, LodSection *Source);
+
 // Re-encodes a DENSE section in its smallest form, exactly as LodSectionEncode
 // would from the same voxels. When the dense buffer stops being used it is
 // handed back in *OutReleased (else NULL) for the caller to reuse or free. On

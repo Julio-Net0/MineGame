@@ -14,6 +14,8 @@
 
 // A ring holds QUEUE_SIZE - 1 entries: enough for every active chunk at once.
 #define QUEUE_SIZE (MAX_ACTIVE_CHUNKS + 1)
+// The LOD scheduler keeps a few dozen jobs in flight at most.
+#define LOD_QUEUE_SIZE 257
 
 // Meshing and generation share one pool rather than getting one each. The queue
 // lock, condition variable and shutdown path already do what mesh work needs,
@@ -60,6 +62,10 @@ typedef struct ChunkWorkerState {
   int MeshHead;
   int MeshTail;
 
+  int LodQueue[LOD_QUEUE_SIZE];
+  int LodHead;
+  int LodTail;
+
   CompletionRing Completions;
 
   pthread_t WorkerThreads[CHUNK_WORKER_MAX_THREADS];
@@ -69,6 +75,7 @@ typedef struct ChunkWorkerState {
   pthread_cond_t WorkAvail;
   atomic_bool WorkerRunning;
   MeshJobRunner MeshRunner;
+  LodJobRunner LodRunner;
 } ChunkWorkerState;
 
 static ChunkWorkerState *GetWorkerState(void) {
@@ -77,19 +84,25 @@ static ChunkWorkerState *GetWorkerState(void) {
     .MeshTail = 0,
     .ThreadCount = 0,
     .WorkerRunning = false,
-    .MeshRunner = (MeshJobRunner)0
+    .MeshRunner = (MeshJobRunner)0,
+    .LodRunner = (LodJobRunner)0
   };
   return &State;
 }
 
-// Caller holds QueueMutex.
-static bool HasWork(const ChunkWorkerState *State) {
+// Caller holds QueueMutex. Mesh or generation work: what a shutdown drains.
+static bool HasChunkWork(const ChunkWorkerState *State) {
   for (int Idx = 0; Idx < State->ThreadCount; Idx++) {
     if (State->GenerationQueues[Idx].Head != (Chunk *)0) {
       return true;
     }
   }
   return State->MeshHead != State->MeshTail;
+}
+
+// Caller holds QueueMutex.
+static bool HasWork(const ChunkWorkerState *State) {
+  return HasChunkWork(State) || State->LodHead != State->LodTail;
 }
 
 // The worker that owns a column. Columns are grouped into OWNER_BLOCK x
@@ -217,13 +230,14 @@ static void *WorkerLoop(void *Arg) {
       pthread_cond_wait(&State->WorkAvail, &State->QueueMutex);
     }
 
-    if (!atomic_load(&State->WorkerRunning) && !HasWork(State)) {
+    if (!atomic_load(&State->WorkerRunning) && !HasChunkWork(State)) {
       pthread_mutex_unlock(&State->QueueMutex);
       break;
     }
 
     Chunk *GenerationTarget = (Chunk *)0;
     int MeshJobId = -1;
+    int LodJobId = -1;
 
     // Mesh work first. It is bounded by the renderer's job slots, which the main
     // thread refills nearest first, so it can never saturate the pool the way
@@ -236,9 +250,14 @@ static void *WorkerLoop(void *Arg) {
       State->MeshHead = (State->MeshHead + 1) % QUEUE_SIZE;
     } else {
       GenerationTarget = TakeGenerationJob(State, WorkerIndex);
+      if (GenerationTarget == (Chunk *)0 && State->LodHead != State->LodTail) {
+        LodJobId = State->LodQueue[State->LodHead];
+        State->LodHead = (State->LodHead + 1) % LOD_QUEUE_SIZE;
+      }
     }
 
     MeshJobRunner Runner = State->MeshRunner;
+    LodJobRunner LodRunner = State->LodRunner;
     pthread_mutex_unlock(&State->QueueMutex);
 
     if (GenerationTarget != (Chunk *)0) {
@@ -246,6 +265,8 @@ static void *WorkerLoop(void *Arg) {
       Completed = GenerationTarget;
     } else if (MeshJobId >= 0 && Runner != (MeshJobRunner)0) {
       Runner(MeshJobId, WorkerIndex);
+    } else if (LodJobId >= 0 && LodRunner != (LodJobRunner)0) {
+      LodRunner(LodJobId);
     }
   }
   return (void *)0;
@@ -253,6 +274,10 @@ static void *WorkerLoop(void *Arg) {
 
 void SetChunkWorkerMeshRunner(MeshJobRunner Runner) {
   GetWorkerState()->MeshRunner = Runner;
+}
+
+void SetChunkWorkerLodRunner(LodJobRunner Runner) {
+  GetWorkerState()->LodRunner = Runner;
 }
 
 int ChunkWorkerDefaultThreadCount(void) {
@@ -288,6 +313,8 @@ void InitChunkWorker(int ThreadCount, int RenderDistance) {
     State->GenerationQueues[Idx].Head = (Chunk *)0;
     State->GenerationQueues[Idx].Tail = (Chunk *)0;
   }
+  State->LodHead = 0;
+  State->LodTail = 0;
   State->Completions.Head = 0;
   State->Completions.Tail = 0;
   State->Completions.Overflowed = false;
@@ -305,8 +332,14 @@ void InitChunkWorker(int ThreadCount, int RenderDistance) {
 
 void CloseChunkWorker(void) {
   ChunkWorkerState *State = GetWorkerState();
+  // Under the lock: a worker that has just seen it still running and found no
+  // work is either already waiting (and woken) or has not released the lock
+  // yet (and sees it stopped). Without it the broadcast can land between the
+  // two, and that worker waits forever.
+  pthread_mutex_lock(&State->QueueMutex);
   atomic_store(&State->WorkerRunning, false);
   pthread_cond_broadcast(&State->WorkAvail);
+  pthread_mutex_unlock(&State->QueueMutex);
   for (int Idx = 0; Idx < State->ThreadCount; Idx++) {
     pthread_join(State->WorkerThreads[Idx], (void **)0);
   }
@@ -375,6 +408,20 @@ bool EnqueueChunkMeshJob(int JobId) {
     pthread_cond_signal(&State->WorkAvail);
   }
 
+  pthread_mutex_unlock(&State->QueueMutex);
+  return Queued;
+}
+
+bool EnqueueChunkLodJob(int JobId) {
+  ChunkWorkerState *State = GetWorkerState();
+  pthread_mutex_lock(&State->QueueMutex);
+  int NextTail = (State->LodTail + 1) % LOD_QUEUE_SIZE;
+  bool Queued = (NextTail != State->LodHead);
+  if (Queued) {
+    State->LodQueue[State->LodTail] = JobId;
+    State->LodTail = NextTail;
+    pthread_cond_signal(&State->WorkAvail);
+  }
   pthread_mutex_unlock(&State->QueueMutex);
   return Queued;
 }

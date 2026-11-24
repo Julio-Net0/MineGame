@@ -98,6 +98,13 @@ typedef struct {
   // --lod-arena-mb N: ceiling of the LOD vertex arena, which starts small
   // and grows on demand; 0 keeps LOD_ARENA_MB_DEFAULT.
   int LodArenaMb;
+  // --lod-distance N: chunks out to which the LOD is generated and drawn; 0
+  // keeps LOD_DISTANCE_DEFAULT. The fog end follows it unless --lod-fog-end
+  // is given.
+  int LodDistance;
+  // --lod-gen off: no synthetic terrain; the LOD holds only what real chunks
+  // brought (the golden comparisons run this way).
+  bool LodNoGen;
 } LaunchOptions;
 
 #define LOD_ARENA_MB_DEFAULT 192
@@ -105,12 +112,21 @@ typedef struct {
 #define LOD_ARENA_MB_MAX 2048
 #define LOD_BYTES_PER_MB 1048576LL
 
-// 512 chunks: the shortest LOD view distance planned.
-#define LOD_FOG_END_DEFAULT 8192
+#define LOD_DISTANCE_DEFAULT 512
+#define LOD_DISTANCE_MIN 32
+#define LOD_DISTANCE_MAX 2048
+#define LOD_BLOCKS_PER_CHUNK 16
+
+// The edge of the default LOD distance.
+#define LOD_FOG_END_DEFAULT (LOD_DISTANCE_DEFAULT * LOD_BLOCKS_PER_CHUNK)
 #define LOD_FOG_END_MIN 64
 #define LOD_FOG_END_MAX 65536
 
 void ParseLaunchOptions(int Argc, char **Argv);
+
+// The LOD distance in chunks and the LOD fog end in blocks, defaults applied.
+int LaunchLodDistance(void);
+int LaunchLodFogEnd(void);
 const LaunchOptions *GetLaunchOptions(void);
 void SetAppliedCoreCount(int CoreCount);
 void SetAppliedRamLimitMb(size_t RamLimitMb);

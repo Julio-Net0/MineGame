@@ -265,6 +265,21 @@ void LodIngestFlush(bool WorldBusy) {
   PROFILE_END(IngestStart, PROFILE_LOD_INGEST);
 }
 
+LodWriteResult LodIngestWriteSynthetic(int Level, int X, int Y, int Z,
+                                       LodSection *Encoded, uint64_t PresentCells) {
+  LodIngestState *State = GetIngestState();
+  if (!State->Enabled) {
+    return LOD_WRITE_OUT_OF_RANGE;
+  }
+  return LodStoreWriteSynthetic(&State->Store, Level, X, Y, Z, Encoded,
+                                PresentCells);
+}
+
+bool LodIngestColumnInRange(int Level, int X, int Z) {
+  const LodIngestState *State = GetIngestState();
+  return State->Enabled && LodStoreInRange(&State->Store, Level, X, 0, Z);
+}
+
 bool LodIngestIdle(void) {
   const LodIngestState *State = GetIngestState();
   return !State->Enabled ||

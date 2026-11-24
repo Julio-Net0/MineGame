@@ -125,6 +125,14 @@ void InitTerrainGeneration(void);
 
 // The terrain's base stone, resolved by InitTerrainGeneration.
 BlockID TerrainStoneBlockId(void);
+// The sea-surface ice of frozen biomes, resolved by InitTerrainGeneration.
+BlockID TerrainIceBlockId(void);
+
+// The biome palette block terrain generation gives a solid block Depth blocks
+// below the column's top (0 <= Depth < SubsurfaceDepth); Steep is the slope
+// test's answer there.
+BlockID TerrainPaletteBlock(const BiomeType *Biome, int Depth, int GlobalY,
+                            bool Steep);
 
 struct ColumnEntry;
 struct CornerRowRing;

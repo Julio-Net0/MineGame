@@ -19,6 +19,7 @@
 #include "world/block_system.h"
 #include "world/chunk.h"
 #include "world/surface.h"
+#include "world/lod/lod_fill.h"
 #include "world/lod/lod_ingest.h"
 #include "world/terrain_density.h"
 #include "world/worldgen_column_cache.h"
@@ -97,6 +98,7 @@ typedef enum {
   SCRIPT_OP_WAIT_LOADED,
   SCRIPT_OP_WAIT_NEAR,
   SCRIPT_OP_WAIT_PROFILE,
+  SCRIPT_OP_WAIT_LOD_GEN,
   SCRIPT_OP_LOOK,
   SCRIPT_OP_HOLD,
   SCRIPT_OP_PRESS,
@@ -181,6 +183,10 @@ typedef enum {
   // itself. Wall-clock by nature: it exists to record a fixed span of real time
   // on whatever machine runs the script, not to reach a game state.
   SCRIPT_WAIT_PROFILE,
+  // Waiting for the synthetic LOD fill to cover the LOD distance and for the
+  // LOD renderer to mesh what it selects, for SETTLED_FRAMES_REQUIRED frames
+  // in a row. "wait loaded" never waits for the fill.
+  SCRIPT_WAIT_LOD_GEN,
   // Waiting for the frame requested by a screenshot statement to come back:
   // the request reaches the backend at the top of a frame and the pixels only
   // exist once that frame has been drawn and read, one frame later.
@@ -627,6 +633,11 @@ static bool ParseStatement(char *Statement, int LineNumber) {
           (ScriptStatement){.Kind = SCRIPT_OP_WAIT_LOADED, .Line = LineNumber},
           "", LineText);
     }
+    if (TokenCount == 2 && CompareString(Tokens[1], "lod_gen") == 0) {
+      return AppendStatement(
+          (ScriptStatement){.Kind = SCRIPT_OP_WAIT_LOD_GEN, .Line = LineNumber},
+          "", LineText);
+    }
     if (TokenCount == 2 && CompareString(Tokens[1], "profile") == 0) {
       return AppendStatement(
           (ScriptStatement){.Kind = SCRIPT_OP_WAIT_PROFILE, .Line = LineNumber},
@@ -991,7 +1002,7 @@ static bool ScriptWorldSettled(const ScriptContext *Ctx) {
   bool Settled = WorldIsSettled(Ctx->WorldVal, ScriptLoadCenter(Ctx),
                                 Ctx->RenderDistance) &&
                  !RendererHasPendingMeshWork() && LodIngestIdle() &&
-                 LodRendererIdle();
+                 (LodFillEnabled() || LodRendererIdle());
   PROFILE_END(SettleStart, PROFILE_SCRIPT_WAIT);
   return Settled;
 }
@@ -1088,6 +1099,33 @@ static void ScriptAddLodJson(cJSON *Root) {
                  (unsigned long long)LodIngestContentHash());
   cJSON_AddStringToObject(Node, "contentHash", HashText);
   cJSON_AddNumberToObject(Node, "sections", Stats.Store.Sections);
+  cJSON_AddNumberToObject(Node, "ingestedSections", Stats.Store.SectionsIngested);
+  cJSON_AddNumberToObject(Node, "syntheticSections", Stats.Store.SectionsSynthetic);
+  LodFillStats Fill;
+  LodFillGetStats(&Fill);
+  cJSON_AddBoolToObject(Node, "genEnabled", Fill.Enabled);
+  cJSON_AddNumberToObject(Node, "genDistance", Fill.DistanceChunks);
+  cJSON_AddNumberToObject(Node, "genQueued", Fill.Queued);
+  cJSON_AddNumberToObject(Node, "genInFlight", Fill.InFlight);
+  cJSON_AddBoolToObject(Node, "genIdle", LodFillIdle());
+  cJSON_AddNumberToObject(Node, "genColumns", (double)Fill.ColumnsGenerated);
+  cJSON_AddNumberToObject(Node, "genSections", (double)Fill.SectionsGenerated);
+  cJSON_AddNumberToObject(Node, "genWritten", (double)Fill.SectionsWritten);
+  cJSON_AddNumberToObject(Node, "genSkippedPrecedence", (double)Fill.SectionsSkipped);
+  cJSON_AddNumberToObject(Node, "genFailed", (double)Fill.SectionsFailed);
+  cJSON_AddNumberToObject(Node, "genMicros", (double)Fill.GenMicros);
+  cJSON_AddNumberToObject(
+      Node, "genUsPerSection",
+      (Fill.SectionsGenerated > 0U)
+          ? (double)Fill.GenMicros / (double)Fill.SectionsGenerated
+          : 0.0);
+  cJSON_AddNumberToObject(
+      Node, "genUsPerColumn",
+      (Fill.ColumnsGenerated > 0U)
+          ? (double)Fill.GenMicros / (double)Fill.ColumnsGenerated
+          : 0.0);
+  cJSON_AddNumberToObject(Node, "genHorizonMs", Fill.HorizonMs);
+  cJSON_AddNumberToObject(Node, "genFillMs", Fill.FillMs);
   cJSON *Levels = cJSON_CreateArray();
   if (Levels != (cJSON *)0) {
     for (int Level = 1; Level <= LOD_MAX_LEVEL; Level++) {
@@ -1707,6 +1745,17 @@ static bool ScriptIsWaiting(const ScriptContext *Ctx) {
               State->WaitTarget, State->Frame, State->Tick);
     break;
   }
+  case SCRIPT_WAIT_LOD_GEN:
+    State->SettledFrames =
+        (LodFillIdle() && LodIngestIdle() && LodRendererIdle())
+            ? State->SettledFrames + 1
+            : 0;
+    if (State->SettledFrames < SETTLED_FRAMES_REQUIRED) {
+      return true;
+    }
+    ScriptLog("      | LOD fill settled after %lld frames, %.1f ms",
+              State->Frame, ScriptWaitElapsedMs(State));
+    break;
   case SCRIPT_WAIT_PROFILE:
 #ifdef MINEGAME_PROFILE
     if (ProfilerIsCapturing()) {
@@ -1851,6 +1900,12 @@ void ScriptStep(ChatState *Chat, GameCamera *Camera, Player *PlayerVal,
       return;
     case SCRIPT_OP_WAIT_PROFILE:
       State->Wait = SCRIPT_WAIT_PROFILE;
+      State->WaitLine = Step->Line;
+      return;
+    case SCRIPT_OP_WAIT_LOD_GEN:
+      State->Wait = SCRIPT_WAIT_LOD_GEN;
+      State->SettledFrames = 0;
+      State->WaitStart = PlatformGetTime();
       State->WaitLine = Step->Line;
       return;
     case SCRIPT_OP_LOOK:

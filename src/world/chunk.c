@@ -120,6 +120,14 @@ static BlockID DeterminePaletteBlock(const BiomeType *Biome, int Depth,
   return (BlockID)Biome->SubsurfaceBlockId;
 }
 
+BlockID TerrainIceBlockId(void) { return GetTerrainBaseBlocks()->IceId; }
+
+BlockID TerrainPaletteBlock(const BiomeType *Biome, int Depth, int GlobalY,
+                            bool Steep) {
+  bool SteepLayer = Steep && Biome->SteepBlockId >= 0;
+  return DeterminePaletteBlock(Biome, Depth, GlobalY, 0, false, SteepLayer);
+}
+
 unsigned char GetChunkBiomeAtLocal(const Chunk *ChunkVal, int LocalX, int LocalY,
                                    int LocalZ) {
   int CellX = LocalX / BIOME_CELL_SIZE;

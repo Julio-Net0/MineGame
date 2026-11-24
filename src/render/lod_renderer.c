@@ -59,8 +59,18 @@ enum {
   // The packed vertex's face normal (see ChunkVertex).
   VERTEX_NORMAL_SHIFT = 27,
   VERTEX_NORMAL_MASK = 7,
-  HALF_SECTION = LOD_SECTION_SIZE / 2
+  HALF_SECTION = LOD_SECTION_SIZE / 2,
+  // Sections the selection walk reaches (selected or refined), kept to find
+  // where neighbouring regions are drawn at different levels.
+  WALK_SET_INITIAL = 65536,
+  WALK_LEVEL_SHIFT = 61,
+  WALK_Y_SHIFT = 52,
+  WALK_X_SHIFT = 26,
+  WALK_Y_BITS = 9,
+  WALK_XZ_BITS = 26
 };
+
+typedef enum { WALK_NONE = 0, WALK_SELECTED, WALK_REFINED } WalkKind;
 
 #define MESH_BUDGET_SECONDS 0.002
 #define CULL_STATS_INTERVAL 0.5
@@ -92,6 +102,8 @@ typedef struct {
   float DistSq;
   // A neighbour changed since the mesh was built: its border faces may be off.
   bool Stale;
+  // Faces the mesh treated as level transitions (see VoxelMeshLodSection).
+  uint8_t Transitions;
 } CacheEntry;
 
 // A selected section whose mesh is missing or out of date, queued so the
@@ -106,6 +118,7 @@ typedef struct {
   // Position in the selection walk, which orders the draw list.
   uint32_t Key;
   bool Border;
+  uint8_t Transitions;
 } PendingMesh;
 
 // A draw with its position in the selection walk.
@@ -127,6 +140,13 @@ typedef struct {
   KeyedDraw *OpaqueKeyed;
   KeyedDraw *BorderKeyed;
   PendingMesh *PendingMeshes;
+  // The selection walk's sections, in walk order, and the set of every
+  // section it selected or refined.
+  PendingMesh *Walked;
+  uint64_t *WalkKeys;
+  uint8_t *WalkKinds;
+  int WalkCapacity;
+  int WalkCount;
   int64_t EvictedForRoom;
   uint64_t JournalRead;
   LodRenderStats Stats;
@@ -171,6 +191,7 @@ typedef struct {
   int Starved;
   int Selected;
   int PendingCount;
+  int WalkedCount;
   // Sections selected so far: the walk position the next one takes.
   uint32_t WalkIndex;
   // Nearest starved section's squared distance, or negative when none.
@@ -202,6 +223,9 @@ static void FreeRendererState(LodRendererState *State) {
   free(State->OpaqueKeyed);
   free(State->BorderKeyed);
   free(State->PendingMeshes);
+  free(State->Walked);
+  free(State->WalkKeys);
+  free(State->WalkKinds);
   *State = (LodRendererState){0};
 }
 
@@ -224,7 +248,12 @@ void LodRendererInit(void) {
   State->OpaqueKeyed = (KeyedDraw *)malloc(sizeof(KeyedDraw) * MAX_DRAWS);
   State->BorderKeyed = (KeyedDraw *)malloc(sizeof(KeyedDraw) * MAX_DRAWS);
   State->PendingMeshes = (PendingMesh *)malloc(sizeof(PendingMesh) * MAX_DRAWS);
+  State->Walked = (PendingMesh *)malloc(sizeof(PendingMesh) * MAX_DRAWS);
+  State->WalkKeys = (uint64_t *)calloc(WALK_SET_INITIAL, sizeof(uint64_t));
+  State->WalkKinds = (uint8_t *)calloc(WALK_SET_INITIAL, sizeof(uint8_t));
+  State->WalkCapacity = WALK_SET_INITIAL;
   if (State->Coverage == NULL || State->CellCounts == NULL ||
+      State->Walked == NULL || State->WalkKeys == NULL || State->WalkKinds == NULL ||
       State->ColumnDirty == NULL ||
       State->DirtyColumns == NULL || State->Cache == NULL ||
       State->Mesher == NULL || State->Scratch == NULL || State->Upload == NULL ||
@@ -528,7 +557,7 @@ static int BuildFaceRuns(const ChunkVertex *Vertices, int Count, RenderLodRun *R
 // the arena had no room for.
 static int MeshSection(LodRendererState *State, const LodStore *Store,
                        const LodSection *Section, int Level, int X, int Y, int Z,
-                       RenderLodMesh *OutMesh) {
+                       unsigned Transitions, RenderLodMesh *OutMesh) {
   static const int OFFSETS[VOXEL_LOD_NEIGHBOURS][3] = {
       {-1, 0, 0}, {1, 0, 0}, {0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}};
   const LodSection *Neighbours[VOXEL_LOD_NEIGHBOURS];
@@ -538,7 +567,8 @@ static int MeshSection(LodRendererState *State, const LodStore *Store,
   }
   PROFILE_BEGIN(MeshStart);
   VoxelLodPlace Place = {.Level = Level, .X = X, .Y = Y, .Z = Z};
-  VoxelMeshLodSection(State->Mesher, State->Scratch, Section, &Place, Neighbours);
+  VoxelMeshLodSection(State->Mesher, State->Scratch, Section, &Place, Neighbours,
+                      Transitions);
   // One mesh: the opaque (and cutout) faces, then the translucent ones,
   // which the LOD draws blended after every opaque face.
   int Count = 0;
@@ -570,8 +600,10 @@ static int MeshSection(LodRendererState *State, const LodStore *Store,
   return Count;
 }
 
-static bool MeshCurrent(const CacheEntry *Entry, const LodSection *Section) {
+static bool MeshCurrent(const CacheEntry *Entry, const LodSection *Section,
+                        unsigned Transitions) {
   return Entry != NULL && Entry->Revision == Section->Revision && !Entry->Stale &&
+         Entry->Transitions == Transitions &&
          (Entry->Mesh != RENDER_LOD_MESH_INVALID || Entry->VertexCount == 0);
 }
 
@@ -581,7 +613,8 @@ static bool MeshPending(LodRendererState *State, SelectContext *Ctx,
                         const PendingMesh *Pending, CacheEntry **InOutEntry) {
   RenderLodMesh Mesh = RENDER_LOD_MESH_INVALID;
   int Count = MeshSection(State, Ctx->Store, Pending->Section, Pending->Level,
-                          Pending->X, Pending->Y, Pending->Z, &Mesh);
+                          Pending->X, Pending->Y, Pending->Z, Pending->Transitions,
+                          &Mesh);
   Ctx->Attempts++;
   if (Count > 0 && Mesh == RENDER_LOD_MESH_INVALID) {
     Ctx->StarvedVertices = Count;
@@ -602,10 +635,86 @@ static bool MeshPending(LodRendererState *State, SelectContext *Ctx,
   Entry->VertexCount = Count;
   Entry->Revision = Pending->Section->Revision;
   Entry->Stale = false;
+  Entry->Transitions = Pending->Transitions;
   Entry->LastFrame = State->Frame;
   Entry->DistSq = Pending->DistSq;
   *InOutEntry = Entry;
   return true;
+}
+
+// --- walk set ----------------------------------------------------------------------
+
+static uint64_t WalkKey(int Level, int X, int Y, int Z) {
+  uint64_t HeightMask = (1ULL << WALK_Y_BITS) - 1ULL;
+  uint64_t PlaneMask = (1ULL << WALK_XZ_BITS) - 1ULL;
+  return ((uint64_t)Level << WALK_LEVEL_SHIFT) |
+         (((uint64_t)(uint32_t)Y & HeightMask) << WALK_Y_SHIFT) |
+         (((uint64_t)(uint32_t)X & PlaneMask) << WALK_X_SHIFT) |
+         ((uint64_t)(uint32_t)Z & PlaneMask);
+}
+
+static unsigned WalkSlot(uint64_t Key, int Capacity) {
+  return (unsigned)((Key * CACHE_HASH_X) >> CACHE_HASH_SHIFT) &
+         ((unsigned)Capacity - 1U);
+}
+
+static void WalkReset(LodRendererState *State) {
+  memset(State->WalkKinds, 0, (size_t)State->WalkCapacity);
+  State->WalkCount = 0;
+}
+
+static WalkKind WalkFind(const LodRendererState *State, int Level, int X, int Y,
+                         int Z) {
+  uint64_t Key = WalkKey(Level, X, Y, Z);
+  unsigned Mask = (unsigned)State->WalkCapacity - 1U;
+  for (unsigned Idx = WalkSlot(Key, State->WalkCapacity);; Idx = (Idx + 1U) & Mask) {
+    if (State->WalkKinds[Idx] == WALK_NONE) {
+      return WALK_NONE;
+    }
+    if (State->WalkKeys[Idx] == Key) {
+      return (WalkKind)State->WalkKinds[Idx];
+    }
+  }
+}
+
+static void WalkPlace(uint64_t *Keys, uint8_t *Kinds, int Capacity, uint64_t Key,
+                      uint8_t Kind) {
+  unsigned Mask = (unsigned)Capacity - 1U;
+  unsigned Idx = WalkSlot(Key, Capacity);
+  while (Kinds[Idx] != WALK_NONE) {
+    Idx = (Idx + 1U) & Mask;
+  }
+  Keys[Idx] = Key;
+  Kinds[Idx] = Kind;
+}
+
+// Records a walked section. When the set cannot grow, the section is left
+// out: its neighbours then see no transition there, as before transitions.
+static void WalkMark(LodRendererState *State, int Level, int X, int Y, int Z,
+                     WalkKind Kind) {
+  if ((State->WalkCount + 1) * 2 > State->WalkCapacity) {
+    int Capacity = State->WalkCapacity * 2;
+    uint64_t *Keys = (uint64_t *)malloc((size_t)Capacity * sizeof(uint64_t));
+    uint8_t *Kinds = (uint8_t *)calloc((size_t)Capacity, sizeof(uint8_t));
+    if (Keys == NULL || Kinds == NULL) {
+      free(Keys);
+      free(Kinds);
+      return;
+    }
+    for (int Idx = 0; Idx < State->WalkCapacity; Idx++) {
+      if (State->WalkKinds[Idx] != WALK_NONE) {
+        WalkPlace(Keys, Kinds, Capacity, State->WalkKeys[Idx], State->WalkKinds[Idx]);
+      }
+    }
+    free(State->WalkKeys);
+    free(State->WalkKinds);
+    State->WalkKeys = Keys;
+    State->WalkKinds = Kinds;
+    State->WalkCapacity = Capacity;
+  }
+  WalkPlace(State->WalkKeys, State->WalkKinds, State->WalkCapacity,
+            WalkKey(Level, X, Y, Z), (uint8_t)Kind);
+  State->WalkCount++;
 }
 
 // --- selection -------------------------------------------------------------------
@@ -713,7 +822,7 @@ static void AssembleDraws(LodRendererState *State, const SelectContext *Ctx) {
 static void SelectSection(LodRendererState *State, SelectContext *Ctx, int Level,
                           int X, int Y, int Z) {
   const LodSection *Section = LodStoreFind(Ctx->Store, Level, X, Y, Z);
-  if (Section == NULL || Section->PresentCells == 0U) {
+  if (Section == NULL) {
     return;
   }
   SectionCoverage Coverage = CoverageOf(State, Ctx, Level, X, Z);
@@ -723,27 +832,79 @@ static void SelectSection(LodRendererState *State, SelectContext *Ctx, int Level
   bool Refine = Coverage == COVERAGE_PARTIAL || CameraIsNear(Ctx, Level, X, Y, Z);
   if (Level > 1 && Refine &&
       ChildrenResident(Ctx->Store, Section, Level, X, Y, Z)) {
+    WalkMark(State, Level, X, Y, Z, WALK_REFINED);
     for (int Octant = 0; Octant < OCTANTS; Octant++) {
       SelectSection(State, Ctx, Level - 1, (X * 2) + (Octant & 1),
                     (Y * 2) + ((Octant >> 1) & 1), (Z * 2) + ((Octant >> 2) & 1));
     }
     return;
   }
-  Ctx->Selected++;
-  bool Border = Coverage == COVERAGE_PARTIAL;
-  float DistSq = SectionDistSq(Ctx, Level, X, Y, Z);
-  uint32_t Key = Ctx->WalkIndex++;
-  CacheEntry *Entry = CacheFind(State, Level, X, Y, Z);
-  if (Entry != NULL) {
-    Entry->LastFrame = State->Frame;
-    Entry->DistSq = DistSq;
+  // Nothing worth drawing at this level (buried rock), but it is still walked
+  // above: a coarse synthetic section can read as buried where its finer
+  // children, sampled more densely, hold a lake or a valley.
+  if (Section->PresentCells == 0U) {
+    return;
   }
-  if (MeshCurrent(Entry, Section)) {
-    AddDraw(State, Ctx, Entry, Level, X, Y, Z, Border, Key);
-  } else if (Ctx->PendingCount < MAX_DRAWS) {
-    State->PendingMeshes[Ctx->PendingCount++] = (PendingMesh){
+  Ctx->Selected++;
+  uint32_t Key = Ctx->WalkIndex++;
+  WalkMark(State, Level, X, Y, Z, WALK_SELECTED);
+  if (Ctx->WalkedCount < MAX_DRAWS) {
+    State->Walked[Ctx->WalkedCount++] = (PendingMesh){
         .Section = Section, .Level = Level, .X = X, .Y = Y, .Z = Z,
-        .DistSq = DistSq, .Key = Key, .Border = Border};
+        .DistSq = SectionDistSq(Ctx, Level, X, Y, Z), .Key = Key,
+        .Border = Coverage == COVERAGE_PARTIAL};
+  }
+}
+
+// Side faces of a selected section whose neighbour on its level is not drawn
+// itself while its region is: refined into finer sections, or inside a
+// coarser selected one. A neighbour no walk reached (under 1:1 chunks, or
+// holding nothing to draw) is no transition. Only sides: the surface steps
+// between levels show from above as cracks in a side, while a top or bottom
+// face at a transition would lay a section-wide sheet of buried rock under
+// the sea.
+static unsigned TransitionFaces(const LodRendererState *State, const PendingMesh *Walk) {
+  static const int SIDES[4][3] = {{-1, 0, 0}, {1, 0, 0}, {0, 0, -1}, {0, 0, 1}};
+  static const int SIDE_FACES[4] = {0, 1, 4, 5};
+  unsigned Faces = 0;
+  for (int Side = 0; Side < 4; Side++) {
+    int Face = SIDE_FACES[Side];
+    int X = Walk->X + SIDES[Side][0];
+    int Y = Walk->Y + SIDES[Side][1];
+    int Z = Walk->Z + SIDES[Side][2];
+    WalkKind Kind = WalkFind(State, Walk->Level, X, Y, Z);
+    bool Transition = Kind == WALK_REFINED;
+    for (int Level = Walk->Level + 1; Kind == WALK_NONE && Level <= LOD_MAX_LEVEL;
+         Level++) {
+      int Shift = Level - Walk->Level;
+      Kind = WalkFind(State, Level, LodFloorShift(X, Shift), LodFloorShift(Y, Shift),
+                      LodFloorShift(Z, Shift));
+      Transition = Kind == WALK_SELECTED;
+    }
+    if (Transition) {
+      Faces |= 1U << (unsigned)Face;
+    }
+  }
+  return Faces;
+}
+
+// After the walk: draws the selected sections whose mesh is current and
+// queues the others, now that each one's level transitions are known.
+static void ResolveWalk(LodRendererState *State, SelectContext *Ctx) {
+  for (int Idx = 0; Idx < Ctx->WalkedCount; Idx++) {
+    PendingMesh Walk = State->Walked[Idx];
+    Walk.Transitions = (uint8_t)TransitionFaces(State, &Walk);
+    CacheEntry *Entry = CacheFind(State, Walk.Level, Walk.X, Walk.Y, Walk.Z);
+    if (Entry != NULL) {
+      Entry->LastFrame = State->Frame;
+      Entry->DistSq = Walk.DistSq;
+    }
+    if (MeshCurrent(Entry, Walk.Section, Walk.Transitions)) {
+      AddDraw(State, Ctx, Entry, Walk.Level, Walk.X, Walk.Y, Walk.Z, Walk.Border,
+              Walk.Key);
+    } else if (Ctx->PendingCount < MAX_DRAWS) {
+      State->PendingMeshes[Ctx->PendingCount++] = Walk;
+    }
   }
 }
 
@@ -890,12 +1051,14 @@ void LodRendererDraw(RenderCamera Camera) {
         .CameraChunkX = ChunkX,
         .CameraChunkZ = ChunkZ,
         .NearestStarved = -1.0F};
+    WalkReset(State);
     for (int Idx = 0; Idx < Store->Capacity; Idx++) {
       const LodStoreSlot *Slot = &Store->Slots[Idx];
       if (Slot->Level == LOD_MAX_LEVEL) {
         SelectSection(State, &Ctx, LOD_MAX_LEVEL, Slot->X, Slot->Y, Slot->Z);
       }
     }
+    ResolveWalk(State, &Ctx);
     MeshQueued(State, &Ctx);
     AssembleDraws(State, &Ctx);
     State->HasSelection = true;
