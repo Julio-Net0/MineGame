@@ -73,6 +73,10 @@ static PauseMenuState *GetPauseMenuState(void) {
 void PauseMenuToggle(void) {
   PauseMenuState *State = GetPauseMenuState();
   State->Open = !State->Open;
+  if (!State->Open) {
+    State->RenderDistanceHeld = false;
+    State->LodDistanceHeld = false;
+  }
   PlatformSetCursorDisabled(!State->Open);
 }
 

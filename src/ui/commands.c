@@ -416,9 +416,9 @@ static void CommandSeed(const char *Args, CommandContext *Ctx) {
 static void CommandBiome(const char *Args, CommandContext *Ctx) {
   (void)Args;
 
-  int PosX = (int)__builtin_floorf(Ctx->Player->Position.x);
-  int PosY = (int)__builtin_floorf(Ctx->Player->Position.y);
-  int PosZ = (int)__builtin_floorf(Ctx->Player->Position.z);
+  int PosX = (int)__builtin_floorf(Ctx->Player->Position.x + BLOCK_HALF_SIZE);
+  int PosY = (int)__builtin_floorf(Ctx->Player->Position.y + BLOCK_HALF_SIZE);
+  int PosZ = (int)__builtin_floorf(Ctx->Player->Position.z + BLOCK_HALF_SIZE);
 
   uint64_t SeedVal = GetWorldSeed();
   BiomeClimate Climate;
@@ -512,8 +512,8 @@ static void CommandLocate(const char *Args, CommandContext *Ctx) {
     return;
   }
 
-  int PlayerX = (int)__builtin_floorf(Ctx->Player->Position.x);
-  int PlayerZ = (int)__builtin_floorf(Ctx->Player->Position.z);
+  int PlayerX = (int)__builtin_floorf(Ctx->Player->Position.x + BLOCK_HALF_SIZE);
+  int PlayerZ = (int)__builtin_floorf(Ctx->Player->Position.z + BLOCK_HALF_SIZE);
   uint64_t Seed = GetWorldSeed();
   const int MAX_SEARCH_RADIUS = 3000;
 
@@ -993,7 +993,7 @@ static void CommandPrefab(const char *Args, CommandContext *Ctx) {
   ReturnCommand(
       Ctx->Chat, LOG_LEVEL_ERROR,
       "Incorrect Format. try: /prefab <list | stamp <name> | pos1 | pos2 | "
-      "save <name>>");
+      "offset | save <name>>");
 }
 
 static void CommandList(const char *Args, CommandContext *Ctx) {
@@ -1036,14 +1036,18 @@ static void CommandNoclip(const char *Args, CommandContext *Ctx) {
   if (OptStr) {
     if (CompareString(OptStr, "speed") == 0) {
       if (SpeedStr != (void*)0) {
-        float SpeedVal = ParseFloat(SpeedStr, (char **)0);
-        if (SpeedVal > 0.0F) {
+        char *SpeedEnd = (void *)0;
+        float SpeedVal = ParseFloat(SpeedStr, &SpeedEnd);
+        if (SpeedEnd != SpeedStr && *SpeedEnd == '\0' && SpeedVal > 0.0F) {
           Ctx->Player->NoclipSpeed = SpeedVal;
           char Msg[MSG_BUFFER_SIZE];
           snprintf(Msg, sizeof(Msg), "Noclip speed set to %.1f", (double)SpeedVal);
           ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
           return;
         }
+        ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR,
+                      "Invalid noclip speed. Provide a positive number.");
+        return;
       }
       char Msg[MSG_BUFFER_SIZE];
       snprintf(Msg, sizeof(Msg), "Current noclip speed: %.1f",
@@ -1052,16 +1056,21 @@ static void CommandNoclip(const char *Args, CommandContext *Ctx) {
       return;
     }
 
-    int Opt = ParseInt(OptStr, (char **)0);
+    char *OptEnd = (void *)0;
+    int Opt = ParseInt(OptStr, &OptEnd);
+    if (OptEnd == OptStr || *OptEnd != '\0' || (Opt != 0 && Opt != 1)) {
+      ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR,
+                    "Incorrect Format. try: /noclip <1/0 | speed <val>>");
+      return;
+    }
     if (Opt == 1) {
       Ctx->Player->Noclip = true;
       if (SpeedStr != (void*)0) {
-        float SpeedVal = ParseFloat(SpeedStr, (char **)0);
-        if (SpeedVal > 0.0F) {
+        char *SpeedEnd = (void *)0;
+        float SpeedVal = ParseFloat(SpeedStr, &SpeedEnd);
+        if (SpeedEnd != SpeedStr && *SpeedEnd == '\0' && SpeedVal > 0.0F) {
           Ctx->Player->NoclipSpeed = SpeedVal;
         }
-      } else {
-        Ctx->Player->NoclipSpeed = PLAYER_DEFAULT_NOCLIP_SPEED;
       }
       char Msg[MSG_BUFFER_SIZE];
       snprintf(Msg, sizeof(Msg), "Noclip activated (speed: %.1f)",
@@ -1185,7 +1194,14 @@ static void CommandDebug(const char *Args, CommandContext *Ctx) {
     return;
   }
 
-  bool State = (ParseInt(OptStr, (char **)0) == 1);
+  char *OptEnd = (void *)0;
+  int OptVal = ParseInt(OptStr, &OptEnd);
+  if (OptEnd == OptStr || *OptEnd != '\0' || (OptVal != 0 && OptVal != 1)) {
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR,
+                  "Invalid state (use 1 or 0). Ex: /debug wireframe 1");
+    return;
+  }
+  bool State = (OptVal == 1);
 
   for (int Index = 0; Index < AVAILABLEDEBUGSCOUNT; Index++) {
     if (CompareString(DebugStr, AVAILABLEDEBUGS[Index].Name) == 0) {
@@ -1427,7 +1443,8 @@ int CommandAutocomplete(const char *Buffer, int CursorPos, char *OutCompleted,
            Idx++) {
         Candidates[CandidateCount++] = Values[Idx];
       }
-    } else if (CompareString(FirstToken, "/noclip") == 0) {
+    } else if (CompareString(FirstToken, "/noclip") == 0 &&
+               CompareString(SecondToken, "speed") == 0) {
       static const char *SpeedVals[] = {"10", "15", "25", "50"};
       int SpeedCount = (int)(sizeof(SpeedVals) / sizeof(SpeedVals[0]));
       for (int Idx = 0;
@@ -1494,7 +1511,18 @@ int CommandAutocomplete(const char *Buffer, int CursorPos, char *OutCompleted,
   int LcpLen = (int)strlen(Matches[0]);
   for (int Idx = 1; Idx < MatchCount; Idx++) {
     int CharIdx = 0;
-    while (CharIdx < LcpLen && Matches[0][CharIdx] == Matches[Idx][CharIdx]) {
+    while (CharIdx < LcpLen) {
+      char First = Matches[0][CharIdx];
+      char Other = Matches[Idx][CharIdx];
+      if (First >= 'A' && First <= 'Z') {
+        First = (char)(First + ('a' - 'A'));
+      }
+      if (Other >= 'A' && Other <= 'Z') {
+        Other = (char)(Other + ('a' - 'A'));
+      }
+      if (First != Other) {
+        break;
+      }
       CharIdx++;
     }
     LcpLen = CharIdx;

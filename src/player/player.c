@@ -397,13 +397,12 @@ void HandlePlayerInteraction(Player *PlayerVal, World *WorldVal,
   }
 
   if (Input.HotbarScroll != 0) {
-    PlayerVal->SelectedHotbarSlot -= Input.HotbarScroll;
-    if (PlayerVal->SelectedHotbarSlot < 0) {
-      PlayerVal->SelectedHotbarSlot = HOTBAR_SIZE - 1;
+    int NextSlot =
+        (PlayerVal->SelectedHotbarSlot - Input.HotbarScroll) % HOTBAR_SIZE;
+    if (NextSlot < 0) {
+      NextSlot += HOTBAR_SIZE;
     }
-    if (PlayerVal->SelectedHotbarSlot > HOTBAR_SIZE - 1) {
-      PlayerVal->SelectedHotbarSlot = 0;
-    }
+    PlayerVal->SelectedHotbarSlot = NextSlot;
   }
 
   if (PlayerVal->TargetBlock.Hit) {
@@ -430,10 +429,11 @@ void HandlePlayerInteraction(Player *PlayerVal, World *WorldVal,
     if (Input.Place) {
       BlockID BlockInHandId =
           PlayerVal->Hotbar[PlayerVal->SelectedHotbarSlot];
-
-      Vec3 PlacePos = Vec3Add(PlayerVal->TargetBlock.BlockPos,
-                              PlayerVal->TargetBlock.Normal);
-      RequestBlockPlace(WorldVal, PlacePos, BlockInHandId);
+      if (BlockInHandId != BLOCK_ID_AIR) {
+        Vec3 PlacePos = Vec3Add(PlayerVal->TargetBlock.BlockPos,
+                                PlayerVal->TargetBlock.Normal);
+        RequestBlockPlace(WorldVal, PlacePos, BlockInHandId);
+      }
     }
   }
 }

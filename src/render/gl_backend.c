@@ -1635,8 +1635,13 @@ void RenderBeginFrame(RenderCamera Camera) {
                                                       Camera.Target, Camera.Up,
                                                       Camera.FovY, Width, Height),
                       State->Mvp3D);
-  GlMat4ToColumnMajor(GlMat4ScreenProjection(PlatformGetScreenWidth(),
-                                             PlatformGetScreenHeight()),
+  int ScreenWidth = PlatformGetScreenWidth();
+  int ScreenHeight = PlatformGetScreenHeight();
+  if (ScreenWidth <= 0 || ScreenHeight <= 0) {
+    ScreenWidth = 1;
+    ScreenHeight = 1;
+  }
+  GlMat4ToColumnMajor(GlMat4ScreenProjection(ScreenWidth, ScreenHeight),
                       State->Mvp2D);
   State->FrameCamera = Camera;
   State->FrameWidth = Width;

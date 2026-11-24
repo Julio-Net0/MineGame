@@ -837,7 +837,15 @@ void UiTextFieldDraw(UiContext *Ctx, UiRect Rect, const char *Text,
   float CaretRelX = 0.0F;
   if (State != NULL) {
     CaretRelX = UiMeasureTextRange(Text, State->Cursor);
+    float TextW = UiMeasureTextRange(Text, (int)strlen(Text));
     float InnerW = (float)(Inner.W - TEXT_FIELD_SCROLL_MARGIN);
+    float MaxScroll = TextW - InnerW;
+    if (MaxScroll < 0.0F) {
+      MaxScroll = 0.0F;
+    }
+    if (State->ScrollOffset > MaxScroll) {
+      State->ScrollOffset = MaxScroll;
+    }
     if (CaretRelX - State->ScrollOffset > InnerW) {
       State->ScrollOffset = CaretRelX - InnerW;
     }

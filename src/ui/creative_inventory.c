@@ -451,6 +451,9 @@ static void HandleInput(const UiContext *Ctx, InventoryState *State,
       State->DraggingScroller = false;
     }
   }
+  if (Input == NULL) {
+    return;
+  }
   if (Input->WheelDelta != 0) {
     CreativeInventoryScrollRows(-Input->WheelDelta);
   }

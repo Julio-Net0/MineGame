@@ -150,10 +150,12 @@ static void DrawHotbar(UiContext *Ctx, Player *PlayerVal) {
   // Offset one unit up and left: the selection frame is two units larger than
   // a slot so it overlaps the hotbar's own border.
   int Selected = PlayerVal->SelectedHotbarSlot;
-  UiSprite(Ctx, Sprites->HotbarSelection,
-           (UiRect){StartX - 1 + (Selected * HOTBAR_SLOT_PITCH), StartY - 1,
-                    HOTBAR_SELECTION_WIDTH, HOTBAR_SELECTION_HEIGHT},
-           COLOR_WHITE);
+  if (Selected >= 0 && Selected < HOTBAR_SIZE) {
+    UiSprite(Ctx, Sprites->HotbarSelection,
+             (UiRect){StartX - 1 + (Selected * HOTBAR_SLOT_PITCH), StartY - 1,
+                      HOTBAR_SELECTION_WIDTH, HOTBAR_SELECTION_HEIGHT},
+             COLOR_WHITE);
+  }
 
   for (int Idx = 0; Idx < HOTBAR_SIZE; Idx++) {
     BlockID BlockId = PlayerVal->Hotbar[Idx];
@@ -492,7 +494,8 @@ static void DrawDebugScreen(UiContext *Ctx, Player *PlayerVal, World *WorldVal,
   char DebugText[DEBUG_TEXT_CAPACITY];
   int Y = DEBUG_MARGIN;
 
-  int Fps = (int)(1.0F / PlatformGetFrameTime());
+  float FrameTime = PlatformGetFrameTime();
+  int Fps = (FrameTime > 0.0F) ? (int)(1.0F / FrameTime) : 0;
   snprintf(DebugText, sizeof(DebugText), "%d FPS", Fps);
   Y = DrawDebugLine(Ctx, DebugText, Y);
 
@@ -501,9 +504,9 @@ static void DrawDebugScreen(UiContext *Ctx, Player *PlayerVal, World *WorldVal,
            (double)PlayerVal->Position.z);
   Y = DrawDebugLine(Ctx, DebugText, Y);
 
-  int BlockX = (int)floorf(PlayerVal->Position.x);
-  int BlockY = (int)floorf(PlayerVal->Position.y);
-  int BlockZ = (int)floorf(PlayerVal->Position.z);
+  int BlockX = (int)floorf(PlayerVal->Position.x + BLOCK_HALF_SIZE);
+  int BlockY = (int)floorf(PlayerVal->Position.y + BLOCK_HALF_SIZE);
+  int BlockZ = (int)floorf(PlayerVal->Position.z + BLOCK_HALF_SIZE);
   snprintf(DebugText, sizeof(DebugText), "Block: %d %d %d", BlockX, BlockY,
            BlockZ);
   Y = DrawDebugLine(Ctx, DebugText, Y);

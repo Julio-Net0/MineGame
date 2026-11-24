@@ -13,6 +13,7 @@
 #define MOUSE_SENSITIVITY 0.05F
 #define DEG_TO_RAD (3.14159265358979323846F / 180.0F)
 #define FREECAM_SPEED 20.0F
+#define FREECAM_SPRINT_MULTIPLIER 2.5F
 
 enum {
   ALIGNMENT_EIGHT = 8
@@ -132,7 +133,9 @@ void UpdateFreeCamera(GameCamera *Camera, Vec2 LookDelta, PlayerInput Move,
   Motion = Vec3Add(Motion, Vec3Scale(Right, Move.MoveX));
   Motion = Vec3Add(Motion, Vec3Scale(WORLD_UP_VECTOR, Vertical));
 
-  float Step = FREECAM_SPEED * Dt;
+  float Speed =
+      Move.SprintHeld ? (FREECAM_SPEED * FREECAM_SPRINT_MULTIPLIER) : FREECAM_SPEED;
+  float Step = Speed * Dt;
   Camera->Position = Vec3Add(Camera->Position, Vec3Scale(Motion, Step));
   Camera->Target = Vec3Add(Camera->Position, Forward);
 }

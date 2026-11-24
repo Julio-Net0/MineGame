@@ -116,17 +116,19 @@ static void HandleChatAction(ChatState *Chat, UiTextAction Action,
     return;
   }
   if (Action == UI_TEXT_SUBMIT) {
-    RecordCommandHistory(Chat, Chat->InputText);
-    Chat->HistoryBrowseIndex = -1;
-    Chat->SavedDraft[0] = '\0';
-    Chat->AutocompleteTabCount = 0;
-    Chat->AutocompleteBasePrefix[0] = '\0';
+    if (Chat->InputText[0] != '\0') {
+      RecordCommandHistory(Chat, Chat->InputText);
+      Chat->HistoryBrowseIndex = -1;
+      Chat->SavedDraft[0] = '\0';
+      Chat->AutocompleteTabCount = 0;
+      Chat->AutocompleteBasePrefix[0] = '\0';
 
-    if (Chat->InputText[0] == '/') {
-      (void)CommandHandler(Chat->InputText, Chat, Camera, Player, World);
-    } else {
-      LogInfo("%s", Chat->InputText);
-      AddChatHistory(Chat, Chat->InputText);
+      if (Chat->InputText[0] == '/') {
+        (void)CommandHandler(Chat->InputText, Chat, Camera, Player, World);
+      } else {
+        LogInfo("%s", Chat->InputText);
+        AddChatHistory(Chat, Chat->InputText);
+      }
     }
     CloseChat(Chat);
   }
@@ -196,6 +198,7 @@ void UpdateChat(ChatState *Chat, GameCamera *Camera, Player *Player, World *Worl
       Chat->EditState.Cursor = Len;
       Chat->EditState.SelectionStart = -1;
       Chat->EditState.SelectionEnd = -1;
+      Chat->EditState.ScrollOffset = 0.0F;
       Chat->AutocompleteTabCount = 0;
       Chat->AutocompleteBasePrefix[0] = '\0';
     }
@@ -216,6 +219,7 @@ void UpdateChat(ChatState *Chat, GameCamera *Camera, Player *Player, World *Worl
       Chat->EditState.Cursor = Len;
       Chat->EditState.SelectionStart = -1;
       Chat->EditState.SelectionEnd = -1;
+      Chat->EditState.ScrollOffset = 0.0F;
       Chat->AutocompleteTabCount = 0;
       Chat->AutocompleteBasePrefix[0] = '\0';
     }
