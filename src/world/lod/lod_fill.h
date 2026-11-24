@@ -30,9 +30,10 @@ bool LodFillInit(int DistanceChunks, int WorkerCount);
 void LodFillShutdown(void);
 bool LodFillEnabled(void);
 
-// Once per frame, after LodIngestUpdate. The anchor is the load centre's chunk;
-// WorldBusy (1:1 mesh work in flight) keeps in-flight jobs and the write
-// budget small.
+// Once per frame, after LodIngestUpdate and before LodIngestFlush (which then
+// carries up what synthetic writes over real cells queued). The anchor is the
+// load centre's chunk; WorldBusy (1:1 mesh work in flight) keeps in-flight jobs
+// and the write budget small.
 void LodFillUpdate(int ChunkX, int ChunkZ, int RenderDistance, bool WorldBusy);
 
 // Every wanted column for the current anchor is generated and written (always
@@ -48,6 +49,9 @@ typedef struct {
   int InFlight;
   uint64_t ColumnsGenerated;
   uint64_t SectionsGenerated;
+  // Columns taken whole from the disk cache, and their sections.
+  uint64_t ColumnsLoaded;
+  uint64_t SectionsLoaded;
   // Store writes applied, refused because every cell held real data, and
   // failed (out of range after a move, or out of memory).
   uint64_t SectionsWritten;

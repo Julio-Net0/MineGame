@@ -37,6 +37,7 @@
 #include "world/lod/lod_downsample.h"
 #include "world/lod/lod_ingest.h"
 #include "world/lod/lod_fill.h"
+#include "world/lod/lod_persist.h"
 #include "world/world.h"
 #include "persistence/world_save.h"
 #include <math.h>
@@ -88,6 +89,25 @@
 // Through the renderer rather than freeing the handles here, so the slot also
 // leaves the renderer's renderable set before it is reused.
 static void FreeEvictedChunkMeshes(Chunk *Evicted) { RendererForgetChunk(Evicted); }
+
+// The LOD disk cache, once the synthetic fill is on: in --lod-cache-dir when
+// given, else in the save, which a read-only world (a script) never touches.
+static void InitLodCache(void) {
+  const LaunchOptions *Options = GetLaunchOptions();
+  if (Options->LodNoCache) {
+    LogInfo("MAIN: LOD disk cache off (--lod-cache off)");
+    return;
+  }
+  const char *Directory = Options->LodCacheDir;
+  if (Directory == (const char *)0) {
+    if (WorldSaveIsReadOnly()) {
+      LogInfo("MAIN: LOD disk cache off (read-only world)");
+      return;
+    }
+    Directory = WORLD_SAVE_LOD_DIR;
+  }
+  (void)LodPersistInit(Directory, GetWorldSeed());
+}
 
 // Returns false when startup could not complete; nothing is initialised in that
 // case, so the caller has nothing to tear down.
@@ -218,8 +238,9 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
     LodDownsampleInit();
     if (LodIngestInit(RenderDistance) && RendererEnableLodIngest()) {
       LodRendererInit();
-      if (!GetLaunchOptions()->LodNoGen) {
-        (void)LodFillInit(LaunchLodDistance(), WorkerCount);
+      if (!GetLaunchOptions()->LodNoGen &&
+          LodFillInit(LaunchLodDistance(), WorkerCount)) {
+        InitLodCache();
       }
     } else {
       LodIngestShutdown();
@@ -245,6 +266,7 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
 
 static void CleanupGame(World *WorldVal) {
   CloseChunkWorker();
+  LodPersistShutdown();
   LodFillShutdown();
   LodRendererShutdown();
   LodIngestShutdown();
@@ -645,13 +667,16 @@ int main(int Argc, char **Argv) {
     PROFILE_END(MeshQueueStart, PROFILE_MESH_QUEUE);
     if (LodIngestEnabled()) {
       bool WorldBusy = RendererHasPendingMeshWork();
-      LodIngestFlush(WorldBusy);
+      // The fill first: a synthetic section written over real cells queues
+      // their parents again, and the flush right after carries them up.
       Vec3 FillCenter = (GetDebugState()->Freecam && WasFreecam)
                             ? FreeCamera.Position
                             : PlayerVal.Position;
       LodFillUpdate((int)floorf(FillCenter.x / (float)CHUNK_SIZE),
                     (int)floorf(FillCenter.z / (float)CHUNK_SIZE), RenderDistance,
                     WorldBusy);
+      LodIngestFlush(WorldBusy);
+      LodPersistUpdate(WorldBusy, LodFillIdle());
     }
 
     if (!PauseMenuIsOpen()) {

@@ -67,6 +67,25 @@ void LodIngestFlush(bool WorldBusy);
 LodWriteResult LodIngestWriteSynthetic(int Level, int X, int Y, int Z,
                                        LodSection *Encoded, uint64_t PresentCells);
 
+// A section loaded from the disk cache; see LodStoreWriteCached.
+LodWriteResult LodIngestWriteCached(int Level, int X, int Y, int Z,
+                                    LodSection *Encoded, uint64_t PresentCells,
+                                    uint64_t IngestedCells, bool GeneratedColumn);
+
+// See LodStoreMarkGenerated.
+void LodIngestMarkGenerated(int Level, int X, int Y, int Z);
+
+// See LodStoreSetEvictHook (nothing when off).
+void LodIngestSetEvictHook(LodEvictHook Hook, void *User);
+
+// Propagates every pending change and compacts every hot section now, for
+// shutdown (nothing when off).
+void LodIngestFlushAll(void);
+
+// The client's store for the disk cache's sweep, main thread only; NULL when
+// off.
+LodStore *LodIngestMutableStore(void);
+
 // Whether the clipmap holds the level-Level section column (X, Z) around the
 // current anchor (false when off).
 bool LodIngestColumnInRange(int Level, int X, int Z);

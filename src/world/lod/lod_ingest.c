@@ -71,6 +71,9 @@ static LodIngestState *GetIngestState(void) {
 // so every chunk the world can load still lands in it.
 static void ConfigForDistance(int RenderDistance, LodStoreConfig *Config) {
   LodStoreDefaultConfig(Config);
+  // Synthetic terrain arrives level by level (lod_fill.c), so only real data
+  // is carried up.
+  Config->RealPropagation = true;
   int Level1 =
       (RenderDistance / LEVEL1_CHUNKS_PER_SECTION) + LEVEL1_RADIUS_MARGIN;
   if (Level1 > Config->Radius[1]) {
@@ -273,6 +276,47 @@ LodWriteResult LodIngestWriteSynthetic(int Level, int X, int Y, int Z,
   }
   return LodStoreWriteSynthetic(&State->Store, Level, X, Y, Z, Encoded,
                                 PresentCells);
+}
+
+LodWriteResult LodIngestWriteCached(int Level, int X, int Y, int Z,
+                                    LodSection *Encoded, uint64_t PresentCells,
+                                    uint64_t IngestedCells, bool GeneratedColumn) {
+  LodIngestState *State = GetIngestState();
+  if (!State->Enabled) {
+    return LOD_WRITE_OUT_OF_RANGE;
+  }
+  return LodStoreWriteCached(&State->Store, Level, X, Y, Z, Encoded, PresentCells,
+                             IngestedCells, GeneratedColumn);
+}
+
+void LodIngestMarkGenerated(int Level, int X, int Y, int Z) {
+  LodIngestState *State = GetIngestState();
+  if (State->Enabled) {
+    LodStoreMarkGenerated(&State->Store, Level, X, Y, Z);
+  }
+}
+
+void LodIngestSetEvictHook(LodEvictHook Hook, void *User) {
+  LodIngestState *State = GetIngestState();
+  if (State->Enabled) {
+    LodStoreSetEvictHook(&State->Store, Hook, User);
+  }
+}
+
+void LodIngestFlushAll(void) {
+  LodIngestState *State = GetIngestState();
+  if (!State->Enabled) {
+    return;
+  }
+  LodIngestFlush(false);
+  if (!LodStoreFlush(&State->Store)) {
+    State->Failed++;
+  }
+}
+
+LodStore *LodIngestMutableStore(void) {
+  LodIngestState *State = GetIngestState();
+  return State->Enabled ? &State->Store : NULL;
 }
 
 bool LodIngestColumnInRange(int Level, int X, int Z) {

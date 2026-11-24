@@ -6,6 +6,9 @@
 
 #define SCRIPT_DEFAULT_WORLD_SEED 16412814131703521744ULL
 
+// The save's directory for the LOD disk cache (world/lod/lod_cache.h).
+#define WORLD_SAVE_LOD_DIR "world/lod"
+
 typedef struct Chunk Chunk;
 
 void InitWorldSave(void);

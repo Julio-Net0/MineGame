@@ -7,6 +7,7 @@
 #include "world/chunk_worker.h"
 #include "world/lod/lod_gen.h"
 #include "world/lod/lod_ingest.h"
+#include "world/lod/lod_persist.h"
 
 #include <math.h>
 #include <stdatomic.h>
@@ -39,6 +40,12 @@ enum {
 // Columns looked at beyond where a level can be wanted, in its own widths.
 #define REACH_MARGIN_WIDTHS 3.0F
 #define SET_EMPTY 0ULL
+// The job cost the in-flight limits are set for (a generated column); once
+// the 1:1 world is idle, cheaper jobs (columns read from the disk cache) may
+// be that many times more numerous, so the worker time queued stays the same. The average starts
+// there and follows the jobs that complete.
+#define REFERENCE_JOB_MICROS 3500.0
+#define JOB_COST_SMOOTHING 0.05
 #define FLUSH_BUDGET_BUSY_SECONDS 0.0005
 #define FLUSH_BUDGET_IDLE_SECONDS 0.002
 
@@ -53,7 +60,16 @@ typedef struct {
   int Count;
   int Written;
   bool Failed;
+  // A store write failed: the column is not whole in the store.
+  bool WriteFailed;
   uint64_t Micros;
+  // Worker time of the whole job: the cache read and any generation.
+  uint64_t WorkMicros;
+  // Sections read from the disk cache, written before the generated ones;
+  // with CacheHit the column was cached whole and nothing was generated.
+  int CachedCount;
+  bool CacheHit;
+  LodCacheEntry Cached[LOD_CACHE_MAX_COLUMN_SECTIONS];
   int SectionY[LOD_GEN_MAX_SECTIONS];
   uint64_t Present[LOD_GEN_MAX_SECTIONS];
   LodSection Sections[LOD_GEN_MAX_SECTIONS];
@@ -73,6 +89,7 @@ typedef struct {
   bool Enabled;
   int DistanceChunks;
   int WorkerCount;
+  double AverageJobMicros;
   bool HasAnchor;
   int AnchorX;
   int AnchorZ;
@@ -212,19 +229,33 @@ static void EmitSection(void *User, int SectionY,
 }
 
 static void RunFillJob(int JobId) {
+  if (JobId >= LOD_PERSIST_JOB_BASE) {
+    LodPersistRunJob(JobId - LOD_PERSIST_JOB_BASE);
+    return;
+  }
   LodFillState *State = GetFillState();
   if (JobId < 0 || JobId >= MAX_JOBS || State->Jobs == NULL) {
     return;
   }
   FillJob *Job = &State->Jobs[JobId];
-  PROFILE_BEGIN(GenStart);
-  double Start = OsGetTimeSeconds();
-  LodGenResult Result;
-  LodGenerateColumn(Job->Gen, Job->Level, Job->X, Job->Z, Job->Seed, EmitSection,
-                    Job, &Result);
-  Job->Micros =
-      (uint64_t)((OsGetTimeSeconds() - Start) * (double)MICROS_PER_SECOND);
-  PROFILE_END(GenStart, PROFILE_LOD_GEN);
+  double JobStart = OsGetTimeSeconds();
+  bool Generated = false;
+  int Read = LodPersistReadColumn(Job->Level, Job->X, Job->Z, Job->Cached,
+                                  LOD_CACHE_MAX_COLUMN_SECTIONS, &Generated);
+  Job->CachedCount = (Read > 0) ? Read : 0;
+  Job->CacheHit = Generated && Read > 0;
+  if (!Job->CacheHit) {
+    PROFILE_BEGIN(GenStart);
+    double Start = OsGetTimeSeconds();
+    LodGenResult Result;
+    LodGenerateColumn(Job->Gen, Job->Level, Job->X, Job->Z, Job->Seed,
+                      EmitSection, Job, &Result);
+    Job->Micros =
+        (uint64_t)((OsGetTimeSeconds() - Start) * (double)MICROS_PER_SECOND);
+    PROFILE_END(GenStart, PROFILE_LOD_GEN);
+  }
+  Job->WorkMicros =
+      (uint64_t)((OsGetTimeSeconds() - JobStart) * (double)MICROS_PER_SECOND);
   atomic_store_explicit(&Job->Phase, JOB_DONE, memory_order_release);
 }
 
@@ -232,7 +263,11 @@ static void FreeJobSections(FillJob *Job) {
   for (int Idx = 0; Idx < Job->Count; Idx++) {
     LodSectionFree(&Job->Sections[Idx]);
   }
+  for (int Idx = 0; Idx < Job->CachedCount; Idx++) {
+    LodSectionFree(&Job->Cached[Idx].Section);
+  }
   Job->Count = 0;
+  Job->CachedCount = 0;
   Job->Written = 0;
 }
 
@@ -277,6 +312,7 @@ bool LodFillInit(int DistanceChunks, int WorkerCount) {
   State->CandidateCapacity = CANDIDATES_INITIAL;
   State->DistanceChunks = DistanceChunks;
   State->WorkerCount = (WorkerCount > 0) ? WorkerCount : 1;
+  State->AverageJobMicros = REFERENCE_JOB_MICROS;
   State->FillStart = -1.0;
   State->HorizonMs = -1.0;
   State->FillMs = -1.0;
@@ -443,26 +479,52 @@ static void Reanchor(LodFillState *State, int ChunkX, int ChunkZ,
 
 // Writes a finished job's sections while the budget lasts; true once the job
 // is fully written and its slot free again.
+// One section of a finished job: the cached ones first, then the generated.
+static LodWriteResult WriteJobSection(FillJob *Job, int Idx) {
+  if (Idx < Job->CachedCount) {
+    LodCacheEntry *Entry = &Job->Cached[Idx];
+    return LodIngestWriteCached(Job->Level, Job->X, Entry->Y, Job->Z,
+                                &Entry->Section, Entry->Section.PresentCells,
+                                Entry->Section.IngestedCells, Job->CacheHit);
+  }
+  int Gen = Idx - Job->CachedCount;
+  return LodIngestWriteSynthetic(Job->Level, Job->X, Job->SectionY[Gen], Job->Z,
+                                 &Job->Sections[Gen], Job->Present[Gen]);
+}
+
 static bool WriteJob(LodFillState *State, FillJob *Job, double Deadline) {
-  while (Job->Written < Job->Count) {
+  int Total = Job->CachedCount + Job->Count;
+  while (Job->Written < Total) {
     int Idx = Job->Written++;
-    LodWriteResult Result =
-        LodIngestWriteSynthetic(Job->Level, Job->X, Job->SectionY[Idx], Job->Z,
-                                &Job->Sections[Idx], Job->Present[Idx]);
+    LodWriteResult Result = WriteJobSection(Job, Idx);
     if (Result == LOD_WRITE_APPLIED) {
       State->Stats.SectionsWritten++;
     } else if (Result == LOD_WRITE_SKIPPED_PRECEDENCE) {
       State->Stats.SectionsSkipped++;
     } else {
       State->Stats.SectionsFailed++;
+      Job->WriteFailed = true;
     }
-    if (Job->Written < Job->Count && OsGetTimeSeconds() >= Deadline) {
+    if (Job->Written < Total && OsGetTimeSeconds() >= Deadline) {
       return false;
     }
   }
-  State->Stats.ColumnsGenerated++;
-  State->Stats.SectionsGenerated += (uint64_t)Job->Count;
-  State->Stats.GenMicros += Job->Micros;
+  if (Job->CacheHit) {
+    State->Stats.ColumnsLoaded++;
+    State->Stats.SectionsLoaded += (uint64_t)Job->CachedCount;
+  } else {
+    State->Stats.ColumnsGenerated++;
+    State->Stats.SectionsGenerated += (uint64_t)Job->Count;
+    State->Stats.GenMicros += Job->Micros;
+    // The whole column is in the store now: its cached copy will not need
+    // generating again.
+    for (int Idx = 0; !Job->Failed && !Job->WriteFailed && Idx < Job->Count; Idx++) {
+      LodIngestMarkGenerated(Job->Level, Job->X, Job->SectionY[Idx], Job->Z);
+    }
+  }
+  LodPersistCountColumn(Job->CacheHit, Job->CachedCount);
+  State->AverageJobMicros +=
+      ((double)Job->WorkMicros - State->AverageJobMicros) * JOB_COST_SMOOTHING;
   if (Job->Failed) {
     State->Stats.SectionsFailed++;
   }
@@ -491,10 +553,16 @@ static int DrainJobs(LodFillState *State, double Deadline) {
 static void Dispatch(LodFillState *State, int Busy, bool WorldBusy) {
   // One worker is always left to the 1:1 world, so a chunk that starts
   // loading never waits for a whole round of LOD jobs.
-  int Limit = WorldBusy ? BUSY_JOBS : State->WorkerCount - 1;
-  if (Limit < 1) {
-    Limit = 1;
+  int Base = WorldBusy ? BUSY_JOBS : State->WorkerCount - 1;
+  if (Base < 1) {
+    Base = 1;
   }
+  // Cheap jobs only widen the limit once the 1:1 world is idle: while it
+  // loads, even short reads on every worker delay its chunks.
+  double Scale = REFERENCE_JOB_MICROS / fmax(State->AverageJobMicros, 1.0);
+  int Limit = (!WorldBusy && Scale > 1.0)
+                  ? (int)((double)Base * fmin(Scale, (double)MAX_JOBS))
+                  : Base;
   if (Limit > MAX_JOBS) {
     Limit = MAX_JOBS;
   }
@@ -514,7 +582,10 @@ static void Dispatch(LodFillState *State, int Busy, bool WorldBusy) {
       return;
     }
     const Candidate *Next = &State->Candidates[State->Cursor];
-    if (!SetInsert(State, PackKey(Next->Level, Next->X, Next->Z))) {
+    // A save of this column's region is still on its way to the disk: reading
+    // it now could see an older copy.
+    if (LodPersistColumnBusy(Next->Level, Next->X, Next->Z) ||
+        !SetInsert(State, PackKey(Next->Level, Next->X, Next->Z))) {
       return;
     }
     Job->Level = Next->Level;
@@ -522,8 +593,12 @@ static void Dispatch(LodFillState *State, int Busy, bool WorldBusy) {
     Job->Z = Next->Z;
     Job->Seed = Seed;
     Job->Count = 0;
+    Job->CachedCount = 0;
+    Job->CacheHit = false;
+    Job->Micros = 0;
     Job->Written = 0;
     Job->Failed = false;
+    Job->WriteFailed = false;
     atomic_store_explicit(&Job->Phase, JOB_QUEUED, memory_order_release);
     if (!EnqueueChunkLodJob(Idx)) {
       atomic_store_explicit(&Job->Phase, JOB_FREE, memory_order_relaxed);
@@ -575,9 +650,10 @@ void LodFillUpdate(int ChunkX, int ChunkZ, int RenderDistance, bool WorldBusy) {
   if (State->WasIdle && State->FillMs < 0.0) {
     State->FillMs = Elapsed;
     LogInfo("LOD: synthetic fill done in %.0f ms (horizon %.0f ms), %llu "
-            "columns, %llu sections",
+            "columns generated, %llu loaded from the cache, %llu sections",
             State->FillMs, State->HorizonMs,
             (unsigned long long)State->Stats.ColumnsGenerated,
+            (unsigned long long)State->Stats.ColumnsLoaded,
             (unsigned long long)State->Stats.SectionsWritten);
   }
   PROFILE_END(FillStart, PROFILE_LOD_INGEST);

@@ -33,6 +33,7 @@ void LodStoreDefaultConfig(LodStoreConfig *Config) {
     Config->VerticalRadius[Level] = 0;
   }
   Config->HotLimit = DEFAULT_HOT_LIMIT;
+  Config->RealPropagation = false;
 }
 
 static uint64_t HashKey(int Level, int X, int Y, int Z) {
@@ -228,8 +229,16 @@ static void EvictOutOfRange(LodStore *Store) {
     LodStoreSlot *Slot = &Store->Slots[Idx];
     if (Slot->Level > 0 &&
         !LodStoreInRange(Store, Slot->Level, Slot->X, Slot->Y, Slot->Z)) {
-      JournalChange(Store, (LodStoreKey){.X = Slot->X, .Y = Slot->Y,
-                                         .Z = Slot->Z, .Level = Slot->Level});
+      LodStoreKey Key = {.X = Slot->X, .Y = Slot->Y, .Z = Slot->Z,
+                         .Level = Slot->Level};
+      JournalChange(Store, Key);
+      if (Store->EvictHook != NULL && Slot->Section->Unsaved) {
+        // The hook may take the storage, so the byte count follows what is
+        // left for FreeSlotSection to subtract.
+        Store->HeapBytes -= LodSectionHeapBytes(Slot->Section);
+        Store->EvictHook(Store->EvictUser, Key, Slot->Section);
+        Store->HeapBytes += LodSectionHeapBytes(Slot->Section);
+      }
       FreeSlotSection(Store, Slot);
       Slot->Level = LOD_SLOT_TOMBSTONE;
       Store->Count--;
@@ -513,6 +522,8 @@ static unsigned ProtectedCells(const LodSection *Section, int OctX, int OctY,
 // Adds a changed section to the pending set, once. Top-level sections have
 // no parent and never wait.
 static bool MarkPending(LodStore *Store, LodSection *Section, LodStoreKey Key) {
+  // Every applied write passes here, content or provenance alike.
+  Section->Unsaved = true;
   if (Key.Level >= LOD_MAX_LEVEL || Section->PendingPropagation) {
     return true;
   }
@@ -608,7 +619,7 @@ static LodWriteResult WriteLevel(LodStore *Store, int Level, int ChildX,
 
 // The octant write a changed level-L section hands its parent: one parent cell
 // per child octant that holds data, real where the octant holds any real data.
-static OctantWrite ParentWrite(const LodSection *Section) {
+static OctantWrite ParentWrite(const LodSection *Section, bool RealOnly) {
   OctantWrite Write = {0};
   for (int Local = 0; Local < OCTANT_CELLS; Local++) {
     uint64_t Mask =
@@ -619,6 +630,9 @@ static OctantWrite ParentWrite(const LodSection *Section) {
     if ((Section->IngestedCells & Mask) != 0U) {
       Write.IngestedMask |= 1U << (unsigned)Local;
     }
+  }
+  if (RealOnly) {
+    Write.WriteMask &= Write.IngestedMask;
   }
   return Write;
 }
@@ -786,7 +800,7 @@ bool LodStoreFlushSome(LodStore *Store, int MaxEntries) {
     }
     // A parent cell built from synthetic child cells only is synthetic, and
     // so gives way to real data already there.
-    if (WriteLevel(Store, Key.Level + 1, Key.X, Key.Y, Key.Z, ParentWrite(Child),
+    if (WriteLevel(Store, Key.Level + 1, Key.X, Key.Y, Key.Z, ParentWrite(Child, Store->Config.RealPropagation),
                    Scratch) == LOD_WRITE_NO_MEMORY) {
       Passed = false;
     }
@@ -835,9 +849,35 @@ static void MergeUnprotected(LodVoxel *Target, const LodSection *Incoming,
   }
 }
 
-LodWriteResult LodStoreWriteSynthetic(LodStore *Store, int Level, int X, int Y,
-                                      int Z, LodSection *Encoded,
-                                      uint64_t PresentCells) {
+// Whether every cell real data protects already holds what Incoming holds there.
+static bool ProtectedCellsMatch(const LodVoxel *Target, const LodSection *Incoming,
+                                uint64_t Protected) {
+  for (int X = 0; X < LOD_SECTION_SIZE; X++) {
+    for (int Y = 0; Y < LOD_SECTION_SIZE; Y++) {
+      for (int Z = 0; Z < LOD_SECTION_SIZE; Z++) {
+        uint64_t Bit = LodCellBit(X / LOD_CELL_SIZE, Y / LOD_CELL_SIZE,
+                                  Z / LOD_CELL_SIZE);
+        if ((Protected & Bit) != 0U &&
+            Target[LodVoxelIndex(X, Y, Z)] != LodSectionGet(Incoming, X, Y, Z)) {
+          return false;
+        }
+      }
+    }
+  }
+  return true;
+}
+
+typedef struct {
+  uint64_t PresentCells;
+  uint64_t IngestedCells;
+  bool GeneratedColumn;
+  // From the disk cache: the result stays saved unless real cells were kept.
+  bool Cached;
+} WholeWrite;
+
+static LodWriteResult WriteWholeSection(LodStore *Store, int Level, int X, int Y,
+                                        int Z, LodSection *Encoded,
+                                        const WholeWrite *Write) {
   if (!LodStoreInRange(Store, Level, X, Y, Z)) {
     return LOD_WRITE_OUT_OF_RANGE;
   }
@@ -852,6 +892,9 @@ LodWriteResult LodStoreWriteSynthetic(LodStore *Store, int Level, int X, int Y,
   }
   size_t OldBytes = LodSectionHeapBytes(Section);
   LodVoxel *Dense = LodSectionDenseVoxels(Section);
+  // A cached copy taken whole equals the disk; a merged one only when the
+  // real cells it kept already held what the cache holds.
+  bool MatchesCache = Write->Cached;
   if (Protected != 0U || Dense != NULL) {
     // A section holding real cells, or hot under real writes, is merged in
     // place and keeps its storage path; real cells stay as they are.
@@ -859,6 +902,7 @@ LodWriteResult LodStoreWriteSynthetic(LodStore *Store, int Level, int X, int Y,
     if (Dense == NULL) {
       LodSectionDecode(Section, Target);
     }
+    MatchesCache = MatchesCache && ProtectedCellsMatch(Target, Encoded, Protected);
     MergeUnprotected(Target, Encoded, Protected);
     if (Dense == NULL &&
         !LodSectionEncodeWithScratch(Section, Target, Store->Encode)) {
@@ -869,11 +913,61 @@ LodWriteResult LodStoreWriteSynthetic(LodStore *Store, int Level, int X, int Y,
   }
   Store->HeapBytes = Store->HeapBytes - OldBytes + LodSectionHeapBytes(Section);
   Section->PresentCells =
-      (Section->PresentCells & Protected) | (PresentCells & ~Protected);
+      (Section->PresentCells & Protected) | (Write->PresentCells & ~Protected);
+  Section->IngestedCells = Protected | (Write->IngestedCells & ~Protected);
+  Section->GeneratedColumn = Section->GeneratedColumn || Write->GeneratedColumn;
   Section->Revision++;
   Section->Dirty = true;
-  JournalChange(Store, (LodStoreKey){.X = X, .Y = Y, .Z = Z, .Level = Level});
-  return LOD_WRITE_APPLIED;
+  LodStoreKey Key = {.X = X, .Y = Y, .Z = Z, .Level = Level};
+  JournalChange(Store, Key);
+  // The real cells' parents were built from what this section held before.
+  bool Propagated =
+      !Store->Config.RealPropagation || Protected == 0U || MarkPending(Store, Section, Key);
+  Section->Unsaved = !MatchesCache || Section->PresentCells != Write->PresentCells ||
+                     Section->IngestedCells != Write->IngestedCells;
+  return Propagated ? LOD_WRITE_APPLIED : LOD_WRITE_NO_MEMORY;
+}
+
+LodWriteResult LodStoreWriteSynthetic(LodStore *Store, int Level, int X, int Y,
+                                      int Z, LodSection *Encoded,
+                                      uint64_t PresentCells) {
+  WholeWrite Write = {.PresentCells = PresentCells};
+  return WriteWholeSection(Store, Level, X, Y, Z, Encoded, &Write);
+}
+
+LodWriteResult LodStoreWriteCached(LodStore *Store, int Level, int X, int Y,
+                                   int Z, LodSection *Encoded,
+                                   uint64_t PresentCells, uint64_t IngestedCells,
+                                   bool GeneratedColumn) {
+  WholeWrite Write = {.PresentCells = PresentCells,
+                      .IngestedCells = IngestedCells,
+                      .GeneratedColumn = GeneratedColumn,
+                      .Cached = true};
+  return WriteWholeSection(Store, Level, X, Y, Z, Encoded, &Write);
+}
+
+void LodStoreMarkGenerated(LodStore *Store, int Level, int X, int Y, int Z) {
+  int Found = FindSlot(Store, Level, X, Y, Z);
+  if (Found < 0) {
+    return;
+  }
+  LodSection *Section = Store->Slots[Found].Section;
+  if (!Section->GeneratedColumn) {
+    Section->GeneratedColumn = true;
+    Section->Unsaved = true;
+  }
+}
+
+void LodStoreMarkSaved(LodStore *Store, int Level, int X, int Y, int Z) {
+  int Found = FindSlot(Store, Level, X, Y, Z);
+  if (Found >= 0) {
+    Store->Slots[Found].Section->Unsaved = false;
+  }
+}
+
+void LodStoreSetEvictHook(LodStore *Store, LodEvictHook Hook, void *User) {
+  Store->EvictHook = Hook;
+  Store->EvictUser = User;
 }
 
 void LodStoreGetStats(const LodStore *Store, LodStoreStats *Out) {
@@ -931,10 +1025,23 @@ static uint64_t MixCells(uint64_t Hash, uint64_t Cells) {
   return MixWord(Hash, (uint32_t)(Cells >> HALF_WORD_SHIFT));
 }
 
+static bool HashSelects(const LodStoreSlot *Slot, int Level, LodHashFilter Filter) {
+  if (Slot->Level != Level) {
+    return false;
+  }
+  bool Real = Slot->Section->IngestedCells != 0U;
+  return Filter == LOD_HASH_ALL || (Filter == LOD_HASH_WITH_REAL) == Real;
+}
+
 uint64_t LodStoreLevelHash(const LodStore *Store, int Level) {
+  return LodStoreLevelHashOf(Store, Level, LOD_HASH_ALL);
+}
+
+uint64_t LodStoreLevelHashOf(const LodStore *Store, int Level,
+                             LodHashFilter Filter) {
   int Count = 0;
   for (int Idx = 0; Idx < Store->Capacity; Idx++) {
-    if (Store->Slots[Idx].Level == Level) {
+    if (HashSelects(&Store->Slots[Idx], Level, Filter)) {
       Count++;
     }
   }
@@ -948,7 +1055,7 @@ uint64_t LodStoreLevelHash(const LodStore *Store, int Level) {
   }
   int Fill = 0;
   for (int Idx = 0; Idx < Store->Capacity; Idx++) {
-    if (Store->Slots[Idx].Level == Level) {
+    if (HashSelects(&Store->Slots[Idx], Level, Filter)) {
       Sorted[Fill++] = &Store->Slots[Idx];
     }
   }

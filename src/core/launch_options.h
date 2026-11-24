@@ -105,6 +105,11 @@ typedef struct {
   // --lod-gen off: no synthetic terrain; the LOD holds only what real chunks
   // brought (the golden comparisons run this way).
   bool LodNoGen;
+  // --lod-cache off: no LOD disk cache. --lod-cache-dir P: the cache lives in
+  // P instead of the save's lod/ directory, and is used even when the world
+  // is read-only (scripts), which otherwise keeps it off. NULL when not given.
+  bool LodNoCache;
+  const char *LodCacheDir;
 } LaunchOptions;
 
 #define LOD_ARENA_MB_DEFAULT 192

@@ -29,6 +29,14 @@ typedef struct {
   // Most sections held DENSE at once while writes arrive (16 KB each); past
   // it the oldest is compacted immediately.
   int HotLimit;
+  // Only real data travels up: a parent is written only from the child
+  // octants holding real cells, and a whole-section write (synthetic or
+  // cached) into a section holding real cells propagates it again. A parent's
+  // real cells then always come from its children's final content, whatever
+  // order real chunks and whole sections arrived in; everything else comes
+  // from the level's own whole sections. For stores filled level by level
+  // (the client's); off by default, where synthetic patches propagate too.
+  bool RealPropagation;
 } LodStoreConfig;
 
 typedef struct {
@@ -48,6 +56,11 @@ typedef struct {
   int32_t Z;
   int32_t Level;
 } LodStoreKey;
+
+// Called for every evicted section still marked Unsaved, just before the store
+// frees it. The hook may move the content out with LodSectionAdoptContent
+// (and read its provenance); the store frees whatever is left.
+typedef void (*LodEvictHook)(void *User, LodStoreKey Key, LodSection *Section);
 
 typedef struct {
   LodStoreConfig Config;
@@ -86,6 +99,8 @@ typedef struct {
   // every section as changed.
   LodStoreKey *Journal;
   uint64_t JournalSeq;
+  LodEvictHook EvictHook;
+  void *EvictUser;
 } LodStore;
 
 enum { LOD_JOURNAL_SIZE = 8192 };
@@ -220,12 +235,45 @@ LodWriteResult LodStoreWriteSynthetic(LodStore *Store, int Level, int X, int Y,
                                       int Z, LodSection *Encoded,
                                       uint64_t PresentCells);
 
+// Writes one section loaded from the disk cache (lod_cache.h) like
+// LodStoreWriteSynthetic, but carrying its provenance: cells the cache holds
+// as real stay real. Cells already holding real data in the store keep it,
+// since this session's chunks are newer than any cache. The section is marked
+// Unsaved only when it no longer equals the cached copy; GeneratedColumn is
+// OR-ed into its flag.
+LodWriteResult LodStoreWriteCached(LodStore *Store, int Level, int X, int Y,
+                                   int Z, LodSection *Encoded,
+                                   uint64_t PresentCells, uint64_t IngestedCells,
+                                   bool GeneratedColumn);
+
+// Flags the resident level-Level section (X, Y, Z) as part of a column the
+// synthetic fill generated whole (LodSection.GeneratedColumn), marking it
+// Unsaved when the flag changes. Nothing when it is not resident.
+void LodStoreMarkGenerated(LodStore *Store, int Level, int X, int Y, int Z);
+
+// Clears the Unsaved flag of the resident section, once the disk cache holds
+// a copy of it as it is now.
+void LodStoreMarkSaved(LodStore *Store, int Level, int X, int Y, int Z);
+
+// Sets the hook called for unsaved sections on eviction; NULL clears it.
+void LodStoreSetEvictHook(LodStore *Store, LodEvictHook Hook, void *User);
+
 void LodStoreGetStats(const LodStore *Store, LodStoreStats *Out);
 
 // Content hash of every section of one level, in coordinate order, so equal
 // content gives an equal hash whatever order it was written in. Zero when the
 // level is empty or the sort buffer cannot be allocated.
 uint64_t LodStoreLevelHash(const LodStore *Store, int Level);
+
+// The same over part of the level: sections holding no real cell, or the
+// ones holding some.
+typedef enum {
+  LOD_HASH_ALL = 0,
+  LOD_HASH_SYNTHETIC_ONLY,
+  LOD_HASH_WITH_REAL
+} LodHashFilter;
+uint64_t LodStoreLevelHashOf(const LodStore *Store, int Level,
+                             LodHashFilter Filter);
 
 // floor(Value / 2^Shift) for negative values too.
 static inline int LodFloorShift(int Value, int Shift) {

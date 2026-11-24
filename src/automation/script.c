@@ -20,6 +20,7 @@
 #include "world/chunk.h"
 #include "world/surface.h"
 #include "world/lod/lod_fill.h"
+#include "world/lod/lod_persist.h"
 #include "world/lod/lod_ingest.h"
 #include "world/terrain_density.h"
 #include "world/worldgen_column_cache.h"
@@ -99,6 +100,7 @@ typedef enum {
   SCRIPT_OP_WAIT_NEAR,
   SCRIPT_OP_WAIT_PROFILE,
   SCRIPT_OP_WAIT_LOD_GEN,
+  SCRIPT_OP_WAIT_LOD_CACHE,
   SCRIPT_OP_LOOK,
   SCRIPT_OP_HOLD,
   SCRIPT_OP_PRESS,
@@ -187,6 +189,9 @@ typedef enum {
   // LOD renderer to mesh what it selects, for SETTLED_FRAMES_REQUIRED frames
   // in a row. "wait loaded" never waits for the fill.
   SCRIPT_WAIT_LOD_GEN,
+  // Waiting for the LOD disk cache to hold every section of the store
+  // (nothing unsaved, held or being written); immediate when the cache is off.
+  SCRIPT_WAIT_LOD_CACHE,
   // Waiting for the frame requested by a screenshot statement to come back:
   // the request reaches the backend at the top of a frame and the pixels only
   // exist once that frame has been drawn and read, one frame later.
@@ -638,6 +643,11 @@ static bool ParseStatement(char *Statement, int LineNumber) {
           (ScriptStatement){.Kind = SCRIPT_OP_WAIT_LOD_GEN, .Line = LineNumber},
           "", LineText);
     }
+    if (TokenCount == 2 && CompareString(Tokens[1], "lod_cache") == 0) {
+      return AppendStatement(
+          (ScriptStatement){.Kind = SCRIPT_OP_WAIT_LOD_CACHE, .Line = LineNumber},
+          "", LineText);
+    }
     if (TokenCount == 2 && CompareString(Tokens[1], "profile") == 0) {
       return AppendStatement(
           (ScriptStatement){.Kind = SCRIPT_OP_WAIT_PROFILE, .Line = LineNumber},
@@ -1085,6 +1095,77 @@ enum {
   LOD_HASH_TEXT_CHARS = 20
 };
 
+// Per-level content hashes, over all sections and split between the ones
+// holding only synthetic cells and the ones holding real cells.
+static void ScriptAddLodLevelHashes(cJSON *Parent) {
+  const LodStore *Store = LodIngestStore();
+  cJSON *Node = cJSON_CreateObject();
+  if (Store == NULL || Node == (cJSON *)0) {
+    cJSON_Delete(Node);
+    return;
+  }
+  static const char *const NAMES[] = {"all", "synthetic", "real"};
+  static const LodHashFilter FILTERS[] = {LOD_HASH_ALL, LOD_HASH_SYNTHETIC_ONLY,
+                                          LOD_HASH_WITH_REAL};
+  for (int Kind = 0; Kind < (int)(sizeof(FILTERS) / sizeof(FILTERS[0])); Kind++) {
+    cJSON *Levels = cJSON_CreateArray();
+    if (Levels == (cJSON *)0) {
+      continue;
+    }
+    for (int Level = 1; Level <= LOD_MAX_LEVEL; Level++) {
+      char Text[LOD_HASH_TEXT_CHARS];
+      (void)snprintf(Text, sizeof(Text), "%016llx",
+                     (unsigned long long)LodStoreLevelHashOf(Store, Level, FILTERS[Kind]));
+      cJSON_AddItemToArray(Levels, cJSON_CreateString(Text));
+    }
+    cJSON_AddItemToObject(Node, NAMES[Kind], Levels);
+  }
+  cJSON_AddItemToObject(Parent, "levelHashes", Node);
+}
+
+// The disk cache's figures: column hits and misses, sections saved, records
+// rejected, bytes on disk, and the read cost and compression they come with.
+static void ScriptAddLodCacheJson(cJSON *Parent) {
+  cJSON *Node = cJSON_CreateObject();
+  if (Node == (cJSON *)0) {
+    return;
+  }
+  LodPersistStats Stats;
+  LodPersistGetStats(&Stats);
+  const LodCacheStats *Cache = &Stats.Cache;
+  cJSON_AddBoolToObject(Node, "enabled", Stats.Enabled);
+  cJSON_AddNumberToObject(Node, "hits", (double)Stats.Hits);
+  cJSON_AddNumberToObject(Node, "misses", (double)Stats.Misses);
+  cJSON_AddNumberToObject(Node, "sectionsLoaded", (double)Stats.SectionsLoaded);
+  cJSON_AddNumberToObject(Node, "saved", (double)Cache->SectionsWritten);
+  cJSON_AddNumberToObject(Node, "pending", Stats.PendingSections);
+  cJSON_AddNumberToObject(Node, "saveFailures", (double)Stats.SaveFailures);
+  cJSON_AddNumberToObject(Node, "corrupt", (double)Cache->Corrupt);
+  cJSON_AddBoolToObject(Node, "invalidated", Cache->Invalidated);
+  cJSON_AddNumberToObject(Node, "diskBytes", (double)Cache->DiskBytes);
+  cJSON_AddNumberToObject(Node, "regions", Cache->Regions);
+  cJSON_AddNumberToObject(Node, "columnReads", (double)Cache->ColumnReads);
+  cJSON_AddNumberToObject(Node, "sectionsRead", (double)Cache->SectionsRead);
+  cJSON_AddNumberToObject(Node, "readMicros", (double)Cache->ReadMicros);
+  cJSON_AddNumberToObject(
+      Node, "readUsPerSection",
+      (Cache->SectionsRead > 0U)
+          ? (double)Cache->ReadMicros / (double)Cache->SectionsRead
+          : 0.0);
+  cJSON_AddNumberToObject(Node, "writeMicros", (double)Cache->WriteMicros);
+  cJSON_AddNumberToObject(Node, "regionWrites", (double)Cache->RegionWrites);
+  cJSON_AddNumberToObject(Node, "recordBytes", (double)Cache->RecordBytesWritten);
+  cJSON_AddNumberToObject(Node, "memoryBytes", (double)Cache->MemoryBytesWritten);
+  cJSON_AddNumberToObject(
+      Node, "compression",
+      (Cache->RecordBytesWritten > 0U)
+          ? (double)Cache->MemoryBytesWritten / (double)Cache->RecordBytesWritten
+          : 0.0);
+  cJSON_AddNumberToObject(Node, "uniformSections", (double)Cache->UniformSections);
+  cJSON_AddNumberToObject(Node, "rleSections", (double)Cache->RleSections);
+  cJSON_AddNumberToObject(Node, "rawSections", (double)Cache->RawSections);
+  cJSON_AddItemToObject(Parent, "cache", Node);
+}
 static void ScriptAddLodJson(cJSON *Root) {
   cJSON *Node = cJSON_CreateObject();
   if (Node == (cJSON *)0) {
@@ -1098,6 +1179,7 @@ static void ScriptAddLodJson(cJSON *Root) {
   (void)snprintf(HashText, sizeof(HashText), "%016llx",
                  (unsigned long long)LodIngestContentHash());
   cJSON_AddStringToObject(Node, "contentHash", HashText);
+  ScriptAddLodLevelHashes(Node);
   cJSON_AddNumberToObject(Node, "sections", Stats.Store.Sections);
   cJSON_AddNumberToObject(Node, "ingestedSections", Stats.Store.SectionsIngested);
   cJSON_AddNumberToObject(Node, "syntheticSections", Stats.Store.SectionsSynthetic);
@@ -1126,6 +1208,9 @@ static void ScriptAddLodJson(cJSON *Root) {
           : 0.0);
   cJSON_AddNumberToObject(Node, "genHorizonMs", Fill.HorizonMs);
   cJSON_AddNumberToObject(Node, "genFillMs", Fill.FillMs);
+  cJSON_AddNumberToObject(Node, "genColumnsLoaded", (double)Fill.ColumnsLoaded);
+  cJSON_AddNumberToObject(Node, "genSectionsLoaded", (double)Fill.SectionsLoaded);
+  ScriptAddLodCacheJson(Node);
   cJSON *Levels = cJSON_CreateArray();
   if (Levels != (cJSON *)0) {
     for (int Level = 1; Level <= LOD_MAX_LEVEL; Level++) {
@@ -1756,6 +1841,13 @@ static bool ScriptIsWaiting(const ScriptContext *Ctx) {
     ScriptLog("      | LOD fill settled after %lld frames, %.1f ms",
               State->Frame, ScriptWaitElapsedMs(State));
     break;
+  case SCRIPT_WAIT_LOD_CACHE:
+    if (!LodPersistIdle()) {
+      return true;
+    }
+    ScriptLog("      | LOD cache saved after %lld frames, %.1f ms", State->Frame,
+              ScriptWaitElapsedMs(State));
+    break;
   case SCRIPT_WAIT_PROFILE:
 #ifdef MINEGAME_PROFILE
     if (ProfilerIsCapturing()) {
@@ -1905,6 +1997,11 @@ void ScriptStep(ChatState *Chat, GameCamera *Camera, Player *PlayerVal,
     case SCRIPT_OP_WAIT_LOD_GEN:
       State->Wait = SCRIPT_WAIT_LOD_GEN;
       State->SettledFrames = 0;
+      State->WaitStart = PlatformGetTime();
+      State->WaitLine = Step->Line;
+      return;
+    case SCRIPT_OP_WAIT_LOD_CACHE:
+      State->Wait = SCRIPT_WAIT_LOD_CACHE;
       State->WaitStart = PlatformGetTime();
       State->WaitLine = Step->Line;
       return;

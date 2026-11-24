@@ -66,6 +66,11 @@ typedef struct {
   // Held DENSE while writes keep arriving, waiting to be compacted; owned by
   // the store.
   bool Hot;
+  // Changed (content or provenance) since the disk cache last saved it.
+  bool Unsaved;
+  // Its column was generated whole by the synthetic fill, or loaded from a
+  // cached column that was: a cached copy of the column needs no generation.
+  bool GeneratedColumn;
 } LodSection;
 
 static inline int LodVoxelIndex(int X, int Y, int Z) {
@@ -122,6 +127,10 @@ void LodSectionAdoptDense(LodSection *Section, LodVoxel *Buffer);
 // Section held; Source is left empty. Provenance and revisions are the
 // caller's.
 void LodSectionAdoptContent(LodSection *Section, LodSection *Source);
+
+// Out becomes a copy of Source (content, provenance and flags) with storage of
+// its own. False when that storage cannot be allocated; Out is then empty.
+bool LodSectionCopy(LodSection *Out, const LodSection *Source);
 
 // Re-encodes a DENSE section in its smallest form, exactly as LodSectionEncode
 // would from the same voxels. When the dense buffer stops being used it is

@@ -105,11 +105,14 @@ set(MINEGAME_SIM_SOURCES
   src/world/lod/lod_ingest.c
   src/world/lod/lod_gen.c
   src/world/lod/lod_fill.c
+  src/world/lod/lod_cache.c
+  src/world/lod/lod_persist.c
   src/persistence/world_save.c
   src/persistence/chunk_serial.c
   src/player/player.c
   src/platform/os_limits.c
   src/platform/os_time.c
+  src/platform/os_file.c
   src/core/utils.c
   src/core/fileio.c
   src/core/log.c
@@ -159,6 +162,7 @@ add_executable(MineGameServer
   src/server/worldgen_selftest.c
   src/server/lod_selftest.c
   src/server/lod_gen_selftest.c
+  src/server/lod_cache_selftest.c
   ${MINEGAME_SIM_SOURCES}
 )
 

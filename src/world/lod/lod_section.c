@@ -248,6 +248,21 @@ void LodSectionAdoptContent(LodSection *Section, LodSection *Source) {
   LodSectionInit(Source);
 }
 
+bool LodSectionCopy(LodSection *Out, const LodSection *Source) {
+  *Out = *Source;
+  Out->Storage = NULL;
+  if (Source->Storage == NULL) {
+    return true;
+  }
+  Out->Storage = malloc(Source->StorageBytes);
+  if (Out->Storage == NULL) {
+    LodSectionInit(Out);
+    return false;
+  }
+  memcpy(Out->Storage, Source->Storage, Source->StorageBytes);
+  return true;
+}
+
 bool LodSectionCompactDense(LodSection *Section, LodEncodeScratch *Build,
                             LodVoxel **OutReleased) {
   *OutReleased = NULL;

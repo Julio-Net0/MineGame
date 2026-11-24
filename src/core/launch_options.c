@@ -60,6 +60,8 @@ static LaunchOptions *GetMutableLaunchOptions(void) {
       .LodArenaMb = 0,
       .LodDistance = 0,
       .LodNoGen = false,
+      .LodNoCache = false,
+      .LodCacheDir = (const char *)0,
   };
   return &Options;
 }
@@ -398,6 +400,16 @@ static void ParseLodGenValue(const char *ValueStr, LaunchOptions *Options) {
   }
 }
 
+static void ParseLodCacheValue(const char *ValueStr, LaunchOptions *Options) {
+  if (strcmp(ValueStr, "on") == 0) {
+    Options->LodNoCache = false;
+  } else if (strcmp(ValueStr, "off") == 0) {
+    Options->LodNoCache = true;
+  } else {
+    LogWarn("MAIN: --lod-cache must be on or off; ignoring \"%s\"", ValueStr);
+  }
+}
+
 static void ParseMonitorValue(const char *ValueStr, LaunchOptions *Options) {
   long Value = 0;
   if (!ParseStrictLong(ValueStr, &Value) || Value < 1 ||
@@ -453,6 +465,8 @@ void ParseLaunchOptions(int Argc, char **Argv) {
       .LodArenaMb = 0,
       .LodDistance = 0,
       .LodNoGen = false,
+      .LodNoCache = false,
+      .LodCacheDir = (const char *)0,
   };
 
   if (Argc <= 1 || Argv == (char **)0) {
@@ -496,6 +510,8 @@ void ParseLaunchOptions(int Argc, char **Argv) {
                      (strcmp(Arg, "--lod-arena-mb") == 0) ||
                      (strcmp(Arg, "--lod-distance") == 0) ||
                      (strcmp(Arg, "--lod-gen") == 0) ||
+                     (strcmp(Arg, "--lod-cache") == 0) ||
+                     (strcmp(Arg, "--lod-cache-dir") == 0) ||
                      (strcmp(Arg, "--monitor") == 0) ||
                      (strcmp(Arg, "--script") == 0) ||
                      (strcmp(Arg, "--script-out") == 0) ||
@@ -551,6 +567,10 @@ void ParseLaunchOptions(int Argc, char **Argv) {
       ParseLodDistanceValue(ValueStr, Options);
     } else if (strcmp(Arg, "--lod-gen") == 0) {
       ParseLodGenValue(ValueStr, Options);
+    } else if (strcmp(Arg, "--lod-cache") == 0) {
+      ParseLodCacheValue(ValueStr, Options);
+    } else if (strcmp(Arg, "--lod-cache-dir") == 0) {
+      Options->LodCacheDir = ValueStr;
     } else if (strcmp(Arg, "--monitor") == 0) {
       ParseMonitorValue(ValueStr, Options);
     } else if (strcmp(Arg, "--script") == 0) {

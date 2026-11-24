@@ -11,6 +11,7 @@
 #include "world/biome.h"
 #include "world/block_system.h"
 #include "world/lod/lod_fill.h"
+#include "world/lod/lod_persist.h"
 #include "world/lod/lod_ingest.h"
 #include "world/worldgen_column_cache.h"
 #include "persistence/world_save.h"
@@ -538,6 +539,17 @@ static void DrawDebugScreen(UiContext *Ctx, Player *PlayerVal, World *WorldVal,
                (Fill.SectionsGenerated > 0U)
                    ? (double)Fill.GenMicros / (double)Fill.SectionsGenerated
                    : 0.0);
+      Y = DrawDebugLine(Ctx, DebugText, Y);
+    }
+    LodPersistStats Persist;
+    LodPersistGetStats(&Persist);
+    if (Persist.Enabled) {
+      snprintf(DebugText, sizeof(DebugText),
+               "LOD cache: %llu hits, %llu misses, %llu saved, %d pending, %.1f MB disk",
+               (unsigned long long)Persist.Hits, (unsigned long long)Persist.Misses,
+               (unsigned long long)Persist.Cache.SectionsWritten,
+               Persist.PendingSections,
+               (double)Persist.Cache.DiskBytes / (double)(1U << BYTES_TO_MB_SHIFT));
       Y = DrawDebugLine(Ctx, DebugText, Y);
     }
     LodRendererReadCullStats(false);
