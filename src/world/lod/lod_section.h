@@ -47,16 +47,15 @@ typedef enum {
 } LodOrigin;
 
 typedef struct {
-  LodStorageMode Mode;
-  LodVoxel Uniform;
-  int PaletteCount;
   // One allocation holding the palette followed by the indices (packed modes)
   // or the raw voxels (dense); NULL for a uniform section.
   void *Storage;
   size_t StorageBytes;
-
   uint64_t PresentCells;
   uint64_t IngestedCells;
+  LodStorageMode Mode;
+  LodVoxel Uniform;
+  int PaletteCount;
   // Bumped on every content change; meshing compares it with the revision its
   // mesh was built from.
   uint32_t Revision;

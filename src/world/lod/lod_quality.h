@@ -36,7 +36,7 @@ static inline const char *LodQualityName(LodQuality Quality) {
 }
 
 static inline bool LodQualityParse(const char *Text, LodQuality *Out) {
-  for (int Idx = 0; Idx < (int)LOD_QUALITY_COUNT; Idx++) {
+  for (int Idx = 0; Idx < LOD_QUALITY_COUNT; Idx++) {
     if (strcmp(Text, LodQualityName((LodQuality)Idx)) == 0) {
       *Out = (LodQuality)Idx;
       return true;
