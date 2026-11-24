@@ -1049,28 +1049,44 @@ void VoxelMeshChunk(VoxelMesher *Mesher, const ChunkSnapshot *Snap) {
 
 enum {
     LOD_GRID_LAST = SNAPSHOT_BLOCK_SPAN - 1,
-    LOD_EDGE = LOD_SECTION_SIZE - 1
+    LOD_EDGE = LOD_SECTION_SIZE - 1,
+    LOD_FACES = 6
 };
 
-// One face of the margin from the neighbour's facing layer. Axis and side
-// select the layer: the -X neighbour lends its X = 15 layer to grid X = 0.
-static void FillMargin(ChunkSnapshot *Grid, const LodSection *Neighbour,
-                       int Axis, bool Positive) {
-    int GridLayer = Positive ? LOD_GRID_LAST : 0;
-    int SourceLayer = Positive ? 0 : LOD_EDGE;
-    for (int A = 0; A < LOD_SECTION_SIZE; A++) {
-        for (int B = 0; B < LOD_SECTION_SIZE; B++) {
-            int Source[3];
-            int Target[3];
-            Source[Axis] = SourceLayer;
-            Target[Axis] = GridLayer;
-            Source[(Axis + 1) % 3] = A;
-            Target[(Axis + 1) % 3] = A + 1;
-            Source[(Axis + 2) % 3] = B;
-            Target[(Axis + 2) % 3] = B + 1;
-            LodVoxel Voxel =
-                LodSectionGet(Neighbour, Source[0], Source[1], Source[2]);
-            Grid->Blocks[Target[0]][Target[1]][Target[2]] = LodVoxelBlock(Voxel);
+// The margin cells the neighbour at offset (Dx, Dy, Dz) touches: a face layer,
+// an edge row or a corner cell. Along an axis with offset -1 the grid's cell 0
+// takes the neighbour's last voxel, with +1 the grid's last cell its first,
+// and with 0 the section's own span maps across. The edges and corners matter
+// for AO: a face at a section's rim samples them, and left as air they lit the
+// rim of every section (a grid of light lines under sea ice, which counts as
+// solid for AO over the water beneath it).
+static void FillMargin(ChunkSnapshot *Grid, const LodSection *Neighbour, int Dx,
+                       int Dy, int Dz) {
+    int Offset[3] = {Dx, Dy, Dz};
+    int From[3];
+    int Count[3];
+    int Source[3];
+    for (int Axis = 0; Axis < 3; Axis++) {
+        Count[Axis] = 1;
+        Source[Axis] = 0;
+        if (Offset[Axis] < 0) {
+            From[Axis] = 0;
+            Source[Axis] = LOD_EDGE;
+        } else if (Offset[Axis] > 0) {
+            From[Axis] = LOD_GRID_LAST;
+        } else {
+            From[Axis] = 1;
+            Count[Axis] = LOD_SECTION_SIZE;
+        }
+    }
+    for (int X = 0; X < Count[0]; X++) {
+        for (int Y = 0; Y < Count[1]; Y++) {
+            for (int Z = 0; Z < Count[2]; Z++) {
+                LodVoxel Voxel = LodSectionGet(Neighbour, Source[0] + X,
+                                               Source[1] + Y, Source[2] + Z);
+                Grid->Blocks[From[0] + X][From[1] + Y][From[2] + Z] =
+                    LodVoxelBlock(Voxel);
+            }
         }
     }
 }
@@ -1150,8 +1166,11 @@ static void FillBiomeCorners(VoxelLodBiomes *Biomes) {
 
 void VoxelMeshLodSection(VoxelMesher *Mesher, VoxelLodScratch *Scratch,
                          const LodSection *Section, const VoxelLodPlace *Place,
-                         const LodSection *const Neighbours[VOXEL_LOD_NEIGHBOURS],
+                         const LodSection *const Around[VOXEL_LOD_AROUND],
                          unsigned TransitionFaces) {
+    // ChunkFace order: -X, +X, -Y, +Y, -Z, +Z.
+    static const int FACE_OFFSETS[LOD_FACES][3] = {
+        {-1, 0, 0}, {1, 0, 0}, {0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}};
     ChunkSnapshot *Grid = &Scratch->Grid;
     // Air margins, no rock faces, a local origin: the grid stands alone.
     memset(Grid, 0, sizeof(*Grid));
@@ -1167,14 +1186,19 @@ void VoxelMeshLodSection(VoxelMesher *Mesher, VoxelLodScratch *Scratch,
             }
         }
     }
-    if (Neighbours != NULL) {
-        for (int Face = 0; Face < VOXEL_LOD_NEIGHBOURS; Face++) {
-            if (Neighbours[Face] != NULL) {
-                FillMargin(Grid, Neighbours[Face], Face / 2, (Face % 2) == 1);
+    if (Around != NULL) {
+        for (int Dx = -1; Dx <= 1; Dx++) {
+            for (int Dy = -1; Dy <= 1; Dy++) {
+                for (int Dz = -1; Dz <= 1; Dz++) {
+                    const LodSection *Neighbour = Around[VoxelLodAround(Dx, Dy, Dz)];
+                    if ((Dx != 0 || Dy != 0 || Dz != 0) && Neighbour != NULL) {
+                        FillMargin(Grid, Neighbour, Dx, Dy, Dz);
+                    }
+                }
             }
         }
     }
-    for (int Face = 0; Face < VOXEL_LOD_NEIGHBOURS; Face++) {
+    for (int Face = 0; Face < LOD_FACES; Face++) {
         if ((TransitionFaces & (1U << (unsigned)Face)) != 0U) {
             FillTransitionMargin(Grid, Face / 2, (Face % 2) == 1);
         }
@@ -1182,9 +1206,11 @@ void VoxelMeshLodSection(VoxelMesher *Mesher, VoxelLodScratch *Scratch,
     // Margin faces in ChunkFace order: -X, +X, then (skipping Y) -Z, +Z.
     static const int SIDE_FACES[4] = {0, 1, 4, 5};
     for (int Side = 0; Side < 4; Side++) {
-        int Face = SIDE_FACES[Side];
-        FillBiomeMargin(&Scratch->Biomes, (Neighbours != NULL) ? Neighbours[Face] : NULL,
-                        Side);
+        const int *Offset = FACE_OFFSETS[SIDE_FACES[Side]];
+        const LodSection *Neighbour =
+            (Around != NULL) ? Around[VoxelLodAround(Offset[0], Offset[1], Offset[2])]
+                             : NULL;
+        FillBiomeMargin(&Scratch->Biomes, Neighbour, Side);
     }
     FillBiomeCorners(&Scratch->Biomes);
     int SectionBlocks = LOD_SECTION_SIZE << Place->Level;

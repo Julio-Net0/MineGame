@@ -1316,17 +1316,17 @@ static bool LodVertexValid(ChunkVertex Vertex, int LayerCount) {
 static void CheckLodSection(VoxelMesher *Mesher, VoxelLodScratch *Scratch,
                             const LodStore *Store, const LodStoreSlot *Slot,
                             int LayerCount, LodMeshCheckStats *Out) {
-    static const int OFFSETS[VOXEL_LOD_NEIGHBOURS][3] = {
-        {-1, 0, 0}, {1, 0, 0}, {0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}};
-    const LodSection *Neighbours[VOXEL_LOD_NEIGHBOURS];
-    for (int Face = 0; Face < VOXEL_LOD_NEIGHBOURS; Face++) {
-        Neighbours[Face] = LodStoreFind(Store, Slot->Level,
-                                        Slot->X + OFFSETS[Face][0],
-                                        Slot->Y + OFFSETS[Face][1],
-                                        Slot->Z + OFFSETS[Face][2]);
+    const LodSection *Around[VOXEL_LOD_AROUND];
+    for (int Dx = -1; Dx <= 1; Dx++) {
+        for (int Dy = -1; Dy <= 1; Dy++) {
+            for (int Dz = -1; Dz <= 1; Dz++) {
+                Around[VoxelLodAround(Dx, Dy, Dz)] = LodStoreFind(
+                    Store, Slot->Level, Slot->X + Dx, Slot->Y + Dy, Slot->Z + Dz);
+            }
+        }
     }
     VoxelLodPlace Place = {.Level = Slot->Level, .X = Slot->X, .Y = Slot->Y, .Z = Slot->Z};
-    VoxelMeshLodSection(Mesher, Scratch, Slot->Section, &Place, Neighbours, 0U);
+    VoxelMeshLodSection(Mesher, Scratch, Slot->Section, &Place, Around, 0U);
 
     int SectionQuads = 0;
     int64_t *Quads[MESH_TARGET_COUNT] = {&Out->OpaqueQuads, &Out->CutoutQuads,

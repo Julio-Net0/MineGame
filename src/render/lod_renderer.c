@@ -54,8 +54,6 @@ enum {
   SLOT_TOMBSTONE = -1,
   LOAD_NUMERATOR = 3,
   LOAD_DENOMINATOR = 4,
-  // A section and its six face neighbours.
-  NEIGHBOURHOOD = 7,
   // Runs kept free for a section's translucent faces: one per direction.
   TRANSLUCENT_RUN_RESERVE = 6,
   // The packed vertex's face normal (see ChunkVertex).
@@ -677,12 +675,11 @@ static void EvictStale(LodRendererState *State, const LodStore *Store,
   }
 }
 
-// A section's mesh reads its six same-level neighbours, so every change the
-// store journals marks the section and its neighbours for a rebuild.
+// A section's mesh reads the 26 same-level sections around it (their faces,
+// edges and corners fill its margin), so every change the store journals
+// marks the section and those around it for a rebuild.
 // True when the store changed since the last call.
 static bool ConsumeJournal(LodRendererState *State, const LodStore *Store) {
-  static const int OFFSETS[NEIGHBOURHOOD][3] = {{0, 0, 0},  {-1, 0, 0}, {1, 0, 0}, {0, -1, 0},
-                                    {0, 1, 0},  {0, 0, -1}, {0, 0, 1}};
   uint64_t Seq = Store->JournalSeq;
   bool Changed = Seq != State->JournalRead;
   if (Seq - State->JournalRead > (uint64_t)LOD_JOURNAL_SIZE) {
@@ -694,11 +691,15 @@ static bool ConsumeJournal(LodRendererState *State, const LodStore *Store) {
   }
   for (; State->JournalRead < Seq; State->JournalRead++) {
     LodStoreKey Key = Store->Journal[State->JournalRead & (LOD_JOURNAL_SIZE - 1U)];
-    for (int Near = 0; Near < NEIGHBOURHOOD; Near++) {
-      CacheEntry *Entry = CacheFind(State, Key.Level, Key.X + OFFSETS[Near][0],
-                                    Key.Y + OFFSETS[Near][1], Key.Z + OFFSETS[Near][2]);
-      if (Entry != NULL) {
-        Entry->Stale = true;
+    for (int Dx = -1; Dx <= 1; Dx++) {
+      for (int Dy = -1; Dy <= 1; Dy++) {
+        for (int Dz = -1; Dz <= 1; Dz++) {
+          CacheEntry *Entry =
+              CacheFind(State, Key.Level, Key.X + Dx, Key.Y + Dy, Key.Z + Dz);
+          if (Entry != NULL) {
+            Entry->Stale = true;
+          }
+        }
       }
     }
   }
@@ -736,16 +737,18 @@ static int BuildFaceRuns(const ChunkVertex *Vertices, int Count, RenderLodRun *R
 static int MeshSection(LodRendererState *State, const LodStore *Store,
                        const LodSection *Section, int Level, int X, int Y, int Z,
                        unsigned Transitions, bool Skirts, RenderLodMesh *OutMesh) {
-  static const int OFFSETS[VOXEL_LOD_NEIGHBOURS][3] = {
-      {-1, 0, 0}, {1, 0, 0}, {0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}};
-  const LodSection *Neighbours[VOXEL_LOD_NEIGHBOURS];
-  for (int Face = 0; Face < VOXEL_LOD_NEIGHBOURS; Face++) {
-    Neighbours[Face] = LodStoreFind(Store, Level, X + OFFSETS[Face][0],
-                                    Y + OFFSETS[Face][1], Z + OFFSETS[Face][2]);
+  const LodSection *Around[VOXEL_LOD_AROUND];
+  for (int Dx = -1; Dx <= 1; Dx++) {
+    for (int Dy = -1; Dy <= 1; Dy++) {
+      for (int Dz = -1; Dz <= 1; Dz++) {
+        Around[VoxelLodAround(Dx, Dy, Dz)] =
+            LodStoreFind(Store, Level, X + Dx, Y + Dy, Z + Dz);
+      }
+    }
   }
   PROFILE_BEGIN(MeshStart);
   VoxelLodPlace Place = {.Level = Level, .X = X, .Y = Y, .Z = Z, .Skirts = Skirts};
-  VoxelMeshLodSection(State->Mesher, State->Scratch, Section, &Place, Neighbours,
+  VoxelMeshLodSection(State->Mesher, State->Scratch, Section, &Place, Around,
                       Transitions);
   // One mesh: the opaque (and cutout) faces, then the translucent ones,
   // which the LOD draws blended after every opaque face.

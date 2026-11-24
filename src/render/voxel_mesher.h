@@ -107,11 +107,18 @@ typedef struct {
   VoxelLodBiomes Biomes;
 } VoxelLodScratch;
 
-// Neighbours of a section on its own level, indexed like ChunkFace (-X, +X,
-// -Y, +Y, -Z, +Z); NULL where none is resident.
+// The 26 sections around a section on its own level, at index
+// VoxelLodAround(Dx, Dy, Dz) for offsets in -1..1 (the centre slot is unused);
+// NULL where none is resident.
 enum {
-  VOXEL_LOD_NEIGHBOURS = 6
+  VOXEL_LOD_AROUND_SPAN = 3,
+  VOXEL_LOD_AROUND_PLANE = VOXEL_LOD_AROUND_SPAN * VOXEL_LOD_AROUND_SPAN,
+  VOXEL_LOD_AROUND = VOXEL_LOD_AROUND_PLANE * VOXEL_LOD_AROUND_SPAN
 };
+static inline int VoxelLodAround(int Dx, int Dy, int Dz) {
+  return ((Dx + 1) * VOXEL_LOD_AROUND_PLANE) + ((Dy + 1) * VOXEL_LOD_AROUND_SPAN) +
+         (Dz + 1);
+}
 
 // Where a section sits: its level and section coordinates on that level.
 typedef struct {
@@ -125,9 +132,10 @@ typedef struct {
 } VoxelLodPlace;
 
 // Meshes a LOD section (any level) into the same 8-byte vertices as a chunk,
-// in section-local voxel units: the caller scales by 2^L. Neighbours fill the
-// one-voxel margin, so faces between two resident sections are culled and AO
-// reads across the border; an absent neighbour reads as air. Section voxels
+// in section-local voxel units: the caller scales by 2^L. The sections Around
+// fill the one-voxel margin, edges and corners included, so faces between two
+// resident sections are culled and AO reads across every border; an absent
+// neighbour reads as air. Section voxels
 // hold no cross plants (they downsample to air), so only cube faces come out.
 // The LOD draws see-through blocks (water, ice, glass: textures with partial
 // alpha or mostly transparent, see RenderBlockLayerSeeThrough) blended, from
@@ -148,7 +156,7 @@ enum { VOXEL_LOD_SKIRT_MAX_LEVEL = 3 };
 #define VOXEL_LOD_FLAG_SEA (UINT32_C(1) << 31U)
 void VoxelMeshLodSection(VoxelMesher *Mesher, VoxelLodScratch *Scratch,
                          const LodSection *Section, const VoxelLodPlace *Place,
-                         const LodSection *const Neighbours[VOXEL_LOD_NEIGHBOURS],
+                         const LodSection *const Around[VOXEL_LOD_AROUND],
                          unsigned TransitionFaces);
 
 #endif
