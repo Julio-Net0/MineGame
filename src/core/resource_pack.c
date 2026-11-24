@@ -33,7 +33,11 @@ void ResourcePacksInit(void) {
       IsDirectory("assets/textures") ? "assets/textures" : "textures";
 
   char ExternalDir[FILEIO_MAX_PATH];
-  snprintf(ExternalDir, sizeof(ExternalDir), "%s/external", State->TexturesRoot);
+  int DirLen = snprintf(ExternalDir, sizeof(ExternalDir), "%s/external",
+                        State->TexturesRoot);
+  if (DirLen <= 0 || DirLen >= (int)sizeof(ExternalDir)) {
+    return;
+  }
 
   static char CandidatePaths[MAX_RESOURCE_PACKS][FILEIO_MAX_PATH];
   static char ZipPaths[MAX_RESOURCE_PACKS][FILEIO_MAX_PATH];
@@ -41,10 +45,14 @@ void ResourcePacksInit(void) {
   int CandidateCount =
       ListDirectoryFiles(ExternalDir, CandidatePaths, MAX_RESOURCE_PACKS);
   int ZipCount = 0;
-  for (int Idx = 0; Idx < CandidateCount; Idx++) {
+  for (int Idx = 0; Idx < CandidateCount && ZipCount < MAX_RESOURCE_PACKS;
+       Idx++) {
     if (HasFileExtension(CandidatePaths[Idx], ".zip")) {
-      snprintf(ZipPaths[ZipCount], FILEIO_MAX_PATH, "%s", CandidatePaths[Idx]);
-      ZipCount++;
+      int PathLen =
+          snprintf(ZipPaths[ZipCount], FILEIO_MAX_PATH, "%s", CandidatePaths[Idx]);
+      if (PathLen > 0 && PathLen < FILEIO_MAX_PATH) {
+        ZipCount++;
+      }
     }
   }
 

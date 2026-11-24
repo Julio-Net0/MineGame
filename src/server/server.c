@@ -352,11 +352,21 @@ void ServerShutdown(ServerState *Server) {
   ServerBindLoopback(Server, (NetLoopback *)0);
   CloseChunkWorker();
 
+  int SavedCount = 0;
+  int FailedCount = 0;
   for (int IdxI = 0; IdxI < Server->WorldVal->ChunkCount; IdxI++) {
     if (Server->WorldVal->SlotInUse[IdxI] &&
         Server->WorldVal->Chunks[IdxI].IsModified) {
-      SaveChunkToDisk(&Server->WorldVal->Chunks[IdxI]);
+      if (SaveChunkToDisk(&Server->WorldVal->Chunks[IdxI])) {
+        SavedCount++;
+      } else {
+        FailedCount++;
+      }
     }
+  }
+  if (SavedCount > 0 || FailedCount > 0) {
+    LogInfo("SERVER: shutdown flushed %d modified chunks (%d failed)",
+            SavedCount, FailedCount);
   }
 
   CloseWorldSave();

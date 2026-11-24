@@ -25,6 +25,9 @@ static bool MakeOne(const char *Path) {
 }
 
 bool OsMakeDirectories(const char *Path) {
+  if (Path == (const char *)0) {
+    return false;
+  }
   size_t Length = strlen(Path);
   if (Length == 0 || Length >= OS_PATH_CAPACITY) {
     return false;

@@ -267,11 +267,11 @@ int GetBlockIdByName(const char *Name) {
   return -1;
 }
 
-void ParseBlockFile(const char *FilePath) {
+bool ParseBlockFile(const char *FilePath) {
   char *FileContent = ReadTextFile(FilePath);
   if (FileContent == (void*)0) {
     fprintf(stderr, "BLOCK_SYSTEM: Failed to read file: %s\n", FilePath);
-    return;
+    return false;
   }
 
   cJSON *Json = cJSON_Parse(FileContent);
@@ -280,7 +280,7 @@ void ParseBlockFile(const char *FilePath) {
     fprintf(stderr, "BLOCK_SYSTEM: JSON syntax error %s before: %s\n",
             FilePath, ErrorPtr);
     free(FileContent);
-    return;
+    return false;
   }
 
   cJSON *IdItem = cJSON_GetObjectItemCaseSensitive(Json, "id");
@@ -289,7 +289,7 @@ void ParseBlockFile(const char *FilePath) {
             FilePath);
     cJSON_Delete(Json);
     free(FileContent);
-    return;
+    return false;
   }
 
   int ParsedId = IdItem->valueint;
@@ -300,7 +300,7 @@ void ParseBlockFile(const char *FilePath) {
         ParsedId, FilePath, BLOCK_REGISTRY_SIZE - 1);
     cJSON_Delete(Json);
     free(FileContent);
-    return;
+    return false;
   }
 
   BlockType *BlockRegistry = GetBlockRegistry();
@@ -312,7 +312,7 @@ void ParseBlockFile(const char *FilePath) {
             ParsedId, FilePath, Block->Name);
     cJSON_Delete(Json);
     free(FileContent);
-    return;
+    return false;
   }
   Block->Id = ParsedId;
 
@@ -398,6 +398,7 @@ void ParseBlockFile(const char *FilePath) {
   // the total, and errors are still reported per file.
   cJSON_Delete(Json);
   free(FileContent);
+  return true;
 }
 
 void LoadAllBlockDefinitions(const char *DirectoryPath) {
@@ -416,8 +417,8 @@ void LoadAllBlockDefinitions(const char *DirectoryPath) {
   int LoadedCount = 0;
 
   for (int Idx = 0; Idx < FilesCount; Idx++) {
-    if (HasFileExtension(FilePaths[Idx], ".json")) {
-      ParseBlockFile(FilePaths[Idx]);
+    if (HasFileExtension(FilePaths[Idx], ".json") &&
+        ParseBlockFile(FilePaths[Idx])) {
       LoadedCount++;
     }
   }
@@ -439,10 +440,10 @@ enum { REGISTRY_BYTE_BITS = 8, REGISTRY_BYTE_MASK = 0xFF };
 
 uint64_t GetBlockRegistryHash(void) {
   uint64_t Hash = REGISTRY_HASH_OFFSET;
-  int Count = GetLoadedBlocksCount();
-  for (int Id = 0; Id < Count; Id++) {
-    const BlockType *Block = GetBlockDef(Id);
-    if (Block == NULL) {
+  const BlockType *BlockRegistry = GetBlockRegistry();
+  for (int Id = 0; Id < BLOCK_REGISTRY_SIZE; Id++) {
+    const BlockType *Block = &BlockRegistry[Id];
+    if (Block->Id == -1) {
       continue;
     }
     for (unsigned Shift = 0; Shift < sizeof(uint32_t) * REGISTRY_BYTE_BITS;

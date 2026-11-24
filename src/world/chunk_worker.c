@@ -321,12 +321,24 @@ void InitChunkWorker(int ThreadCount, int RenderDistance) {
   atomic_store(&State->WorkerRunning, true);
   pthread_mutex_init(&State->QueueMutex, (const pthread_mutexattr_t *)0);
   pthread_cond_init(&State->WorkAvail, (const pthread_condattr_t *)0);
-  for (int Idx = 0; Idx < State->ThreadCount; Idx++) {
+  int Started = 0;
+  for (int Idx = 0; Idx < ClampedCount; Idx++) {
     // Each worker owns a mesher scratch, identified by this index. The storage
     // is the state struct's own, so it outlives the thread that reads it.
-    State->WorkerIndices[Idx] = Idx;
-    pthread_create(&State->WorkerThreads[Idx], (const pthread_attr_t *)0,
-                   WorkerLoop, &State->WorkerIndices[Idx]);
+    State->WorkerIndices[Started] = Started;
+    int Err = pthread_create(&State->WorkerThreads[Started],
+                             (const pthread_attr_t *)0, WorkerLoop,
+                             &State->WorkerIndices[Started]);
+    if (Err != 0) {
+      LogError("WORKER: pthread_create failed for worker %d (err=%d)", Idx,
+               Err);
+      break;
+    }
+    Started++;
+  }
+  State->ThreadCount = Started;
+  if (State->ThreadCount == 0) {
+    LogError("WORKER: no chunk worker threads started");
   }
 }
 

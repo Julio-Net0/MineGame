@@ -113,9 +113,11 @@ int ListDirectoryFiles(const char *DirPath, char OutPaths[][FILEIO_MAX_PATH],
   struct dirent *Entry = readdir(Dir);
   while (Entry != (void *)0 && Count < MaxFiles) {
     if (strcmp(Entry->d_name, ".") != 0 && strcmp(Entry->d_name, "..") != 0) {
-      snprintf(OutPaths[Count], FILEIO_MAX_PATH, "%s/%s", DirPath,
-               Entry->d_name);
-      Count++;
+      int Written = snprintf(OutPaths[Count], FILEIO_MAX_PATH, "%s/%s",
+                             DirPath, Entry->d_name);
+      if (Written > 0 && Written < FILEIO_MAX_PATH) {
+        Count++;
+      }
     }
     Entry = readdir(Dir);
   }

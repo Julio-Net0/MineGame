@@ -1671,6 +1671,16 @@ unsigned char GetBiomeCellFromWorld(World *WorldVal, int CellX, int CellY,
   return ChunkVal->BiomeMap[LocalX][LocalY][LocalZ];
 }
 
+static float ComputeDdaTMax(float Start, int Step, float TDelta) {
+  if (Step > 0) {
+    return (__builtin_floorf(Start) + BLOCK_SIZE - Start) * TDelta;
+  }
+  if (Step < 0) {
+    return (Start - __builtin_floorf(Start)) * TDelta;
+  }
+  return __builtin_huge_valf();
+}
+
 static DdaState InitDDAState(Vec3 RayOrigin, Vec3 RayDir){
   DdaState State = {0};
 
@@ -1690,9 +1700,9 @@ static DdaState InitDDAState(Vec3 RayOrigin, Vec3 RayDir){
   State.TDeltaY = (RayDir.y != 0.0F) ? __builtin_fabsf(BLOCK_SIZE / RayDir.y) : __builtin_huge_valf();
   State.TDeltaZ = (RayDir.z != 0.0F) ? __builtin_fabsf(BLOCK_SIZE / RayDir.z) : __builtin_huge_valf();
 
-  State.TMaxX = (State.StepX > 0) ? (__builtin_floorf(StartX) + BLOCK_SIZE - StartX) * State.TDeltaX : (StartX - __builtin_floorf(StartX)) * State.TDeltaX;
-  State.TMaxY = (State.StepY > 0) ? (__builtin_floorf(StartY) + BLOCK_SIZE - StartY) * State.TDeltaY : (StartY - __builtin_floorf(StartY)) * State.TDeltaY;
-  State.TMaxZ = (State.StepZ > 0) ? (__builtin_floorf(StartZ) + BLOCK_SIZE - StartZ) * State.TDeltaZ : (StartZ - __builtin_floorf(StartZ)) * State.TDeltaZ;
+  State.TMaxX = ComputeDdaTMax(StartX, State.StepX, State.TDeltaX);
+  State.TMaxY = ComputeDdaTMax(StartY, State.StepY, State.TDeltaY);
+  State.TMaxZ = ComputeDdaTMax(StartZ, State.StepZ, State.TDeltaZ);
 
   return State;
 }

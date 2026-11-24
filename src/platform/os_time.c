@@ -12,28 +12,44 @@ enum {
   WIN_EXE_PATH_CAPACITY = 4096
 };
 
+typedef struct {
+  LARGE_INTEGER Frequency;
+  LARGE_INTEGER StartCounter;
+} WinTimerState;
+
+static WinTimerState *GetWinTimerState(void) {
+  static WinTimerState State;
+  return &State;
+}
+
+static BOOL CALLBACK InitWinTimerOnce(PINIT_ONCE InitOnce, PVOID Parameter,
+                                      PVOID *Context) {
+  (void)InitOnce;
+  (void)Parameter;
+  (void)Context;
+  WinTimerState *State = GetWinTimerState();
+  (void)QueryPerformanceFrequency(&State->Frequency);
+  (void)QueryPerformanceCounter(&State->StartCounter);
+  return TRUE;
+}
+
 double OsGetTimeSeconds(void) {
-  static LARGE_INTEGER Frequency = {0};
-  static LARGE_INTEGER StartCounter = {0};
-  static bool Initialized = false;
+  static INIT_ONCE TimerOnce = INIT_ONCE_STATIC_INIT;
+  (void)InitOnceExecuteOnce(&TimerOnce, InitWinTimerOnce, (PVOID)0,
+                            (PVOID *)0);
 
-  if (!Initialized) {
-    (void)QueryPerformanceFrequency(&Frequency);
-    (void)QueryPerformanceCounter(&StartCounter);
-    Initialized = true;
-  }
-
-  if (Frequency.QuadPart <= 0) {
+  const WinTimerState *State = GetWinTimerState();
+  if (State->Frequency.QuadPart <= 0) {
     return 0.0;
   }
 
   LARGE_INTEGER Now = {0};
   (void)QueryPerformanceCounter(&Now);
-  LONGLONG Delta = Now.QuadPart - StartCounter.QuadPart;
+  LONGLONG Delta = Now.QuadPart - State->StartCounter.QuadPart;
   if (Delta < 0) {
     return 0.0;
   }
-  return (double)Delta / (double)Frequency.QuadPart;
+  return (double)Delta / (double)State->Frequency.QuadPart;
 }
 
 void OsSleepMillis(unsigned int Millis) { Sleep((DWORD)Millis); }
@@ -62,6 +78,7 @@ bool OsAnchorWorkingDirectoryToExecutable(void) {
 
 #else
 
+#include <pthread.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -73,22 +90,28 @@ enum {
 
 #define NANOS_PER_SECOND_F 1.0e-9
 
-double OsGetTimeSeconds(void) {
+static struct timespec *GetPosixStartTime(void) {
   static struct timespec StartTime = {0, 0};
-  static bool Initialized = false;
+  return &StartTime;
+}
+
+static void InitPosixTimerOnce(void) {
+  (void)clock_gettime(CLOCK_MONOTONIC, GetPosixStartTime());
+}
+
+double OsGetTimeSeconds(void) {
+  static pthread_once_t TimerOnce = PTHREAD_ONCE_INIT;
+  (void)pthread_once(&TimerOnce, InitPosixTimerOnce);
 
   struct timespec Now = {0, 0};
   if (clock_gettime(CLOCK_MONOTONIC, &Now) != 0) {
     return 0.0;
   }
 
-  if (!Initialized) {
-    StartTime = Now;
-    Initialized = true;
-  }
-
-  double SecDiff = (double)(Now.tv_sec - StartTime.tv_sec);
-  double NanoDiff = (double)(Now.tv_nsec - StartTime.tv_nsec) * NANOS_PER_SECOND_F;
+  const struct timespec *StartTime = GetPosixStartTime();
+  double SecDiff = (double)(Now.tv_sec - StartTime->tv_sec);
+  double NanoDiff =
+      (double)(Now.tv_nsec - StartTime->tv_nsec) * NANOS_PER_SECOND_F;
   double Total = SecDiff + NanoDiff;
   return (Total >= 0.0) ? Total : 0.0;
 }

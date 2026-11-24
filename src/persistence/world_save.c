@@ -256,7 +256,9 @@ void InitWorldSave(void) {
     return;
   }
 
-  make_dir("world");
+  if (make_dir("world") != 0 && errno != EEXIST) {
+    LogWarn("WORLD_SAVE: Failed to create world directory (errno=%d)", errno);
+  }
 
   uint64_t LoadedSeed = 0;
   uint32_t OldVersion = 0;
@@ -281,7 +283,9 @@ void InitWorldSave(void) {
           State->HasSeedOverride ? State->SeedOverride : GenerateRandomSeed();
       return;
     }
-    make_dir("world");
+    if (make_dir("world") != 0 && errno != EEXIST) {
+    LogWarn("WORLD_SAVE: Failed to create world directory (errno=%d)", errno);
+  }
   }
 
   State->WorldSeed =
@@ -333,11 +337,11 @@ static FILE* OpenFileWithRetry(const char *Path, const char *Mode) {
   return FileVal;
 }
 
-void SaveChunkToDisk(Chunk *ChunkVal) {
+bool SaveChunkToDisk(Chunk *ChunkVal) {
   // The single guard every write path funnels through: chunk eviction, /save
   // and the shutdown sweep all end up here.
   if (GetWorldSaveState()->ReadOnly) {
-    return;
+    return true;
   }
 
   uint8_t TempBuffer[REGION_SLOT_SIZE];
@@ -360,7 +364,7 @@ void SaveChunkToDisk(Chunk *ChunkVal) {
     if (FileVal == (FILE *)0) {
       LogWarn("WORLD_SAVE: Failed to create region file %s", Path);
       pthread_mutex_unlock(RegionMutex);
-      return;
+      return false;
     }
     uint8_t EmptyHeader[REGION_HEADER_SIZE];
     for (int IdxI = 0; IdxI < REGION_HEADER_SIZE; IdxI++) {
@@ -370,7 +374,7 @@ void SaveChunkToDisk(Chunk *ChunkVal) {
       LogWarn("WORLD_SAVE: Failed to write empty header to %s", Path);
       fclose(FileVal);
       pthread_mutex_unlock(RegionMutex);
-      return;
+      return false;
     }
   }
 
@@ -386,35 +390,38 @@ void SaveChunkToDisk(Chunk *ChunkVal) {
   Entry[1] = (uint8_t)(DataSize & BYTE_MASK);
   Entry[2] = (uint8_t)((DataSize >> BYTE_SHIFT) & BYTE_MASK);
 
-  if (fseek(FileVal, (long)Idx * REGION_HEADER_ENTRY_BYTES, SEEK_SET) != 0) {
-    LogWarn("WORLD_SAVE: Failed to seek header entry in %s", Path);
-    fclose(FileVal);
-    pthread_mutex_unlock(RegionMutex);
-    return;
-  }
-  if (fwrite(Entry, 1, REGION_HEADER_ENTRY_BYTES, FileVal) != REGION_HEADER_ENTRY_BYTES) {
-    LogWarn("WORLD_SAVE: Failed to write header entry in %s", Path);
-    fclose(FileVal);
-    pthread_mutex_unlock(RegionMutex);
-    return;
-  }
-
+  // Write the body before committing the header entry so a failed body write
+  // cannot leave the region header pointing at partial or stale bytes.
   long SlotOffset = REGION_HEADER_SIZE + ((long)Idx * REGION_SLOT_SIZE);
   if (fseek(FileVal, SlotOffset, SEEK_SET) != 0) {
     LogWarn("WORLD_SAVE: Failed to seek body slot in %s", Path);
     fclose(FileVal);
     pthread_mutex_unlock(RegionMutex);
-    return;
+    return false;
   }
-  if (fwrite(TempBuffer, 1, DataSize, FileVal) != DataSize) {
+  if (fwrite(TempBuffer, 1, DataSize, FileVal) != (size_t)DataSize) {
     LogWarn("WORLD_SAVE: Failed to write body slot in %s", Path);
     fclose(FileVal);
     pthread_mutex_unlock(RegionMutex);
-    return;
+    return false;
   }
 
-  fclose(FileVal);
+  if (fseek(FileVal, (long)Idx * REGION_HEADER_ENTRY_BYTES, SEEK_SET) != 0) {
+    LogWarn("WORLD_SAVE: Failed to seek header entry in %s", Path);
+    fclose(FileVal);
+    pthread_mutex_unlock(RegionMutex);
+    return false;
+  }
+  if (fwrite(Entry, 1, REGION_HEADER_ENTRY_BYTES, FileVal) != REGION_HEADER_ENTRY_BYTES) {
+    LogWarn("WORLD_SAVE: Failed to write header entry in %s", Path);
+    fclose(FileVal);
+    pthread_mutex_unlock(RegionMutex);
+    return false;
+  }
+
+  bool ClosedOk = (fclose(FileVal) == 0);
   pthread_mutex_unlock(RegionMutex);
+  return ClosedOk;
 }
 
 bool LoadChunkFromDisk(Chunk *ChunkVal) {

@@ -23,7 +23,7 @@ void WorldSaveSetSeedOverride(uint64_t Seed);
 void WorldSaveSetReadOnly(bool ReadOnly);
 bool WorldSaveIsReadOnly(void);
 
-void SaveChunkToDisk(Chunk *ChunkVal);
+bool SaveChunkToDisk(Chunk *ChunkVal);
 bool LoadChunkFromDisk(Chunk *ChunkVal);
 
 // Calls Visitor for every chunk position the save holds, read from the region

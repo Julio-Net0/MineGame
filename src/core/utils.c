@@ -13,13 +13,9 @@ void SafeStrncpy(char *Dest, const char *Src, int MaxLen) {
     return;
   }
   int Index = 0;
-  for (int LoopIdx = 0; LoopIdx < MAX_STR_LOOP; LoopIdx++) {
-    if (Index < MaxLen - 1 && Src[Index] != '\0') {
-      Dest[Index] = Src[Index];
-      Index++;
-    } else {
-      break;
-    }
+  while (Index < MaxLen - 1 && Src[Index] != '\0') {
+    Dest[Index] = Src[Index];
+    Index++;
   }
   Dest[Index] = '\0';
 }
@@ -32,12 +28,9 @@ int CompareString(const char *Str1, const char *Str2) {
     return (Str1 == (void*)0) ? -1 : 1;
   }
   int Index = 0;
-  for (int LoopIdx = 0; LoopIdx < MAX_STR_LOOP; LoopIdx++) {
-    if (Str1[Index] != '\0' && Str2[Index] != '\0' && Str1[Index] == Str2[Index]) {
-      Index++;
-    } else {
-      break;
-    }
+  while (Str1[Index] != '\0' && Str2[Index] != '\0' &&
+         Str1[Index] == Str2[Index]) {
+    Index++;
   }
   return (unsigned char)Str1[Index] - (unsigned char)Str2[Index];
 }
