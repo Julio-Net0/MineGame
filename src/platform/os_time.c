@@ -1,8 +1,14 @@
 #include "platform/os_time.h"
 
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+static atomic_bool *GetTimerInitialized(void) {
+  static atomic_bool Initialized = false;
+  return &Initialized;
+}
 
 #ifdef _WIN32
 #include <direct.h>
@@ -30,13 +36,16 @@ static BOOL CALLBACK InitWinTimerOnce(PINIT_ONCE InitOnce, PVOID Parameter,
   WinTimerState *State = GetWinTimerState();
   (void)QueryPerformanceFrequency(&State->Frequency);
   (void)QueryPerformanceCounter(&State->StartCounter);
+  atomic_store_explicit(GetTimerInitialized(), true, memory_order_release);
   return TRUE;
 }
 
 double OsGetTimeSeconds(void) {
-  static INIT_ONCE TimerOnce = INIT_ONCE_STATIC_INIT;
-  (void)InitOnceExecuteOnce(&TimerOnce, InitWinTimerOnce, (PVOID)0,
-                            (PVOID *)0);
+  if (!atomic_load_explicit(GetTimerInitialized(), memory_order_acquire)) {
+    static INIT_ONCE TimerOnce = INIT_ONCE_STATIC_INIT;
+    (void)InitOnceExecuteOnce(&TimerOnce, InitWinTimerOnce, (PVOID)0,
+                              (PVOID *)0);
+  }
 
   const WinTimerState *State = GetWinTimerState();
   if (State->Frequency.QuadPart <= 0) {
@@ -97,11 +106,14 @@ static struct timespec *GetPosixStartTime(void) {
 
 static void InitPosixTimerOnce(void) {
   (void)clock_gettime(CLOCK_MONOTONIC, GetPosixStartTime());
+  atomic_store_explicit(GetTimerInitialized(), true, memory_order_release);
 }
 
 double OsGetTimeSeconds(void) {
-  static pthread_once_t TimerOnce = PTHREAD_ONCE_INIT;
-  (void)pthread_once(&TimerOnce, InitPosixTimerOnce);
+  if (!atomic_load_explicit(GetTimerInitialized(), memory_order_acquire)) {
+    static pthread_once_t TimerOnce = PTHREAD_ONCE_INIT;
+    (void)pthread_once(&TimerOnce, InitPosixTimerOnce);
+  }
 
   struct timespec Now = {0, 0};
   if (clock_gettime(CLOCK_MONOTONIC, &Now) != 0) {
