@@ -1809,6 +1809,8 @@ void RenderLodReadCullStats(void) { GlLodReadCullStats(); }
 
 void RenderLodSetFog(bool Enabled, float End) { GlLodSetFog(Enabled, End); }
 
+float RenderGetNearFarPlane(void) { return (float)GL_MATH_CULL_FAR; }
+
 void RenderBeginTranslucentPass(void) {
   FlushDebugBatch();
   GetBackendState()->InTranslucentPass = true;

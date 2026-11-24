@@ -17,6 +17,7 @@ uniform sampler2DArray uBlockArray;
 uniform usampler2D uCoverage;
 uniform ivec3 uCameraBlock;
 uniform vec3 uCameraFrac;
+uniform float uNearFarReciprocal;
 
 out vec4 finalColor;
 
@@ -39,6 +40,9 @@ vec3 ApplyFog(vec3 rgb) {
 }
 
 bool CoveredByChunks() {
+    if (gl_FragCoord.w <= uNearFarReciprocal) {
+        return false;
+    }
     ivec3 block = ivec3(floor(fragProbe + uCameraFrac + vec3(0.5))) + uCameraBlock;
     ivec2 column = ivec2(floor(vec2(block.xz) / 16.0));
     ivec2 cameraColumn = ivec2(floor(vec2(uCameraBlock.xz) / 16.0));

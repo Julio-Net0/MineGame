@@ -74,6 +74,9 @@ typedef enum { WALK_NONE = 0, WALK_SELECTED, WALK_REFINED } WalkKind;
 #define CULL_STATS_INTERVAL 0.5
 // Blocks are centred on integers, so a box of blocks starts half a block low.
 #define BLOCK_CENTRE_OFFSET 0.5F
+// Margin subtracted from the 1:1 far clip plane when checking whether a covered
+// section can still cross it: absorbs rounding the camera to its chunk centre.
+#define NEAR_FAR_SELECT_MARGIN 32.0F
 #define CACHE_HASH_X 0x9E3779B97F4A7C15ULL
 #define CACHE_HASH_Y 0xC2B2AE3D27D4EB4FULL
 #define CACHE_HASH_Z 0x165667B19E3779F9ULL
@@ -835,6 +838,36 @@ static void AssembleDraws(LodRendererState *State, const SelectContext *Ctx) {
   }
 }
 
+// How a section's AABB sits relative to the 1:1 far clip sphere:
+//   *OutAllPast: every corner lies past the 1:1 far plane (no 1:1 fragment can
+//                overlap it, so it draws opaque at its natural LOD level);
+//   *OutReaches: at least one corner reaches the 1:1 far plane, so a covered
+//                section must still enter the border pass.
+static void SectionNearFarRange(const SelectContext *Ctx, int Level, int X,
+                                int Y, int Z, bool *OutAllPast,
+                                bool *OutReaches) {
+  float Width = (float)(LOD_SECTION_SIZE << Level);
+  float MinX = ((float)X * Width) - BLOCK_CENTRE_OFFSET;
+  float MinY = ((float)Y * Width) - BLOCK_CENTRE_OFFSET;
+  float MinZ = ((float)Z * Width) - BLOCK_CENTRE_OFFSET;
+  float NearX = AxisGap(Ctx->Camera.x, MinX, MinX + Width);
+  float NearY = AxisGap(Ctx->Camera.y, MinY, MinY + Width);
+  float NearZ = AxisGap(Ctx->Camera.z, MinZ, MinZ + Width);
+  float FarX = fmaxf(fabsf(Ctx->Camera.x - MinX),
+                     fabsf(Ctx->Camera.x - (MinX + Width)));
+  float FarY = fmaxf(fabsf(Ctx->Camera.y - MinY),
+                     fabsf(Ctx->Camera.y - (MinY + Width)));
+  float FarZ = fmaxf(fabsf(Ctx->Camera.z - MinZ),
+                     fabsf(Ctx->Camera.z - (MinZ + Width)));
+  float FarPlane = RenderGetNearFarPlane();
+  float Low = FarPlane - NEAR_FAR_SELECT_MARGIN;
+  float High = FarPlane + NEAR_FAR_SELECT_MARGIN;
+  float NearDistSq = (NearX * NearX) + (NearY * NearY) + (NearZ * NearZ);
+  float FarDistSq = (FarX * FarX) + (FarY * FarY) + (FarZ * FarZ);
+  *OutAllPast = NearDistSq >= High * High;
+  *OutReaches = FarDistSq >= Low * Low;
+}
+
 static void SelectSection(LodRendererState *State, SelectContext *Ctx, int Level,
                           int X, int Y, int Z) {
   const LodSection *Section = LodStoreFind(Ctx->Store, Level, X, Y, Z);
@@ -842,7 +875,18 @@ static void SelectSection(LodRendererState *State, SelectContext *Ctx, int Level
     return;
   }
   SectionCoverage Coverage = CoverageOf(State, Ctx, Level, X, Z);
-  if (Coverage == COVERAGE_FULL) {
+  bool FarStraddles = false;
+  if (Coverage != COVERAGE_NONE) {
+    bool AllPast = false;
+    bool Reaches = false;
+    SectionNearFarRange(Ctx, Level, X, Y, Z, &AllPast, &Reaches);
+    if (AllPast) {
+      Coverage = COVERAGE_NONE;
+    } else if (Coverage == COVERAGE_FULL && Reaches) {
+      FarStraddles = true;
+    }
+  }
+  if (Coverage == COVERAGE_FULL && !FarStraddles) {
     return;
   }
   bool Refine = Coverage == COVERAGE_PARTIAL || CameraIsNear(Ctx, Level, X, Y, Z);
@@ -868,7 +912,7 @@ static void SelectSection(LodRendererState *State, SelectContext *Ctx, int Level
     State->Walked[Ctx->WalkedCount++] = (PendingMesh){
         .Section = Section, .Level = Level, .X = X, .Y = Y, .Z = Z,
         .DistSq = SectionDistSq(Ctx, Level, X, Y, Z), .Key = Key,
-        .Border = Coverage == COVERAGE_PARTIAL};
+        .Border = Coverage == COVERAGE_PARTIAL || FarStraddles};
   }
 }
 

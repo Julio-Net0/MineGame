@@ -22,6 +22,9 @@ uniform sampler2DArray uBlockArray;
 uniform usampler2D uCoverage;
 uniform ivec3 uCameraBlock;
 uniform vec3 uCameraFrac;
+// 1 / (nearFar - margin): gl_FragCoord.w is 1 / viewDistance, so fragments at
+// or past the 1:1 far plane are never discarded even inside covered columns.
+uniform float uNearFarReciprocal;
 
 out vec4 finalColor;
 
@@ -57,6 +60,9 @@ vec4 SampleBase() {
 }
 
 bool CoveredByChunks() {
+    if (gl_FragCoord.w <= uNearFarReciprocal) {
+        return false;
+    }
     ivec3 block = ivec3(floor(fragProbe + uCameraFrac + vec3(0.5))) + uCameraBlock;
     ivec2 column = ivec2(floor(vec2(block.xz) / 16.0));
     ivec2 cameraColumn = ivec2(floor(vec2(uCameraBlock.xz) / 16.0));

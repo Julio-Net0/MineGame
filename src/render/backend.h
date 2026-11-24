@@ -106,6 +106,9 @@ enum {
 };
 void RenderGetViewProjection(float OutMatrix[RENDER_MATRIX_ELEMENTS]);
 
+// Far clip plane of the 1:1 chunk projection, in blocks along the view axis.
+float RenderGetNearFarPlane(void);
+
 // Frame lifecycle. 3D content is drawn between BeginFrame and End3D; 2D content
 // (deferred HUD layer) between End3D and EndFrame.
 void RenderBeginFrame(RenderCamera Camera);

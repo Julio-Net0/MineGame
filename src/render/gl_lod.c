@@ -110,6 +110,8 @@ enum {
 #define LOD_NEAR_PLANE 8.0
 #define LOD_FAR_PLANE 40000.0
 #define LOD_FOG_START_FRACTION 0.75F
+// Small pull-in from the 1:1 far plane so the LOD hands off without a gap.
+#define LOD_NEAR_FAR_CLIP_OFFSET 1.0
 
 typedef struct {
   GLuint Count;
@@ -294,6 +296,8 @@ static LodProgram LoadLodProgram(const char *FragmentPath, const LodFog *Fog) {
   glUniform1i(glGetUniformLocation(Result.Program, "uFogEnabled"), Fog->Enabled ? 1 : 0);
   glUniform2f(glGetUniformLocation(Result.Program, "uFogRange"), Fog->Start, Fog->End);
   glUniform3fv(glGetUniformLocation(Result.Program, "uFogColor"), 1, Fog->Color);
+  glUniform1f(glGetUniformLocation(Result.Program, "uNearFarReciprocal"),
+              (float)(1.0 / (GL_MATH_CULL_FAR - LOD_NEAR_FAR_CLIP_OFFSET)));
   glUseProgram(0);
   return Result;
 }

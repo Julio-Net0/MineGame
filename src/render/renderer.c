@@ -1072,10 +1072,12 @@ bool RendererResolveEmptyChunk(World *WorldVal, Chunk *ChunkVal) {
     SetChunkVisibility(ChunkVal, FACE_VIS_ALL);
     ChunkVal->IsDirty = false;
     // No mesh job carries this chunk, so its (empty) patch goes in here; an
-    // edit that hollows a chunk out reaches the LOD this way.
+    // edit that hollows a chunk out reaches the LOD this way. Empty air chunks
+    // never mark a column as 1:1 covered, or flying into the sky above the
+    // vertical load window would still block the LOD terrain below.
     LodIngestUniformChunk(ChunkVal);
     LodRendererSetChunkCovered(ChunkVal->ChunkX, ChunkVal->ChunkY,
-                               ChunkVal->ChunkZ, true);
+                               ChunkVal->ChunkZ, false);
     return true;
 }
 
@@ -1267,8 +1269,11 @@ bool RendererUploadFinishedMesh(void) {
                 LodIngestChunkPatch(Job->ChunkX, Job->ChunkY, Job->ChunkZ,
                                     &LodPatches[Idx]);
             }
+            bool HasTerrain = ChunkVal->SolidBlockCount > 0 ||
+                              ChunkVal->HasMesh || ChunkVal->HasCutoutMesh ||
+                              ChunkVal->HasTranslucentMesh;
             LodRendererSetChunkCovered(Job->ChunkX, Job->ChunkY, Job->ChunkZ,
-                                       true);
+                                       HasTerrain);
         }
 
         for (int Target = 0; Target < MESH_TARGET_COUNT; Target++) {
