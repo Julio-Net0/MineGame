@@ -1040,7 +1040,11 @@ void RenderBackendInit(void) {
                                                    : LOD_FOG_END_DEFAULT),
         .FogColor = {(float)COLOR_CLEAR.R / COLOR8_CHANNEL_MAX,
                      (float)COLOR_CLEAR.G / COLOR8_CHANNEL_MAX,
-                     (float)COLOR_CLEAR.B / COLOR8_CHANNEL_MAX}};
+                     (float)COLOR_CLEAR.B / COLOR8_CHANNEL_MAX},
+        .ReversedZ = RenderGetCapabilities()->ClipControl && !Options->LodNoReversedZ,
+        .ArenaLimitBytes =
+            (int64_t)((Options->LodArenaMb > 0) ? Options->LodArenaMb : LOD_ARENA_MB_DEFAULT)
+            * LOD_BYTES_PER_MB};
     (void)GlLodInit(State->ChunkSharedEbo, &Lod);
   }
 
@@ -1765,6 +1769,8 @@ RenderLodMesh RenderLodUploadMesh(const ChunkVertex *Vertices,
 }
 
 void RenderLodFreeMesh(RenderLodMesh Mesh) { GlLodFreeMesh(Mesh); }
+
+uint32_t RenderLodArenaGeneration(void) { return GlLodArenaGeneration(); }
 
 void RenderLodSetCoverage(int ColumnX, int ColumnZ,
                           const uint32_t Words[RENDER_LOD_COVERAGE_WORDS]) {

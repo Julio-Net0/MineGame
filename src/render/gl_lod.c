@@ -10,13 +10,19 @@
 #include <string.h>
 
 enum {
-  // Arena: one vertex buffer in pages of 256 vertices, so every section mesh
-  // shares one vertex array and a whole pass is one multi-draw.
-  LOD_PAGE_SHIFT = 8,
+  // Arena: one vertex buffer in pages of 64 vertices (512 bytes), so every
+  // section mesh shares one vertex array and a whole pass is one multi-draw.
+  // It starts at ARENA_INITIAL_MB and grows on demand by a quarter (at least
+  // ARENA_STEP_MB) up to its ceiling: the driver keeps a system-memory copy
+  // of the whole buffer, so allocating close to what is used saves RAM.
+  LOD_PAGE_SHIFT = 6,
   LOD_PAGE_VERTICES = 1 << LOD_PAGE_SHIFT,
-  LOD_ARENA_PAGES = 16384,
-  // Every mesh holds at least one page, so no more can be live at once.
-  LOD_MAX_MESHES = LOD_ARENA_PAGES,
+  ARENA_INITIAL_MB = 16,
+  ARENA_STEP_MB = 16,
+  ARENA_GROWTH_DIVISOR = 4,
+  // Mesh records (and the Hi-Z visibility flags indexed like them) grow the
+  // same way.
+  MESH_INITIAL_CAPACITY = 4096,
   LIST_INITIAL_CAPACITY = 1024,
   LOD_MAX_DRAWS = 32768,
   // A freed run stays reserved this many presented frames, so no upload can
@@ -93,9 +99,14 @@ enum {
 // ARB_indirect_parameters / GL 4.6 tokens, absent from the 4.3 loader.
 #define LOD_PARAMETER_BUFFER 0x80EEU
 #define LOD_PARAMETER_BUFFER_BARRIER_BIT 0x00001000U
+// ARB_clip_control / GL 4.5 tokens.
+#define LOD_LOWER_LEFT 0x8CA1U
+#define LOD_NEGATIVE_ONE_TO_ONE 0x935EU
+#define LOD_ZERO_TO_ONE 0x935FU
 
 // The LOD projection: its near plane well inside the 1:1 disc and its far
-// plane past the largest view distance (2048 chunks = 32768 blocks).
+// plane past the largest view distance (2048 chunks = 32768 blocks). With
+// reversed-Z the far plane is at infinity instead.
 #define LOD_NEAR_PLANE 8.0
 #define LOD_FAR_PLANE 40000.0
 #define LOD_FOG_START_FRACTION 0.75F
@@ -157,6 +168,7 @@ typedef struct {
   GLint HizTop;
   GLint HizLevels;
   GLint UseHiz;
+  GLint ReversedZ;
 } CullProgram;
 
 typedef struct {
@@ -164,15 +176,22 @@ typedef struct {
   GLint Source;
   GLint Top;
   GLint Levels;
+  GLint Reversed;
 } HizProgram;
 
 typedef struct {
-  bool Active;
-  bool UseIndirectCount;
-  bool CullEnabled;
-  bool HizEnabled;
-  GLuint SharedIndexBuffer;
+  int64_t ListVertices;
+  uint8_t *PageUsed;
+  LodMeshRecord *Meshes;
+  int *FreeMeshes;
+  int64_t LiveVertices;
+  LodPendingRun *Pending;
+  uint64_t Frame;
+  int32_t *Meta;
+  uint32_t *CullRecords;
+  RenderLodStats Stats;
 
+  GLuint SharedIndexBuffer;
   GLuint Vbo;
   GLuint Vao;
   GLuint InstanceVbo;
@@ -181,39 +200,34 @@ typedef struct {
   GLuint CommandBuffer;
   GLuint CounterBuffer;
   GLuint CoverageTex;
-  CullProgram Cull;
   // Per mesh: visible when last tested (see lod_cull.comp).
   GLuint VisibilitySsbo;
-  HizProgram Hiz;
-  // The Hi-Z atlas and, per level, its first row, width and height; level 0
-  // is unused (level k covers 2^k x 2^k pixels).
+  // The Hi-Z atlas; HizLevels holds, per level, its first row, width and
+  // height (level 0 is the screen, level k covers 2^k x 2^k pixels).
   GLuint HizTex;
   int HizTop;
-  GLint HizLevels[HIZ_MAX_LEVELS][HIZ_LEVEL_FIELDS];
 
   // The section list last sent to the GPU.
-  bool HasList;
   uint32_t ListRevision;
   int ListOpaque;
   int ListBorder;
-  int64_t ListVertices;
   // Command slots: one per face run, opaque sections' first; and one per
   // see-through run for the blended pass.
   int ListOpaqueRuns;
   int ListRuns;
   int ListBlendedRuns;
 
-  uint8_t *PageUsed;
+  int ArenaPages;
+  int ArenaMaxPages;
   int UsedPages;
   int Cursor;
-  LodMeshRecord *Meshes;
-  int *FreeMeshes;
+  // Bumped when pages come free or the arena grows (RenderLodArenaGeneration).
+  uint32_t ArenaGeneration;
   int FreeMeshCount;
+  int MeshCapacity;
   int LiveMeshes;
-  LodPendingRun *Pending;
   int PendingCount;
   int PendingCapacity;
-  uint64_t Frame;
 
   // Copy of the default framebuffer's depth, the remap's input.
   GLuint DepthCopyTex;
@@ -231,17 +245,24 @@ typedef struct {
   GLuint RemapVao;
   GLint RemapNear;
   GLint RemapLod;
+  GLint RemapReversed;
+  // Sections Meta and CullRecords have room for; grown on demand.
+  int ListCapacity;
+  int CheckedFrames;
+
   LodProgram Opaque;
   LodProgram Border;
   LodProgram Translucent;
+  HizProgram Hiz;
+  CullProgram Cull;
+  GLint HizLevels[HIZ_MAX_LEVELS][HIZ_LEVEL_FIELDS];
 
-  int32_t *Meta;
-  uint32_t *CullRecords;
-  // Sections Meta and CullRecords have room for; grown on demand.
-  int ListCapacity;
-
-  RenderLodStats Stats;
-  int CheckedFrames;
+  bool Active;
+  bool UseIndirectCount;
+  bool CullEnabled;
+  bool HizEnabled;
+  bool ReversedZ;
+  bool HasList;
 } GlLodState;
 
 static GlLodState *GetLodState(void) {
@@ -294,6 +315,7 @@ static CullProgram LoadCullProgram(void) {
   Result.HizTop = glGetUniformLocation(Result.Program, "uHizTop");
   Result.HizLevels = glGetUniformLocation(Result.Program, "uHizLevels");
   Result.UseHiz = glGetUniformLocation(Result.Program, "uUseHiz");
+  Result.ReversedZ = glGetUniformLocation(Result.Program, "uReversedZ");
   return Result;
 }
 
@@ -303,6 +325,7 @@ static HizProgram LoadHizProgram(void) {
   Result.Source = glGetUniformLocation(Result.Program, "uSource");
   Result.Top = glGetUniformLocation(Result.Program, "uTop");
   Result.Levels = glGetUniformLocation(Result.Program, "uHizLevels");
+  Result.Reversed = glGetUniformLocation(Result.Program, "uReversed");
   glUseProgram(Result.Program);
   glUniform1i(glGetUniformLocation(Result.Program, "uDepth"), DEPTH_NEAR_UNIT);
   glUseProgram(0);
@@ -418,11 +441,15 @@ static bool CreateTargets(GlLodState *State, int Width, int Height) {
   return true;
 }
 
+static size_t PageBytes(int Pages) {
+  return (size_t)Pages * LOD_PAGE_VERTICES * sizeof(ChunkVertex);
+}
+
 static bool CreateArena(GlLodState *State) {
-  size_t VertexBytes = (size_t)LOD_ARENA_PAGES * LOD_PAGE_VERTICES * sizeof(ChunkVertex);
   glGenBuffers(1, &State->Vbo);
   glBindBuffer(GL_ARRAY_BUFFER, State->Vbo);
-  glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)VertexBytes, NULL, GL_DYNAMIC_DRAW);
+  glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)PageBytes(State->ArenaPages), NULL,
+               GL_DYNAMIC_DRAW);
 
   // Identity: draw i reads section record i through its baseInstance.
   uint32_t *Ids = (uint32_t *)malloc(sizeof(uint32_t) * LOD_MAX_DRAWS);
@@ -464,19 +491,109 @@ static bool CreateArena(GlLodState *State) {
   glGenVertexArrays(1, &State->RemapVao);
   if (State->HizEnabled) {
     // Every mesh starts visible, so a section is never hidden before a test.
-    uint32_t *Ones = (uint32_t *)malloc(sizeof(uint32_t) * LOD_MAX_MESHES);
-    if (Ones == NULL) {
-      return false;
-    }
-    for (int Idx = 0; Idx < LOD_MAX_MESHES; Idx++) {
-      Ones[Idx] = 1U;
-    }
+    uint32_t Visible = 1U;
     glGenBuffers(1, &State->VisibilitySsbo);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, State->VisibilitySsbo);
     glBufferData(GL_SHADER_STORAGE_BUFFER,
-                 (GLsizeiptr)(sizeof(uint32_t) * LOD_MAX_MESHES), Ones, GL_DYNAMIC_DRAW);
+                 (GLsizeiptr)(sizeof(uint32_t) * (size_t)State->MeshCapacity), NULL,
+                 GL_DYNAMIC_DRAW);
+    glClearBufferData(GL_SHADER_STORAGE_BUFFER, GL_R32UI, GL_RED_INTEGER,
+                      GL_UNSIGNED_INT, &Visible);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-    free(Ones);
+  }
+  return true;
+}
+
+// Copies a buffer's first CopyBytes into a new one of NewBytes and deletes the
+// old one; a frame still queued on the GPU keeps reading the old one, which
+// GL deletes only once no command uses it.
+static GLuint GrowBuffer(GLuint Old, size_t CopyBytes, size_t NewBytes) {
+  GLuint Grown = 0;
+  glGenBuffers(1, &Grown);
+  glBindBuffer(GL_COPY_WRITE_BUFFER, Grown);
+  glBufferData(GL_COPY_WRITE_BUFFER, (GLsizeiptr)NewBytes, NULL, GL_DYNAMIC_DRAW);
+  glBindBuffer(GL_COPY_READ_BUFFER, Old);
+  glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0,
+                      (GLsizeiptr)CopyBytes);
+  glBindBuffer(GL_COPY_READ_BUFFER, 0);
+  glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+  glDeleteBuffers(1, &Old);
+  return Grown;
+}
+
+// Grows the arena by a quarter, at least ARENA_STEP_MB and NeededPages, up
+// to its ceiling. False when it is already there or memory runs out.
+static bool GrowArena(GlLodState *State, int NeededPages) {
+  int Pages = State->ArenaPages;
+  if (Pages >= State->ArenaMaxPages) {
+    return false;
+  }
+  int Step = Pages / ARENA_GROWTH_DIVISOR;
+  int MinStep = (int)(((int64_t)ARENA_STEP_MB << BYTES_TO_MB_SHIFT) / (int64_t)PageBytes(1));
+  if (Step < MinStep) {
+    Step = MinStep;
+  }
+  if (Step < NeededPages) {
+    Step = NeededPages;
+  }
+  int Target = Pages + Step;
+  if (Target > State->ArenaMaxPages) {
+    Target = State->ArenaMaxPages;
+  }
+  uint8_t *Used = (uint8_t *)realloc(State->PageUsed, (size_t)Target);
+  if (Used == NULL) {
+    return false;
+  }
+  memset(Used + Pages, 0, (size_t)(Target - Pages));
+  State->PageUsed = Used;
+  State->Vbo = GrowBuffer(State->Vbo, PageBytes(Pages), PageBytes(Target));
+  glBindVertexArray(State->Vao);
+  glBindBuffer(GL_ARRAY_BUFFER, State->Vbo);
+  glVertexAttribIPointer(ATTRIB_VERTEX, 2, GL_UNSIGNED_INT,
+                         (GLsizei)sizeof(ChunkVertex), BufferOffset(0));
+  glBindVertexArray(0);
+  glBindBuffer(GL_ARRAY_BUFFER, 0);
+  State->Cursor = Pages;
+  State->ArenaPages = Target;
+  State->ArenaGeneration++;
+  State->Stats.ArenaCapacityBytes = (int64_t)PageBytes(Target);
+  LogInfo("RENDER: LOD arena grown to %lld MB (ceiling %lld MB)",
+          (long long)(PageBytes(Target) >> BYTES_TO_MB_SHIFT),
+          (long long)(PageBytes(State->ArenaMaxPages) >> BYTES_TO_MB_SHIFT));
+  return true;
+}
+
+// Doubles the mesh records and their Hi-Z visibility flags (new ones start
+// visible). False when memory runs out.
+static bool GrowMeshes(GlLodState *State) {
+  int Old = State->MeshCapacity;
+  int Target = Old * 2;
+  LodMeshRecord *Meshes =
+      (LodMeshRecord *)realloc(State->Meshes, sizeof(LodMeshRecord) * (size_t)Target);
+  if (Meshes == NULL) {
+    return false;
+  }
+  State->Meshes = Meshes;
+  memset(Meshes + Old, 0, sizeof(LodMeshRecord) * (size_t)(Target - Old));
+  int *Free = (int *)realloc(State->FreeMeshes, sizeof(int) * (size_t)Target);
+  if (Free == NULL) {
+    return false;
+  }
+  State->FreeMeshes = Free;
+  for (int Idx = Target - 1; Idx >= Old; Idx--) {
+    State->FreeMeshes[State->FreeMeshCount++] = Idx;
+  }
+  State->MeshCapacity = Target;
+  if (State->HizEnabled) {
+    uint32_t Visible = 1U;
+    State->VisibilitySsbo = GrowBuffer(State->VisibilitySsbo, sizeof(uint32_t) * (size_t)Old,
+                                       sizeof(uint32_t) * (size_t)Target);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, State->VisibilitySsbo);
+    glClearBufferSubData(GL_SHADER_STORAGE_BUFFER, GL_R32UI,
+                         (GLintptr)(sizeof(uint32_t) * (size_t)Old),
+                         (GLsizeiptr)(sizeof(uint32_t) * (size_t)(Target - Old)),
+                         GL_RED_INTEGER, GL_UNSIGNED_INT, &Visible);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
   }
   return true;
 }
@@ -533,9 +650,18 @@ bool GlLodInit(GLuint SharedIndexBuffer, const GlLodOptions *Options) {
   State->UseIndirectCount = Options->UseIndirectCount;
   State->CullEnabled = Options->Cull;
   State->HizEnabled = Options->Cull && Options->HiZ;
-  State->PageUsed = (uint8_t *)calloc(LOD_ARENA_PAGES, sizeof(uint8_t));
-  State->Meshes = (LodMeshRecord *)calloc(LOD_MAX_MESHES, sizeof(LodMeshRecord));
-  State->FreeMeshes = (int *)malloc(sizeof(int) * LOD_MAX_MESHES);
+  State->ReversedZ = Options->ReversedZ;
+  State->ArenaMaxPages =
+      (int)(Options->ArenaLimitBytes / (int64_t)PageBytes(1));
+  State->ArenaPages = (int)(((int64_t)ARENA_INITIAL_MB << BYTES_TO_MB_SHIFT) /
+                            (int64_t)PageBytes(1));
+  if (State->ArenaPages > State->ArenaMaxPages) {
+    State->ArenaPages = State->ArenaMaxPages;
+  }
+  State->MeshCapacity = MESH_INITIAL_CAPACITY;
+  State->PageUsed = (uint8_t *)calloc((size_t)State->ArenaPages, sizeof(uint8_t));
+  State->Meshes = (LodMeshRecord *)calloc((size_t)State->MeshCapacity, sizeof(LodMeshRecord));
+  State->FreeMeshes = (int *)malloc(sizeof(int) * (size_t)State->MeshCapacity);
   if (State->PageUsed == NULL || State->Meshes == NULL ||
       State->FreeMeshes == NULL || !EnsureListCapacity(State, LIST_INITIAL_CAPACITY) ||
       !CreateArena(State) || !CreateCoverage(State)) {
@@ -543,10 +669,10 @@ bool GlLodInit(GLuint SharedIndexBuffer, const GlLodOptions *Options) {
     LogWarn("RENDER: could not create the LOD resources; LOD stays off");
     return false;
   }
-  for (int Idx = 0; Idx < LOD_MAX_MESHES; Idx++) {
-    State->FreeMeshes[Idx] = LOD_MAX_MESHES - 1 - Idx;
+  for (int Idx = 0; Idx < State->MeshCapacity; Idx++) {
+    State->FreeMeshes[Idx] = State->MeshCapacity - 1 - Idx;
   }
-  State->FreeMeshCount = LOD_MAX_MESHES;
+  State->FreeMeshCount = State->MeshCapacity;
 
   State->CompositeProgram = GlLinkShaderProgram(
       "assets/shaders/depth_remap.vert", "assets/shaders/lod_composite.frag");
@@ -558,6 +684,7 @@ bool GlLodInit(GLuint SharedIndexBuffer, const GlLodOptions *Options) {
                                             "assets/shaders/depth_remap.frag");
   State->RemapNear = glGetUniformLocation(State->RemapProgram, "uNear");
   State->RemapLod = glGetUniformLocation(State->RemapProgram, "uLod");
+  State->RemapReversed = glGetUniformLocation(State->RemapProgram, "uReversed");
   glUseProgram(State->RemapProgram);
   glUniform1i(glGetUniformLocation(State->RemapProgram, "uDepthNear"),
               DEPTH_NEAR_UNIT);
@@ -576,16 +703,19 @@ bool GlLodInit(GLuint SharedIndexBuffer, const GlLodOptions *Options) {
     State->Hiz = LoadHizProgram();
   }
 
-  State->Stats.ArenaCapacityBytes =
-      (int64_t)LOD_ARENA_PAGES * LOD_PAGE_VERTICES * (int64_t)sizeof(ChunkVertex);
+  State->Stats.ArenaCapacityBytes = (int64_t)PageBytes(State->ArenaPages);
+  State->Stats.ArenaLimitBytes = (int64_t)PageBytes(State->ArenaMaxPages);
+  State->Stats.ReversedZ = State->ReversedZ;
   State->Active = true;
-  LogInfo("RENDER: LOD pipeline on: %d-page arena (%lld MB), projection %.0f..%.0f, "
-          "standard depth (32-bit float LOD depth), 1:1 left in the default "
-          "framebuffer, GPU cull%s into a %s command list, Hi-Z occlusion %s, "
+  LogInfo("RENDER: LOD pipeline on: arena %lld MB growing to %lld MB in %d-vertex "
+          "pages, projection %.0f..%s, %s (32-bit float LOD depth), 1:1 left in the "
+          "default framebuffer, GPU cull%s into a %s command list, Hi-Z occlusion %s, "
           "fog %s (%.0f..%.0f blocks)",
-          LOD_ARENA_PAGES,
-          (long long)(State->Stats.ArenaCapacityBytes >> BYTES_TO_MB_SHIFT), LOD_NEAR_PLANE,
-          LOD_FAR_PLANE, Options->Cull ? "" : " (off: --lod-cull off)",
+          (long long)(State->Stats.ArenaCapacityBytes >> BYTES_TO_MB_SHIFT),
+          (long long)(State->Stats.ArenaLimitBytes >> BYTES_TO_MB_SHIFT), LOD_PAGE_VERTICES,
+          LOD_NEAR_PLANE, State->ReversedZ ? "infinity" : "40000",
+          State->ReversedZ ? "reversed-Z" : "standard depth",
+          Options->Cull ? "" : " (off: --lod-cull off)",
           Options->UseIndirectCount ? "compacted (indirect count)" : "fixed (zeroed)",
           State->HizEnabled ? "on (two phases)" : "off", Options->Fog ? "on" : "off",
           (double)Fog.Start, (double)Fog.End);
@@ -643,7 +773,7 @@ void GlLodShutdown(void) {
 static int FindFreeRun(GlLodState *State, int Pages) {
   for (int Pass = 0; Pass < 2; Pass++) {
     int Start = (Pass == 0) ? State->Cursor : 0;
-    int End = (Pass == 0) ? LOD_ARENA_PAGES : State->Cursor;
+    int End = (Pass == 0) ? State->ArenaPages : State->Cursor;
     int Run = 0;
     for (int Page = Start; Page < End; Page++) {
       Run = (State->PageUsed[Page] == 0U) ? Run + 1 : 0;
@@ -669,16 +799,22 @@ RenderLodMesh GlLodUploadMesh(const ChunkVertex *Vertices,
     VertexCount += Runs[Run].Quads * LOD_VERTICES_PER_QUAD;
   }
   if (!State->Active || VertexCount <= 0 || RunCount > LOD_RUNS ||
-      State->FreeMeshCount == 0) {
+      (State->FreeMeshCount == 0 && !GrowMeshes(State))) {
+    return RENDER_LOD_MESH_INVALID;
+  }
+  if (State->FreeMeshCount <= 0) {
     return RENDER_LOD_MESH_INVALID;
   }
   int Pages = (VertexCount + LOD_PAGE_VERTICES - 1) >> LOD_PAGE_SHIFT;
   int First = FindFreeRun(State, Pages);
+  while (First < 0 && GrowArena(State, Pages)) {
+    First = FindFreeRun(State, Pages);
+  }
   if (First < 0) {
     return RENDER_LOD_MESH_INVALID;
   }
   MarkPages(State, First, Pages, 1U);
-  State->Cursor = (First + Pages) % LOD_ARENA_PAGES;
+  State->Cursor = (First + Pages) % State->ArenaPages;
   glBindBuffer(GL_ARRAY_BUFFER, State->Vbo);
   glBufferSubData(GL_ARRAY_BUFFER,
                   (GLintptr)((size_t)First * LOD_PAGE_VERTICES * sizeof(ChunkVertex)),
@@ -696,6 +832,7 @@ RenderLodMesh GlLodUploadMesh(const ChunkVertex *Vertices,
                         (uint32_t)Runs[Run].Quads;
   }
   State->LiveMeshes++;
+  State->LiveVertices += VertexCount;
   if (State->HizEnabled) {
     uint32_t Visible = 1U;
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, State->VisibilitySsbo);
@@ -708,10 +845,11 @@ RenderLodMesh GlLodUploadMesh(const ChunkVertex *Vertices,
 
 void GlLodFreeMesh(RenderLodMesh Mesh) {
   GlLodState *State = GetLodState();
-  if (Mesh < 0 || Mesh >= LOD_MAX_MESHES || !State->Meshes[Mesh].Used) {
+  if (Mesh < 0 || Mesh >= State->MeshCapacity || !State->Meshes[Mesh].Used) {
     return;
   }
   LodMeshRecord *Record = &State->Meshes[Mesh];
+  State->LiveVertices -= Record->VertexCount;
   if (State->PendingCount == State->PendingCapacity) {
     int Capacity = (State->PendingCapacity > 0) ? State->PendingCapacity * 2 : PENDING_INITIAL;
     LodPendingRun *Grown = (LodPendingRun *)realloc(
@@ -745,12 +883,15 @@ void GlLodEndFrame(void) {
     LodPendingRun Run = State->Pending[Idx];
     if (State->Frame - Run.Frame >= LOD_RELEASE_DELAY_FRAMES) {
       MarkPages(State, Run.FirstPage, Run.PageCount, 0U);
+      State->ArenaGeneration++;
     } else {
       State->Pending[Kept++] = Run;
     }
   }
   State->PendingCount = Kept;
 }
+
+uint32_t GlLodArenaGeneration(void) { return GetLodState()->ArenaGeneration; }
 
 void GlLodSetCoverage(int ColumnX, int ColumnZ,
                       const uint32_t Words[RENDER_LOD_COVERAGE_WORDS]) {
@@ -794,6 +935,7 @@ static void RemapDepth(const GlLodState *State, float LodM10, float LodM14,
   glUseProgram(State->RemapProgram);
   glUniform2f(State->RemapNear, Frame->NearM10, Frame->NearM14);
   glUniform2f(State->RemapLod, LodM10, LodM14);
+  glUniform1i(State->RemapReversed, State->ReversedZ ? 1 : 0);
   glActiveTexture(GL_TEXTURE0 + DEPTH_NEAR_UNIT);
   glBindTexture(GL_TEXTURE_2D, State->DepthCopyTex);
   glBindVertexArray(State->RemapVao);
@@ -802,6 +944,23 @@ static void RemapDepth(const GlLodState *State, float LodM10, float LodM14,
   glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
   glDepthFunc(GL_LEQUAL);
   glEnable(GL_CULL_FACE);
+}
+
+// Reversed-Z is context state, not framebuffer state: it is switched on only
+// around the LOD passes and off again before anything else draws, so every
+// 1:1, debug and UI pass keeps the [-1, 1] clip range and LEQUAL test.
+static void BeginLodDepth(const GlLodState *State) {
+  if (State->ReversedZ) {
+    GlCapsProcs()->ClipControl(LOD_LOWER_LEFT, LOD_ZERO_TO_ONE);
+    glDepthFunc(GL_GEQUAL);
+  }
+}
+
+static void EndLodDepth(const GlLodState *State) {
+  if (State->ReversedZ) {
+    GlCapsProcs()->ClipControl(LOD_LOWER_LEFT, LOD_NEGATIVE_ONE_TO_ONE);
+    glDepthFunc(GL_LEQUAL);
+  }
 }
 
 // Lays the LOD's pixels over the default framebuffer and restores the frame's
@@ -981,6 +1140,7 @@ static void CullSections(GlLodState *State, const LodView *View, int Phase,
   glUniform1i(Cull->Phase, Phase);
   glUniform1ui(Cull->PhaseBase, (GLuint)PhaseBase(State, Phase));
   glUniform1i(Cull->UseHiz, State->HizEnabled ? 1 : 0);
+  glUniform1i(Cull->ReversedZ, State->ReversedZ ? 1 : 0);
   if (State->HizEnabled) {
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_VISIBILITY, State->VisibilitySsbo);
     glUniform2f(Cull->Viewport, (float)Frame->Width, (float)Frame->Height);
@@ -1012,6 +1172,7 @@ static void BuildHizPyramid(const GlLodState *State) {
   glUseProgram(State->Hiz.Program);
   glUniform1i(State->Hiz.Top, State->HizTop);
   glUniform4iv(State->Hiz.Levels, HIZ_MAX_LEVELS, &State->HizLevels[0][0]);
+  glUniform1i(State->Hiz.Reversed, State->ReversedZ ? 1 : 0);
   glActiveTexture(GL_TEXTURE0 + DEPTH_NEAR_UNIT);
   glBindTexture(GL_TEXTURE_2D, State->DepthLodTex);
   glBindImageTexture(HIZ_IMAGE_UNIT, State->HizTex, 0, GL_FALSE, 0, GL_READ_WRITE,
@@ -1163,6 +1324,12 @@ void GlLodDraw(const GlLodFrame *Frame, const RenderLodDraw *Draws,
   double Right = Top * Aspect;
   GlMat4 Projection =
       GlMat4Frustum(-Right, Right, -Top, Top, LOD_NEAR_PLANE, LOD_FAR_PLANE);
+  if (State->ReversedZ) {
+    // Infinite far plane, reversed: clip z = near, clip w = distance, so the
+    // [0, 1] depth is near / distance.
+    Projection.m10 = 0.0F;
+    Projection.m14 = (float)LOD_NEAR_PLANE;
+  }
   GlMat4 LookAt = GlMat4LookAt((Vec3){0.0F, 0.0F, 0.0F}, Forward, Frame->Camera.Up);
   LodView View;
   GlMat4ToColumnMajor(GlMat4Multiply(LookAt, Projection), View.ViewProj);
@@ -1183,6 +1350,7 @@ void GlLodDraw(const GlLodFrame *Frame, const RenderLodDraw *Draws,
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
   }
   RemapDepth(State, Projection.m10, Projection.m14, Frame);
+  BeginLodDepth(State);
   State->Stats.CandidateVertices = State->ListVertices;
   ClearCounters(State);
   CullSections(State, &View, State->HizEnabled ? PHASE_FIRST : PHASE_SINGLE, Frame);
@@ -1196,6 +1364,7 @@ void GlLodDraw(const GlLodFrame *Frame, const RenderLodDraw *Draws,
   CullSections(State, &View, PHASE_TRANSLUCENT, Frame);
   glBindFramebuffer(GL_FRAMEBUFFER, State->FboLod);
   DrawTranslucent(State, Frame, &View);
+  EndLodDepth(State);
   CompositeOntoFrame(State, Frame);
   if (Frame->Wireframe) {
     glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
@@ -1217,6 +1386,6 @@ void GlLodGetStats(RenderLodStats *Out) {
   const GlLodState *State = GetLodState();
   *Out = State->Stats;
   Out->Meshes = State->LiveMeshes;
-  Out->ArenaUsedBytes =
-      (int64_t)State->UsedPages * LOD_PAGE_VERTICES * (int64_t)sizeof(ChunkVertex);
+  Out->ArenaUsedBytes = (int64_t)PageBytes(State->UsedPages);
+  Out->ArenaLiveBytes = State->LiveVertices * (int64_t)sizeof(ChunkVertex);
 }

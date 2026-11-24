@@ -32,6 +32,13 @@ enum {
   MAX_DRAWS = 32768,
   // Sections meshed per frame at most, on top of the time budget.
   MESH_BUDGET_SECTIONS = 96,
+  // Eviction rounds allowed for one selection anchor (camera chunk, store and
+  // coverage unchanged) while sections starve; past them the starved wait
+  // for the anchor to change, so a full arena can never loop.
+  MAX_EVICTION_ROUNDS = 4,
+  // A round frees this many times the starved section's vertices, the slack
+  // covering pages the freed meshes leave scattered.
+  EVICTION_SLACK = 2,
   // Cached meshes not drawn for this many frames, or whose section is gone,
   // are freed; the cache is swept every EVICT_INTERVAL frames.
   EVICT_INTERVAL = 64,
@@ -81,35 +88,60 @@ typedef struct {
   RenderLodMesh Mesh;
   int VertexCount;
   uint32_t LastFrame;
+  // Squared distance from the camera's chunk centre at the last selection.
+  float DistSq;
   // A neighbour changed since the mesh was built: its border faces may be off.
   bool Stale;
 } CacheEntry;
 
+// A selected section whose mesh is missing or out of date, queued so the
+// nearest are meshed first.
 typedef struct {
-  bool Enabled;
-  bool DrawOn;
+  const LodSection *Section;
+  int32_t Level;
+  int32_t X;
+  int32_t Y;
+  int32_t Z;
+  float DistSq;
+  // Position in the selection walk, which orders the draw list.
+  uint32_t Key;
+  bool Border;
+} PendingMesh;
+
+// A draw with its position in the selection walk.
+typedef struct {
+  uint32_t Key;
+  RenderLodDraw Draw;
+} KeyedDraw;
+
+typedef struct {
   uint32_t *Coverage;
   uint16_t *CellCounts;
   uint8_t *ColumnDirty;
   int *DirtyColumns;
-  int DirtyCount;
-
   CacheEntry *Cache;
-  int Capacity;
-  int Count;
-  int Tombstones;
-
   VoxelMesher *Mesher;
   VoxelLodScratch *Scratch;
   ChunkVertex *Upload;
   RenderLodDraw *Draws;
-  RenderLodDraw *BorderDraws;
+  KeyedDraw *OpaqueKeyed;
+  KeyedDraw *BorderKeyed;
+  PendingMesh *PendingMeshes;
+  int64_t EvictedForRoom;
+  uint64_t JournalRead;
+  LodRenderStats Stats;
 
+  int DirtyCount;
+  int Capacity;
+  int Count;
+  int Tombstones;
+  // The arena generation when sections last starved: they are retried only
+  // once it moves (space freed or the arena grown), not every frame.
+  uint32_t StarvedGeneration;
+  int EvictionRounds;
   // Counts selection passes, not frames: a pass reruns only when its inputs
   // changed (see LodRendererDraw), and mesh ages are measured in passes.
   uint32_t Frame;
-  uint64_t JournalRead;
-  bool HasSelection;
   int SelectChunkX;
   int SelectChunkY;
   int SelectChunkZ;
@@ -118,7 +150,13 @@ typedef struct {
   uint32_t ListRevision;
   int OpaqueCount;
   int BorderCount;
-  LodRenderStats Stats;
+
+  bool Enabled;
+  bool DrawOn;
+  // Out of eviction rounds for this anchor: starved sections wait for it to
+  // change instead of retrying on every freed page.
+  bool StarvedParked;
+  bool HasSelection;
 } LodRendererState;
 
 typedef struct {
@@ -126,13 +164,21 @@ typedef struct {
   Vec3 Camera;
   int CameraChunkX;
   int CameraChunkZ;
-  double Deadline;
   int Meshed;
   int OpaqueCount;
   int BorderCount;
   int Waiting;
   int Starved;
   int Selected;
+  int PendingCount;
+  // Sections selected so far: the walk position the next one takes.
+  uint32_t WalkIndex;
+  // Nearest starved section's squared distance, or negative when none.
+  float NearestStarved;
+  // Vertices of the first section the arena could not hold.
+  int StarvedVertices;
+  // Meshing attempts, the per-frame budget, and successful uploads.
+  int Attempts;
   bool ArenaFull;
 } SelectContext;
 
@@ -153,7 +199,9 @@ static void FreeRendererState(LodRendererState *State) {
   free(State->Scratch);
   free(State->Upload);
   free(State->Draws);
-  free(State->BorderDraws);
+  free(State->OpaqueKeyed);
+  free(State->BorderKeyed);
+  free(State->PendingMeshes);
   *State = (LodRendererState){0};
 }
 
@@ -173,12 +221,15 @@ void LodRendererInit(void) {
   State->Scratch = (VoxelLodScratch *)malloc(sizeof(VoxelLodScratch));
   State->Upload = (ChunkVertex *)malloc(sizeof(ChunkVertex) * CHUNK_MAX_VERTICES);
   State->Draws = (RenderLodDraw *)malloc(sizeof(RenderLodDraw) * MAX_DRAWS);
-  State->BorderDraws = (RenderLodDraw *)malloc(sizeof(RenderLodDraw) * MAX_DRAWS);
+  State->OpaqueKeyed = (KeyedDraw *)malloc(sizeof(KeyedDraw) * MAX_DRAWS);
+  State->BorderKeyed = (KeyedDraw *)malloc(sizeof(KeyedDraw) * MAX_DRAWS);
+  State->PendingMeshes = (PendingMesh *)malloc(sizeof(PendingMesh) * MAX_DRAWS);
   if (State->Coverage == NULL || State->CellCounts == NULL ||
       State->ColumnDirty == NULL ||
       State->DirtyColumns == NULL || State->Cache == NULL ||
       State->Mesher == NULL || State->Scratch == NULL || State->Upload == NULL ||
-      State->Draws == NULL || State->BorderDraws == NULL) {
+      State->Draws == NULL || State->OpaqueKeyed == NULL || State->BorderKeyed == NULL ||
+      State->PendingMeshes == NULL) {
     FreeRendererState(State);
     LogWarn("LOD: could not allocate the LOD renderer; LOD stays undrawn");
     return;
@@ -473,7 +524,8 @@ static int BuildFaceRuns(const ChunkVertex *Vertices, int Count, RenderLodRun *R
 }
 
 // Meshes the section (with its same-level neighbours as margin) and uploads
-// it. Returns the vertex count, or -1 when the arena had no room.
+// it. Returns the vertex count; OutMesh stays invalid for a non-empty mesh
+// the arena had no room for.
 static int MeshSection(LodRendererState *State, const LodStore *Store,
                        const LodSection *Section, int Level, int X, int Y, int Z,
                        RenderLodMesh *OutMesh) {
@@ -504,7 +556,6 @@ static int MeshSection(LodRendererState *State, const LodStore *Store,
     }
   }
   *OutMesh = RENDER_LOD_MESH_INVALID;
-  int Result = Count;
   if (Count > 0) {
     RenderLodRun Runs[RENDER_LOD_MAX_RUNS];
     int Reserve = (Count > OpaqueCount) ? TRANSLUCENT_RUN_RESERVE : 0;
@@ -514,67 +565,47 @@ static int MeshSection(LodRendererState *State, const LodStore *Store,
                                               Count - OpaqueCount, &Runs[OpaqueRuns],
                                               RENDER_LOD_MAX_RUNS - OpaqueRuns);
     *OutMesh = RenderLodUploadMesh(State->Upload, Runs, RunCount, OpaqueRuns);
-    if (*OutMesh == RENDER_LOD_MESH_INVALID) {
-      Result = -1;
-    }
   }
   PROFILE_END(MeshStart, PROFILE_LOD_MESH);
-  return Result;
+  return Count;
 }
 
-// The cached mesh for the section, rebuilt first when its content changed and
-// the frame's budget allows; a stale mesh is drawn until then.
-static const CacheEntry *EnsureMesh(LodRendererState *State, SelectContext *Ctx,
-                                    const LodSection *Section, int Level, int X,
-                                    int Y, int Z) {
-  CacheEntry *Entry = CacheFind(State, Level, X, Y, Z);
-  if (Entry != NULL && Entry->Revision == Section->Revision && !Entry->Stale &&
-      (Entry->Mesh != RENDER_LOD_MESH_INVALID || Entry->VertexCount == 0)) {
-    Entry->LastFrame = State->Frame;
-    return Entry;
-  }
-  // A full arena is not waiting: the section only gets a mesh once eviction
-  // frees room, so it must not hold back the settled state.
-  if (Ctx->ArenaFull) {
-    Ctx->Starved++;
-    if (Entry != NULL) {
-      Entry->LastFrame = State->Frame;
-    }
-    return Entry;
-  }
-  if (Ctx->Meshed >= MESH_BUDGET_SECTIONS || OsGetTimeSeconds() > Ctx->Deadline) {
-    Ctx->Waiting++;
-    if (Entry != NULL) {
-      Entry->LastFrame = State->Frame;
-    }
-    return Entry;
-  }
+static bool MeshCurrent(const CacheEntry *Entry, const LodSection *Section) {
+  return Entry != NULL && Entry->Revision == Section->Revision && !Entry->Stale &&
+         (Entry->Mesh != RENDER_LOD_MESH_INVALID || Entry->VertexCount == 0);
+}
+
+// Meshes a queued section into its cache entry. False when the arena had no
+// room; the entry (and any older mesh it holds) is then left as it was.
+static bool MeshPending(LodRendererState *State, SelectContext *Ctx,
+                        const PendingMesh *Pending, CacheEntry **InOutEntry) {
   RenderLodMesh Mesh = RENDER_LOD_MESH_INVALID;
-  int Count = MeshSection(State, Ctx->Store, Section, Level, X, Y, Z, &Mesh);
-  Ctx->Meshed++;
-  if (Count < 0) {
-    Ctx->ArenaFull = true;
-    Ctx->Starved++;
-    if (Entry != NULL) {
-      Entry->LastFrame = State->Frame;
-    }
-    return Entry;
+  int Count = MeshSection(State, Ctx->Store, Pending->Section, Pending->Level,
+                          Pending->X, Pending->Y, Pending->Z, &Mesh);
+  Ctx->Attempts++;
+  if (Count > 0 && Mesh == RENDER_LOD_MESH_INVALID) {
+    Ctx->StarvedVertices = Count;
+    return false;
   }
+  Ctx->Meshed++;
+  CacheEntry *Entry = *InOutEntry;
   if (Entry == NULL) {
-    Entry = CacheInsert(State, Level, X, Y, Z);
+    Entry = CacheInsert(State, Pending->Level, Pending->X, Pending->Y, Pending->Z);
     if (Entry == NULL) {
       RenderLodFreeMesh(Mesh);
-      return NULL;
+      return true;
     }
   } else {
     RenderLodFreeMesh(Entry->Mesh);
   }
   Entry->Mesh = Mesh;
   Entry->VertexCount = Count;
-  Entry->Revision = Section->Revision;
+  Entry->Revision = Pending->Section->Revision;
   Entry->Stale = false;
   Entry->LastFrame = State->Frame;
-  return Entry;
+  Entry->DistSq = Pending->DistSq;
+  *InOutEntry = Entry;
+  return true;
 }
 
 // --- selection -------------------------------------------------------------------
@@ -625,9 +656,19 @@ static bool CameraIsNear(const SelectContext *Ctx, int Level, int X, int Y, int 
   return (Dx * Dx) + (Dy * Dy) + (Dz * Dz) < Limit * Limit;
 }
 
+// Squared distance from the camera's chunk centre to the section's centre.
+static float SectionDistSq(const SelectContext *Ctx, int Level, int X, int Y, int Z) {
+  float Width = (float)(LOD_SECTION_SIZE << Level);
+  float Half = (float)(LOD_SECTION_SIZE << (Level - 1));
+  float Dx = ((float)X * Width) + Half - BLOCK_CENTRE_OFFSET - Ctx->Camera.x;
+  float Dy = ((float)Y * Width) + Half - BLOCK_CENTRE_OFFSET - Ctx->Camera.y;
+  float Dz = ((float)Z * Width) + Half - BLOCK_CENTRE_OFFSET - Ctx->Camera.z;
+  return (Dx * Dx) + (Dy * Dy) + (Dz * Dz);
+}
+
 static void AddDraw(LodRendererState *State, SelectContext *Ctx,
                     const CacheEntry *Entry, int Level, int X, int Y, int Z,
-                    bool Border) {
+                    bool Border, uint32_t Key) {
   if (Entry == NULL || Entry->Mesh == RENDER_LOD_MESH_INVALID ||
       Ctx->OpaqueCount + Ctx->BorderCount >= MAX_DRAWS) {
     return;
@@ -640,9 +681,32 @@ static void AddDraw(LodRendererState *State, SelectContext *Ctx,
                         .Scale = 1 << Level,
                         .VertexCount = Entry->VertexCount};
   if (Border) {
-    State->BorderDraws[Ctx->BorderCount++] = Draw;
+    State->BorderKeyed[Ctx->BorderCount++] = (KeyedDraw){.Key = Key, .Draw = Draw};
   } else {
-    State->Draws[Ctx->OpaqueCount++] = Draw;
+    State->OpaqueKeyed[Ctx->OpaqueCount++] = (KeyedDraw){.Key = Key, .Draw = Draw};
+  }
+}
+
+static int CompareKeyed(const void *Left, const void *Right) {
+  uint32_t A = ((const KeyedDraw *)Left)->Key;
+  uint32_t B = ((const KeyedDraw *)Right)->Key;
+  return (A > B) - (A < B);
+}
+
+// The draw list in selection-walk order: sections meshed this pass were
+// added after the walk, in distance order, and go back to their walk place,
+// so the list (and blending and depth-tie order with it) never depends on
+// which pass meshed what. Opaque draws first, then border draws.
+static void AssembleDraws(LodRendererState *State, const SelectContext *Ctx) {
+  if (Ctx->PendingCount > 0) {
+    qsort(State->OpaqueKeyed, (size_t)Ctx->OpaqueCount, sizeof(KeyedDraw), CompareKeyed);
+    qsort(State->BorderKeyed, (size_t)Ctx->BorderCount, sizeof(KeyedDraw), CompareKeyed);
+  }
+  for (int Idx = 0; Idx < Ctx->OpaqueCount; Idx++) {
+    State->Draws[Idx] = State->OpaqueKeyed[Idx].Draw;
+  }
+  for (int Idx = 0; Idx < Ctx->BorderCount; Idx++) {
+    State->Draws[Ctx->OpaqueCount + Idx] = State->BorderKeyed[Idx].Draw;
   }
 }
 
@@ -666,8 +730,119 @@ static void SelectSection(LodRendererState *State, SelectContext *Ctx, int Level
     return;
   }
   Ctx->Selected++;
-  const CacheEntry *Entry = EnsureMesh(State, Ctx, Section, Level, X, Y, Z);
-  AddDraw(State, Ctx, Entry, Level, X, Y, Z, Coverage == COVERAGE_PARTIAL);
+  bool Border = Coverage == COVERAGE_PARTIAL;
+  float DistSq = SectionDistSq(Ctx, Level, X, Y, Z);
+  uint32_t Key = Ctx->WalkIndex++;
+  CacheEntry *Entry = CacheFind(State, Level, X, Y, Z);
+  if (Entry != NULL) {
+    Entry->LastFrame = State->Frame;
+    Entry->DistSq = DistSq;
+  }
+  if (MeshCurrent(Entry, Section)) {
+    AddDraw(State, Ctx, Entry, Level, X, Y, Z, Border, Key);
+  } else if (Ctx->PendingCount < MAX_DRAWS) {
+    State->PendingMeshes[Ctx->PendingCount++] = (PendingMesh){
+        .Section = Section, .Level = Level, .X = X, .Y = Y, .Z = Z,
+        .DistSq = DistSq, .Key = Key, .Border = Border};
+  }
+}
+
+// Nearest first; ties resolved by position so the order never depends on the
+// store's hash layout.
+static int ComparePending(const void *Left, const void *Right) {
+  const PendingMesh *A = (const PendingMesh *)Left;
+  const PendingMesh *B = (const PendingMesh *)Right;
+  if (A->DistSq != B->DistSq) {
+    return (A->DistSq < B->DistSq) ? -1 : 1;
+  }
+  int Keys[2][4] = {{A->Level, A->X, A->Y, A->Z}, {B->Level, B->X, B->Y, B->Z}};
+  for (int Key = 0; Key < 4; Key++) {
+    if (Keys[0][Key] != Keys[1][Key]) {
+      return (Keys[0][Key] < Keys[1][Key]) ? -1 : 1;
+    }
+  }
+  return 0;
+}
+
+// Meshes the queued sections nearest first within the frame's budget, timed
+// from here (the walk before it can be long) and always allowing one attempt,
+// so every pass makes progress. One that cannot be meshed now keeps drawing
+// its older mesh, if it has one.
+static void MeshQueued(LodRendererState *State, SelectContext *Ctx) {
+  qsort(State->PendingMeshes, (size_t)Ctx->PendingCount, sizeof(PendingMesh),
+        ComparePending);
+  double Deadline = OsGetTimeSeconds() + MESH_BUDGET_SECONDS;
+  for (int Idx = 0; Idx < Ctx->PendingCount; Idx++) {
+    const PendingMesh *Pending = &State->PendingMeshes[Idx];
+    CacheEntry *Entry =
+        CacheFind(State, Pending->Level, Pending->X, Pending->Y, Pending->Z);
+    if (Ctx->ArenaFull) {
+      Ctx->Starved++;
+    } else if (Ctx->Attempts >= MESH_BUDGET_SECTIONS ||
+               (Ctx->Attempts > 0 && OsGetTimeSeconds() > Deadline)) {
+      Ctx->Waiting++;
+    } else if (!MeshPending(State, Ctx, Pending, &Entry)) {
+      // A full arena is not waiting: the section only gets a mesh once room
+      // is freed, so it must not hold back the settled state. Nothing after
+      // it is tried either, so no farther section takes the room it needs.
+      Ctx->ArenaFull = true;
+      Ctx->Starved++;
+    }
+    if (Ctx->ArenaFull && Ctx->NearestStarved < 0.0F) {
+      Ctx->NearestStarved = Pending->DistSq;
+    }
+    AddDraw(State, Ctx, Entry, Pending->Level, Pending->X, Pending->Y, Pending->Z,
+            Pending->Border, Pending->Key);
+  }
+}
+
+static int CompareFarthest(const void *Left, const void *Right) {
+  const CacheEntry *A = *(const CacheEntry *const *)Left;
+  const CacheEntry *B = *(const CacheEntry *const *)Right;
+  if (A->DistSq != B->DistSq) {
+    return (A->DistSq > B->DistSq) ? -1 : 1;
+  }
+  return 0;
+}
+
+// With the arena at its ceiling, frees selected meshes farther than the
+// nearest starved section, the farthest first, until Vertices are freed, so
+// the room goes to what is nearer the camera. They stay in this frame's list
+// (their vertices are released only frames later) and leave it at the next
+// selection. Returns how many it freed.
+static int EvictFarthestSelected(LodRendererState *State, int64_t Vertices,
+                                 float Nearer) {
+  if (Vertices <= 0 || Nearer < 0.0F) {
+    return 0;
+  }
+  const CacheEntry **Candidates =
+      (const CacheEntry **)malloc(sizeof(CacheEntry *) * (size_t)State->Capacity);
+  if (Candidates == NULL) {
+    return 0;
+  }
+  int Found = 0;
+  for (int Idx = 0; Idx < State->Capacity; Idx++) {
+    const CacheEntry *Entry = &State->Cache[Idx];
+    if (Entry->Level > 0 && Entry->LastFrame == State->Frame &&
+        Entry->Mesh != RENDER_LOD_MESH_INVALID && Entry->DistSq > Nearer) {
+      Candidates[Found++] = Entry;
+    }
+  }
+  qsort((void *)Candidates, (size_t)Found, sizeof(CacheEntry *), CompareFarthest);
+  int Freed = 0;
+  int64_t FreedVertices = 0;
+  for (int Idx = 0; Idx < Found && FreedVertices < Vertices; Idx++) {
+    CacheEntry *Entry = &State->Cache[Candidates[Idx] - State->Cache];
+    FreedVertices += Entry->VertexCount;
+    Freed++;
+    RenderLodFreeMesh(Entry->Mesh);
+    Entry->Level = SLOT_TOMBSTONE;
+    State->Count--;
+    State->Tombstones++;
+    State->EvictedForRoom++;
+  }
+  free((void *)Candidates);
+  return Freed;
 }
 
 // The selection and its draw list depend only on the store, the coverage, the
@@ -688,8 +863,19 @@ void LodRendererDraw(RenderCamera Camera) {
   int ChunkZ = (int)floorf(Camera.Position.z / (float)LOD_SECTION_SIZE);
   bool Moved = ChunkX != State->SelectChunkX || ChunkY != State->SelectChunkY ||
                ChunkZ != State->SelectChunkZ;
-  bool Owed = State->Stats.WaitingSections > 0 || State->Stats.StarvedSections > 0;
-  if (!State->HasSelection || CoverageChanged || StoreChanged || Moved || Owed) {
+  // A new anchor (camera chunk, store or coverage) restarts the eviction
+  // rounds a full arena allows.
+  bool Anchored = !State->HasSelection || CoverageChanged || StoreChanged || Moved;
+  if (Anchored) {
+    State->EvictionRounds = 0;
+    State->StarvedParked = false;
+  }
+  // Starved sections are retried only once the arena has gained room and
+  // while eviction rounds remain, so a full arena costs nothing per frame.
+  bool Owed = State->Stats.WaitingSections > 0 ||
+              (State->Stats.StarvedSections > 0 && !State->StarvedParked &&
+               RenderLodArenaGeneration() != State->StarvedGeneration);
+  if (Anchored || Owed) {
     State->Frame++;
     State->ListRevision++;
     if (State->Frame % EVICT_INTERVAL == 0U) {
@@ -703,15 +889,15 @@ void LodRendererDraw(RenderCamera Camera) {
                    ((float)ChunkZ * (float)LOD_SECTION_SIZE) + Half},
         .CameraChunkX = ChunkX,
         .CameraChunkZ = ChunkZ,
-        .Deadline = OsGetTimeSeconds() + MESH_BUDGET_SECONDS};
+        .NearestStarved = -1.0F};
     for (int Idx = 0; Idx < Store->Capacity; Idx++) {
       const LodStoreSlot *Slot = &Store->Slots[Idx];
       if (Slot->Level == LOD_MAX_LEVEL) {
         SelectSection(State, &Ctx, LOD_MAX_LEVEL, Slot->X, Slot->Y, Slot->Z);
       }
     }
-    memcpy(&State->Draws[Ctx.OpaqueCount], State->BorderDraws,
-           (size_t)Ctx.BorderCount * sizeof(RenderLodDraw));
+    MeshQueued(State, &Ctx);
+    AssembleDraws(State, &Ctx);
     State->HasSelection = true;
     State->SelectChunkX = ChunkX;
     State->SelectChunkY = ChunkY;
@@ -725,9 +911,18 @@ void LodRendererDraw(RenderCamera Camera) {
                                     .WaitingSections = Ctx.Waiting,
                                     .StarvedSections = Ctx.Starved};
     if (Ctx.ArenaFull) {
-      // Every mesh this pass did not select goes, so the next passes can mesh
-      // the starved sections once the arena's delayed frees land.
+      // Every mesh this pass did not select goes, then, if starved sections
+      // remain nearer than selected ones, the farthest selected meshes; the
+      // starved are retried once the arena's delayed frees land.
       EvictStale(State, Store, 0U);
+      int Freed = 0;
+      if (State->EvictionRounds < MAX_EVICTION_ROUNDS) {
+        State->EvictionRounds++;
+        Freed = EvictFarthestSelected(
+            State, (int64_t)Ctx.StarvedVertices * EVICTION_SLACK, Ctx.NearestStarved);
+      }
+      State->StarvedParked = Freed == 0;
+      State->StarvedGeneration = RenderLodArenaGeneration();
     }
   }
   RenderDrawLod(State->Draws, State->OpaqueCount, State->BorderCount,
@@ -736,6 +931,7 @@ void LodRendererDraw(RenderCamera Camera) {
   RenderGetLodStats(&State->Stats.Gpu);
   State->Stats.Enabled = true;
   State->Stats.CachedMeshes = State->Count;
+  State->Stats.EvictedForRoom = State->EvictedForRoom;
   PROFILE_END(DrawStart, PROFILE_LOD_DRAW);
 }
 

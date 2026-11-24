@@ -92,7 +92,18 @@ typedef struct {
   // three quarters of it); 0 keeps LOD_FOG_END_DEFAULT.
   bool LodNoFog;
   int LodFogEnd;
+  // --lod-reversed-z off: the LOD keeps a standard depth range even where
+  // glClipControl allows reversed-Z.
+  bool LodNoReversedZ;
+  // --lod-arena-mb N: ceiling of the LOD vertex arena, which starts small
+  // and grows on demand; 0 keeps LOD_ARENA_MB_DEFAULT.
+  int LodArenaMb;
 } LaunchOptions;
+
+#define LOD_ARENA_MB_DEFAULT 192
+#define LOD_ARENA_MB_MIN 4
+#define LOD_ARENA_MB_MAX 2048
+#define LOD_BYTES_PER_MB 1048576LL
 
 // 512 chunks: the shortest LOD view distance planned.
 #define LOD_FOG_END_DEFAULT 8192

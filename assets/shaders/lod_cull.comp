@@ -115,6 +115,9 @@ uniform uint uPhaseBase;
 uniform vec2 uViewport;
 // Hi-Z levels 1..uHizTop; per level x: first atlas row, y: width, z: height.
 uniform int uHizTop;
+// Reversed-Z with an infinite far plane and a [0, 1] clip range (see
+// depth_remap.frag): larger depth is nearer.
+uniform bool uReversedZ;
 uniform bool uUseHiz;
 uniform ivec4 uHizLevels[16];
 
@@ -133,6 +136,10 @@ const float NEAR_W = 8.0;
 // than this beyond the farthest occluder depth, so neither a 24-bit 1:1 depth
 // nor a 32-bit LOD depth tie can flip the result.
 const float DEPTH_MARGIN = 2e-6;
+// Reversed-Z keeps depth relative to distance (near / distance), so its slack
+// is relative too: a box hides only beyond 1e-5 of the occluder's distance,
+// a third of a block at 32768 blocks, far above float rounding there.
+const float REVERSED_DEPTH_MARGIN = 1e-5;
 const uint INDICES_PER_QUAD = 6u;
 const uint VERTICES_PER_QUAD = 4u;
 
@@ -141,8 +148,12 @@ bool OutsideFrustum(vec3 boxMin, vec3 boxMax) {
     vec4 row1 = vec4(uViewProj[0][1], uViewProj[1][1], uViewProj[2][1], uViewProj[3][1]);
     vec4 row2 = vec4(uViewProj[0][2], uViewProj[1][2], uViewProj[2][2], uViewProj[3][2]);
     vec4 row3 = vec4(uViewProj[0][3], uViewProj[1][3], uViewProj[2][3], uViewProj[3][3]);
+    // A [-1, 1] clip range bounds z by -w..w; reversed-Z's [0, 1] range keeps
+    // 0 <= z <= w, so its near plane is w - z and its far plane z.
+    vec4 nearPlane = uReversedZ ? row3 - row2 : row3 + row2;
+    vec4 farPlane = uReversedZ ? row2 : row3 - row2;
     vec4 planes[6] = vec4[6](row3 + row0, row3 - row0, row3 + row1,
-                             row3 - row1, row3 + row2, row3 - row2);
+                             row3 - row1, nearPlane, farPlane);
     for (int idx = 0; idx < 6; idx++) {
         vec4 plane = planes[idx];
         // The box corner furthest along the plane's normal.
@@ -180,6 +191,7 @@ bool HizVisible(vec3 boxMin, vec3 boxMax) {
     vec2 ndcMin = vec2(1e30);
     vec2 ndcMax = vec2(-1e30);
     float nearestZ = 1e30;
+    float nearestReversed = 0.0;
     for (int corner = 0; corner < 8; corner++) {
         vec3 point = vec3(((corner & 1) != 0) ? hi.x : lo.x,
                           ((corner & 2) != 0) ? hi.y : lo.y,
@@ -192,6 +204,7 @@ bool HizVisible(vec3 boxMin, vec3 boxMax) {
         ndcMin = min(ndcMin, ndc.xy);
         ndcMax = max(ndcMax, ndc.xy);
         nearestZ = min(nearestZ, ndc.z);
+        nearestReversed = max(nearestReversed, ndc.z);
     }
     ivec2 screen = ivec2(uViewport);
     ivec2 pixelMin = ivec2(floor((ndcMin * 0.5 + 0.5) * uViewport)) - ivec2(1);
@@ -210,11 +223,15 @@ bool HizVisible(vec3 boxMin, vec3 boxMax) {
     ivec4 info = uHizLevels[level];
     ivec2 first = pixelMin >> level;
     ivec2 last = min(pixelMax >> level, info.yz - ivec2(1));
-    float farthest = 0.0;
+    float farthest = uReversedZ ? 1.0 : 0.0;
     for (int y = first.y; y <= last.y; y++) {
         for (int x = first.x; x <= last.x; x++) {
-            farthest = max(farthest, imageLoad(uHiz, ivec2(x, info.x + y)).r);
+            float texelDepth = imageLoad(uHiz, ivec2(x, info.x + y)).r;
+            farthest = uReversedZ ? min(farthest, texelDepth) : max(farthest, texelDepth);
         }
+    }
+    if (uReversedZ) {
+        return nearestReversed >= farthest * (1.0 - REVERSED_DEPTH_MARGIN);
     }
     return nearestZ * 0.5 + 0.5 <= farthest + DEPTH_MARGIN;
 }

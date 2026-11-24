@@ -531,9 +531,11 @@ static void DrawDebugScreen(UiContext *Ctx, Player *PlayerVal, World *WorldVal,
     LodRenderStats Lod;
     LodRendererGetStats(&Lod);
     snprintf(DebugText, sizeof(DebugText),
-             "LOD draw: %d opaque + %d border, %d meshes %.0f MB",
+             "LOD draw: %d opaque + %d border, %d meshes, arena %.0f/%.0f MB%s",
              Lod.OpaqueSections, Lod.BorderSections, Lod.CachedMeshes,
-             (double)Lod.Gpu.ArenaUsedBytes / (double)(1U << BYTES_TO_MB_SHIFT));
+             (double)Lod.Gpu.ArenaUsedBytes / (double)(1U << BYTES_TO_MB_SHIFT),
+             (double)Lod.Gpu.ArenaCapacityBytes / (double)(1U << BYTES_TO_MB_SHIFT),
+             Lod.Gpu.ReversedZ ? ", reversed-Z" : "");
     Y = DrawDebugLine(Ctx, DebugText, Y);
     snprintf(DebugText, sizeof(DebugText),
              "LOD cull%s: %lld/%lld verts, %d cmds, %d out, %d back",

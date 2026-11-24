@@ -49,6 +49,10 @@ typedef struct {
   bool Fog;
   float FogEnd;
   float FogColor[3];
+  // Reversed-Z (glClipControl) in the LOD passes.
+  bool ReversedZ;
+  // Ceiling of the vertex arena, which starts small and grows on demand.
+  int64_t ArenaLimitBytes;
 } GlLodOptions;
 
 // Creates every LOD resource. False (and LOD stays off) when any of them
@@ -64,6 +68,7 @@ RenderLodMesh GlLodUploadMesh(const ChunkVertex *Vertices,
                               const RenderLodRun *Runs, int RunCount,
                               int OpaqueRunCount);
 void GlLodFreeMesh(RenderLodMesh Mesh);
+uint32_t GlLodArenaGeneration(void);
 void GlLodSetCoverage(int ColumnX, int ColumnZ,
                       const uint32_t Words[RENDER_LOD_COVERAGE_WORDS]);
 

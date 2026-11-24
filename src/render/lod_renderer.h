@@ -46,6 +46,9 @@ typedef struct {
   int WaitingSections;
   // Selected sections left without a mesh because the vertex arena was full.
   int StarvedSections;
+  // Selected meshes freed so far, the farthest first, to make room for nearer
+  // starved sections.
+  int64_t EvictedForRoom;
   int CachedMeshes;
   // The backend's view of the last pass: arena use, candidate vertices and the
   // GPU cull's (late) results.

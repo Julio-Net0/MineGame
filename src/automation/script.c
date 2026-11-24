@@ -1133,9 +1133,13 @@ static void ScriptAddLodJson(cJSON *Root) {
   cJSON_AddNumberToObject(Node, "gpuMeshes", Render.CachedMeshes);
   cJSON_AddNumberToObject(Node, "meshWaiting", Render.WaitingSections);
   cJSON_AddNumberToObject(Node, "arenaStarved", Render.StarvedSections);
+  cJSON_AddNumberToObject(Node, "arenaEvictedForRoom", (double)Render.EvictedForRoom);
   cJSON_AddNumberToObject(Node, "arenaUsedBytes", (double)Gpu->ArenaUsedBytes);
   cJSON_AddNumberToObject(Node, "arenaCapacityBytes",
                           (double)Gpu->ArenaCapacityBytes);
+  cJSON_AddNumberToObject(Node, "arenaLimitBytes", (double)Gpu->ArenaLimitBytes);
+  cJSON_AddNumberToObject(Node, "arenaLiveBytes", (double)Gpu->ArenaLiveBytes);
+  cJSON_AddBoolToObject(Node, "reversedZ", Gpu->ReversedZ);
   cJSON_AddNumberToObject(Node, "glError", (double)Gpu->GlError);
   cJSON *Cull = cJSON_CreateObject();
   cJSON_AddBoolToObject(Cull, "valid", Gpu->CullValid);

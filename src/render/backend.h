@@ -234,6 +234,10 @@ RenderLodMesh RenderLodUploadMesh(const ChunkVertex *Vertices,
 bool RenderBlockLayerSeeThrough(int Layer);
 void RenderLodFreeMesh(RenderLodMesh Mesh);
 
+// Bumped whenever the LOD arena gains free space (pages released after their
+// delay, or the arena grown): an upload that failed for room may succeed now.
+uint32_t RenderLodArenaGeneration(void);
+
 // One section to draw: its mesh, its origin in blocks and its blocks per
 // voxel (2^level).
 typedef struct {
@@ -267,8 +271,15 @@ void RenderDrawLod(const RenderLodDraw *Draws, int OpaqueCount, int BorderCount,
 
 typedef struct {
   int Meshes;
+  // Arena pages in use, the arena's current size, its ceiling, and the
+  // vertex bytes the live meshes actually hold (the rest of the used pages
+  // is rounding padding).
   int64_t ArenaUsedBytes;
   int64_t ArenaCapacityBytes;
+  int64_t ArenaLimitBytes;
+  int64_t ArenaLiveBytes;
+  // Reversed-Z depth in the LOD passes.
+  bool ReversedZ;
   int OpaqueDraws;
   int BorderDraws;
   // Vertices of every section handed to the last LOD pass, before culling.
