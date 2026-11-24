@@ -2,6 +2,7 @@
 
 #include "core/log.h"
 #include "world/chunk_worker.h"
+#include "world/lod/lod_quality.h"
 #include "world/world.h"
 
 #include <errno.h>
@@ -62,6 +63,7 @@ static LaunchOptions *GetMutableLaunchOptions(void) {
       .LodNoGen = false,
       .LodNoCache = false,
       .LodCacheDir = (const char *)0,
+      .LodQuality = LOD_QUALITY_UNSET,
   };
   return &Options;
 }
@@ -79,6 +81,14 @@ int LaunchLodFogEnd(void) {
   const LaunchOptions *Options = GetMutableLaunchOptions();
   return (Options->LodFogEnd > 0) ? Options->LodFogEnd
                                   : LaunchLodDistance() * LOD_BLOCKS_PER_CHUNK;
+}
+
+bool LaunchLodFogEndLocked(void) { return GetMutableLaunchOptions()->LodFogEnd > 0; }
+
+int LaunchLodQuality(void) {
+  const LaunchOptions *Options = GetMutableLaunchOptions();
+  return (Options->LodQuality == LOD_QUALITY_UNSET) ? LOD_QUALITY_MEDIUM
+                                                    : Options->LodQuality;
 }
 
 void SetAppliedCoreCount(int CoreCount) {
@@ -410,6 +420,16 @@ static void ParseLodCacheValue(const char *ValueStr, LaunchOptions *Options) {
   }
 }
 
+static void ParseLodQualityValue(const char *ValueStr, LaunchOptions *Options) {
+  LodQuality Quality = LOD_QUALITY_MEDIUM;
+  if (!LodQualityParse(ValueStr, &Quality)) {
+    LogWarn("MAIN: --lod-quality must be low, medium or high; ignoring \"%s\"",
+            ValueStr);
+    return;
+  }
+  Options->LodQuality = (int)Quality;
+}
+
 static void ParseMonitorValue(const char *ValueStr, LaunchOptions *Options) {
   long Value = 0;
   if (!ParseStrictLong(ValueStr, &Value) || Value < 1 ||
@@ -467,6 +487,7 @@ void ParseLaunchOptions(int Argc, char **Argv) {
       .LodNoGen = false,
       .LodNoCache = false,
       .LodCacheDir = (const char *)0,
+      .LodQuality = LOD_QUALITY_UNSET,
   };
 
   if (Argc <= 1 || Argv == (char **)0) {
@@ -512,6 +533,7 @@ void ParseLaunchOptions(int Argc, char **Argv) {
                      (strcmp(Arg, "--lod-gen") == 0) ||
                      (strcmp(Arg, "--lod-cache") == 0) ||
                      (strcmp(Arg, "--lod-cache-dir") == 0) ||
+                     (strcmp(Arg, "--lod-quality") == 0) ||
                      (strcmp(Arg, "--monitor") == 0) ||
                      (strcmp(Arg, "--script") == 0) ||
                      (strcmp(Arg, "--script-out") == 0) ||
@@ -571,6 +593,8 @@ void ParseLaunchOptions(int Argc, char **Argv) {
       ParseLodCacheValue(ValueStr, Options);
     } else if (strcmp(Arg, "--lod-cache-dir") == 0) {
       Options->LodCacheDir = ValueStr;
+    } else if (strcmp(Arg, "--lod-quality") == 0) {
+      ParseLodQualityValue(ValueStr, Options);
     } else if (strcmp(Arg, "--monitor") == 0) {
       ParseMonitorValue(ValueStr, Options);
     } else if (strcmp(Arg, "--script") == 0) {

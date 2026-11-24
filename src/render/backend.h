@@ -198,6 +198,10 @@ const RenderCapabilities *RenderGetCapabilities(void);
 // Whether LOD is drawn this run.
 bool RenderLodActive(void);
 
+// The LOD's edge fog at runtime: on or off, and the distance in blocks where
+// it reaches the sky colour (it starts a quarter before).
+void RenderLodSetFog(bool Enabled, float End);
+
 // A LOD section's mesh in GPU memory, or RENDER_LOD_MESH_INVALID.
 typedef int RenderLodMesh;
 #define RENDER_LOD_MESH_INVALID (-1)

@@ -27,6 +27,11 @@ bool LodRendererEnabled(void);
 void LodRendererSetDrawOn(bool On);
 bool LodRendererDrawOn(void);
 
+// The refine factor (world/lod/lod_quality.h) at runtime: the next draw redoes
+// the selection with it; cached meshes are kept.
+void LodRendererSetRefineFactor(int Factor);
+int LodRendererRefineFactor(void);
+
 // A chunk now drawn 1:1 (meshed, or resolved without a mesh) or no longer.
 void LodRendererSetChunkCovered(int ChunkX, int ChunkY, int ChunkZ, bool Covered);
 

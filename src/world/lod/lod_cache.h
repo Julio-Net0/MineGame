@@ -10,8 +10,8 @@
 // between sessions so the horizon reappears without being generated again and
 // real data (built or edited terrain) survives far from the loaded chunks.
 //
-// Files live in one directory: meta.bin names the format, the generator version
-// and the seed the cache belongs to, and each region file holds the sections of
+// Files live in one directory: meta.bin names the format, the generator
+// version, the block registry and the seed the cache belongs to, and each region file holds the sections of
 // LOD_CACHE_REGION_COLUMNS^2 section columns of one level
 // ("l<level>.<rx>.<rz>.lod"). A region file is a header (the same identity as
 // meta.bin plus a bitmask of the columns generated whole), an index sorted by
@@ -29,7 +29,8 @@
 // region stripe. No globals; nothing touches the disk outside the calls below.
 
 enum {
-  LOD_CACHE_FORMAT_VERSION = 1,
+  // 2: the block registry hash joined the identity.
+  LOD_CACHE_FORMAT_VERSION = 2,
   LOD_CACHE_REGION_SHIFT = 3,
   LOD_CACHE_REGION_COLUMNS = 1 << LOD_CACHE_REGION_SHIFT,
   // Sections one column may hold: the world's height range spans 36 level-1
@@ -43,6 +44,9 @@ typedef struct LodCache LodCache;
 typedef struct {
   const char *Directory;
   uint64_t Seed;
+  // GetBlockRegistryHash(): voxels hold block ids, which only mean the same
+  // blocks under the same registry.
+  uint64_t BlockTableHash;
   // The identity the cache must match; normally WORLDGEN_VERSION and
   // LOD_CACHE_FORMAT_VERSION (tests vary them).
   uint32_t WorldgenVersion;

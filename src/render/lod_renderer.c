@@ -5,6 +5,7 @@
 #include "platform/os_time.h"
 #include "render/voxel_mesher.h"
 #include "world/lod/lod_ingest.h"
+#include "world/lod/lod_quality.h"
 #include "world/lod/lod_store.h"
 
 #include <math.h>
@@ -43,9 +44,6 @@ enum {
   // are freed; the cache is swept every EVICT_INTERVAL frames.
   EVICT_INTERVAL = 64,
   EVICT_AGE = 600,
-  // A section is refined while the camera is closer than this many of its
-  // own widths: about two screen pixels per voxel at 1280x720 and 90 degrees.
-  REFINE_FACTOR = 8,
   OCTANTS = 8,
   CELLS_PER_OCTANT_AXIS = 2,
   SLOT_EMPTY = 0,
@@ -173,6 +171,10 @@ typedef struct {
 
   bool Enabled;
   bool DrawOn;
+  // A section is refined while the camera is closer than this many of its
+  // own widths (lod_quality.h): medium's 8 is about two screen pixels per
+  // voxel at 1280x720 and 90 degrees, low's 4 about four, high's 16 about one.
+  int RefineFactor;
   // Out of eviction rounds for this anchor: starved sections wait for it to
   // change instead of retrying on every freed page.
   bool StarvedParked;
@@ -182,6 +184,7 @@ typedef struct {
 typedef struct {
   const LodStore *Store;
   Vec3 Camera;
+  float RefineFactor;
   int CameraChunkX;
   int CameraChunkZ;
   int Meshed;
@@ -265,6 +268,7 @@ void LodRendererInit(void) {
   }
   State->Capacity = CACHE_INITIAL;
   State->Enabled = true;
+  State->RefineFactor = LodQualityRefineFactor(LOD_QUALITY_MEDIUM);
   State->DrawOn = true;
 }
 
@@ -277,6 +281,18 @@ void LodRendererSetDrawOn(bool On) {
   State->HasSelection = false;
   State->Stats = (LodRenderStats){0};
 }
+
+void LodRendererSetRefineFactor(int Factor) {
+  LodRendererState *State = GetLodRendererState();
+  if (!State->Enabled || Factor < 1 || State->RefineFactor == Factor) {
+    return;
+  }
+  State->RefineFactor = Factor;
+  // Meshes stay cached; only the walk is redone, at the next draw.
+  State->HasSelection = false;
+}
+
+int LodRendererRefineFactor(void) { return GetLodRendererState()->RefineFactor; }
 
 bool LodRendererDrawOn(void) {
   const LodRendererState *State = GetLodRendererState();
@@ -761,7 +777,7 @@ static bool CameraIsNear(const SelectContext *Ctx, int Level, int X, int Y, int 
   float Dx = AxisGap(Ctx->Camera.x, MinX, MinX + Width);
   float Dy = AxisGap(Ctx->Camera.y, MinY, MinY + Width);
   float Dz = AxisGap(Ctx->Camera.z, MinZ, MinZ + Width);
-  float Limit = Width * (float)REFINE_FACTOR;
+  float Limit = Width * Ctx->RefineFactor;
   return (Dx * Dx) + (Dy * Dy) + (Dz * Dz) < Limit * Limit;
 }
 
@@ -1048,6 +1064,7 @@ void LodRendererDraw(RenderCamera Camera) {
         .Camera = {((float)ChunkX * (float)LOD_SECTION_SIZE) + Half,
                    ((float)ChunkY * (float)LOD_SECTION_SIZE) + Half,
                    ((float)ChunkZ * (float)LOD_SECTION_SIZE) + Half},
+        .RefineFactor = (float)State->RefineFactor,
         .CameraChunkX = ChunkX,
         .CameraChunkZ = ChunkZ,
         .NearestStarved = -1.0F};

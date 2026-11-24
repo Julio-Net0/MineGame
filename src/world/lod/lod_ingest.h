@@ -37,7 +37,9 @@ typedef struct {
 
 // Allocates the store sized for RenderDistance. False (and LOD stays off) when
 // allocation fails. Main thread, before the workers start.
-bool LodIngestInit(int RenderDistance);
+// LodDistance (chunks, 0 for none) and RefineFactor (lod_quality.h) size the
+// clipmap for the LOD view as well.
+bool LodIngestInit(int RenderDistance, int LodDistance, int RefineFactor);
 void LodIngestShutdown(void);
 
 // Fixed once the workers start, so workers may read it without a lock.
@@ -81,6 +83,10 @@ void LodIngestSetEvictHook(LodEvictHook Hook, void *User);
 // Propagates every pending change and compacts every hot section now, for
 // shutdown (nothing when off).
 void LodIngestFlushAll(void);
+
+// The LOD view changed at runtime: the clipmap radii follow it (sections out
+// of the new radii are evicted, to the disk cache when it is on).
+void LodIngestSetView(int LodDistance, int RefineFactor);
 
 // The client's store for the disk cache's sweep, main thread only; NULL when
 // off.

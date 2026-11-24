@@ -10,11 +10,13 @@
 #include "render/backend.h"
 #include "render/camera.h"
 #include "render/lod_renderer.h"
+#include "render/lod_settings.h"
 #include "render/renderer.h"
 #include "third_party/cJSON.h"
 #include "ui/commands.h"
 #include "ui/creative_inventory.h"
 #include "ui/debug.h"
+#include "ui/pause_menu.h"
 #include "persistence/world_save.h"
 #include "world/block_system.h"
 #include "world/chunk.h"
@@ -106,6 +108,7 @@ typedef enum {
   SCRIPT_OP_PRESS,
   SCRIPT_OP_HOTBAR,
   SCRIPT_OP_DEBUG_SCREEN,
+  SCRIPT_OP_PAUSE_MENU,
   SCRIPT_OP_LOD,
   SCRIPT_OP_SCREENSHOT,
   SCRIPT_OP_STATE,
@@ -768,6 +771,24 @@ static bool ParseStatement(char *Statement, int LineNumber) {
                            "", LineText);
   }
 
+  // "pause on|off": opens or closes the pause menu, for screenshots of it.
+  if (CompareString(Tokens[0], "pause") == 0) {
+    int Open = -1;
+    if (TokenCount == 2 && CompareString(Tokens[1], "on") == 0) {
+      Open = 1;
+    } else if (TokenCount == 2 && CompareString(Tokens[1], "off") == 0) {
+      Open = 0;
+    }
+    if (Open < 0) {
+      ParseError(LineNumber, "expected \"pause <on|off>\"");
+      return false;
+    }
+    return AppendStatement((ScriptStatement){.Kind = SCRIPT_OP_PAUSE_MENU,
+                                             .Line = LineNumber,
+                                             .Index = Open},
+                           "", LineText);
+  }
+
   if (CompareString(Tokens[0], "lod") == 0) {
     int On = -1;
     if (TokenCount == 2) {
@@ -1174,6 +1195,15 @@ static void ScriptAddLodJson(cJSON *Root) {
   LodIngestStats Stats;
   LodIngestGetStats(&Stats);
   cJSON_AddBoolToObject(Node, "enabled", Stats.Enabled);
+  const LodSettings *Settings = LodSettingsGet();
+  cJSON_AddBoolToObject(Node, "supported", Settings->Supported);
+  cJSON_AddStringToObject(Node, "quality", LodQualityName(Settings->Quality));
+  cJSON_AddNumberToObject(Node, "refineFactor", LodRendererRefineFactor());
+  cJSON_AddNumberToObject(Node, "distance", Settings->Distance);
+  cJSON_AddBoolToObject(Node, "drawRequested", Settings->DrawOn);
+  cJSON_AddBoolToObject(Node, "drawn", LodRendererDrawOn());
+  cJSON_AddBoolToObject(Node, "fogOn", Settings->FogOn);
+  cJSON_AddNumberToObject(Node, "fogEnd", (double)Settings->FogEnd);
   cJSON_AddNumberToObject(Node, "pending", LodIngestPendingCount());
   char HashText[LOD_HASH_TEXT_CHARS];
   (void)snprintf(HashText, sizeof(HashText), "%016llx",
@@ -2035,8 +2065,11 @@ void ScriptStep(ChatState *Chat, GameCamera *Camera, Player *PlayerVal,
     case SCRIPT_OP_DEBUG_SCREEN:
       State->DebugScreen = Step->Index != 0;
       break;
+    case SCRIPT_OP_PAUSE_MENU:
+      PauseMenuSetOpen(Step->Index != 0);
+      break;
     case SCRIPT_OP_LOD:
-      LodRendererSetDrawOn(Step->Index != 0);
+      (void)LodSettingsSetDrawOn(Step->Index != 0);
       break;
     case SCRIPT_OP_INVENTORY:
       if (!ScriptRunInventory(Step, PlayerVal)) {

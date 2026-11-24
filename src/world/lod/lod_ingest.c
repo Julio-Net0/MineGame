@@ -8,10 +8,13 @@
 #include <string.h>
 
 enum {
-  // Level-1 sections span two chunks; the margin keeps chunks at the very edge
-  // of the loaded disc inside level 1 so their data reaches the levels above.
-  LEVEL1_RADIUS_MARGIN = 2,
-  LEVEL1_CHUNKS_PER_SECTION = 2,
+  // Sections kept beyond the 1:1 disc at every level (the fill also wants
+  // columns whose parent touches it), and beyond the LOD distance.
+  DISC_RADIUS_MARGIN = 3,
+  DISTANCE_RADIUS_MARGIN = 2,
+  // Sections of a level the fill can want around the camera for a refine
+  // factor F: parents within 2F of their widths, plus its margin.
+  REFINE_RADIUS_MARGIN = 5,
   UNIFORM_QUEUE_INITIAL = 256,
   // Patches written to level 1 per batch: the frame's mesh uploads queue up to
   // this many before they are written, and queued uniform chunks are expanded
@@ -47,6 +50,9 @@ typedef struct {
   int AnchorY;
   int AnchorZ;
   int RenderDistance;
+  // The LOD view the clipmap must hold (see ConfigForView).
+  int LodDistance;
+  int RefineFactor;
   uint64_t IngestedChunks;
   uint64_t UniformChunks;
   uint64_t OutOfRange;
@@ -67,18 +73,35 @@ static LodIngestState *GetIngestState(void) {
   return &State;
 }
 
-// Every level keeps the default radius; level 1 grows with the render distance
-// so every chunk the world can load still lands in it.
-static void ConfigForDistance(int RenderDistance, LodStoreConfig *Config) {
+static int CeilShift(int Value, int Shift) {
+  return (Value + (1 << Shift) - 1) >> Shift;
+}
+
+// Each level holds the 1:1 disc (every chunk the world can load still lands
+// in level 1 and carries up) and the LOD view: the columns within the LOD
+// distance, below the top level only as far as the refine factor makes the
+// renderer want them. A smaller view evicts what lies outside it, so the
+// renderer, which draws what the store holds, never draws past the distance.
+static void ConfigForView(int RenderDistance, int LodDistance, int RefineFactor,
+                          LodStoreConfig *Config) {
   LodStoreDefaultConfig(Config);
+  for (int Level = 1; Level <= LOD_MAX_LEVEL; Level++) {
+    Config->Radius[Level] = 0;
+    int Need = CeilShift(RenderDistance, Level) + DISC_RADIUS_MARGIN;
+    if (LodDistance > 0) {
+      int Reach = CeilShift(LodDistance, Level) + DISTANCE_RADIUS_MARGIN;
+      if (Level < LOD_MAX_LEVEL && Reach > (2 * RefineFactor) + REFINE_RADIUS_MARGIN) {
+        Reach = (2 * RefineFactor) + REFINE_RADIUS_MARGIN;
+      }
+      Need = (Reach > Need) ? Reach : Need;
+    }
+    if (Need > Config->Radius[Level]) {
+      Config->Radius[Level] = Need;
+    }
+  }
   // Synthetic terrain arrives level by level (lod_fill.c), so only real data
   // is carried up.
   Config->RealPropagation = true;
-  int Level1 =
-      (RenderDistance / LEVEL1_CHUNKS_PER_SECTION) + LEVEL1_RADIUS_MARGIN;
-  if (Level1 > Config->Radius[1]) {
-    Config->Radius[1] = Level1;
-  }
 }
 
 static void FreeIngestState(LodIngestState *State) {
@@ -91,11 +114,13 @@ static void FreeIngestState(LodIngestState *State) {
   *State = (LodIngestState){0};
 }
 
-bool LodIngestInit(int RenderDistance) {
+bool LodIngestInit(int RenderDistance, int LodDistance, int RefineFactor) {
   LodIngestState *State = GetIngestState();
   *State = (LodIngestState){0};
   LodStoreConfig Config;
-  ConfigForDistance(RenderDistance, &Config);
+  State->LodDistance = LodDistance;
+  State->RefineFactor = RefineFactor;
+  ConfigForView(RenderDistance, LodDistance, RefineFactor, &Config);
   State->BatchPatches =
       (LodPatch8 *)malloc(sizeof(LodPatch8) * (size_t)BATCH_CAPACITY);
   State->BatchWrites =
@@ -131,7 +156,7 @@ void LodIngestUpdate(int ChunkX, int ChunkY, int ChunkZ, int RenderDistance) {
   PROFILE_BEGIN(IngestStart);
   if (Resized) {
     LodStoreConfig Config;
-    ConfigForDistance(RenderDistance, &Config);
+    ConfigForView(RenderDistance, State->LodDistance, State->RefineFactor, &Config);
     LodStoreSetConfig(&State->Store, &Config);
     State->RenderDistance = RenderDistance;
   }
@@ -312,6 +337,19 @@ void LodIngestFlushAll(void) {
   if (!LodStoreFlush(&State->Store)) {
     State->Failed++;
   }
+}
+
+void LodIngestSetView(int LodDistance, int RefineFactor) {
+  LodIngestState *State = GetIngestState();
+  if (!State->Enabled ||
+      (LodDistance == State->LodDistance && RefineFactor == State->RefineFactor)) {
+    return;
+  }
+  State->LodDistance = LodDistance;
+  State->RefineFactor = RefineFactor;
+  LodStoreConfig Config;
+  ConfigForView(State->RenderDistance, LodDistance, RefineFactor, &Config);
+  LodStoreSetConfig(&State->Store, &Config);
 }
 
 LodStore *LodIngestMutableStore(void) {

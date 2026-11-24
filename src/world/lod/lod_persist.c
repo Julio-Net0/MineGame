@@ -3,6 +3,7 @@
 #include "core/log.h"
 #include "core/profiler.h"
 #include "platform/os_time.h"
+#include "world/block_system.h"
 #include "world/chunk.h"
 #include "world/chunk_worker.h"
 #include "world/lod/lod_ingest.h"
@@ -471,6 +472,7 @@ bool LodPersistInit(const char *Directory, uint64_t Seed) {
   *State = (PersistState){0};
   LodCacheConfig Config = {.Directory = Directory,
                            .Seed = Seed,
+                           .BlockTableHash = GetBlockRegistryHash(),
                            .WorldgenVersion = (uint32_t)WORLDGEN_VERSION,
                            .FormatVersion = LOD_CACHE_FORMAT_VERSION,
                            .Writable = true};

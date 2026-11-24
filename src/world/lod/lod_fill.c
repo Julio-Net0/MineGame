@@ -8,6 +8,7 @@
 #include "world/lod/lod_gen.h"
 #include "world/lod/lod_ingest.h"
 #include "world/lod/lod_persist.h"
+#include "world/lod/lod_quality.h"
 
 #include <math.h>
 #include <stdatomic.h>
@@ -20,9 +21,6 @@ enum {
   HALF_CHUNK = LOD_SECTION_SIZE / 2,
   // Jobs in flight while 1:1 chunks still load or mesh.
   BUSY_JOBS = 2,
-  // The renderer refines a section while the camera is within this many of
-  // its widths (REFINE_FACTOR in lod_renderer.c).
-  REFINE_WIDTHS = 8,
   // Levels filled first, coarsest first: the horizon.
   COARSE_PHASE_LEVEL = 4,
   SET_INITIAL = 1024,
@@ -88,6 +86,12 @@ typedef struct {
 typedef struct {
   bool Enabled;
   int DistanceChunks;
+  // The renderer refines a section while the camera is within this many of
+  // its widths (lod_quality.h); the fill wants the same columns.
+  int RefineWidths;
+  // The distance or the refine factor changed: candidates are rebuilt at the
+  // next update.
+  bool ViewChanged;
   int WorkerCount;
   double AverageJobMicros;
   bool HasAnchor;
@@ -311,6 +315,7 @@ bool LodFillInit(int DistanceChunks, int WorkerCount) {
   State->SetCapacity = SET_INITIAL;
   State->CandidateCapacity = CANDIDATES_INITIAL;
   State->DistanceChunks = DistanceChunks;
+  State->RefineWidths = LodQualityRefineFactor(LOD_QUALITY_MEDIUM);
   State->WorkerCount = (WorkerCount > 0) ? WorkerCount : 1;
   State->AverageJobMicros = REFERENCE_JOB_MICROS;
   State->FillStart = -1.0;
@@ -328,6 +333,19 @@ void LodFillShutdown(void) {
 }
 
 bool LodFillEnabled(void) { return GetFillState()->Enabled; }
+
+void LodFillSetView(int DistanceChunks, int RefineWidths) {
+  LodFillState *State = GetFillState();
+  if (!State->Enabled ||
+      (DistanceChunks == State->DistanceChunks && RefineWidths == State->RefineWidths)) {
+    return;
+  }
+  State->DistanceChunks = DistanceChunks;
+  State->RefineWidths = RefineWidths;
+  State->ViewChanged = true;
+  // A new view is a new fill: its timings start over even if one is running.
+  State->FillStart = -1.0;
+}
 
 // --- column choice ----------------------------------------------------------
 
@@ -396,7 +414,7 @@ static int CompareCandidates(const void *Left, const void *Right) {
 // renderer already hides the LOD wherever chunks are drawn, so real data
 // only takes over the cells it actually holds.
 static bool ColumnWanted(float CamX, float CamZ, int Level, int X, int Z,
-                         float Distance, float Disc) {
+                         float Distance, float Disc, int RefineWidths) {
   float Width = (float)(LOD_SECTION_SIZE << Level);
   if (BoxGap(CamX, CamZ, Level, X, Z) >= Distance) {
     return false;
@@ -406,7 +424,7 @@ static bool ColumnWanted(float CamX, float CamZ, int Level, int X, int Z,
   }
   float ParentGap = BoxGap(CamX, CamZ, Level + 1, LodFloorShift(X, 1),
                            LodFloorShift(Z, 1));
-  float Refine = (float)REFINE_WIDTHS * PARENT_WIDTHS * Width;
+  float Refine = (float)RefineWidths * PARENT_WIDTHS * Width;
   return ParentGap < Refine + Width || ParentGap < Disc + Width;
 }
 
@@ -423,7 +441,7 @@ static void BuildCandidates(LodFillState *State) {
     float Reach = Distance;
     if (Level < LOD_MAX_LEVEL) {
       float Margin = REACH_MARGIN_WIDTHS * Width;
-      float Refine = ((float)REFINE_WIDTHS * PARENT_WIDTHS * Width) + Margin;
+      float Refine = ((float)State->RefineWidths * PARENT_WIDTHS * Width) + Margin;
       Reach = fminf(Distance, fmaxf(Refine, Disc + Margin));
     }
     int Radius = (int)(Reach / Width) + 1;
@@ -433,7 +451,8 @@ static void BuildCandidates(LodFillState *State) {
       for (int Z = CentreZ - Radius; Z <= CentreZ + Radius; Z++) {
         if (SetContains(State, PackKey(Level, X, Z)) ||
             !LodIngestColumnInRange(Level, X, Z) ||
-            !ColumnWanted(CamX, CamZ, Level, X, Z, Distance, Disc)) {
+            !ColumnWanted(CamX, CamZ, Level, X, Z, Distance, Disc,
+                          State->RefineWidths)) {
           continue;
         }
         Candidate Entry = {.Level = Level,
@@ -615,8 +634,9 @@ void LodFillUpdate(int ChunkX, int ChunkZ, int RenderDistance, bool WorldBusy) {
     return;
   }
   PROFILE_BEGIN(FillStart);
-  if (!State->HasAnchor || ChunkX != State->AnchorX ||
+  if (!State->HasAnchor || State->ViewChanged || ChunkX != State->AnchorX ||
       ChunkZ != State->AnchorZ || RenderDistance != State->RenderDistance) {
+    State->ViewChanged = false;
     Reanchor(State, ChunkX, ChunkZ, RenderDistance);
   }
   double Deadline = OsGetTimeSeconds() + (WorldBusy ? FLUSH_BUDGET_BUSY_SECONDS

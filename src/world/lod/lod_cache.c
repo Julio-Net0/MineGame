@@ -20,14 +20,14 @@ enum {
   MAGIC_BYTES = 4,
   // Region header: magic, format, generator, level, seed, region x and z,
   // entry count, reserved, generated-column mask, checksum.
-  HEADER_BYTES = 56,
-  HEADER_CHECKSUM_AT = 48,
+  HEADER_BYTES = 64,
+  HEADER_CHECKSUM_AT = 56,
   INDEX_ENTRY_BYTES = 24,
   // Record header: present and ingested cells, mode, encoding, palette count,
   // uniform voxel, payload bytes.
   RECORD_HEADER_BYTES = 28,
-  META_BYTES = 32,
-  META_CHECKSUM_AT = 24,
+  META_BYTES = 40,
+  META_CHECKSUM_AT = 32,
   PACKED4_INDEX_BYTES = LOD_SECTION_VOLUME / 2,
   PACKED8_INDEX_BYTES = LOD_SECTION_VOLUME,
   MAX_PALETTE_BYTES = LOD_PACKED8_MAX_PALETTE * (int)sizeof(LodVoxel),
@@ -63,6 +63,7 @@ enum {
   HEADER_ENTRIES_AT = 32,
   HEADER_RESERVED_AT = 36,
   HEADER_MASK_AT = 40,
+  HEADER_BLOCKS_AT = 48,
   // Field offsets of an index entry.
   ENTRY_RESERVED_AT = 2,
   ENTRY_Y_AT = 4,
@@ -70,6 +71,7 @@ enum {
   ENTRY_SIZE_AT = 12,
   ENTRY_CHECKSUM_AT = 16,
   META_SEED_AT = 16,
+  META_BLOCKS_AT = 24,
   // Room left in a path for a region file name.
   PATH_NAME_ROOM = 32,
   KNOWN_INITIAL = 256,
@@ -103,6 +105,7 @@ static const char TEMP_SUFFIX[] = ".lod.tmp";
 struct LodCache {
   char Directory[LOD_CACHE_PATH_CAPACITY];
   uint64_t Seed;
+  uint64_t BlockTableHash;
   uint32_t WorldgenVersion;
   uint32_t FormatVersion;
   bool Writable;
@@ -686,6 +689,7 @@ static MetaStatus ReadMeta(const LodCache *Cache) {
   memcpy(Expected, META_MAGIC, MAGIC_BYTES);
   PutIdentity(Cache, Expected + IDENTITY_AT);
   Put64(Expected + META_SEED_AT, Cache->Seed);
+  Put64(Expected + META_BLOCKS_AT, Cache->BlockTableHash);
   Put64(Expected + META_CHECKSUM_AT, Fnv(FNV_OFFSET, Expected, META_CHECKSUM_AT));
   return (Read == sizeof(Meta) && memcmp(Meta, Expected, sizeof(Meta)) == 0)
              ? META_MATCH
@@ -697,6 +701,7 @@ static bool WriteMeta(const LodCache *Cache) {
   memcpy(Meta, META_MAGIC, MAGIC_BYTES);
   PutIdentity(Cache, Meta + IDENTITY_AT);
   Put64(Meta + META_SEED_AT, Cache->Seed);
+  Put64(Meta + META_BLOCKS_AT, Cache->BlockTableHash);
   Put64(Meta + META_CHECKSUM_AT, Fnv(FNV_OFFSET, Meta, META_CHECKSUM_AT));
   char Path[LOD_CACHE_PATH_CAPACITY];
   char Temp[LOD_CACHE_PATH_CAPACITY];
@@ -727,6 +732,7 @@ LodCache *LodCacheOpen(const LodCacheConfig *Config) {
   }
   snprintf(Cache->Directory, sizeof(Cache->Directory), "%s", Config->Directory);
   Cache->Seed = Config->Seed;
+  Cache->BlockTableHash = Config->BlockTableHash;
   Cache->WorldgenVersion = Config->WorldgenVersion;
   Cache->FormatVersion = Config->FormatVersion;
   Cache->Writable = Config->Writable;
@@ -747,8 +753,8 @@ LodCache *LodCacheOpen(const LodCacheConfig *Config) {
     if (Cache->Writable) {
       if (Stale) {
         ScanRegions(Cache, true, &Files, &Bytes);
-        LogWarn("LOD_CACHE: %s belongs to another seed, generator or format; "
-                "discarded its regions",
+        LogWarn("LOD_CACHE: %s belongs to another seed, generator, block "
+                "registry or format; discarded its regions",
                 Cache->Directory);
       }
       if (!WriteMeta(Cache)) {
@@ -827,6 +833,7 @@ static bool HeaderMatches(const LodCache *Cache, const uint8_t *Header,
          memcmp(Header + IDENTITY_AT, Identity, sizeof(Identity)) == 0 &&
          Get32(Header + HEADER_LEVEL_AT) == (uint32_t)Level &&
          Get64(Header + HEADER_SEED_AT) == Cache->Seed &&
+         Get64(Header + HEADER_BLOCKS_AT) == Cache->BlockTableHash &&
          (int32_t)Get32(Header + HEADER_REGION_X_AT) == RegionX &&
          (int32_t)Get32(Header + HEADER_REGION_Z_AT) == RegionZ;
 }
@@ -1179,6 +1186,7 @@ static bool LayOut(const LodCache *Cache, int Level, int RegionX, int RegionZ,
   Put32(Bytes + HEADER_ENTRIES_AT, (uint32_t)Count);
   Put32(Bytes + HEADER_RESERVED_AT, 0U);
   Put64(Bytes + HEADER_MASK_AT, Mask);
+  Put64(Bytes + HEADER_BLOCKS_AT, Cache->BlockTableHash);
   size_t Offset = IndexEnd;
   for (int Idx = 0; Idx < Count; Idx++) {
     RegionEntry *Entry = &Entries[Idx];

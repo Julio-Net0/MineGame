@@ -82,6 +82,8 @@ void GlLodDraw(const GlLodFrame *Frame, const RenderLodDraw *Draws,
 
 // Reads the last cull's counters into the stats; stalls (see backend.h).
 void GlLodReadCullStats(void);
+// The fog of every LOD program at runtime (see GlLodOptions.Fog / FogEnd).
+void GlLodSetFog(bool Enabled, float End);
 void GlLodGetStats(RenderLodStats *Out);
 
 #endif

@@ -110,6 +110,9 @@ typedef struct {
   // is read-only (scripts), which otherwise keeps it off. NULL when not given.
   bool LodNoCache;
   const char *LodCacheDir;
+  // --lod-quality low|medium|high (world/lod/lod_quality.h); LOD_QUALITY_UNSET
+  // keeps medium.
+  int LodQuality;
 } LaunchOptions;
 
 #define LOD_ARENA_MB_DEFAULT 192
@@ -120,6 +123,14 @@ typedef struct {
 #define LOD_DISTANCE_DEFAULT 512
 #define LOD_DISTANCE_MIN 32
 #define LOD_DISTANCE_MAX 2048
+// The LOD distance the pause menu and /lod set at runtime: 0 (off) or
+// LOD_RUNTIME_DISTANCE_MIN..LOD_DISTANCE_MAX.
+#define LOD_RUNTIME_DISTANCE_MIN 128
+#define LOD_QUALITY_UNSET (-1)
+// The 1:1 render distance of an interactive run on a device that draws LOD
+// when --render-distance is not given; scripts and devices without LOD keep
+// DEFAULT_RENDER_DISTANCE.
+#define LOD_INTERACTIVE_RENDER_DISTANCE 32
 #define LOD_BLOCKS_PER_CHUNK 16
 
 // The edge of the default LOD distance.
@@ -132,6 +143,11 @@ void ParseLaunchOptions(int Argc, char **Argv);
 // The LOD distance in chunks and the LOD fog end in blocks, defaults applied.
 int LaunchLodDistance(void);
 int LaunchLodFogEnd(void);
+// Whether --lod-fog-end fixed the fog end; otherwise it follows the LOD
+// distance, also when that changes at runtime.
+bool LaunchLodFogEndLocked(void);
+// The --lod-quality preset as a LodQuality value, medium when not given.
+int LaunchLodQuality(void);
 const LaunchOptions *GetLaunchOptions(void);
 void SetAppliedCoreCount(int CoreCount);
 void SetAppliedRamLimitMb(size_t RamLimitMb);

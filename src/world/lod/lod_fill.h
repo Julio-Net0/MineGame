@@ -30,6 +30,11 @@ bool LodFillInit(int DistanceChunks, int WorkerCount);
 void LodFillShutdown(void);
 bool LodFillEnabled(void);
 
+// Changes the LOD distance (0 generates nothing more) and the renderer's refine
+// factor at runtime; the wanted columns are rebuilt at the next update.
+// Columns already generated stay in the store while it holds them.
+void LodFillSetView(int DistanceChunks, int RefineWidths);
+
 // Once per frame, after LodIngestUpdate and before LodIngestFlush (which then
 // carries up what synthetic writes over real cells queued). The anchor is the
 // load centre's chunk; WorldBusy (1:1 mesh work in flight) keeps in-flight jobs

@@ -1059,6 +1059,24 @@ static void UploadSectionList(GlLodState *State, const RenderLodDraw *Draws,
   State->ListRevision = ListRevision;
 }
 
+static void SetProgramFog(GLuint Program, bool Enabled, float End) {
+  glUseProgram(Program);
+  glUniform1i(glGetUniformLocation(Program, "uFogEnabled"), Enabled ? 1 : 0);
+  glUniform2f(glGetUniformLocation(Program, "uFogRange"), End * LOD_FOG_START_FRACTION,
+              End);
+}
+
+void GlLodSetFog(bool Enabled, float End) {
+  GlLodState *State = GetLodState();
+  if (!State->Active) {
+    return;
+  }
+  SetProgramFog(State->Opaque.Program, Enabled, End);
+  SetProgramFog(State->Border.Program, Enabled, End);
+  SetProgramFog(State->Translucent.Program, Enabled, End);
+  glUseProgram(0);
+}
+
 void GlLodReadCullStats(void) {
   GlLodState *State = GetLodState();
   if (!State->Active || !State->HasList) {

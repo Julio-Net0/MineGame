@@ -54,6 +54,7 @@ enum {
 
 #define SCRATCH_DIR "lod_cache_selftest.tmp"
 #define TEST_SEED 0x1234ABCD5678EF01ULL
+#define TEST_BLOCKS 0x0F1E2D3C4B5A6978ULL
 #define NOISE_MUL 6364136223846793005ULL
 #define NOISE_ADD 1442695040888963407ULL
 #define NOISE_SHIFT 33U
@@ -108,10 +109,11 @@ static int CountFiles(const char *Path) {
   return Count;
 }
 
-static LodCache *OpenCache(const char *Dir, uint64_t Seed, uint32_t Worldgen,
-                           uint32_t Format, bool Writable) {
+static LodCache *OpenCache(const char *Dir, uint64_t Seed, uint64_t Blocks,
+                           uint32_t Worldgen, uint32_t Format, bool Writable) {
   LodCacheConfig Config = {.Directory = Dir,
                            .Seed = Seed,
+                           .BlockTableHash = Blocks,
                            .WorldgenVersion = Worldgen,
                            .FormatVersion = Format,
                            .Writable = Writable};
@@ -119,7 +121,7 @@ static LodCache *OpenCache(const char *Dir, uint64_t Seed, uint32_t Worldgen,
 }
 
 static LodCache *OpenDefault(const char *Dir, bool Writable) {
-  return OpenCache(Dir, TEST_SEED, (uint32_t)WORLDGEN_VERSION,
+  return OpenCache(Dir, TEST_SEED, TEST_BLOCKS, (uint32_t)WORLDGEN_VERSION,
                    LOD_CACHE_FORMAT_VERSION, Writable);
 }
 
@@ -351,15 +353,19 @@ static bool TestInvalidation(LodVoxel *Grid, LodCacheEntry *Read) {
   typedef struct {
     const char *What;
     uint64_t Seed;
+    uint64_t Blocks;
     uint32_t Worldgen;
     uint32_t Format;
   } Change;
   const Change CHANGES[] = {
-      {"seed", TEST_SEED + 1U, (uint32_t)WORLDGEN_VERSION, LOD_CACHE_FORMAT_VERSION},
-      {"generator version", TEST_SEED, (uint32_t)WORLDGEN_VERSION + 1U,
+      {"seed", TEST_SEED + 1U, TEST_BLOCKS, (uint32_t)WORLDGEN_VERSION,
        LOD_CACHE_FORMAT_VERSION},
-      {"format version", TEST_SEED, (uint32_t)WORLDGEN_VERSION,
+      {"generator version", TEST_SEED, TEST_BLOCKS, (uint32_t)WORLDGEN_VERSION + 1U,
+       LOD_CACHE_FORMAT_VERSION},
+      {"format version", TEST_SEED, TEST_BLOCKS, (uint32_t)WORLDGEN_VERSION,
        LOD_CACHE_FORMAT_VERSION + 1U},
+      {"block registry", TEST_SEED, TEST_BLOCKS ^ 1U, (uint32_t)WORLDGEN_VERSION,
+       LOD_CACHE_FORMAT_VERSION},
   };
   bool Passed = true;
   char Text[CHECK_TEXT_CHARS];
@@ -372,7 +378,8 @@ static bool TestInvalidation(LodVoxel *Grid, LodCacheEntry *Read) {
     LodCacheClose(Cache);
 
     // A read-only open of another identity neither reads nor removes it.
-    Cache = OpenCache(Dir, Next->Seed, Next->Worldgen, Next->Format, false);
+    Cache = OpenCache(Dir, Next->Seed, Next->Blocks, Next->Worldgen, Next->Format,
+                      false);
     int Files = CountFiles(Dir);
     snprintf(Text, sizeof(Text), "read-only cache of another %s misses and keeps files",
              Next->What);
@@ -381,7 +388,8 @@ static bool TestInvalidation(LodVoxel *Grid, LodCacheEntry *Read) {
                              Text);
     LodCacheClose(Cache);
 
-    Cache = OpenCache(Dir, Next->Seed, Next->Worldgen, Next->Format, true);
+    Cache = OpenCache(Dir, Next->Seed, Next->Blocks, Next->Worldgen, Next->Format,
+                      true);
     LodCacheStats Stats = {0};
     if (Cache != NULL) {
       LodCacheGetStats(Cache, &Stats);
@@ -399,7 +407,8 @@ static bool TestInvalidation(LodVoxel *Grid, LodCacheEntry *Read) {
     LodCacheClose(Cache);
   }
   if (Passed) {
-    LogInfo("LOD_TEST: ok cache discarded when the seed, generator or format changes");
+    LogInfo("LOD_TEST: ok cache discarded when the seed, generator, block registry "
+            "or format changes");
   }
   return Passed;
 }

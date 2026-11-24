@@ -1,5 +1,6 @@
 #include "ui/commands.h"
 #include "render/lod_renderer.h"
+#include "render/lod_settings.h"
 #include "world/block_system.h"
 #include "world/biome.h"
 #include "world/chunk.h"
@@ -15,7 +16,10 @@
 #include "core/profiler.h"
 #include "world/world.h"
 #include "persistence/world_save.h"
+#include "core/launch_options.h"
+#include <errno.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -25,7 +29,8 @@ enum {
   DEBUG_STATUS_MSG_SIZE = 64,
   MSG_BUFFER_SIZE = 256,
   MAX_AUTOCOMPLETE_CANDIDATES = 64,
-  MAX_AUTOCOMPLETE_TOKEN_LENGTH = 64
+  MAX_AUTOCOMPLETE_TOKEN_LENGTH = 64,
+  DECIMAL_BASE = 10
 };
 
 static void CommandHelp(const char *Args, CommandContext *Ctx);
@@ -77,8 +82,10 @@ static const CommandInfo AVAILABLECOMMANDS[] = {
     {"/fillchat", "Use: /fillchat [lines]",
      "Fills the chat history with identical test lines (20 by default)",
      CommandFillChat},
-    {"/lod", "Use: /lod <on|off>",
-     "Shows or hides the distant LOD terrain (needs an OpenGL 4.3 device)",
+    {"/lod",
+     "Use: /lod [status | on | off | distance <0|128-2048> | quality "
+     "<low|medium|high> | fog <on|off>]",
+     "Shows or changes the distant LOD terrain (needs an OpenGL 4.3 device)",
      CommandLod},
 #ifdef MINEGAME_PROFILE
     {"/profile", "Use: /profile <start [seconds] | stop | dump | reset>",
@@ -621,22 +628,93 @@ static void CommandGuiScale(const char *Args, CommandContext *Ctx) {
   ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
 }
 
-static void CommandLod(const char *Args, CommandContext *Ctx) {
-  if (!LodRendererEnabled()) {
+static const char LOD_USAGE[] =
+    "Incorrect Format. try: /lod [status | on | off | distance <0|128-2048> | "
+    "quality <low|medium|high> | fog <on|off>]";
+
+static void LodStatus(CommandContext *Ctx) {
+  char Settings[MSG_BUFFER_SIZE];
+  char Usage[MSG_BUFFER_SIZE];
+  LodSettingsStatus(Settings, sizeof(Settings), Usage, sizeof(Usage));
+  ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Settings);
+  if (Usage[0] != '\0') {
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Usage);
+  }
+}
+
+// "on" or "off" into *Out; false for anything else.
+static bool ParseOnOff(const char *Text, bool *Out) {
+  if (Text != (void *)0 && CompareString(Text, "on") == 0) {
+    *Out = true;
+    return true;
+  }
+  if (Text != (void *)0 && CompareString(Text, "off") == 0) {
+    *Out = false;
+    return true;
+  }
+  return false;
+}
+
+static void LodDistance(const char *Value, CommandContext *Ctx) {
+  char *End = (char *)0;
+  errno = 0;
+  long Chunks = (Value != (void *)0) ? strtol(Value, &End, DECIMAL_BASE) : -1;
+  bool Parsed = Value != (void *)0 && End != Value && *End == '\0' && errno == 0;
+  if (!Parsed || Chunks > LOD_DISTANCE_MAX || !LodSettingsDistanceValid((int)Chunks)) {
     ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR,
-                  "LOD is not available on this device or was turned off "
-                  "with --lod off");
+                  "LOD distance must be 0 (off) or 128-2048 chunks");
     return;
   }
+  (void)LodSettingsSetDistance((int)Chunks);
+  char Msg[MSG_BUFFER_SIZE];
+  if (Chunks == 0) {
+    snprintf(Msg, sizeof(Msg), "LOD distance off");
+  } else {
+    snprintf(Msg, sizeof(Msg), "LOD distance %ld chunks", Chunks);
+  }
+  ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
+}
+
+static void CommandLod(const char *Args, CommandContext *Ctx) {
+  const char *Reason = LodSettingsUnavailableReason();
+  if (Reason != (void *)0) {
+    char Msg[MSG_BUFFER_SIZE];
+    snprintf(Msg, sizeof(Msg), "LOD unavailable: %s", Reason);
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR, Msg);
+    return;
+  }
+  char ArgsCopy[CHAT_MAX_INPUT_CHARS] = {0};
+  if (Args != (void *)0) {
+    SafeStrncpy(ArgsCopy, Args, (int)sizeof(ArgsCopy));
+  }
+  char *SavePtr = ArgsCopy;
+  char *SubCmd = TokenizeSpace(&SavePtr);
+  char *Value = TokenizeSpace(&SavePtr);
+  bool Extra = TokenizeSpace(&SavePtr) != (void *)0;
   bool On = false;
-  if (Args != (void *)0 && CompareString(Args, "on") == 0) {
-    On = true;
-  } else if (Args == (void *)0 || CompareString(Args, "off") != 0) {
-    ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR, "Incorrect Format. try: /lod <on|off>");
-    return;
+  if (SubCmd == (void *)0 || CompareString(SubCmd, "status") == 0) {
+    LodStatus(Ctx);
+  } else if (Value == (void *)0 && ParseOnOff(SubCmd, &On)) {
+    (void)LodSettingsSetDrawOn(On);
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, On ? "LOD drawing on" : "LOD drawing off");
+  } else if (!Extra && CompareString(SubCmd, "distance") == 0) {
+    LodDistance(Value, Ctx);
+  } else if (!Extra && CompareString(SubCmd, "quality") == 0) {
+    LodQuality Quality = LOD_QUALITY_MEDIUM;
+    if (Value == (void *)0 || !LodQualityParse(Value, &Quality)) {
+      ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR, "LOD quality must be low, medium or high");
+      return;
+    }
+    (void)LodSettingsSetQuality(Quality);
+    char Msg[MSG_BUFFER_SIZE];
+    snprintf(Msg, sizeof(Msg), "LOD quality %s", LodQualityName(Quality));
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, Msg);
+  } else if (!Extra && CompareString(SubCmd, "fog") == 0 && ParseOnOff(Value, &On)) {
+    (void)LodSettingsSetFog(On);
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, On ? "LOD fog on" : "LOD fog off");
+  } else {
+    ReturnCommand(Ctx->Chat, LOG_LEVEL_ERROR, LOD_USAGE);
   }
-  LodRendererSetDrawOn(On);
-  ReturnCommand(Ctx->Chat, LOG_LEVEL_INFO, On ? "LOD drawing on" : "LOD drawing off");
 }
 
 // Identical lines, accents included, so chat-cost captures always draw the
@@ -1274,8 +1352,14 @@ int CommandAutocomplete(const char *Buffer, int CursorPos, char *OutCompleted,
         Candidates[CandidateCount++] = SpeedVals[Idx];
       }
     } else if (CompareString(FirstToken, "/lod") == 0) {
-      Candidates[CandidateCount++] = "on";
-      Candidates[CandidateCount++] = "off";
+      static const char *LodSubcommands[] = {"status", "on", "off",
+                                             "distance", "quality", "fog"};
+      int SubCount = (int)(sizeof(LodSubcommands) / sizeof(LodSubcommands[0]));
+      for (int Idx = 0;
+           Idx < SubCount && CandidateCount < MAX_AUTOCOMPLETE_CANDIDATES;
+           Idx++) {
+        Candidates[CandidateCount++] = LodSubcommands[Idx];
+      }
     } else if (CompareString(FirstToken, "/guiscale") == 0) {
       static const char *GuiScales[] = {"0", "1", "2", "3", "4"};
       int ScaleCount = (int)(sizeof(GuiScales) / sizeof(GuiScales[0]));
@@ -1322,6 +1406,27 @@ int CommandAutocomplete(const char *Buffer, int CursorPos, char *OutCompleted,
     } else if (CompareString(FirstToken, "/debug") == 0) {
       Candidates[CandidateCount++] = "1";
       Candidates[CandidateCount++] = "0";
+    } else if (CompareString(FirstToken, "/lod") == 0) {
+      static const char *Distances[] = {"0", "128", "256", "512", "1024", "2048"};
+      static const char *Qualities[] = {"low", "medium", "high"};
+      static const char *Switches[] = {"on", "off"};
+      const char **Values = (const char **)0;
+      int ValueCount = 0;
+      if (CompareString(SecondToken, "distance") == 0) {
+        Values = Distances;
+        ValueCount = (int)(sizeof(Distances) / sizeof(Distances[0]));
+      } else if (CompareString(SecondToken, "quality") == 0) {
+        Values = Qualities;
+        ValueCount = (int)(sizeof(Qualities) / sizeof(Qualities[0]));
+      } else if (CompareString(SecondToken, "fog") == 0) {
+        Values = Switches;
+        ValueCount = (int)(sizeof(Switches) / sizeof(Switches[0]));
+      }
+      for (int Idx = 0;
+           Idx < ValueCount && CandidateCount < MAX_AUTOCOMPLETE_CANDIDATES;
+           Idx++) {
+        Candidates[CandidateCount++] = Values[Idx];
+      }
     } else if (CompareString(FirstToken, "/noclip") == 0) {
       static const char *SpeedVals[] = {"10", "15", "25", "50"};
       int SpeedCount = (int)(sizeof(SpeedVals) / sizeof(SpeedVals[0]));

@@ -432,3 +432,28 @@ void LoadAllBlockDefinitions(const char *DirectoryPath) {
 }
 
 int GetLoadedBlocksCount(void) { return *GetLoadedBlocksCountPtr(); }
+
+#define REGISTRY_HASH_OFFSET 0xCBF29CE484222325ULL
+#define REGISTRY_HASH_PRIME 0x100000001B3ULL
+enum { REGISTRY_BYTE_BITS = 8, REGISTRY_BYTE_MASK = 0xFF };
+
+uint64_t GetBlockRegistryHash(void) {
+  uint64_t Hash = REGISTRY_HASH_OFFSET;
+  int Count = GetLoadedBlocksCount();
+  for (int Id = 0; Id < Count; Id++) {
+    const BlockType *Block = GetBlockDef(Id);
+    if (Block == NULL) {
+      continue;
+    }
+    for (unsigned Shift = 0; Shift < sizeof(uint32_t) * REGISTRY_BYTE_BITS;
+         Shift += REGISTRY_BYTE_BITS) {
+      Hash = (Hash ^ (((uint32_t)Block->Id >> Shift) & REGISTRY_BYTE_MASK)) * REGISTRY_HASH_PRIME;
+    }
+    for (const char *Cursor = Block->Name; *Cursor != '\0'; Cursor++) {
+      Hash = (Hash ^ (uint8_t)*Cursor) * REGISTRY_HASH_PRIME;
+    }
+    // A separator, so "ab" + "c" and "a" + "bc" differ.
+    Hash = (Hash ^ (uint64_t)REGISTRY_BYTE_MASK) * REGISTRY_HASH_PRIME;
+  }
+  return Hash;
+}

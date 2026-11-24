@@ -27,6 +27,7 @@
 #include "render/backend.h"
 #include "render/chunk_visibility.h"
 #include "render/lod_renderer.h"
+#include "render/lod_settings.h"
 #include "render/renderer.h"
 #include "server/server.h"
 #include "core/launch_options.h"
@@ -113,7 +114,7 @@ static void InitLodCache(void) {
 // case, so the caller has nothing to tear down.
 static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCamera,
                      ChatState *ChatVal, GameCamera *FreeCamera,
-                     const LaunchOptions *Options, int RenderDistance) {
+                     const LaunchOptions *Options, int *RenderDistance) {
   // First, before the window and the registries: a failure here then costs no
   // teardown of a live GL context and no unloading of already-parsed assets.
   *WorldVal = (World *)malloc(sizeof(World));
@@ -232,11 +233,21 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
             MesherSlots, WorkerCount, MesherSlots);
     WorkerCount = MesherSlots;
   }
+  // With LOD beyond it, an interactive run draws a wider 1:1 disc by default.
+  // Scripts and devices without LOD keep the old default, so every scripted
+  // scenario sees the world it always did.
+  if (Options->RenderDistance <= 0 && !ScriptIsActive() &&
+      RenderGetCapabilities()->LodSupported) {
+    *RenderDistance = LOD_INTERACTIVE_RENDER_DISTANCE;
+    LogInfo("MAIN: render distance %d (LOD device default)", *RenderDistance);
+  }
   // Only a device that can draw LOD builds it: everywhere else the store is
   // never allocated and the workers never downsample.
   if (RenderGetCapabilities()->LodSupported) {
     LodDownsampleInit();
-    if (LodIngestInit(RenderDistance) && RendererEnableLodIngest()) {
+    if (LodIngestInit(*RenderDistance, LaunchLodDistance(),
+                      LodQualityRefineFactor((LodQuality)LaunchLodQuality())) &&
+        RendererEnableLodIngest()) {
       LodRendererInit();
       if (!GetLaunchOptions()->LodNoGen &&
           LodFillInit(LaunchLodDistance(), WorkerCount)) {
@@ -250,8 +261,9 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
     LogInfo("MAIN: LOD ingestion off (%s)",
             RenderGetCapabilities()->LodUnavailableReason);
   }
+  LodSettingsInit();
   SetChunkWorkerMeshRunner(RendererBuildMeshJob);
-  InitChunkWorker(WorkerCount, RenderDistance);
+  InitChunkWorker(WorkerCount, *RenderDistance);
 
   SpawnPoint Spawn = FindSpawnColumn(GetWorldSeed());
   LogInfo("MAIN: spawn column (%d, %d) surface %d", Spawn.X, Spawn.Z,
@@ -539,7 +551,7 @@ int main(int Argc, char **Argv) {
   }
 
   if (!InitGame(&WorldVal, &PlayerVal, &PlayerCamera, &ChatVal, &FreeCamera,
-                Options, RenderDistance)) {
+                Options, &RenderDistance)) {
     ScriptShutdown();
     return EXIT_FAILURE;
   }

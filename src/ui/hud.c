@@ -3,6 +3,7 @@
 #include "core/color.h"
 #include "platform/platform.h"
 #include "render/lod_renderer.h"
+#include "render/lod_settings.h"
 #include "render/renderer.h"
 #include "render/backend.h"
 #include "ui/block_icon.h"
@@ -34,6 +35,10 @@ enum {
   CROSSHAIR_SIZE = 15,
   DEBUG_TEXT_CAPACITY = 96,
   BYTES_TO_MB_SHIFT = 20,
+  CAP_FLAG_CHARS = 8,
+  VERTS_PER_K = 1000,
+  // Capability flags on the GL line: mdi, bi, cs, ic, clip, dp.
+  CAP_FLAG_COUNT = 6,
   // Vanilla F3 layout: lines start two units in from the corner, one font line
   // apart, each on its own translucent grey strip.
   DEBUG_MARGIN = 2,
@@ -311,8 +316,19 @@ static int DrawTimingPanel(UiContext *Ctx, int Y) {
   const char *const FRAME_CELLS[DEBUG_NUMBER_COLUMNS] = {Avg, Max, Low, NULL};
   Y = DrawTimingRow(Ctx, Y, "Frame", FRAME_CELLS, "");
 
+  // Only scopes that ran, and only as many as fit above the hotbar; the rest
+  // are counted on a last line (/profile dump lists them all).
+  int Bottom = Ctx->GuiHeight - HOTBAR_HEIGHT;
+  int Hidden = 0;
   for (int Scope = 0; Scope < PROFILE_SCOPE_COUNT; Scope++) {
     const ProfileStats *Stats = &Panel->Stats[Scope];
+    if (Stats->AverageEntries == 0U && Stats->MaxUs == 0U) {
+      continue;
+    }
+    if (Y + (2 * FONT_LINE_HEIGHT) > Bottom) {
+      Hidden++;
+      continue;
+    }
     // A worker-side scope is summed across those threads, so it can legitimately
     // exceed the frame's own duration. Marked so that reading it as a share of
     // the frame is not the obvious interpretation. Asked of the profiler rather
@@ -331,6 +347,11 @@ static int DrawTimingPanel(UiContext *Ctx, int Y) {
     const char *const ROW_CELLS[DEBUG_NUMBER_COLUMNS] = {Avg, Max, Low, Count};
     Y = DrawTimingRow(Ctx, Y, GetProfileScopeName((ProfileScope)Scope),
                       ROW_CELLS, Suffix);
+  }
+  if (Hidden > 0) {
+    char More[DEBUG_TEXT_CAPACITY];
+    snprintf(More, sizeof(More), "+%d more scopes (/profile dump)", Hidden);
+    Y = DrawDebugLine(Ctx, More, Y);
   }
   return Y;
 }
@@ -376,6 +397,94 @@ static int FloorDiv(int Numerator, int Denominator) {
     Quotient--;
   }
   return Quotient;
+}
+
+// "+name" for a capability present, "-name" for one missing.
+static const char *CapFlag(bool Present, const char *Name, char *Buffer, size_t Size) {
+  snprintf(Buffer, Size, "%c%s", Present ? '+' : '-', Name);
+  return Buffer;
+}
+
+static double ToMegabytes(int64_t Bytes) {
+  return (double)Bytes / (double)(1U << BYTES_TO_MB_SHIFT);
+}
+
+// Three lines: the GL context and the LOD settings; the LOD store, synthetic
+// fill and disk cache; the LOD draw, GPU cull and Hi-Z. Without LOD, only the
+// first, with the reason.
+static int DrawRenderAndLodLines(UiContext *Ctx, char *Text, size_t Size,
+                                 const RenderStats *Render, int Y) {
+  const RenderCapabilities *Caps = RenderGetCapabilities();
+  char Flags[CAP_FLAG_COUNT][CAP_FLAG_CHARS];
+  int Used = snprintf(
+      Text, Size, "GL %d.%d%s (ctx %d.%d) tier %d %s %s %s %s %s %s a%.0f | ",
+      Caps->EffectiveMajor, Caps->EffectiveMinor, Caps->VersionCapped ? " capped" : "",
+      Caps->ContextMajor, Caps->ContextMinor, Render->Tier,
+      CapFlag(Caps->MultiDrawIndirect, "mdi", Flags[0], CAP_FLAG_CHARS),
+      CapFlag(Caps->BaseInstance, "bi", Flags[1], CAP_FLAG_CHARS),
+      CapFlag(Caps->ComputeShaders, "cs", Flags[2], CAP_FLAG_CHARS),
+      CapFlag(Caps->IndirectCount, "ic", Flags[3], CAP_FLAG_CHARS),
+      CapFlag(Caps->ClipControl, "clip", Flags[4], CAP_FLAG_CHARS),
+      CapFlag(Caps->ShaderDrawParameters, "dp", Flags[CAP_FLAG_COUNT - 1],
+              CAP_FLAG_CHARS),
+      (double)Caps->MaxAnisotropy);
+  size_t Offset = (Used > 0 && (size_t)Used < Size) ? (size_t)Used : Size - 1U;
+  const char *Reason = LodSettingsUnavailableReason();
+  const LodSettings *Settings = LodSettingsGet();
+  if (Reason != NULL) {
+    snprintf(Text + Offset, Size - Offset, "LOD unavailable: %s", Reason);
+    return DrawDebugLine(Ctx, Text, Y);
+  }
+  if (Settings->Distance > 0) {
+    snprintf(Text + Offset, Size - Offset, "LOD %s %d %s fog %s",
+             LodRendererDrawOn() ? "on" : "hidden", Settings->Distance,
+             LodQualityName(Settings->Quality), Settings->FogOn ? "on" : "off");
+  } else {
+    snprintf(Text + Offset, Size - Offset, "LOD off (distance 0)");
+  }
+  Y = DrawDebugLine(Ctx, Text, Y);
+
+  LodFillStats Fill;
+  LodFillGetStats(&Fill);
+  LodPersistStats Persist;
+  LodPersistGetStats(&Persist);
+  Used = snprintf(Text, Size, "LOD store %d sec %.1f MB %llu ch",
+                  LodIngestSectionCount(), ToMegabytes((int64_t)LodIngestBytes()),
+                  (unsigned long long)LodIngestChunkCount());
+  Offset = (Used > 0 && (size_t)Used < Size) ? (size_t)Used : Size - 1U;
+  if (Fill.Enabled) {
+    Used = snprintf(Text + Offset, Size - Offset, " | gen %dq %dr %llu+%llu col %.0f us",
+                    Fill.Queued, Fill.InFlight,
+                    (unsigned long long)Fill.ColumnsGenerated,
+                    (unsigned long long)Fill.ColumnsLoaded,
+                    (Fill.SectionsGenerated > 0U)
+                        ? (double)Fill.GenMicros / (double)Fill.SectionsGenerated
+                        : 0.0);
+    Offset += (Used > 0 && (size_t)Used < Size - Offset) ? (size_t)Used : 0U;
+  }
+  if (Persist.Enabled) {
+    snprintf(Text + Offset, Size - Offset, " | cache %lluh %llum %dp %.1f MB",
+             (unsigned long long)Persist.Hits, (unsigned long long)Persist.Misses,
+             Persist.PendingSections, ToMegabytes(Persist.Cache.DiskBytes));
+  }
+  Y = DrawDebugLine(Ctx, Text, Y);
+
+  LodRendererReadCullStats(false);
+  LodRenderStats Lod;
+  LodRendererGetStats(&Lod);
+  const RenderLodStats *Gpu = &Lod.Gpu;
+  Used = snprintf(Text, Size,
+                  "LOD draw %d+%d %dm %.0f/%.0fMB%s | cull %lldk/%lldk v %dc bl %dc",
+                  Lod.OpaqueSections, Lod.BorderSections, Lod.CachedMeshes,
+                  ToMegabytes(Gpu->ArenaUsedBytes), ToMegabytes(Gpu->ArenaCapacityBytes),
+                  Gpu->ReversedZ ? " rz" : "", (long long)(Gpu->DrawnVertices / VERTS_PER_K),
+                  (long long)(Gpu->CandidateVertices / VERTS_PER_K), Gpu->DrawnCommands,
+                  Gpu->TranslucentCommands);
+  Offset = (Used > 0 && (size_t)Used < Size) ? (size_t)Used : Size - 1U;
+  if (Gpu->HiZ) {
+    snprintf(Text + Offset, Size - Offset, " | hiz %d", Gpu->HizCulledSections);
+  }
+  return DrawDebugLine(Ctx, Text, Y);
 }
 
 static void DrawDebugScreen(UiContext *Ctx, Player *PlayerVal, World *WorldVal,
@@ -503,84 +612,7 @@ static void DrawDebugScreen(UiContext *Ctx, Player *PlayerVal, World *WorldVal,
 
   RenderStats Render = {0};
   RenderGetStats(&Render);
-  snprintf(DebugText, sizeof(DebugText), "Render: tier %d, OpenGL %s",
-           Render.Tier, RenderGetApiVersion());
-  Y = DrawDebugLine(Ctx, DebugText, Y);
-  const RenderCapabilities *Caps = RenderGetCapabilities();
-  snprintf(DebugText, sizeof(DebugText),
-           "GL: %d.%d requested, %d.%d provided, %d.%d effective%s | LOD %s",
-           Caps->RequestedMajor, Caps->RequestedMinor, Caps->ContextMajor,
-           Caps->ContextMinor, Caps->EffectiveMajor, Caps->EffectiveMinor,
-           Caps->VersionCapped ? " (capped)" : "",
-           Caps->LodSupported ? "supported" : "unavailable");
-  Y = DrawDebugLine(Ctx, DebugText, Y);
-  snprintf(DebugText, sizeof(DebugText),
-           "GL caps: mdi %d, base inst %d, compute %d, icount %d, clip %d, "
-           "drawparams %d, aniso %.0fx",
-           (int)Caps->MultiDrawIndirect, (int)Caps->BaseInstance,
-           (int)Caps->ComputeShaders, (int)Caps->IndirectCount,
-           (int)Caps->ClipControl, (int)Caps->ShaderDrawParameters,
-           (double)Caps->MaxAnisotropy);
-  Y = DrawDebugLine(Ctx, DebugText, Y);
-  if (LodIngestEnabled()) {
-    snprintf(DebugText, sizeof(DebugText),
-             "LOD: %d sections, %.1f MB, %llu chunks ingested",
-             LodIngestSectionCount(),
-             (double)LodIngestBytes() / (double)(1U << BYTES_TO_MB_SHIFT),
-             (unsigned long long)LodIngestChunkCount());
-    Y = DrawDebugLine(Ctx, DebugText, Y);
-    LodFillStats Fill;
-    LodFillGetStats(&Fill);
-    if (Fill.Enabled) {
-      snprintf(DebugText, sizeof(DebugText),
-               "LOD gen: %d chunks, %d queued, %d running, %llu cols, %.0f us/section",
-               Fill.DistanceChunks, Fill.Queued, Fill.InFlight,
-               (unsigned long long)Fill.ColumnsGenerated,
-               (Fill.SectionsGenerated > 0U)
-                   ? (double)Fill.GenMicros / (double)Fill.SectionsGenerated
-                   : 0.0);
-      Y = DrawDebugLine(Ctx, DebugText, Y);
-    }
-    LodPersistStats Persist;
-    LodPersistGetStats(&Persist);
-    if (Persist.Enabled) {
-      snprintf(DebugText, sizeof(DebugText),
-               "LOD cache: %llu hits, %llu misses, %llu saved, %d pending, %.1f MB disk",
-               (unsigned long long)Persist.Hits, (unsigned long long)Persist.Misses,
-               (unsigned long long)Persist.Cache.SectionsWritten,
-               Persist.PendingSections,
-               (double)Persist.Cache.DiskBytes / (double)(1U << BYTES_TO_MB_SHIFT));
-      Y = DrawDebugLine(Ctx, DebugText, Y);
-    }
-    LodRendererReadCullStats(false);
-    LodRenderStats Lod;
-    LodRendererGetStats(&Lod);
-    snprintf(DebugText, sizeof(DebugText),
-             "LOD draw: %d opaque + %d border, %d meshes, arena %.0f/%.0f MB%s",
-             Lod.OpaqueSections, Lod.BorderSections, Lod.CachedMeshes,
-             (double)Lod.Gpu.ArenaUsedBytes / (double)(1U << BYTES_TO_MB_SHIFT),
-             (double)Lod.Gpu.ArenaCapacityBytes / (double)(1U << BYTES_TO_MB_SHIFT),
-             Lod.Gpu.ReversedZ ? ", reversed-Z" : "");
-    Y = DrawDebugLine(Ctx, DebugText, Y);
-    snprintf(DebugText, sizeof(DebugText),
-             "LOD cull%s: %lld/%lld verts, %d cmds, %d out, %d back",
-             Lod.Gpu.IndirectCount ? " (count)" : " (fixed)",
-             (long long)Lod.Gpu.DrawnVertices, (long long)Lod.Gpu.CandidateVertices,
-             Lod.Gpu.DrawnCommands, Lod.Gpu.FrustumCulledSections,
-             Lod.Gpu.FacingCulledRuns);
-    Y = DrawDebugLine(Ctx, DebugText, Y);
-    snprintf(DebugText, sizeof(DebugText), "LOD blended: %d cmds, %lld verts",
-             Lod.Gpu.TranslucentCommands, (long long)Lod.Gpu.TranslucentVertices);
-    Y = DrawDebugLine(Ctx, DebugText, Y);
-    if (Lod.Gpu.HiZ) {
-      snprintf(DebugText, sizeof(DebugText),
-               "LOD hi-z: %d hidden, phase 1 %d cmds %lld verts, phase 2 %d cmds %lld verts",
-               Lod.Gpu.HizCulledSections, Lod.Gpu.Phase1Commands,
-               (long long)Lod.Gpu.Phase1Vertices, Lod.Gpu.Phase2Commands,
-               (long long)Lod.Gpu.Phase2Vertices);
-      Y = DrawDebugLine(Ctx, DebugText, Y);
-    }
-  }
+  Y = DrawRenderAndLodLines(Ctx, DebugText, sizeof(DebugText), &Render, Y);
   snprintf(DebugText, sizeof(DebugText),
            "Mesh Arena: %d blocks, %lld MB used, %lld MB slack", Render.ArenaBlocks,
            (long long)(Render.UsedBytes >> BYTES_TO_MB_SHIFT),

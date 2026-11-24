@@ -1802,6 +1802,8 @@ void RenderGetLodStats(RenderLodStats *Out) { GlLodGetStats(Out); }
 
 void RenderLodReadCullStats(void) { GlLodReadCullStats(); }
 
+void RenderLodSetFog(bool Enabled, float End) { GlLodSetFog(Enabled, End); }
+
 void RenderBeginTranslucentPass(void) {
   FlushDebugBatch();
   GetBackendState()->InTranslucentPass = true;

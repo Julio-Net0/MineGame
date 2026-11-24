@@ -136,6 +136,7 @@ add_executable(${PROJECT_NAME}
   src/render/gl_caps.c
   src/render/gl_lod.c
   src/render/lod_renderer.c
+  src/render/lod_settings.c
   src/render/gl_mesh_arena.c
   src/render/camera.c
   src/ui/hud.c

@@ -9,6 +9,8 @@
 // cursor and takes input away from the player while open.
 
 void PauseMenuToggle(void);
+// Opens or closes it (scripts: "pause on|off").
+void PauseMenuSetOpen(bool Open);
 bool PauseMenuIsOpen(void);
 
 // True once Save and Quit was chosen; the main loop exits through its normal
@@ -16,7 +18,9 @@ bool PauseMenuIsOpen(void);
 bool PauseMenuQuitRequested(void);
 
 // Draws the menu when open. The FOV slider writes Camera->FovY directly; the
-// render distance slider writes *RenderDistance when the handle is released.
+// render distance slider writes *RenderDistance when the handle is released,
+// and the LOD distance slider and quality button go through lod_settings.h.
+// Without LOD the LOD rows are shown disabled with the reason.
 void DrawPauseMenu(UiContext *Ctx, GameCamera *Camera, int *RenderDistance);
 
 #endif

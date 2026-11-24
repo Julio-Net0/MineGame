@@ -1,6 +1,7 @@
 #ifndef BLOCK_SYSTEM_H
 #define BLOCK_SYSTEM_H
 
+#include <stdint.h>
 #include "core/color.h"
 #include "core/tint.h"
 #include <stdbool.h>
@@ -88,6 +89,10 @@ void ParseBlockFile(const char *FilePath);
 BlockType *GetBlockDef(int Id);
 int GetBlockIdByName(const char *Name);
 int GetLoadedBlocksCount(void);
+// FNV-1a over every registered block's id and name: equal for registries that
+// map the same names to the same ids, so data stored by block id (the LOD disk
+// cache) can tell when it no longer means the same blocks.
+uint64_t GetBlockRegistryHash(void);
 int RegisterBlockTexture(const char *Name);
 int GetBlockTextureCount(void);
 const char *GetBlockTextureName(int Index);
