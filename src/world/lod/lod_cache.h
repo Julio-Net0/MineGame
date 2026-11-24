@@ -30,7 +30,8 @@
 
 enum {
   // 2: the block registry hash joined the identity.
-  LOD_CACHE_FORMAT_VERSION = 2,
+  // 3: generated seas fill the voxel holding the sea block row.
+  LOD_CACHE_FORMAT_VERSION = 3,
   LOD_CACHE_REGION_SHIFT = 3,
   LOD_CACHE_REGION_COLUMNS = 1 << LOD_CACHE_REGION_SHIFT,
   // Sections one column may hold: the world's height range spans 36 level-1

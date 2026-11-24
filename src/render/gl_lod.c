@@ -5,6 +5,7 @@
 #include "render/gl_internal.h"
 #include "render/gl_math.h"
 #include "world/block_system.h"
+#include "world/chunk.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -282,7 +283,8 @@ static const void *BufferOffset(size_t Offset) {
   return Converted.Pointer;
 }
 
-static LodProgram LoadLodProgram(const char *FragmentPath, const LodFog *Fog) {
+static LodProgram LoadLodProgram(const char *FragmentPath, const LodFog *Fog,
+                                  bool DrawSkirts) {
   LodProgram Result = {0};
   Result.Program = GlLinkShaderProgram("assets/shaders/lod.vert", FragmentPath);
   Result.ViewProj = glGetUniformLocation(Result.Program, "uViewProj");
@@ -298,6 +300,8 @@ static LodProgram LoadLodProgram(const char *FragmentPath, const LodFog *Fog) {
   glUniform3fv(glGetUniformLocation(Result.Program, "uFogColor"), 1, Fog->Color);
   glUniform1f(glGetUniformLocation(Result.Program, "uNearFarReciprocal"),
               (float)(1.0 / (GL_MATH_CULL_FAR - LOD_NEAR_FAR_CLIP_OFFSET)));
+  glUniform1i(glGetUniformLocation(Result.Program, "uDrawSkirts"), DrawSkirts ? 1 : 0);
+  glUniform1i(glGetUniformLocation(Result.Program, "uSeaLevel"), SEA_LEVEL);
   glUseProgram(0);
   return Result;
 }
@@ -699,9 +703,9 @@ bool GlLodInit(GLuint SharedIndexBuffer, const GlLodOptions *Options) {
                 .End = Options->FogEnd,
                 .Color = {Options->FogColor[0], Options->FogColor[1],
                           Options->FogColor[2]}};
-  State->Opaque = LoadLodProgram("assets/shaders/lod_opaque.frag", &Fog);
-  State->Border = LoadLodProgram("assets/shaders/lod_border.frag", &Fog);
-  State->Translucent = LoadLodProgram("assets/shaders/lod_translucent.frag", &Fog);
+  State->Opaque = LoadLodProgram("assets/shaders/lod_opaque.frag", &Fog, false);
+  State->Border = LoadLodProgram("assets/shaders/lod_border.frag", &Fog, true);
+  State->Translucent = LoadLodProgram("assets/shaders/lod_translucent.frag", &Fog, false);
   State->Cull = LoadCullProgram();
   if (State->HizEnabled) {
     State->Hiz = LoadHizProgram();

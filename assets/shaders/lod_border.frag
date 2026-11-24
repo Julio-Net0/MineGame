@@ -17,6 +17,9 @@ in vec4 fragColor;
 in float fragLayer;
 in float fragOverlayLayer;
 in vec3 fragProbe;
+in vec3 fragCutProbe;
+in vec3 fragSkirtProbe;
+flat in uint fragSkirt;
 
 uniform sampler2DArray uBlockArray;
 uniform usampler2D uCoverage;
@@ -59,11 +62,11 @@ vec4 SampleBase() {
     return base;
 }
 
-bool CoveredByChunks() {
+bool CoveredByChunks(vec3 probe) {
     if (gl_FragCoord.w <= uNearFarReciprocal) {
         return false;
     }
-    ivec3 block = ivec3(floor(fragProbe + uCameraFrac + vec3(0.5))) + uCameraBlock;
+    ivec3 block = ivec3(floor(probe + uCameraFrac + vec3(0.5))) + uCameraBlock;
     ivec2 column = ivec2(floor(vec2(block.xz) / 16.0));
     ivec2 cameraColumn = ivec2(floor(vec2(uCameraBlock.xz) / 16.0));
     ivec2 offset = abs(column - cameraColumn);
@@ -75,7 +78,12 @@ bool CoveredByChunks() {
 }
 
 void main() {
-    if (CoveredByChunks()) {
+    if (CoveredByChunks(fragCutProbe)) {
+        discard;
+    }
+    // A skirt stands where its neighbour's column is cut away; between two
+    // LOD columns it would only hide inside the neighbour's voxel.
+    if (fragSkirt != 0u && !CoveredByChunks(fragSkirtProbe)) {
         discard;
     }
     vec4 base = SampleBase();

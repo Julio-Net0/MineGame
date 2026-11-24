@@ -6,6 +6,7 @@
 #include "render/renderer.h"
 #include "world/biome.h"
 #include "world/block_system.h"
+#include "world/cave_fields.h"
 #include "world/chunk.h"
 
 #include <stdbool.h>
@@ -371,7 +372,7 @@ static void AddGreedyFaceToMeshBuilder(VoxelMesher *State, MeshTarget Target,
                                        int W, int H,
                                        int TexIndex, int OverlaySlot,
                                        const int Ao[4], uint16_t Tint565,
-                                       bool FlipQuad) {
+                                       bool FlipQuad, uint32_t Flags) {
     if (!MesherHasRoom(State, Target)) { return; }
 
     int Coords[VERTICES_PER_FACE][3];
@@ -423,6 +424,7 @@ static void AddGreedyFaceToMeshBuilder(VoxelMesher *State, MeshTarget Target,
         Corners[Corner] = PackChunkVertex(
             Coords[Corner][0], Coords[Corner][1], Coords[Corner][2],
             TileU[Corner], TileV[Corner], Ao[Corner], (int)Face, Word1);
+        Corners[Corner].Word0 |= Flags;
     }
 
     EmitQuadVertices(&State->Sets[Target], Corners, FlipQuad);
@@ -637,6 +639,51 @@ static Color8 LodFaceTint(const VoxelLodBiomes *Biomes, int Lx, int Ly, int Lz,
     return GetBiomeTint((int)LodBiomeAt(Biomes, Lx, Ly, Lz), Def->Tint);
 }
 
+// Fills the mask cell of the face at (U, V) of a slice. Skirt faces stand
+// against solid neighbours, so ambient occlusion would read them fully dark;
+// they take none.
+static void FillFaceCell(const ChunkSnapshot *Snap, const VoxelLodBiomes *LodBiomes,
+                         const FaceDir *Fd, int Slice, int U, int V, bool Skirt,
+                         FaceMaskData *Cell) {
+    int Lpos[3];
+    Lpos[Fd->NormalAxis] = Slice;
+    Lpos[Fd->UAxis] = U;
+    Lpos[Fd->VAxis] = V;
+    int Lx = Lpos[0];
+    int Ly = Lpos[1];
+    int Lz = Lpos[2];
+
+    BlockID Id = Snap->Blocks[Lx + 1][Ly + 1][Lz + 1];
+    BlockType *Def = GetBlockDef(Id);
+    bool Translucent = Def->IsTransparent;
+
+    Cell->BlockId  = Id;
+    Cell->TexIndex = (uint16_t)GetFaceTex(Def, Fd->Face);
+    if (Skirt) {
+        for (int Corner = 0; Corner < VERTICES_PER_FACE; Corner++) {
+            Cell->Ao[Corner] = 0;
+        }
+        Cell->FlipQuad = false;
+    } else {
+        Cell->FlipQuad = ComputeFaceAO(Snap, Lx, Ly, Lz, Fd->Face, Cell->Ao);
+    }
+
+    int Wx = (Snap->ChunkX * CHUNK_SIZE) + Lx;
+    int Wy = (Snap->ChunkY * CHUNK_SIZE) + Ly;
+    int Wz = (Snap->ChunkZ * CHUNK_SIZE) + Lz;
+    // Each target keeps the tint its faces had before translucent
+    // merging existed: the translucent faces never took the grass
+    // bottom-face exception GetFaceTint applies.
+    Color8 Tint;
+    if (LodBiomes != NULL) {
+        Tint = LodFaceTint(LodBiomes, Lx, Ly, Lz, Def, Fd->Face, Translucent);
+    } else {
+        Tint = Translucent ? ComputeBlockTint(Snap, Wx, Wy, Wz, Def)
+                           : GetFaceTint(Snap, Wx, Wy, Wz, Def, Fd->Face);
+    }
+    Cell->Tint565 = ColorToRgb565(Tint);
+}
+
 static int BuildSliceMask(const ChunkSnapshot *Snap, const CullColumns *Cols,
                           const VoxelLodBiomes *LodBiomes, const FaceDir *Fd,
                           int Slice, FaceMaskData Mask[CHUNK_SIZE][CHUNK_SIZE],
@@ -648,43 +695,17 @@ static int BuildSliceMask(const ChunkSnapshot *Snap, const CullColumns *Cols,
         while (Bits != 0U) {
             int V = __builtin_ctz(Bits);
             Bits &= Bits - 1U;
-
-            int Lpos[3];
-            Lpos[Fd->NormalAxis] = Slice;
-            Lpos[Fd->UAxis] = U;
-            Lpos[Fd->VAxis] = V;
-            int Lx = Lpos[0];
-            int Ly = Lpos[1];
-            int Lz = Lpos[2];
-
-            BlockID Id = Snap->Blocks[Lx + 1][Ly + 1][Lz + 1];
-            BlockType *Def = GetBlockDef(Id);
-            bool Translucent = Def->IsTransparent;
-
-            FaceMaskData *Cell = &Mask[U][V];
-            Cell->BlockId  = Id;
-            Cell->TexIndex = (uint16_t)GetFaceTex(Def, Fd->Face);
-            Cell->FlipQuad = ComputeFaceAO(Snap, Lx, Ly, Lz, Fd->Face, Cell->Ao);
-
-            int Wx = (Snap->ChunkX * CHUNK_SIZE) + Lx;
-            int Wy = (Snap->ChunkY * CHUNK_SIZE) + Ly;
-            int Wz = (Snap->ChunkZ * CHUNK_SIZE) + Lz;
-            // Each target keeps the tint its faces had before translucent
-            // merging existed: the translucent faces never took the grass
-            // bottom-face exception GetFaceTint applies.
-            Color8 Tint;
-            if (LodBiomes != NULL) {
-                Tint = LodFaceTint(LodBiomes, Lx, Ly, Lz, Def, Fd->Face,
-                                   Translucent);
-            } else {
-                Tint = Translucent ? ComputeBlockTint(Snap, Wx, Wy, Wz, Def)
-                                   : GetFaceTint(Snap, Wx, Wy, Wz, Def, Fd->Face);
-            }
-            Cell->Tint565 = ColorToRgb565(Tint);
+            FillFaceCell(Snap, LodBiomes, Fd, Slice, U, V, false, &Mask[U][V]);
             FaceCount++;
         }
     }
     return FaceCount;
+}
+
+// Blocks whose LOD faces carry VOXEL_LOD_FLAG_SEA: the sea and its frozen top.
+static bool IsSeaSurfaceBlock(BlockID Id) {
+    return Id != BLOCK_ID_AIR &&
+           (Id == TerrainFluidBlock(CAVE_FLUID_WATER) || Id == TerrainIceBlockId());
 }
 
 // Whether the face at (U, V) is still unmerged and can join Origin's rectangle.
@@ -700,7 +721,8 @@ static bool CellMerges(const FaceMaskData *Origin,
 // rectangle only ever consumes cells at or past its own origin's V.
 static void ScanGreedyMask(FaceMaskData Mask[CHUNK_SIZE][CHUNK_SIZE],
                            uint16_t Avail[CHUNK_SIZE],
-                           const FaceDir *Fd, int Slice, VoxelMesher *State) {
+                           const FaceDir *Fd, int Slice, VoxelMesher *State,
+                           uint32_t Flags) {
     for (int U0 = 0; U0 < CHUNK_SIZE; U0++) {
         while (Avail[U0] != 0U) {
             int V0 = __builtin_ctz(Avail[U0]);
@@ -741,9 +763,15 @@ static void ScanGreedyMask(FaceMaskData Mask[CHUNK_SIZE][CHUNK_SIZE],
                                                    : MESH_TARGET_OPAQUE;
             // The LOD blends only what a viewer sees through; leaves stay
             // opaque (see VoxelMeshLodSection).
-            if (State->LodBiomes != NULL && Target == MESH_TARGET_TRANSLUCENT &&
-                !RenderBlockLayerSeeThrough(Origin->TexIndex)) {
-                Target = MESH_TARGET_OPAQUE;
+            uint32_t FaceFlags = Flags;
+            if (State->LodBiomes != NULL) {
+                if (Target == MESH_TARGET_TRANSLUCENT &&
+                    !RenderBlockLayerSeeThrough(Origin->TexIndex)) {
+                    Target = MESH_TARGET_OPAQUE;
+                }
+                if (IsSeaSurfaceBlock(Origin->BlockId)) {
+                    FaceFlags |= VOXEL_LOD_FLAG_SEA;
+                }
             }
 
             AddGreedyFaceToMeshBuilder(State, Target, Fd->Face,
@@ -752,7 +780,7 @@ static void ScanGreedyMask(FaceMaskData Mask[CHUNK_SIZE][CHUNK_SIZE],
                                        Origin->TexIndex,
                                        GetFaceOverlay(Def, Fd->Face),
                                        Origin->Ao, Origin->Tint565,
-                                       Origin->FlipQuad);
+                                       Origin->FlipQuad, FaceFlags);
 
             uint32_t Span = ((1U << (uint32_t)H) - 1U) << (uint32_t)V0;
             for (int Ku = 0; Ku < W; Ku++) {
@@ -762,9 +790,87 @@ static void ScanGreedyMask(FaceMaskData Mask[CHUNK_SIZE][CHUNK_SIZE],
     }
 }
 
+// A skirt is the side face of a LOD voxel toward a solid neighbour within
+// LOD_SKIRT_DEPTH voxels of the open cell above it, across a chunk column
+// plane. The border pass cuts a section at those planes (every voxel in a 1:1
+// column is discarded), and a covered voxel's top can stand above the real
+// terrain it stands for (a level-1 voxel is two blocks tall): the face that
+// closes the step from the open side was culled against that voxel, so
+// without the skirt the view runs into the section's hollow interior and
+// shows the sky. Only the border pass draws skirts, and only toward a 1:1
+// column; anywhere else they would hide inside the neighbour's top voxel.
+// See-through faces get none: they would lay a second water surface where
+// the view already crossed the 1:1 one.
+enum { LOD_SKIRT_DEPTH = 4 };
+
+static uint32_t SkirtRowBits(const CullColumns *Cols, const FaceDir *Fd,
+                             int Slice, int U) {
+    int Self = Slice + 1;
+    int Next = Self + Fd->NormalDir;
+    int Across = U + 1;
+    uint32_t SelfEmits;
+    uint32_t NextPasses;
+    if (Fd->NormalAxis == 0) {
+        SelfEmits = Cols->EmitsY[Self][Across];
+        NextPasses = Cols->PassesY[Next][Across];
+    } else {
+        SelfEmits = Cols->EmitsY[Across][Self];
+        NextPasses = Cols->PassesY[Across][Next];
+    }
+    uint32_t NearOpen = 0;
+    for (uint32_t Depth = 1; Depth <= (uint32_t)LOD_SKIRT_DEPTH; Depth++) {
+        NearOpen |= NextPasses >> Depth;
+    }
+    uint32_t Skirts = SelfEmits & ~NextPasses & NearOpen & CULL_INTERIOR_BITS;
+    return (Skirts >> 1U) & CULL_LOCAL_BITS;
+}
+
+// Whether the LOD draws this block's face blended (see ScanGreedyMask).
+static bool LodFaceSeeThrough(BlockID Id, BlockFace Face) {
+    BlockType *Def = GetBlockDef(Id);
+    return Def->IsTransparent && RenderBlockLayerSeeThrough(GetFaceTex(Def, Face));
+}
+
+static void BuildLodSkirtPass(const ChunkSnapshot *Snap, const CullColumns *Cols,
+                              const FaceDir *Fd, VoxelMesher *State) {
+    FaceMaskData Mask[CHUNK_SIZE][CHUNK_SIZE];
+    uint16_t Rows[CHUNK_SIZE];
+    for (int Slice = 0; Slice < CHUNK_SIZE; Slice++) {
+        int Plane = (Fd->NormalDir > 0) ? Slice + 1 : Slice;
+        if (Plane % State->LodSkirtPeriod != 0) {
+            continue;
+        }
+        int FaceCount = 0;
+        for (int U = 0; U < CHUNK_SIZE; U++) {
+            uint32_t Bits = SkirtRowBits(Cols, Fd, Slice, U);
+            uint32_t Kept = 0;
+            while (Bits != 0U) {
+                int V = __builtin_ctz(Bits);
+                Bits &= Bits - 1U;
+                int Lpos[3];
+                Lpos[Fd->NormalAxis] = Slice;
+                Lpos[Fd->UAxis] = U;
+                Lpos[Fd->VAxis] = V;
+                if (LodFaceSeeThrough(Snap->Blocks[Lpos[0] + 1][Lpos[1] + 1][Lpos[2] + 1],
+                                      Fd->Face)) {
+                    continue;
+                }
+                FillFaceCell(Snap, State->LodBiomes, Fd, Slice, U, V, true, &Mask[U][V]);
+                Kept |= 1U << (uint32_t)V;
+                FaceCount++;
+            }
+            Rows[U] = (uint16_t)Kept;
+        }
+        if (FaceCount > 0) {
+            ScanGreedyMask(Mask, Rows, Fd, Slice, State, VOXEL_LOD_FLAG_SKIRT);
+        }
+    }
+}
+
 // Greedy merging for both cube targets. Translucent faces merge under the same
 // rules as opaque ones; the translucent pass draws whole chunks back to front
 // and never ordered the faces inside one, so merging changes no ordering.
+// Skirts follow their direction's faces, so they share its culling run.
 static void BuildGreedyFacePass(const ChunkSnapshot *Snap, const CullColumns *Cols,
                                 const FaceDir *Fd, VoxelMesher *State) {
     FaceMaskData Mask[CHUNK_SIZE][CHUNK_SIZE];
@@ -772,8 +878,11 @@ static void BuildGreedyFacePass(const ChunkSnapshot *Snap, const CullColumns *Co
     for (int Slice = 0; Slice < CHUNK_SIZE; Slice++) {
         if (BuildSliceMask(Snap, Cols, State->LodBiomes, Fd, Slice, Mask,
                            Rows) > 0) {
-            ScanGreedyMask(Mask, Rows, Fd, Slice, State);
+            ScanGreedyMask(Mask, Rows, Fd, Slice, State, 0U);
         }
+    }
+    if (State->LodSkirtPeriod > 0 && Fd->NormalAxis != 1) {
+        BuildLodSkirtPass(Snap, Cols, Fd, State);
     }
 }
 
@@ -835,7 +944,7 @@ static void BuildRockCapPass(const ChunkSnapshot *Snap, const CullColumns *Cols,
                 Cell->Tint565 = ColorToRgb565(Tint);
             }
         }
-        ScanGreedyMask(Mask, Rows, Fd, RockSlice, State);
+        ScanGreedyMask(Mask, Rows, Fd, RockSlice, State, 0U);
     }
 }
 
@@ -919,6 +1028,7 @@ static void ResetMesher(VoxelMesher *Mesher, const VoxelLodBiomes *LodBiomes) {
         Mesher->Sets[Target].VCount = 0;
     }
     Mesher->LodBiomes = LodBiomes;
+    Mesher->LodSkirtPeriod = 0;
     Mesher->Truncated = false;
 }
 
@@ -1082,5 +1192,12 @@ void VoxelMeshLodSection(VoxelMesher *Mesher, VoxelLodScratch *Scratch,
     Scratch->Biomes.OriginX = Place->X * SectionBlocks;
     Scratch->Biomes.OriginZ = Place->Z * SectionBlocks;
     ResetMesher(Mesher, &Scratch->Biomes);
+    // Up to level 3 a voxel is narrower than a chunk, so the 1:1 columns cut
+    // the section every CHUNK_SIZE >> Level voxels. Coarser sections reach the
+    // 1:1 edge only where no finer data exists, and would pay skirts on every
+    // voxel boundary.
+    if (Place->Skirts && Place->Level >= 1 && Place->Level <= VOXEL_LOD_SKIRT_MAX_LEVEL) {
+        Mesher->LodSkirtPeriod = CHUNK_SIZE >> Place->Level;
+    }
     BuildCubeFaces(Mesher, Grid);
 }

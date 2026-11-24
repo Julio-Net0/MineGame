@@ -12,6 +12,7 @@ in vec4 fragColor;
 in float fragLayer;
 in float fragOverlayLayer;
 in vec3 fragProbe;
+in vec3 fragCutProbe;
 
 uniform sampler2DArray uBlockArray;
 uniform usampler2D uCoverage;
@@ -43,7 +44,7 @@ bool CoveredByChunks() {
     if (gl_FragCoord.w <= uNearFarReciprocal) {
         return false;
     }
-    ivec3 block = ivec3(floor(fragProbe + uCameraFrac + vec3(0.5))) + uCameraBlock;
+    ivec3 block = ivec3(floor(fragCutProbe + uCameraFrac + vec3(0.5))) + uCameraBlock;
     ivec2 column = ivec2(floor(vec2(block.xz) / 16.0));
     ivec2 cameraColumn = ivec2(floor(vec2(uCameraBlock.xz) / 16.0));
     ivec2 offset = abs(column - cameraColumn);

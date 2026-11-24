@@ -23,6 +23,14 @@ uniform mat4 uViewProj;
 uniform ivec3 uCameraBlock;
 uniform vec3 uCameraFrac;
 uniform int uOverlayLayers[16];
+// Skirt faces (word 0 bit 30) close the cut the border pass makes at the 1:1
+// columns; every other pass collapses them.
+uniform bool uDrawSkirts;
+// Sea faces (word 0 bit 31): water and sea ice. A level's sea ends on the top
+// of the voxel holding the sea block row, 2^L - 1 blocks above the 1:1 sea's
+// top; that line moves onto it, so the LOD sea meets the 1:1 sea (and every
+// level meets every other) at one height.
+uniform int uSeaLevel;
 
 out vec2 fragTexCoord;
 out vec4 fragColor;
@@ -32,6 +40,18 @@ out float fragOverlayLayer;
 // variant's coverage lookup: a face on a chunk boundary belongs to the chunk
 // its voxel is in.
 out vec3 fragProbe;
+// fragProbe moved PROBE_INSET into the quad along its two edges' axes, for
+// the 1:1 cut: a quad edge on a chunk column plane puts its probes on the
+// plane, where interpolation can carry a fragment's probe a hair into the
+// next column, so the cut would take or keep a row of pixels by rounding.
+// Inset, every fragment is judged by its own quad's side.
+out vec3 fragCutProbe;
+// A skirt's neighbour, half a block across the face (inset the same way): the
+// skirt is kept only where that voxel's column is 1:1.
+out vec3 fragSkirtProbe;
+flat out uint fragSkirt;
+
+const float PROBE_INSET = 1.0 / 64.0;
 
 const vec3 FACE_NORMALS[6] = vec3[6](
     vec3(0.0, 1.0, 0.0), vec3(0.0, -1.0, 0.0), vec3(-1.0, 0.0, 0.0),
@@ -41,6 +61,12 @@ void main() {
     ivec4 meta = Sections[aSectionIndex];
     uint w0 = aPackedVertex.x;
     uint w1 = aPackedVertex.y;
+    fragSkirt = (w0 >> 30u) & 1u;
+    if (fragSkirt != 0u && !uDrawSkirts) {
+        // All of a quad's vertices land on one point: nothing is rasterised.
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+        return;
+    }
 
     vec3 localPos = vec3(
         float( w0         & 31u),
@@ -77,7 +103,30 @@ void main() {
     float scale = float(meta.w);
     vec3 relative = vec3(meta.xyz - uCameraBlock) + (localPos * scale) -
                     vec3(0.5) - uCameraFrac;
+    if (((w0 >> 31u) & 1u) != 0u) {
+        // Block row whose bottom this vertex's voxel line is.
+        int lineY = meta.y + (int(localPos.y) * meta.w);
+        int seaVoxelTop = (uSeaLevel >> findLSB(meta.w) << findLSB(meta.w)) + meta.w;
+        if (lineY == seaVoxelTop) {
+            relative.y -= float(seaVoxelTop - (uSeaLevel + 1));
+        }
+    }
     uint normal = min((w0 >> 27u) & 7u, 5u);
     fragProbe = relative - (FACE_NORMALS[normal] * 0.5);
+    // Towards the quad's inside along x and z, from which end of the face's
+    // tile axes this vertex sits on (see AddGreedyFaceToMeshBuilder).
+    float alongU = (((w0 >> 15u) & 31u) == 0u) ? 1.0 : -1.0;
+    float alongV = (((w0 >> 20u) & 31u) == 0u) ? 1.0 : -1.0;
+    vec3 inward = vec3(0.0);
+    switch (normal) {
+        case 0u: inward = vec3(alongU, 0.0, alongV); break;
+        case 1u: inward = vec3(alongU, 0.0, -alongV); break;
+        case 2u: inward = vec3(0.0, 0.0, alongU); break;
+        case 3u: inward = vec3(0.0, 0.0, -alongU); break;
+        case 4u: inward = vec3(alongU, 0.0, 0.0); break;
+        default: inward = vec3(-alongU, 0.0, 0.0); break;
+    }
+    fragCutProbe = fragProbe + (inward * PROBE_INSET);
+    fragSkirtProbe = relative + (FACE_NORMALS[normal] * 0.5) + (inward * PROBE_INSET);
     gl_Position = uViewProj * vec4(relative, 1.0);
 }

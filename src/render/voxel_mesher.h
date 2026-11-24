@@ -64,6 +64,10 @@ typedef struct {
   // One biome per interior cell, for LOD sections; NULL for chunks, whose tint
   // blends the snapshot's biome cells.
   const struct VoxelLodBiomes *LodBiomes;
+  // LOD sections only: voxels between two chunk column planes, where the
+  // section is cut against the 1:1 chunks and closes the cut with skirt faces
+  // (see BuildLodSkirtPass); 0 emits none.
+  int LodSkirtPeriod;
   // A target filled up and faces were dropped.
   bool Truncated;
 } VoxelMesher;
@@ -115,6 +119,9 @@ typedef struct {
   int X;
   int Y;
   int Z;
+  // Mesh skirt faces (levels 1..VOXEL_LOD_SKIRT_MAX_LEVEL only): sections the
+  // border pass draws ask for them.
+  bool Skirts;
 } VoxelLodPlace;
 
 // Meshes a LOD section (any level) into the same 8-byte vertices as a chunk,
@@ -131,6 +138,14 @@ typedef struct {
 // TransitionFaces (bit per face, ChunkFace order) marks neighbours drawn at
 // another level: their faces are meshed as if the neighbour held this
 // section's own see-through blocks and air elsewhere (see FillTransitionMargin).
+// Two LOD-only vertex flags use the packed vertex's spare top bits (lod.vert
+// reads them): VOXEL_LOD_FLAG_SKIRT on skirt faces, drawn only where the
+// section is cut against the 1:1 chunks, and VOXEL_LOD_FLAG_SEA on water and
+// sea-ice faces, whose sea-level lines the shader moves onto the 1:1 sea.
+// Skirts are meshed up to this level (see VoxelMeshLodSection).
+enum { VOXEL_LOD_SKIRT_MAX_LEVEL = 3 };
+#define VOXEL_LOD_FLAG_SKIRT (UINT32_C(1) << 30U)
+#define VOXEL_LOD_FLAG_SEA (UINT32_C(1) << 31U)
 void VoxelMeshLodSection(VoxelMesher *Mesher, VoxelLodScratch *Scratch,
                          const LodSection *Section, const VoxelLodPlace *Place,
                          const LodSection *const Neighbours[VOXEL_LOD_NEIGHBOURS],

@@ -105,6 +105,9 @@ typedef struct {
   bool Stale;
   // Faces the mesh treated as level transitions (see VoxelMeshLodSection).
   uint8_t Transitions;
+  // The mesh carries skirts: only border draws use them, so only their
+  // sections pay for them.
+  bool Skirted;
 } CacheEntry;
 
 // A selected section whose mesh is missing or out of date, queued so the
@@ -426,6 +429,39 @@ static SectionCoverage CoverageOf(const LodRendererState *State,
   return Gap ? COVERAGE_PARTIAL : COVERAGE_FULL;
 }
 
+static bool CoveredInRange(const LodRendererState *State, const SelectContext *Ctx,
+                           int ChunkX, int ChunkZ) {
+  int OffsetX = abs(ChunkX - Ctx->CameraChunkX);
+  int OffsetZ = abs(ChunkZ - Ctx->CameraChunkZ);
+  if (OffsetX > COVERAGE_RANGE || OffsetZ > COVERAGE_RANGE) {
+    return false;
+  }
+  return ColumnCovered(State, ColumnIndex(ChunkX, ChunkZ));
+}
+
+// Whether a section with no 1:1 column of its own has one beside its sides.
+// Its skirts on that side close the cut there (see BuildLodSkirtPass), and
+// only the border pass draws skirts, so such a section is drawn by it too.
+// Sections coarser than the last skirted level carry none.
+static bool BesideCoverage(const LodRendererState *State, const SelectContext *Ctx,
+                           int Level, int X, int Z) {
+  if (Level > VOXEL_LOD_SKIRT_MAX_LEVEL) {
+    return false;
+  }
+  int Size = 1 << Level;
+  int ChunkX0 = X * Size;
+  int ChunkZ0 = Z * Size;
+  for (int Along = 0; Along < Size; Along++) {
+    if (CoveredInRange(State, Ctx, ChunkX0 - 1, ChunkZ0 + Along) ||
+        CoveredInRange(State, Ctx, ChunkX0 + Size, ChunkZ0 + Along) ||
+        CoveredInRange(State, Ctx, ChunkX0 + Along, ChunkZ0 - 1) ||
+        CoveredInRange(State, Ctx, ChunkX0 + Along, ChunkZ0 + Size)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // --- mesh cache ------------------------------------------------------------------
 
 static uint64_t CacheHash(int Level, int X, int Y, int Z) {
@@ -576,7 +612,7 @@ static int BuildFaceRuns(const ChunkVertex *Vertices, int Count, RenderLodRun *R
 // the arena had no room for.
 static int MeshSection(LodRendererState *State, const LodStore *Store,
                        const LodSection *Section, int Level, int X, int Y, int Z,
-                       unsigned Transitions, RenderLodMesh *OutMesh) {
+                       unsigned Transitions, bool Skirts, RenderLodMesh *OutMesh) {
   static const int OFFSETS[VOXEL_LOD_NEIGHBOURS][3] = {
       {-1, 0, 0}, {1, 0, 0}, {0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}};
   const LodSection *Neighbours[VOXEL_LOD_NEIGHBOURS];
@@ -585,7 +621,7 @@ static int MeshSection(LodRendererState *State, const LodStore *Store,
                                     Y + OFFSETS[Face][1], Z + OFFSETS[Face][2]);
   }
   PROFILE_BEGIN(MeshStart);
-  VoxelLodPlace Place = {.Level = Level, .X = X, .Y = Y, .Z = Z};
+  VoxelLodPlace Place = {.Level = Level, .X = X, .Y = Y, .Z = Z, .Skirts = Skirts};
   VoxelMeshLodSection(State->Mesher, State->Scratch, Section, &Place, Neighbours,
                       Transitions);
   // One mesh: the opaque (and cutout) faces, then the translucent ones,
@@ -620,9 +656,9 @@ static int MeshSection(LodRendererState *State, const LodStore *Store,
 }
 
 static bool MeshCurrent(const CacheEntry *Entry, const LodSection *Section,
-                        unsigned Transitions) {
+                        unsigned Transitions, bool Skirts) {
   return Entry != NULL && Entry->Revision == Section->Revision && !Entry->Stale &&
-         Entry->Transitions == Transitions &&
+         Entry->Transitions == Transitions && Entry->Skirted == Skirts &&
          (Entry->Mesh != RENDER_LOD_MESH_INVALID || Entry->VertexCount == 0);
 }
 
@@ -633,7 +669,7 @@ static bool MeshPending(LodRendererState *State, SelectContext *Ctx,
   RenderLodMesh Mesh = RENDER_LOD_MESH_INVALID;
   int Count = MeshSection(State, Ctx->Store, Pending->Section, Pending->Level,
                           Pending->X, Pending->Y, Pending->Z, Pending->Transitions,
-                          &Mesh);
+                          Pending->Border, &Mesh);
   Ctx->Attempts++;
   if (Count > 0 && Mesh == RENDER_LOD_MESH_INVALID) {
     Ctx->StarvedVertices = Count;
@@ -655,6 +691,7 @@ static bool MeshPending(LodRendererState *State, SelectContext *Ctx,
   Entry->Revision = Pending->Section->Revision;
   Entry->Stale = false;
   Entry->Transitions = Pending->Transitions;
+  Entry->Skirted = Pending->Border;
   Entry->LastFrame = State->Frame;
   Entry->DistSq = Pending->DistSq;
   *InOutEntry = Entry;
@@ -875,6 +912,7 @@ static void SelectSection(LodRendererState *State, SelectContext *Ctx, int Level
     return;
   }
   SectionCoverage Coverage = CoverageOf(State, Ctx, Level, X, Z);
+  bool Beside = Coverage == COVERAGE_NONE && BesideCoverage(State, Ctx, Level, X, Z);
   bool FarStraddles = false;
   if (Coverage != COVERAGE_NONE) {
     bool AllPast = false;
@@ -912,7 +950,7 @@ static void SelectSection(LodRendererState *State, SelectContext *Ctx, int Level
     State->Walked[Ctx->WalkedCount++] = (PendingMesh){
         .Section = Section, .Level = Level, .X = X, .Y = Y, .Z = Z,
         .DistSq = SectionDistSq(Ctx, Level, X, Y, Z), .Key = Key,
-        .Border = Coverage == COVERAGE_PARTIAL || FarStraddles};
+        .Border = Coverage == COVERAGE_PARTIAL || FarStraddles || Beside};
   }
 }
 
@@ -959,7 +997,7 @@ static void ResolveWalk(LodRendererState *State, SelectContext *Ctx) {
       Entry->LastFrame = State->Frame;
       Entry->DistSq = Walk.DistSq;
     }
-    if (MeshCurrent(Entry, Walk.Section, Walk.Transitions)) {
+    if (MeshCurrent(Entry, Walk.Section, Walk.Transitions, Walk.Border)) {
       AddDraw(State, Ctx, Entry, Walk.Level, Walk.X, Walk.Y, Walk.Z, Walk.Border,
               Walk.Key);
     } else if (Ctx->PendingCount < MAX_DRAWS) {

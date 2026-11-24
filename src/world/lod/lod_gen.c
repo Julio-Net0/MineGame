@@ -73,14 +73,11 @@ void LodGenScratchFree(LodGenScratch *Scratch) { free(Scratch); }
 static int MinInt(int A, int B) { return (A < B) ? A : B; }
 static int MaxInt(int A, int B) { return (A > B) ? A : B; }
 
-// The highest voxel wholly at or below the sea level. Every level's sea then
-// ends at the same height, the top of the sea level block row's voxel
-// boundary, so the water of neighbouring levels meets without a step (a voxel
-// merely touching the sea would put each level's surface 2^L blocks higher,
-// and the crack between them shows the sea floor).
-static int SeaTopVoxel(int Level) {
-  return LodFloorShift(SEA_LEVEL + 1, Level) - 1;
-}
+// The voxel holding the sea level block row, the one a downsampled 1:1 sea
+// fills too, so generated and ingested seas cover the same shallows. Its top
+// lies 2^L - 1 blocks above the 1:1 sea; lod.vert moves it onto the 1:1 sea's
+// top on every level, so the levels and the chunks meet without a step.
+static int SeaTopVoxel(int Level) { return LodFloorShift(SEA_LEVEL, Level); }
 
 static int SampleTop(int X, int Z, uint64_t Seed) {
   int Top = GetTerrainTopOnLattice(X, Z, Seed);
