@@ -15,6 +15,7 @@
 #include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -34,6 +35,7 @@ typedef struct {
   bool TestProtocol;
   bool TestWorldgen;
   bool TestLod;
+  bool ShowHelp;
   int CoreCount;
   double CpuSlowdown;
   size_t RamLimitMb;
@@ -116,6 +118,7 @@ static ServerLaunchOptions ParseServerOptions(int Argc, char **Argv) {
       .TestProtocol = false,
       .TestWorldgen = false,
       .TestLod = false,
+      .ShowHelp = false,
       .CoreCount = 0,
       .CpuSlowdown = 1.0,
       .RamLimitMb = 0,
@@ -123,6 +126,10 @@ static ServerLaunchOptions ParseServerOptions(int Argc, char **Argv) {
 
   for (int Idx = 1; Idx < Argc; Idx++) {
     const char *Arg = Argv[Idx];
+    if (strcmp(Arg, "--help") == 0 || strcmp(Arg, "-h") == 0) {
+      Options.ShowHelp = true;
+      continue;
+    }
     if (strcmp(Arg, "--read-only") == 0) {
       Options.Config.ReadOnly = true;
       continue;
@@ -150,7 +157,8 @@ static ServerLaunchOptions ParseServerOptions(int Argc, char **Argv) {
                       (strcmp(Arg, "--workers") == 0) ||
                       (strcmp(Arg, "--cores") == 0) ||
                       (strcmp(Arg, "--cpu-slowdown") == 0) ||
-                      (strcmp(Arg, "--ram-limit") == 0);
+                      (strcmp(Arg, "--ram-limit") == 0) ||
+                      (strcmp(Arg, "--settle-timeout") == 0);
     if (!NeedsValue) {
       LogWarn("SERVER: unknown launch flag \"%s\"; ignoring", Arg);
       continue;
@@ -224,6 +232,14 @@ static ServerLaunchOptions ParseServerOptions(int Argc, char **Argv) {
         LogWarn("SERVER: --ram-limit must be a positive integer (MB); ignoring \"%s\"",
                 ValueStr);
       }
+    } else if (strcmp(Arg, "--settle-timeout") == 0) {
+      double Value = 0.0;
+      if (ParseStrictDouble(ValueStr, &Value) && Value > 0.0) {
+        Options.Config.SettleTimeoutSeconds = Value;
+      } else {
+        LogWarn("SERVER: --settle-timeout must be a positive number; ignoring \"%s\"",
+                ValueStr);
+      }
     }
   }
 
@@ -258,11 +274,42 @@ static void ApplyProcessLimits(const ServerLaunchOptions *Options) {
 #endif
 }
 
+static void PrintServerHelp(const char *ProgramName) {
+  const char *Name =
+      (ProgramName != (const char *)0 && ProgramName[0] != '\0')
+          ? ProgramName
+          : "MineGameServer";
+  (void)printf(
+      "Usage: %s [options]\n\n"
+      "Options:\n"
+      "  -h, --help                   Show this help message and exit\n"
+      "  --read-only                  Do not read or write the world save\n"
+      "  --pace-realtime              Pace ticks at real-time 20 Hz\n"
+      "  --ticks <count>              Run for a fixed number of ticks\n"
+      "  --seed <uint64>              Use a fixed world seed\n"
+      "  --render-distance <chunks>   Render distance (%d..%d)\n"
+      "  --workers <count>            Chunk worker threads (1..%d)\n"
+      "  --cores <count>              Limit usable physical cores\n"
+      "  --cpu-slowdown <factor>      Simulate slower CPU (%.1f..%.1f)\n"
+      "  --ram-limit <MB>             Cap process committed memory\n"
+      "  --settle-timeout <seconds>   World settle wait timeout (default %.0f)\n"
+      "  --test-protocol              Run protocol codec self-test\n"
+      "  --test-worldgen              Run worldgen self-test\n"
+      "  --test-lod                   Run LOD self-test\n",
+      Name, MIN_RENDER_DISTANCE, MAX_RENDER_DISTANCE, CHUNK_WORKER_MAX_THREADS,
+      MIN_CPU_SLOWDOWN, MAX_CPU_SLOWDOWN,
+      SERVER_DEFAULT_SETTLE_TIMEOUT_SECONDS);
+}
+
 int main(int Argc, char **Argv) {
   (void)signal(SIGINT, HandleStopSignal);
   (void)signal(SIGTERM, HandleStopSignal);
 
   ServerLaunchOptions Options = ParseServerOptions(Argc, Argv);
+  if (Options.ShowHelp) {
+    PrintServerHelp((Argc > 0 && Argv != (char **)0) ? Argv[0] : (const char *)0);
+    return EXIT_SUCCESS;
+  }
   ApplyProcessLimits(&Options);
 
   if (Options.TestProtocol && !RunProtocolCodecSelfTest()) {

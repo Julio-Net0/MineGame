@@ -113,6 +113,8 @@ typedef struct {
   // --lod-quality low|medium|high (world/lod/lod_quality.h); LOD_QUALITY_UNSET
   // keeps medium.
   int LodQuality;
+  // --help / -h: print supported launch flags and exit.
+  bool ShowHelp;
 } LaunchOptions;
 
 #define LOD_ARENA_MB_DEFAULT 192
@@ -139,6 +141,7 @@ typedef struct {
 #define LOD_FOG_END_MAX 65536
 
 void ParseLaunchOptions(int Argc, char **Argv);
+void PrintLaunchHelp(const char *ProgramName);
 
 // The LOD distance in chunks and the LOD fog end in blocks, defaults applied.
 int LaunchLodDistance(void);

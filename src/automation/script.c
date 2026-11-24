@@ -662,7 +662,8 @@ static bool ParseStatement(char *Statement, int LineNumber) {
     bool IsNear = (TokenCount == 3) && CompareString(Tokens[1], "near") == 0;
     if (!IsFrames && !IsTicks && !IsNear) {
       ParseError(LineNumber,
-                 "expected \"wait loaded\", \"wait profile\", "
+                 "expected \"wait loaded\", \"wait lod_gen\", "
+                 "\"wait lod_cache\", \"wait profile\", "
                  "\"wait near <chunks>\", \"wait ticks <count>\" or "
                  "\"wait frames <count>\"");
       return false;
@@ -703,8 +704,8 @@ static bool ParseStatement(char *Statement, int LineNumber) {
     int Count = 0;
     if (Axis < 0 || !ParsePositiveInt(Tokens[2], &Count)) {
       ParseError(LineNumber,
-                 "expected \"hold <forward|back|left|right|ascend|descend> "
-                 "<ticks>\"");
+                 "expected \"hold <forward|back|left|right|ascend|descend|"
+                 "sprint> <ticks>\"");
       return false;
     }
     return AppendStatement((ScriptStatement){.Kind = SCRIPT_OP_HOLD,
@@ -1295,28 +1296,30 @@ static void ScriptAddLodJson(cJSON *Root) {
   cJSON_AddBoolToObject(Node, "reversedZ", Gpu->ReversedZ);
   cJSON_AddNumberToObject(Node, "glError", (double)Gpu->GlError);
   cJSON *Cull = cJSON_CreateObject();
-  cJSON_AddBoolToObject(Cull, "valid", Gpu->CullValid);
-  cJSON_AddBoolToObject(Cull, "indirectCount", Gpu->IndirectCount);
-  cJSON_AddNumberToObject(Cull, "candidateSections",
-                          Render.OpaqueSections + Render.BorderSections);
-  cJSON_AddNumberToObject(Cull, "frustumCulledSections", Gpu->FrustumCulledSections);
-  cJSON_AddNumberToObject(Cull, "candidateRuns", Gpu->CandidateRuns);
-  cJSON_AddNumberToObject(Cull, "facingCulledRuns", Gpu->FacingCulledRuns);
-  cJSON_AddNumberToObject(Cull, "drawnCommands", Gpu->DrawnCommands);
-  cJSON_AddNumberToObject(Cull, "candidateVertices", (double)Gpu->CandidateVertices);
-  cJSON_AddNumberToObject(Cull, "drawnVertices", (double)Gpu->DrawnVertices);
-  cJSON_AddBoolToObject(Cull, "hiz", Gpu->HiZ);
-  cJSON_AddNumberToObject(Cull, "hizCulled", Gpu->HizCulledSections);
-  cJSON_AddNumberToObject(Cull, "phase1Commands", Gpu->Phase1Commands);
-  cJSON_AddNumberToObject(Cull, "phase2Commands", Gpu->Phase2Commands);
-  cJSON_AddNumberToObject(Cull, "phase1Quads",
-                          (double)Gpu->Phase1Vertices / (double)CHUNK_VERTICES_PER_QUAD);
-  cJSON_AddNumberToObject(Cull, "translucentCommands", Gpu->TranslucentCommands);
-  cJSON_AddNumberToObject(Cull, "translucentQuads",
-                          (double)Gpu->TranslucentVertices / (double)CHUNK_VERTICES_PER_QUAD);
-  cJSON_AddNumberToObject(Cull, "phase2Quads",
-                          (double)Gpu->Phase2Vertices / (double)CHUNK_VERTICES_PER_QUAD);
-  cJSON_AddItemToObject(Node, "cull", Cull);
+  if (Cull != (cJSON *)0) {
+    cJSON_AddBoolToObject(Cull, "valid", Gpu->CullValid);
+    cJSON_AddBoolToObject(Cull, "indirectCount", Gpu->IndirectCount);
+    cJSON_AddNumberToObject(Cull, "candidateSections",
+                            Render.OpaqueSections + Render.BorderSections);
+    cJSON_AddNumberToObject(Cull, "frustumCulledSections", Gpu->FrustumCulledSections);
+    cJSON_AddNumberToObject(Cull, "candidateRuns", Gpu->CandidateRuns);
+    cJSON_AddNumberToObject(Cull, "facingCulledRuns", Gpu->FacingCulledRuns);
+    cJSON_AddNumberToObject(Cull, "drawnCommands", Gpu->DrawnCommands);
+    cJSON_AddNumberToObject(Cull, "candidateVertices", (double)Gpu->CandidateVertices);
+    cJSON_AddNumberToObject(Cull, "drawnVertices", (double)Gpu->DrawnVertices);
+    cJSON_AddBoolToObject(Cull, "hiz", Gpu->HiZ);
+    cJSON_AddNumberToObject(Cull, "hizCulled", Gpu->HizCulledSections);
+    cJSON_AddNumberToObject(Cull, "phase1Commands", Gpu->Phase1Commands);
+    cJSON_AddNumberToObject(Cull, "phase2Commands", Gpu->Phase2Commands);
+    cJSON_AddNumberToObject(Cull, "phase1Quads",
+                            (double)Gpu->Phase1Vertices / (double)CHUNK_VERTICES_PER_QUAD);
+    cJSON_AddNumberToObject(Cull, "translucentCommands", Gpu->TranslucentCommands);
+    cJSON_AddNumberToObject(Cull, "translucentQuads",
+                            (double)Gpu->TranslucentVertices / (double)CHUNK_VERTICES_PER_QUAD);
+    cJSON_AddNumberToObject(Cull, "phase2Quads",
+                            (double)Gpu->Phase2Vertices / (double)CHUNK_VERTICES_PER_QUAD);
+    cJSON_AddItemToObject(Node, "cull", Cull);
+  }
   cJSON_AddItemToObject(Root, "lod", Node);
 }
 
@@ -1934,7 +1937,11 @@ static bool ScriptRunInventory(const ScriptStatement *Step,
       CreativeInventoryHoverEntry(Step->Count - 1);
       return true;
     }
-    return CreativeInventoryPickEntry(Step->Count - 1);
+    if (!CreativeInventoryPickEntry(Step->Count - 1)) {
+      ScriptFail(Step->Line, "could not pick catalog entry");
+      return false;
+    }
+    return true;
   case SCRIPT_INV_PUT:
     if (!CreativeInventoryPutCarried(Step->Count - 1)) {
       ScriptFail(Step->Line, "no block is carried");
@@ -1993,7 +2000,7 @@ void ScriptStep(ChatState *Chat, GameCamera *Camera, Player *PlayerVal,
       char Command[SCRIPT_MAX_TEXT];
       SafeStrncpy(Command, Step->Text, (int)sizeof(Command));
       if (!CommandHandler(Command, Chat, Camera, PlayerVal, WorldVal)) {
-        ScriptFail(Step->Line, "unknown command");
+        ScriptFail(Step->Line, "command failed or unknown");
         return;
       }
       break;

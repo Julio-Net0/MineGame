@@ -125,8 +125,8 @@ void GlfwInputBeginFrame(void) {
   memset(State->ButtonPressed, 0, sizeof(State->ButtonPressed));
   memset(State->ButtonReleased, 0, sizeof(State->ButtonReleased));
   State->CharCount = 0;
-  State->WheelX = 0.0F;
-  State->WheelY = 0.0F;
+  State->WheelX -= truncf(State->WheelX);
+  State->WheelY -= truncf(State->WheelY);
   State->PreviousCursorX = State->CursorX;
   State->PreviousCursorY = State->CursorY;
 }
@@ -191,7 +191,7 @@ PlayerInput PollPlayerInput(bool HasControl) {
 
   Input.Jump = IsKeyPressed(GLFW_KEY_SPACE);
   Input.AscendHeld = IsKeyDown(GLFW_KEY_SPACE);
-  Input.DescendHeld = IsKeyDown(GLFW_KEY_LEFT_SHIFT);
+  Input.DescendHeld = IsShiftDown();
   Input.SprintHeld = IsControlDown();
 
   Input.HotbarSelect = PressedHotbarKey();
@@ -240,7 +240,8 @@ TextInput PollTextInput(void) {
 
   Text.Backspace = IsKeyPressedOrRepeated(GLFW_KEY_BACKSPACE);
   Text.Delete = IsKeyPressedOrRepeated(GLFW_KEY_DELETE);
-  Text.Submit = IsKeyPressed(GLFW_KEY_ENTER);
+  Text.Submit =
+      IsKeyPressed(GLFW_KEY_ENTER) || IsKeyPressed(GLFW_KEY_KP_ENTER);
   Text.Cancel = IsKeyPressed(GLFW_KEY_ESCAPE);
   Text.MoveLeft = IsKeyPressedOrRepeated(GLFW_KEY_LEFT);
   Text.MoveRight = IsKeyPressedOrRepeated(GLFW_KEY_RIGHT);

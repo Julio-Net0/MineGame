@@ -9,6 +9,7 @@
 #include <limits.h>
 #include <math.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -488,6 +489,7 @@ void ParseLaunchOptions(int Argc, char **Argv) {
       .LodNoCache = false,
       .LodCacheDir = (const char *)0,
       .LodQuality = LOD_QUALITY_UNSET,
+      .ShowHelp = false,
   };
 
   if (Argc <= 1 || Argv == (char **)0) {
@@ -501,6 +503,10 @@ void ParseLaunchOptions(int Argc, char **Argv) {
 
   for (int Idx = 1; Idx < Argc; Idx++) {
     const char *Arg = Argv[Idx];
+    if (strcmp(Arg, "--help") == 0 || strcmp(Arg, "-h") == 0) {
+      Options->ShowHelp = true;
+      continue;
+    }
     if (strcmp(Arg, "--hidden") == 0) {
       Options->Hidden = true;
       continue;
@@ -592,16 +598,28 @@ void ParseLaunchOptions(int Argc, char **Argv) {
     } else if (strcmp(Arg, "--lod-cache") == 0) {
       ParseLodCacheValue(ValueStr, Options);
     } else if (strcmp(Arg, "--lod-cache-dir") == 0) {
-      Options->LodCacheDir = ValueStr;
+      if (ValueStr[0] == '\0') {
+        LogWarn("MAIN: --lod-cache-dir cannot be empty; ignoring");
+      } else {
+        Options->LodCacheDir = ValueStr;
+      }
     } else if (strcmp(Arg, "--lod-quality") == 0) {
       ParseLodQualityValue(ValueStr, Options);
     } else if (strcmp(Arg, "--monitor") == 0) {
       ParseMonitorValue(ValueStr, Options);
     } else if (strcmp(Arg, "--script") == 0) {
-      Options->ScriptPath = ValueStr;
+      if (ValueStr[0] == '\0') {
+        LogWarn("MAIN: --script path cannot be empty; ignoring");
+      } else {
+        Options->ScriptPath = ValueStr;
+      }
     } else if (strcmp(Arg, "--script-out") == 0) {
-      SawScriptOutDir = true;
-      Options->ScriptOutDir = ValueStr;
+      if (ValueStr[0] == '\0') {
+        LogWarn("MAIN: --script-out path cannot be empty; ignoring");
+      } else {
+        SawScriptOutDir = true;
+        Options->ScriptOutDir = ValueStr;
+      }
     } else if (strcmp(Arg, "--script-timeout") == 0) {
       SawScriptTimeout = true;
       ParseScriptTimeoutValue(ValueStr, Options);
@@ -636,4 +654,44 @@ void ParseLaunchOptions(int Argc, char **Argv) {
     LogInfo("MAIN: script mode is windowed at %dx%d", Options->Window.Width,
             Options->Window.Height);
   }
+}
+
+void PrintLaunchHelp(const char *ProgramName) {
+  const char *Name =
+      (ProgramName != (const char *)0 && ProgramName[0] != '\0') ? ProgramName
+                                                                 : "MineGame";
+  (void)printf(
+      "Usage: %s [width height | fullscreen] [options]\n\n"
+      "Options:\n"
+      "  -h, --help                     Show this help message and exit\n"
+      "  --hidden                       Start with a hidden window\n"
+      "  --monitor <index>              Select target monitor index\n"
+      "  --seed <uint64>                Use a fixed world seed\n"
+      "  --render-distance <chunks>     1:1 render distance (%d..%d)\n"
+      "  --workers <count>              Chunk worker threads (1..%d)\n"
+      "  --cores <count>                Limit usable physical cores\n"
+      "  --cpu-slowdown <factor>        Simulate slower CPU (%.1f..%.1f)\n"
+      "  --ram-limit <MB>               Cap process committed memory\n"
+      "  --gl-tier <0|1|2>              Force render tier\n"
+      "  --gl-max <3.3|4.1|4.3>         Cap OpenGL context version\n"
+      "  --lod <on|off>                 Enable/disable LOD pipeline\n"
+      "  --lod-distance <chunks>        LOD view distance (%d..%d)\n"
+      "  --lod-quality <low|medium|high> LOD quality preset\n"
+      "  --lod-fog <on|off>             Enable/disable LOD fog\n"
+      "  --lod-fog-end <blocks>         LOD fog end distance (%d..%d)\n"
+      "  --lod-cull <on|off>            Enable/disable GPU LOD culling\n"
+      "  --lod-hiz <on|off>             Enable/disable Hi-Z occlusion\n"
+      "  --lod-indirect-count <on|off>  Enable/disable indirect count draw\n"
+      "  --lod-reversed-z <on|off>      Enable/disable LOD reversed-Z\n"
+      "  --lod-arena-mb <MB>            LOD vertex arena cap (%d..%d)\n"
+      "  --lod-gen <on|off>             Enable/disable synthetic LOD fill\n"
+      "  --lod-cache <on|off>           Enable/disable LOD disk cache\n"
+      "  --lod-cache-dir <path>         Override LOD disk cache directory\n"
+      "  --script <path>                Run automation script (.mgs)\n"
+      "  --script-out <dir>             Output directory for script artifacts\n"
+      "  --script-timeout <seconds>     Script wall-clock timeout (%ld..%ld)\n",
+      Name, MIN_RENDER_DISTANCE, MAX_RENDER_DISTANCE, CHUNK_WORKER_MAX_THREADS,
+      MIN_CPU_SLOWDOWN, MAX_CPU_SLOWDOWN, LOD_DISTANCE_MIN, LOD_DISTANCE_MAX,
+      LOD_FOG_END_MIN, LOD_FOG_END_MAX, LOD_ARENA_MB_MIN, LOD_ARENA_MB_MAX,
+      MIN_SCRIPT_TIMEOUT_SECONDS, MAX_SCRIPT_TIMEOUT_SECONDS);
 }

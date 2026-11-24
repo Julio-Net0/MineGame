@@ -1,5 +1,6 @@
 #include "core/profiler.h"
 
+#include "core/log.h"
 #include "platform/os_time.h"
 
 #include <stdatomic.h>
@@ -588,7 +589,10 @@ void ProfilerStopCapture(void) {
   if (State->CaptureFile == NULL) {
     return;
   }
-  (void)fclose(State->CaptureFile);
+  bool WriteFailed = (ferror(State->CaptureFile) != 0);
+  if (fclose(State->CaptureFile) != 0 || WriteFailed) {
+    LogWarn("PROFILE: error writing or closing capture file");
+  }
   State->CaptureFile = NULL;
   State->CaptureRow = 0;
   State->CaptureDeadline = 0.0;

@@ -99,6 +99,9 @@ static int FloorDiv(int Numerator, int Denominator) {
 
 static void SetError(char *Error, int ErrorSize, const char *Reason,
                      const char *Detail) {
+  if (Error == (char *)0 || ErrorSize <= 0) {
+    return;
+  }
   (void)snprintf(Error, (size_t)ErrorSize, "%s%s", Reason, Detail);
 }
 

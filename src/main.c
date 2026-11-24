@@ -226,6 +226,14 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
   int MesherSlots = RendererInitMesherSlots(WorkerCount);
   if (MesherSlots == 0) {
     LogError("MAIN: could not allocate mesher scratch for any worker");
+    CloseWorldSave();
+    DestroyWorld(*WorldVal);
+    free(*WorldVal);
+    *WorldVal = (World *)0;
+    UiShutdown();
+    CloseRenderer();
+    ResourcePacksShutdown();
+    PlatformShutdown();
     return false;
   }
   if (MesherSlots < WorkerCount) {
@@ -283,6 +291,7 @@ static void CleanupGame(World *WorldVal) {
   LodRendererShutdown();
   LodIngestShutdown();
 #ifdef MINEGAME_PROFILE
+  ProfilerStopCapture();
   (void)RendererCheckRenderableSet(WorldVal);
   RendererLogVisibilityStats(WorldVal);
   (void)WorldCheckLoadVolumes(WorldVal);
@@ -351,7 +360,12 @@ static void UpdateCameras(GameCamera *PlayerCamera, GameCamera *FreeCamera,
     if (!*WasFreecam) {
       *FreeCamera = *PlayerCamera;
     }
-    UpdateFreeCamera(FreeCamera, LookDelta, Move, PlatformGetFrameTime());
+    float MaxFreecamDt = (float)MAX_TICKS_PER_FRAME * TICK_DT;
+    float Dt = PlatformGetFrameTime();
+    if (Dt > MaxFreecamDt) {
+      Dt = MaxFreecamDt;
+    }
+    UpdateFreeCamera(FreeCamera, LookDelta, Move, Dt);
     *ActiveCamera = FreeCamera;
   } else if (HasControl) {
     UpdateGameCamera(PlayerCamera, LookDelta);
@@ -516,6 +530,10 @@ int main(int Argc, char **Argv) {
 
   ParseLaunchOptions(Argc, Argv);
   const LaunchOptions *Options = GetLaunchOptions();
+  if (Options->ShowHelp) {
+    PrintLaunchHelp((Argc > 0 && Argv != (char **)0) ? Argv[0] : (const char *)0);
+    return EXIT_SUCCESS;
+  }
   int RenderDistance = (Options->RenderDistance > 0)
                            ? ClampRenderDistance(Options->RenderDistance)
                            : DEFAULT_RENDER_DISTANCE;
