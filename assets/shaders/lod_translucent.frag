@@ -18,7 +18,9 @@ uniform sampler2DArray uBlockArray;
 uniform usampler2D uCoverage;
 uniform ivec3 uCameraBlock;
 uniform vec3 uCameraFrac;
-uniform float uNearFarReciprocal;
+// Radius of the 1:1 hand-off sphere: past it every fragment is the LOD's.
+uniform float uHandOffRadius;
+in vec3 fragRelative;
 
 out vec4 finalColor;
 
@@ -41,7 +43,7 @@ vec3 ApplyFog(vec3 rgb) {
 }
 
 bool CoveredByChunks() {
-    if (gl_FragCoord.w <= uNearFarReciprocal) {
+    if (length(fragRelative) > uHandOffRadius) {
         return false;
     }
     ivec3 block = ivec3(floor(fragCutProbe + uCameraFrac + vec3(0.5))) + uCameraBlock;

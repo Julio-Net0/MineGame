@@ -2827,6 +2827,7 @@ void DrawWorld(World *WorldVal, RenderCamera CameraVal) {
     //
     // Each pass is timed into "Chunk submit", nested inside "World draw", so the
     // submission cost reads apart from the culling and ordering above.
+    RenderSetLodHandOff(LodRendererDrawOn());
     PROFILE_BEGIN(SolidSubmitStart);
     RenderBeginChunkPass(GetDebugState()->ForceCutoutShader ? CHUNK_PASS_CUTOUT
                                                             : CHUNK_PASS_OPAQUE);

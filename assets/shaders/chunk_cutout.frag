@@ -15,8 +15,14 @@ in vec2 fragTexCoord;
 in vec4 fragColor;
 in float fragLayer;
 in float fragOverlayLayer;
+in vec3 fragRelative;
 
 uniform sampler2DArray uBlockArray;
+
+// Distance from the camera past which the LOD drew this pixel's water, or 0
+// outside the translucent pass. Discarding past it gives every pixel one
+// translucent owner across the hand-off instead of blending water twice.
+uniform float uLodHandOff;
 
 out vec4 finalColor;
 
@@ -33,6 +39,9 @@ out vec4 finalColor;
 // which is what the grass top and leaves want; untinted blocks carry a white
 // tint, making that a no-op for everything else.
 void main() {
+    if (uLodHandOff > 0.0 && length(fragRelative) > uLodHandOff) {
+        discard;
+    }
     vec4 base = texture(uBlockArray, vec3(fragTexCoord, fragLayer));
 
     vec3 tint = fragColor.rgb;

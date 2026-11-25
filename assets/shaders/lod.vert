@@ -50,6 +50,8 @@ out vec3 fragCutProbe;
 // skirt is kept only where that voxel's column is 1:1.
 out vec3 fragSkirtProbe;
 flat out uint fragSkirt;
+// Camera-relative position of the fragment itself, for the hand-off sphere.
+out vec3 fragRelative;
 
 const float PROBE_INSET = 1.0 / 64.0;
 
@@ -128,5 +130,6 @@ void main() {
     }
     fragCutProbe = fragProbe + (inward * PROBE_INSET);
     fragSkirtProbe = relative + (FACE_NORMALS[normal] * 0.5) + (inward * PROBE_INSET);
+    fragRelative = relative;
     gl_Position = uViewProj * vec4(relative, 1.0);
 }

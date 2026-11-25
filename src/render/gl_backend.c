@@ -68,6 +68,9 @@ typedef struct {
   GLuint Program;
   GLint MvpLoc;
   GLint DrawPageBaseLoc;
+  GLint HandOffLoc;
+  GLint CameraPosLoc;
+  GLint ClipRadiusLoc;
 } ChunkProgram;
 
 // How recorded chunk draws reach the GPU. Every tier draws the same meshes with
@@ -168,6 +171,8 @@ typedef struct {
   // submission hands the driver. Ordered passes (translucent) keep the added
   // order across blocks; the others are grouped by block.
   bool InTranslucentPass;
+  // RenderSetLodHandOff's radius for this frame; 0 keeps the 1:1 whole.
+  float HandOffRadius;
   bool ExactChunkOrder;
   bool PassOrdered;
   PassDraw PassDraws[PASS_CAPACITY];
@@ -357,6 +362,9 @@ static ChunkProgram LoadChunkProgram(const char *FragmentPath) {
   Result.Program = LinkProgram("assets/shaders/chunk.vert", FragmentPath, NULL, 0);
   Result.MvpLoc = glGetUniformLocation(Result.Program, "mvp");
   Result.DrawPageBaseLoc = glGetUniformLocation(Result.Program, "uDrawPageBase");
+  Result.HandOffLoc = glGetUniformLocation(Result.Program, "uLodHandOff");
+  Result.CameraPosLoc = glGetUniformLocation(Result.Program, "uCameraPos");
+  Result.ClipRadiusLoc = glGetUniformLocation(Result.Program, "uClipRadius");
 
   glUseProgram(Result.Program);
   glUniform1i(glGetUniformLocation(Result.Program, "uBlockArray"),
@@ -1515,6 +1523,15 @@ void RenderBeginChunkPass(ChunkPassKind Kind) {
   glUseProgram(State->ActiveChunk->Program);
   glUniformMatrix4fv(State->ActiveChunk->MvpLoc, 1, GL_FALSE, State->Mvp3D);
   glUniform1i(State->ActiveChunk->DrawPageBaseLoc, 0);
+  bool HandOff = State->HandOffRadius > 0.0F;
+  glUniform3f(State->ActiveChunk->CameraPosLoc, State->FrameCamera.Position.x,
+              State->FrameCamera.Position.y, State->FrameCamera.Position.z);
+  glUniform1f(State->ActiveChunk->ClipRadiusLoc, State->HandOffRadius);
+  glUniform1f(State->ActiveChunk->HandOffLoc,
+              (HandOff && State->InTranslucentPass) ? State->HandOffRadius : 0.0F);
+  if (HandOff && !State->InTranslucentPass) {
+    glEnable(GL_CLIP_DISTANCE0);
+  }
   glActiveTexture(GL_TEXTURE0 + BLOCK_TEXTURE_UNIT);
   glBindTexture(GL_TEXTURE_2D_ARRAY, State->BlockArrayTex);
   glBindSampler(BLOCK_TEXTURE_UNIT, State->NearSampler);
@@ -1538,6 +1555,7 @@ void RenderEndChunkPass(void) {
     }
   }
   State->PassDrawCount = 0;
+  glDisable(GL_CLIP_DISTANCE0);
 #ifdef MINEGAME_PROFILE
   EndSolidOcclusionQuery(State);
 #endif
@@ -1809,6 +1827,10 @@ void RenderLodReadCullStats(void) { GlLodReadCullStats(); }
 void RenderLodSetFog(bool Enabled, float End) { GlLodSetFog(Enabled, End); }
 
 float RenderGetNearFarPlane(void) { return (float)GL_MATH_CULL_FAR; }
+
+void RenderSetLodHandOff(bool LodDrawn) {
+  GetBackendState()->HandOffRadius = (LodDrawn && GlLodActive()) ? GlLodHandOffRadius() : 0.0F;
+}
 
 void RenderBeginTranslucentPass(void) {
   FlushDebugBatch();

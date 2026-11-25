@@ -27,7 +27,9 @@ uniform ivec3 uCameraBlock;
 uniform vec3 uCameraFrac;
 // 1 / (nearFar - margin): gl_FragCoord.w is 1 / viewDistance, so fragments at
 // or past the 1:1 far plane are never discarded even inside covered columns.
-uniform float uNearFarReciprocal;
+// Radius of the 1:1 hand-off sphere: past it every fragment is the LOD's.
+uniform float uHandOffRadius;
+in vec3 fragRelative;
 
 out vec4 finalColor;
 
@@ -63,7 +65,9 @@ vec4 SampleBase() {
 }
 
 bool CoveredByChunks(vec3 probe) {
-    if (gl_FragCoord.w <= uNearFarReciprocal) {
+    // One block of overlap: the 1:1 clip follows its vertices' distances,
+    // which cut a few hundredths of a block short along long quads.
+    if (length(fragRelative) >= uHandOffRadius - 1.0) {
         return false;
     }
     ivec3 block = ivec3(floor(probe + uCameraFrac + vec3(0.5))) + uCameraBlock;

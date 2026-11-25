@@ -117,8 +117,10 @@ enum {
 #define LOD_NEAR_PLANE 8.0
 #define LOD_FAR_PLANE 40000.0
 #define LOD_FOG_START_FRACTION 0.75F
-// Small pull-in from the 1:1 far plane so the LOD hands off without a gap.
+// The hand-off sphere sits just inside the 1:1 far plane, so the plane never
+// cuts 1:1 geometry the sphere keeps.
 #define LOD_NEAR_FAR_CLIP_OFFSET 1.0
+#define LOD_HAND_OFF_RADIUS (GL_MATH_CULL_FAR - LOD_NEAR_FAR_CLIP_OFFSET)
 
 typedef struct {
   GLuint Count;
@@ -297,6 +299,8 @@ static GlLodState *GetLodState(void) {
 
 bool GlLodActive(void) { return GetLodState()->Active; }
 
+float GlLodHandOffRadius(void) { return (float)LOD_HAND_OFF_RADIUS; }
+
 static const void *BufferOffset(size_t Offset) {
   union {
     uintptr_t Offset;
@@ -320,8 +324,8 @@ static LodProgram LoadLodProgram(const char *FragmentPath, const LodFog *Fog,
   glUniform1i(glGetUniformLocation(Result.Program, "uFogEnabled"), Fog->Enabled ? 1 : 0);
   glUniform2f(glGetUniformLocation(Result.Program, "uFogRange"), Fog->Start, Fog->End);
   glUniform3fv(glGetUniformLocation(Result.Program, "uFogColor"), 1, Fog->Color);
-  glUniform1f(glGetUniformLocation(Result.Program, "uNearFarReciprocal"),
-              (float)(1.0 / (GL_MATH_CULL_FAR - LOD_NEAR_FAR_CLIP_OFFSET)));
+  glUniform1f(glGetUniformLocation(Result.Program, "uHandOffRadius"),
+              (float)LOD_HAND_OFF_RADIUS);
   glUniform1i(glGetUniformLocation(Result.Program, "uDrawSkirts"), DrawSkirts ? 1 : 0);
   glUniform1i(glGetUniformLocation(Result.Program, "uSeaLevel"), SEA_LEVEL);
   glUseProgram(0);

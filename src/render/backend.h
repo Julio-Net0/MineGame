@@ -341,6 +341,9 @@ void RenderGetLodStats(RenderLodStats *Out);
 void RenderLodReadCullStats(void);
 
 // Translucent pass state (depth-mask off, color blend on, batch flush).
+// Whether the LOD draws this frame: while it does, the 1:1 passes stop at
+// the LOD's hand-off sphere instead of the far plane.
+void RenderSetLodHandOff(bool LodDrawn);
 void RenderBeginTranslucentPass(void);
 void RenderEndTranslucentPass(void);
 

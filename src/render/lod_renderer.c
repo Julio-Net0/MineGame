@@ -95,6 +95,15 @@ typedef enum { WALK_NONE = 0, WALK_SELECTED, WALK_REFINED } WalkKind;
 // Margin subtracted from the 1:1 far clip plane when checking whether a covered
 // section can still cross it: absorbs rounding the camera to its chunk centre.
 #define NEAR_FAR_SELECT_MARGIN 32.0F
+// Around the 1:1 hand-off sphere a section refines while it is within this
+// many of its own widths of the sphere, whatever the quality: level 1 meets
+// the 1:1 cut and each coarser level starts twice as far out, until the
+// quality's own choice is finer again. A coarse level right at the cut
+// shows as a step along it, worse the lower the quality.
+#define HAND_OFF_REFINE 2.0F
+// Lowest terrain the hand-off band is measured for: ocean floors. Deeper
+// ground is hidden under the 1:1 area or seen only through caves.
+#define HAND_OFF_TERRAIN_FLOOR ((float)SEA_LEVEL - 64.0F)
 #define CACHE_HASH_X 0x9E3779B97F4A7C15ULL
 #define CACHE_HASH_Y 0xC2B2AE3D27D4EB4FULL
 #define CACHE_HASH_Z 0x165667B19E3779F9ULL
@@ -289,6 +298,10 @@ typedef struct {
   Vec3 Camera;
   // The top face of the highest block the world generates (see CameraIsNear).
   float TerrainTop;
+  // Horizontal radii at which the 1:1 hand-off sphere meets the terrain's
+  // height range (see NearHandOff); both zero while the LOD is not drawn.
+  float HandOffInner;
+  float HandOffOuter;
   float RefineFactor;
   int CameraChunkX;
   int CameraChunkZ;
@@ -1202,6 +1215,28 @@ static bool CameraIsNear(const SelectContext *Ctx, int Level, int X, int Z) {
   return (Dx * Dx) + (Dy * Dy) + (Dz * Dz) < Limit * Limit;
 }
 
+// Whether a column is within HAND_OFF_REFINE of its widths of where the 1:1
+// hand-off sphere crosses the terrain. Measured across the ground, like
+// CameraIsNear, so a column refines alike at every height.
+static bool NearHandOff(const SelectContext *Ctx, int Level, int X, int Z) {
+  if (Ctx->HandOffOuter <= 0.0F) {
+    return false;
+  }
+  float Width = (float)(LOD_SECTION_SIZE << Level);
+  float MinX = ((float)X * Width) - BLOCK_CENTRE_OFFSET;
+  float MinZ = ((float)Z * Width) - BLOCK_CENTRE_OFFSET;
+  float NearX = AxisGap(Ctx->Camera.x, MinX, MinX + Width);
+  float NearZ = AxisGap(Ctx->Camera.z, MinZ, MinZ + Width);
+  float FarX = fmaxf(fabsf(Ctx->Camera.x - MinX), fabsf(Ctx->Camera.x - (MinX + Width)));
+  float FarZ = fmaxf(fabsf(Ctx->Camera.z - MinZ), fabsf(Ctx->Camera.z - (MinZ + Width)));
+  float Band = Width * HAND_OFF_REFINE;
+  float Inner = Ctx->HandOffInner - Band;
+  float Outer = Ctx->HandOffOuter + Band;
+  float NearSq = (NearX * NearX) + (NearZ * NearZ);
+  float FarSq = (FarX * FarX) + (FarZ * FarZ);
+  return NearSq <= Outer * Outer && (Inner <= 0.0F || FarSq >= Inner * Inner);
+}
+
 // Squared distance from the camera's chunk centre to the section's centre.
 static float SectionDistSq(const SelectContext *Ctx, int Level, int X, int Y, int Z) {
   float Width = (float)(LOD_SECTION_SIZE << Level);
@@ -1333,11 +1368,14 @@ typedef struct {
   bool Hidden;
   // Drawn by the border pass.
   bool Border;
+  // Some of its columns are 1:1, whether or not the 1:1 reaches it.
+  bool UnderChunks;
 } SectionRole;
 
 static SectionRole RoleOf(const LodRendererState *State, const SelectContext *Ctx,
                           int Level, int X, int Y, int Z) {
   SectionCoverage Coverage = CoverageOf(State, Ctx, Level, X, Z);
+  bool UnderChunks = Coverage != COVERAGE_NONE;
   bool Beside = Coverage == COVERAGE_NONE && BesideCoverage(State, Ctx, Level, X, Z);
   bool FarStraddles = false;
   if (Coverage != COVERAGE_NONE) {
@@ -1353,7 +1391,8 @@ static SectionRole RoleOf(const LodRendererState *State, const SelectContext *Ct
   return (SectionRole){
       .Coverage = Coverage,
       .Hidden = Coverage == COVERAGE_FULL && !FarStraddles,
-      .Border = Coverage == COVERAGE_PARTIAL || FarStraddles || Beside};
+      .Border = Coverage == COVERAGE_PARTIAL || FarStraddles || Beside,
+      .UnderChunks = UnderChunks};
 }
 
 static void WalkAppend(LodRendererState *State, SelectContext *Ctx,
@@ -1408,7 +1447,8 @@ static void SelectSection(LodRendererState *State, SelectContext *Ctx, int Level
   if (Role.Hidden) {
     return;
   }
-  bool Refine = Role.Coverage == COVERAGE_PARTIAL || CameraIsNear(Ctx, Level, X, Z);
+  bool Refine = Role.Coverage == COVERAGE_PARTIAL || CameraIsNear(Ctx, Level, X, Z) ||
+                (Role.UnderChunks && NearHandOff(Ctx, Level, X, Z));
   bool StandIn = false;
   if (Level > 1 && Refine &&
       ChildrenResident(Ctx->Store, Section, Level, X, Y, Z)) {
@@ -1678,6 +1718,18 @@ void LodRendererDraw(RenderCamera Camera) {
         .CameraChunkX = ChunkX,
         .CameraChunkZ = ChunkZ,
         .NearestStarved = -1.0F};
+    if (State->DrawOn) {
+      float Radius = RenderGetNearFarPlane();
+      float Above = Ctx.Camera.y - Ctx.TerrainTop;
+      float Below = Ctx.Camera.y - HAND_OFF_TERRAIN_FLOOR;
+      float NearDy = fmaxf(fmaxf(Above, -Below), 0.0F);
+      float FarDy = fmaxf(fabsf(Above), fabsf(Below));
+      if (NearDy < Radius) {
+        Ctx.HandOffOuter = sqrtf((Radius * Radius) - (NearDy * NearDy));
+        Ctx.HandOffInner =
+            (FarDy < Radius) ? sqrtf((Radius * Radius) - (FarDy * FarDy)) : 0.0F;
+      }
+    }
     // Before the walk, so the sections finished since the last pass are
     // drawn, and refined into, by this one.
     double CollectStart = OsGetTimeSeconds();

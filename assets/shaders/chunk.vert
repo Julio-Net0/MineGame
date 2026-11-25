@@ -15,11 +15,19 @@ uniform samplerBuffer uPageOrigin;
 uniform int uDrawPageBase;
 // Overlay slot -> texture array layer. Slot 0 is "no overlay".
 uniform int uOverlayLayers[16];
+// The 1:1-to-LOD hand-off is a sphere around the camera, not the far plane:
+// a plane's cut moves over the terrain as the view turns and reaches past
+// the LOD's hand-off towards the screen corners. Opaque passes clip at
+// uClipRadius (enabled only while the LOD draws); the translucent pass
+// discards per fragment instead, exactly where the LOD water starts.
+uniform vec3 uCameraPos;
+uniform float uClipRadius;
 
 out vec2 fragTexCoord;
 out vec4 fragColor;
 out float fragLayer;
 out float fragOverlayLayer;
+out vec3 fragRelative;
 
 void main() {
     uint w0 = aPackedVertex.x;
@@ -53,5 +61,8 @@ void main() {
 
     int page = uDrawPageBase + (gl_VertexID >> PAGE_SHIFT);
     vec3 chunkOrigin = texelFetch(uPageOrigin, page).xyz;
-    gl_Position = mvp * vec4(chunkOrigin + localPos, 1.0);
+    vec3 position = chunkOrigin + localPos;
+    fragRelative = position - uCameraPos;
+    gl_ClipDistance[0] = uClipRadius - length(fragRelative);
+    gl_Position = mvp * vec4(position, 1.0);
 }

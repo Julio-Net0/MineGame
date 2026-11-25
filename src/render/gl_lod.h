@@ -64,6 +64,10 @@ bool GlLodActive(void);
 // Once per presented frame: recycles arena pages freed three frames ago.
 void GlLodEndFrame(void);
 
+// Distance from the camera past which the LOD owns every pixel: the 1:1
+// passes clip (opaque) or discard (translucent) beyond it while LOD draws.
+float GlLodHandOffRadius(void);
+
 RenderLodMesh GlLodUploadMesh(const ChunkVertex *Vertices,
                               const RenderLodRun *Runs, int RunCount,
                               int OpaqueRunCount);
