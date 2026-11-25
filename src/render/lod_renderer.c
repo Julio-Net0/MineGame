@@ -7,6 +7,7 @@
 #include "world/lod/lod_ingest.h"
 #include "world/lod/lod_quality.h"
 #include "world/lod/lod_store.h"
+#include "world/worldgen_strata.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -213,8 +214,10 @@ typedef struct {
   bool Enabled;
   bool DrawOn;
   // A section is refined while the camera is closer than this many of its
-  // own widths (lod_quality.h): medium's 8 is about two screen pixels per
-  // voxel at 1280x720 and 90 degrees, low's 4 about four, high's 16 about one.
+  // own widths, across the ground and above the terrain (see CameraIsNear,
+  // lod_quality.h): medium's 8 is about two screen pixels per voxel at
+  // 1280x720 and 90 degrees, low's 4 about four, high's 16 about one; a
+  // camera raised over lower terrain only makes them smaller.
   int RefineFactor;
   // Out of eviction rounds for this anchor: starved sections wait for it to
   // change instead of retrying on every freed page.
@@ -229,6 +232,8 @@ typedef struct {
 typedef struct {
   const LodStore *Store;
   Vec3 Camera;
+  // The top face of the highest block the world generates (see CameraIsNear).
+  float TerrainTop;
   float RefineFactor;
   int CameraChunkX;
   int CameraChunkZ;
@@ -989,14 +994,21 @@ static float AxisGap(float Value, float Min, float Max) {
   return (Value > Max) ? Value - Max : 0.0F;
 }
 
-static bool CameraIsNear(const SelectContext *Ctx, int Level, int X, int Y, int Z) {
+// Measured across the ground, plus the camera's height above the highest
+// terrain the world generates: the same for every section of a column, so a
+// column refines alike at every height. Measured to each section in 3D, the
+// sections nearer a raised camera refined while those under them did not, and
+// the coarse section's top faces, culled against same-level data the finer
+// region above does not hold, left lines of sky along every such step. The
+// height term keeps a camera far above all terrain from refining what it only
+// sees from that far.
+static bool CameraIsNear(const SelectContext *Ctx, int Level, int X, int Z) {
   float Width = (float)(LOD_SECTION_SIZE << Level);
   float MinX = ((float)X * Width) - BLOCK_CENTRE_OFFSET;
-  float MinY = ((float)Y * Width) - BLOCK_CENTRE_OFFSET;
   float MinZ = ((float)Z * Width) - BLOCK_CENTRE_OFFSET;
   float Dx = AxisGap(Ctx->Camera.x, MinX, MinX + Width);
-  float Dy = AxisGap(Ctx->Camera.y, MinY, MinY + Width);
   float Dz = AxisGap(Ctx->Camera.z, MinZ, MinZ + Width);
+  float Dy = fmaxf(Ctx->Camera.y - Ctx->TerrainTop, 0.0F);
   float Limit = Width * Ctx->RefineFactor;
   return (Dx * Dx) + (Dy * Dy) + (Dz * Dz) < Limit * Limit;
 }
@@ -1202,7 +1214,7 @@ static void SelectSection(LodRendererState *State, SelectContext *Ctx, int Level
   if (Role.Hidden) {
     return;
   }
-  bool Refine = Role.Coverage == COVERAGE_PARTIAL || CameraIsNear(Ctx, Level, X, Y, Z);
+  bool Refine = Role.Coverage == COVERAGE_PARTIAL || CameraIsNear(Ctx, Level, X, Z);
   bool StandIn = false;
   if (Level > 1 && Refine &&
       ChildrenResident(Ctx->Store, Section, Level, X, Y, Z)) {
@@ -1466,6 +1478,7 @@ void LodRendererDraw(RenderCamera Camera) {
         .Camera = {((float)ChunkX * (float)LOD_SECTION_SIZE) + Half,
                    ((float)ChunkY * (float)LOD_SECTION_SIZE) + Half,
                    ((float)ChunkZ * (float)LOD_SECTION_SIZE) + Half},
+        .TerrainTop = (float)GetGenerationCeiling() - BLOCK_CENTRE_OFFSET,
         .RefineFactor = (float)State->RefineFactor,
         .CameraChunkX = ChunkX,
         .CameraChunkZ = ChunkZ,

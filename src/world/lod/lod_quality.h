@@ -5,10 +5,12 @@
 #include <string.h>
 
 // How fine the LOD is drawn: a section is refined into its children while the
-// camera is within RefineFactor of its widths, so each step doubles or halves
-// the screen size a voxel reaches before the next level takes over. Medium is
-// the factor the LOD was built with. The renderer and the synthetic fill use
-// the same factor, so every column the renderer wants is generated.
+// camera is within RefineFactor of its widths, measured across the ground
+// (plus any height above all terrain), so each step doubles or halves the
+// screen size a voxel reaches before the next level takes over. Medium is the
+// factor the LOD was built with. The synthetic fill wants every column the
+// camera is horizontally that close to, so every column the renderer wants is
+// generated.
 typedef enum {
   LOD_QUALITY_LOW = 0,
   LOD_QUALITY_MEDIUM,
