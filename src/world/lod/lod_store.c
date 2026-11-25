@@ -16,7 +16,10 @@ enum {
   DEFAULT_HOT_LIMIT = 512,
   // Spare dense buffers kept (1 MB); more are freed.
   DENSE_POOL_MAX = 64,
-  CELL_SPAN_IN_OCTANT = 2
+  CELL_SPAN_IN_OCTANT = 2,
+  // LodJournalEntry.Around bit layout: (Dx + 1) * 9 + (Dy + 1) * 3 + (Dz + 1).
+  AROUND_ROW = 3,
+  AROUND_PLANE = 9
 };
 
 #define HASH_MUL_X 0x9E3779B97F4A7C15ULL
@@ -62,7 +65,8 @@ bool LodStoreInit(LodStore *Store, const LodStoreConfig *Config) {
   Store->Scratch = (LodStoreScratch *)malloc(sizeof(LodStoreScratch));
   Store->Encode = LodEncodeScratchCreate();
   Store->DensePool = (LodVoxel **)calloc(DENSE_POOL_MAX, sizeof(LodVoxel *));
-  Store->Journal = (LodStoreKey *)malloc(sizeof(LodStoreKey) * LOD_JOURNAL_SIZE);
+  Store->Journal =
+      (LodJournalEntry *)malloc(sizeof(LodJournalEntry) * LOD_JOURNAL_SIZE);
   if (Store->Slots == NULL || Store->Scratch == NULL || Store->Encode == NULL ||
       Store->DensePool == NULL || Store->Journal == NULL) {
     LodStoreFree(Store);
@@ -219,9 +223,32 @@ bool LodStoreInRange(const LodStore *Store, int Level, int X, int Y, int Z) {
   return true;
 }
 
-static void JournalChange(LodStore *Store, LodStoreKey Key) {
-  Store->Journal[Store->JournalSeq & (LOD_JOURNAL_SIZE - 1U)] = Key;
+static void JournalChange(LodStore *Store, LodStoreKey Key, uint32_t Around) {
+  Store->Journal[Store->JournalSeq & (LOD_JOURNAL_SIZE - 1U)] =
+      (LodJournalEntry){.Key = Key, .Around = Around};
   Store->JournalSeq++;
+}
+
+// The sections (LodJournalEntry.Around) that changes inside the given octants
+// (bit X | Y << 1 | Z << 2) can reach: per axis, the section itself and the
+// neighbour on that octant's side.
+static uint32_t AroundOfOctants(unsigned Octants) {
+  uint32_t Around = 0;
+  for (unsigned Octant = 0; Octant < OCTANT_CELLS; Octant++) {
+    if ((Octants & (1U << Octant)) == 0U) {
+      continue;
+    }
+    int Side[3] = {((Octant & 1U) != 0U) ? 1 : -1, ((Octant & 2U) != 0U) ? 1 : -1,
+                   ((Octant & 4U) != 0U) ? 1 : -1};
+    for (unsigned Pick = 0; Pick < OCTANT_CELLS; Pick++) {
+      int Dx = ((Pick & 1U) != 0U) ? Side[0] : 0;
+      int Dy = ((Pick & 2U) != 0U) ? Side[1] : 0;
+      int Dz = ((Pick & 4U) != 0U) ? Side[2] : 0;
+      Around |= UINT32_C(1) << (unsigned)(((Dx + 1) * AROUND_PLANE) +
+                                          ((Dy + 1) * AROUND_ROW) + (Dz + 1));
+    }
+  }
+  return Around;
 }
 
 static void EvictOutOfRange(LodStore *Store) {
@@ -231,7 +258,7 @@ static void EvictOutOfRange(LodStore *Store) {
         !LodStoreInRange(Store, Slot->Level, Slot->X, Slot->Y, Slot->Z)) {
       LodStoreKey Key = {.X = Slot->X, .Y = Slot->Y, .Z = Slot->Z,
                          .Level = Slot->Level};
-      JournalChange(Store, Key);
+      JournalChange(Store, Key, LOD_JOURNAL_AROUND_ALL);
       if (Store->EvictHook != NULL && Slot->Section->Unsaved) {
         // The hook may take the storage, so the byte count follows what is
         // left for FreeSlotSection to subtract.
@@ -608,7 +635,9 @@ static LodWriteResult WriteLevel(LodStore *Store, int Level, int ChildX,
   if (ContentChanged) {
     Section->Revision++;
     Section->Dirty = true;
-    JournalChange(Store, Key);
+    unsigned Octant = (unsigned)Write.OctX | ((unsigned)Write.OctY << 1U) |
+                      ((unsigned)Write.OctZ << 2U);
+    JournalChange(Store, Key, AroundOfOctants(1U << Octant));
     if (!MarkHot(Store, Section, Key)) {
       return LOD_WRITE_NO_MEMORY;
     }
@@ -716,21 +745,23 @@ static void WriteSectionGroup(LodStore *Store, const LodChunkWrite *Writes,
       Voxels = Store->Scratch->Voxels;
       LodSectionDecode(Section, Voxels);
     }
-    bool ContentChanged = false;
+    unsigned ChangedOctants = 0;
     for (int Idx = First; Idx < Last; Idx++) {
       OctantWrite Write = RealOctantWrite(&Writes[Idx], X, Y, Z);
-      ContentChanged =
-          ApplyCells(Voxels, Writes[Idx].Patch, &Write) || ContentChanged;
+      if (ApplyCells(Voxels, Writes[Idx].Patch, &Write)) {
+        ChangedOctants |= 1U << ((unsigned)Write.OctX | ((unsigned)Write.OctY << 1U) |
+                                 ((unsigned)Write.OctZ << 2U));
+      }
       Changed = UpdateProvenance(Section, &Write) || Changed;
     }
-    if (ContentChanged) {
+    if (ChangedOctants != 0U) {
       if (Dense == NULL && !PromoteDense(Store, Section, Voxels)) {
         Out->Failed += Count;
         return;
       }
       Section->Revision++;
       Section->Dirty = true;
-      JournalChange(Store, Key);
+      JournalChange(Store, Key, AroundOfOctants(ChangedOctants));
       Changed = true;
       if (!MarkHot(Store, Section, Key)) {
         Out->Failed += Count;
@@ -919,7 +950,7 @@ static LodWriteResult WriteWholeSection(LodStore *Store, int Level, int X, int Y
   Section->Revision++;
   Section->Dirty = true;
   LodStoreKey Key = {.X = X, .Y = Y, .Z = Z, .Level = Level};
-  JournalChange(Store, Key);
+  JournalChange(Store, Key, LOD_JOURNAL_AROUND_ALL);
   // The real cells' parents were built from what this section held before.
   bool Propagated =
       !Store->Config.RealPropagation || Protected == 0U || MarkPending(Store, Section, Key);

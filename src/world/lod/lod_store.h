@@ -57,6 +57,18 @@ typedef struct {
   int32_t Level;
 } LodStoreKey;
 
+// One change the journal records: the section, and which of the 27 sections
+// around it on its level (bit (Dx + 1) * 9 + (Dy + 1) * 3 + (Dz + 1), itself
+// included) can see it. A section reads only its neighbours' border voxels (a
+// mesh's margin), so a change inside one octant reaches only the sections
+// that octant borders; an eviction or a whole-section write reaches all.
+typedef struct {
+  LodStoreKey Key;
+  uint32_t Around;
+} LodJournalEntry;
+
+#define LOD_JOURNAL_AROUND_ALL ((UINT32_C(1) << 27U) - 1U)
+
 // Called for every evicted section still marked Unsaved, just before the store
 // frees it. The hook may move the content out with LodSectionAdoptContent
 // (and read its provenance); the store frees whatever is left.
@@ -97,7 +109,7 @@ typedef struct {
   // Seq & (LOD_JOURNAL_SIZE - 1) holds change number Seq. A reader that fell
   // more than LOD_JOURNAL_SIZE changes behind has lost some and must treat
   // every section as changed.
-  LodStoreKey *Journal;
+  LodJournalEntry *Journal;
   uint64_t JournalSeq;
   LodEvictHook EvictHook;
   void *EvictUser;

@@ -769,7 +769,8 @@ static void EvictStale(LodRendererState *State, const LodStore *Store,
 
 // A section's mesh reads the 26 same-level sections around it (their faces,
 // edges and corners fill its margin), so every change the store journals
-// marks the section and those around it for a rebuild.
+// marks the section and those around it that the change reaches for a
+// rebuild (LodJournalEntry.Around).
 // True when the store changed since the last call.
 static bool ConsumeJournal(LodRendererState *State, const LodStore *Store) {
   uint64_t Seq = Store->JournalSeq;
@@ -782,10 +783,15 @@ static bool ConsumeJournal(LodRendererState *State, const LodStore *Store) {
     return Changed;
   }
   for (; State->JournalRead < Seq; State->JournalRead++) {
-    LodStoreKey Key = Store->Journal[State->JournalRead & (LOD_JOURNAL_SIZE - 1U)];
+    const LodJournalEntry *Change =
+        &Store->Journal[State->JournalRead & (LOD_JOURNAL_SIZE - 1U)];
+    LodStoreKey Key = Change->Key;
     for (int Dx = -1; Dx <= 1; Dx++) {
       for (int Dy = -1; Dy <= 1; Dy++) {
         for (int Dz = -1; Dz <= 1; Dz++) {
+          if (((Change->Around >> (unsigned)VoxelLodAround(Dx, Dy, Dz)) & 1U) == 0U) {
+            continue;
+          }
           CacheEntry *Entry =
               CacheFind(State, Key.Level, Key.X + Dx, Key.Y + Dy, Key.Z + Dz);
           if (Entry != NULL) {
