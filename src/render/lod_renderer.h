@@ -12,7 +12,8 @@
 // Selection walks down from the coarsest level and draws every region at
 // exactly one level, so no two levels ever overlap. A section is refined into
 // its eight children while the camera is close (or while it overlaps 1:1
-// chunks) and every child holding data is resident; one wholly covered by 1:1
+// chunks) and every child under its data is resident, or missing from a column
+// generated whole and so holding nothing; one wholly covered by 1:1
 // chunks is not drawn at all; one partly covered is drawn with the border
 // shader, which drops the fragments inside 1:1 chunks.
 

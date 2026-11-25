@@ -50,6 +50,9 @@ enum {
   EVICT_AGE = 600,
   OCTANTS = 8,
   CELLS_PER_OCTANT_AXIS = 2,
+  // Sections looked at above and below a child the store does not hold, for
+  // one showing that its column was generated whole (see ColumnGenerated).
+  COLUMN_SCAN_SECTIONS = 8,
   SLOT_EMPTY = 0,
   SLOT_TOMBSTONE = -1,
   LOAD_NUMERATOR = 3,
@@ -937,15 +940,42 @@ static uint64_t OctantCells(int Octant) {
   return Mask;
 }
 
+// Whether the level-Level column (X, Z) was generated whole, by the synthetic
+// fill or from a cached copy of such a column: the fill flags every section of
+// a column it finished (LodSection.GeneratedColumn), and a column is evicted
+// whole, so any resident section near Y tells.
+static bool ColumnGenerated(const LodStore *Store, int Level, int X, int Y, int Z) {
+  for (int Offset = 1; Offset <= COLUMN_SCAN_SECTIONS; Offset++) {
+    const LodSection *Below = LodStoreFind(Store, Level, X, Y - Offset, Z);
+    if (Below != NULL && Below->GeneratedColumn) {
+      return true;
+    }
+    const LodSection *Above = LodStoreFind(Store, Level, X, Y + Offset, Z);
+    if (Above != NULL && Above->GeneratedColumn) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Whether every child under the section's present cells can be drawn in its
+// place. A child missing from a column generated whole holds nothing to draw:
+// each level is generated on its own, and from level 4 up a voxel's corner
+// samples reach a block past its footprint, so on a steep slope its top can
+// rise above every finer column under it, into a child section the finer
+// level holds as air and never stores. Waiting for that child kept a coarse
+// section unrefined right beside the 1:1 chunks, cut open to the sky by them.
 static bool ChildrenResident(const LodStore *Store, const LodSection *Section,
                              int Level, int X, int Y, int Z) {
   for (int Octant = 0; Octant < OCTANTS; Octant++) {
     if ((Section->PresentCells & OctantCells(Octant)) == 0U) {
       continue;
     }
-    if (LodStoreFind(Store, Level - 1, (X * 2) + (Octant & 1),
-                     (Y * 2) + ((Octant >> 1) & 1),
-                     (Z * 2) + ((Octant >> 2) & 1)) == NULL) {
+    int ChildX = (X * 2) + (Octant & 1);
+    int ChildY = (Y * 2) + ((Octant >> 1) & 1);
+    int ChildZ = (Z * 2) + ((Octant >> 2) & 1);
+    if (LodStoreFind(Store, Level - 1, ChildX, ChildY, ChildZ) == NULL &&
+        !ColumnGenerated(Store, Level - 1, ChildX, ChildY, ChildZ)) {
       return false;
     }
   }
