@@ -21,8 +21,8 @@ enum {
   HALF_CHUNK = LOD_SECTION_SIZE / 2,
   // Jobs in flight while 1:1 chunks still load or mesh.
   BUSY_JOBS = 2,
-  // Levels filled first, coarsest first: the horizon.
-  COARSE_PHASE_LEVEL = 4,
+  // The level filled first, nearest first: the horizon.
+  HORIZON_LEVEL = LOD_MAX_LEVEL,
   SET_INITIAL = 1024,
   CANDIDATES_INITIAL = 1024,
   LEVEL_KEY_SHIFT = 60,
@@ -79,8 +79,11 @@ typedef struct {
   int Level;
   int X;
   int Z;
-  // Sort key: phase, then level or distance (see CompareCandidates).
+  // Horizontal distance from the camera to the column, in blocks.
   float Gap;
+  // Gap in blocks per voxel of the level: the screen size of what is drawn
+  // while the column is missing (see CompareCandidates).
+  float Priority;
 } Candidate;
 
 typedef struct {
@@ -109,7 +112,8 @@ typedef struct {
   int CandidateCount;
   int CandidateCapacity;
   int Cursor;
-  int CoarseCount;
+  // Candidates of the horizon level, which lead the list.
+  int HorizonCount;
 
   FillJob *Jobs;
 
@@ -381,22 +385,25 @@ static bool AppendCandidate(LodFillState *State, Candidate Entry) {
   return true;
 }
 
-// Coarse levels first, coarsest first and nearest first within a level; then
-// the fine levels nearest first, the coarser of two at one distance first.
-// Positions break the remaining ties, so the order is fixed.
+// The horizon level first, nearest first: with it the whole distance has
+// terrain. Then every other column by Priority, its distance over its voxel
+// width: while it is missing its parent is drawn in its place, with voxels
+// twice as wide, so a column right beyond the 1:1 chunks comes before a
+// coarse one far away whose absence the screen hardly shows. A parent's box
+// holds its children's, so it is never farther and its voxels are wider: it
+// always comes first, and the walk can refine into every child generated.
+// The coarser of two at one priority comes first; positions break the
+// remaining ties, so the order is fixed.
 static int CompareCandidates(const void *Left, const void *Right) {
   const Candidate *A = (const Candidate *)Left;
   const Candidate *B = (const Candidate *)Right;
-  bool CoarseA = A->Level >= COARSE_PHASE_LEVEL;
-  bool CoarseB = B->Level >= COARSE_PHASE_LEVEL;
-  if (CoarseA != CoarseB) {
-    return CoarseA ? -1 : 1;
+  bool HorizonA = A->Level >= HORIZON_LEVEL;
+  bool HorizonB = B->Level >= HORIZON_LEVEL;
+  if (HorizonA != HorizonB) {
+    return HorizonA ? -1 : 1;
   }
-  if (CoarseA && A->Level != B->Level) {
-    return (A->Level > B->Level) ? -1 : 1;
-  }
-  if (A->Gap != B->Gap) {
-    return (A->Gap < B->Gap) ? -1 : 1;
+  if (A->Priority != B->Priority) {
+    return (A->Priority < B->Priority) ? -1 : 1;
   }
   int Keys[2][3] = {{-A->Level, A->X, A->Z}, {-B->Level, B->X, B->Z}};
   for (int Key = 0; Key < 3; Key++) {
@@ -455,10 +462,12 @@ static void BuildCandidates(LodFillState *State) {
                           State->RefineWidths)) {
           continue;
         }
+        float Gap = BoxGap(CamX, CamZ, Level, X, Z);
         Candidate Entry = {.Level = Level,
                            .X = X,
                            .Z = Z,
-                           .Gap = BoxGap(CamX, CamZ, Level, X, Z)};
+                           .Gap = Gap,
+                           .Priority = Gap / (float)(1 << Level)};
         if (!AppendCandidate(State, Entry)) {
           LogWarn("LOD: synthetic fill candidate list out of memory");
           return;
@@ -468,10 +477,10 @@ static void BuildCandidates(LodFillState *State) {
   }
   qsort(State->Candidates, (size_t)State->CandidateCount, sizeof(Candidate),
         CompareCandidates);
-  State->CoarseCount = 0;
-  while (State->CoarseCount < State->CandidateCount &&
-         State->Candidates[State->CoarseCount].Level >= COARSE_PHASE_LEVEL) {
-    State->CoarseCount++;
+  State->HorizonCount = 0;
+  while (State->HorizonCount < State->CandidateCount &&
+         State->Candidates[State->HorizonCount].Level >= HORIZON_LEVEL) {
+    State->HorizonCount++;
   }
 }
 
@@ -654,15 +663,15 @@ void LodFillUpdate(int ChunkX, int ChunkZ, int RenderDistance, bool WorldBusy) {
   State->Stats.InFlight = InFlight;
   State->Stats.Queued = State->CandidateCount - State->Cursor;
   double Elapsed = (OsGetTimeSeconds() - State->FillStart) * (double)MS_PER_SECOND;
-  if (State->HorizonMs < 0.0 && State->Cursor >= State->CoarseCount) {
-    bool CoarseInFlight = false;
+  if (State->HorizonMs < 0.0 && State->Cursor >= State->HorizonCount) {
+    bool HorizonInFlight = false;
     for (int Idx = 0; Idx < MAX_JOBS; Idx++) {
       const FillJob *Job = &State->Jobs[Idx];
-      CoarseInFlight |=
+      HorizonInFlight |=
           atomic_load_explicit(&Job->Phase, memory_order_relaxed) != JOB_FREE &&
-          Job->Level >= COARSE_PHASE_LEVEL;
+          Job->Level >= HORIZON_LEVEL;
     }
-    if (!CoarseInFlight) {
+    if (!HorizonInFlight) {
       State->HorizonMs = Elapsed;
     }
   }

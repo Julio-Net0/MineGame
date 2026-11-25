@@ -10,9 +10,11 @@
 //
 // Columns are chosen where the LOD renderer will want them: every level-7
 // column within the distance, and every finer column whose parent the camera
-// is close enough to refine (or whose parent touches the 1:1 disc). Coarse
-// levels (7 down to 4) fill first, each nearest first, so the whole horizon
-// appears early; levels 3 to 1 follow, nearest first across the three.
+// is close enough to refine (or whose parent touches the 1:1 disc). Level 7
+// fills first, nearest first, so the whole horizon appears early; every other
+// column follows by its distance over its voxel width, the screen size of the
+// parent drawn while it is missing, so the terrain right beyond the 1:1 chunks
+// refines before far coarse columns, and a parent always precedes its children.
 // Columns under the 1:1 chunks are generated too, for the heights the 1:1
 // window leaves unloaded; real data keeps every cell it holds.
 //
@@ -65,8 +67,8 @@ typedef struct {
   // Worker time spent generating (and encoding), summed over all workers.
   uint64_t GenMicros;
   // Milliseconds from the start of a fill (the first anchor, or a move once
-  // idle) until the coarse levels (7 to 4) and then every wanted column were
-  // in the store; negative until reached.
+  // idle) until the horizon level (7) and then every wanted column were in
+  // the store; negative until reached.
   double HorizonMs;
   double FillMs;
 } LodFillStats;
