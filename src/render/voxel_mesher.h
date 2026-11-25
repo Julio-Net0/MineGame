@@ -55,7 +55,7 @@ typedef struct {
   uint32_t TransparentY[SNAPSHOT_BLOCK_SPAN][SNAPSHOT_BLOCK_SPAN];
 } CullColumns;
 
-typedef struct {
+typedef struct VoxelMesher {
   // All three sized alike. The cutout set will hold far less than the others in
   // practice, but a shared size keeps every emit path identical and removes a
   // class of bug where a helper indexes the wrong capacity.
@@ -107,12 +107,18 @@ typedef struct VoxelLodBiomes {
   int OriginZ;
 } VoxelLodBiomes;
 
-// Workspace for meshing a LOD section: its voxels laid out as a snapshot grid
-// and their biomes. About 32 KB; one per meshing thread.
+// What meshing a LOD section reads: its voxels laid out as a snapshot grid,
+// its neighbours' in the margin, and their biomes. About 19 KB.
 typedef struct {
   ChunkSnapshot Grid;
-  LodVoxel Voxels[LOD_SECTION_VOLUME];
   VoxelLodBiomes Biomes;
+} VoxelLodInput;
+
+// Workspace for preparing and meshing a LOD section in one call: the input and
+// the section's decoded voxels. About 35 KB.
+typedef struct {
+  VoxelLodInput Input;
+  LodVoxel Voxels[LOD_SECTION_VOLUME];
 } VoxelLodScratch;
 
 // The 26 sections around a section on its own level, at index
@@ -169,5 +175,16 @@ enum { VOXEL_LOD_SKIRT_MAX_LEVEL = 3 };
 void VoxelMeshLodSection(VoxelMesher *Mesher, VoxelLodScratch *Scratch,
                          const LodSection *Section, const VoxelLodPlace *Place,
                          const LodSection *const Around[VOXEL_LOD_AROUND]);
+
+// The same in two steps, so the meshing can run on another thread. Preparing
+// reads the sections, so the thread that owns the LOD store does it; Decoded
+// is its workspace. Meshing reads only Input (it changes the grid's margin
+// while meshing the walls and puts it back) and writes only Mesher, so any
+// thread can run it.
+void VoxelPrepareLodSection(VoxelLodInput *Input, LodVoxel Decoded[LOD_SECTION_VOLUME],
+                            const LodSection *Section, const VoxelLodPlace *Place,
+                            const LodSection *const Around[VOXEL_LOD_AROUND]);
+void VoxelMeshLodInput(VoxelMesher *Mesher, VoxelLodInput *Input,
+                       const VoxelLodPlace *Place);
 
 #endif

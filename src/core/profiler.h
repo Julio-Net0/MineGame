@@ -71,10 +71,13 @@ typedef enum {
   // Main thread, inside World draw: LOD selection, depth remap and the LOD
   // multi-draws.
   PROFILE_LOD_DRAW,
-  // Main thread, inside LOD draw: meshing and uploading LOD sections.
+  // Main thread, inside LOD draw: preparing LOD sections for meshing and
+  // uploading the finished meshes.
   PROFILE_LOD_MESH,
   // Workers: generating synthetic LOD columns (lod_fill.c).
   PROFILE_LOD_GEN,
+  // Workers: meshing prepared LOD sections (lod_renderer.c).
+  PROFILE_LOD_MESH_JOB,
   PROFILE_SCOPE_COUNT
 } ProfileScope;
 

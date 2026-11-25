@@ -92,6 +92,10 @@ static MesherState *GetMesherStateSlot(int Slot) {
   return &Slots->States[Slot];
 }
 
+VoxelMesher *RendererWorkerMesher(int MesherSlot) {
+  return &GetMesherStateSlot(MesherSlot)->Mesher;
+}
+
 void InitRenderer(void) {
     RenderBackendInit();
     InitChunkVisibility();

@@ -3,13 +3,16 @@
 #include "core/log.h"
 #include "core/profiler.h"
 #include "platform/os_time.h"
+#include "render/renderer.h"
 #include "render/voxel_mesher.h"
+#include "world/chunk_worker.h"
 #include "world/lod/lod_ingest.h"
 #include "world/lod/lod_quality.h"
 #include "world/lod/lod_store.h"
 #include "world/worldgen_strata.h"
 
 #include <math.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -36,8 +39,12 @@ enum {
   COLUMN_STRIPPED = 2,
   CACHE_INITIAL = 4096,
   MAX_DRAWS = 32768,
-  // Sections meshed per frame at most, on top of the time budget.
-  MESH_BUDGET_SECTIONS = 96,
+  // Section mesh jobs in flight at most (see the mesh jobs below): about
+  // 19 KB of prepared input each.
+  MESH_JOB_SLOTS = 128,
+  JOB_FREE = 0,
+  JOB_QUEUED = 1,
+  JOB_READY = 2,
   // Eviction rounds allowed for one selection anchor (camera chunk, store and
   // coverage unchanged) while sections starve; past them the starved wait
   // for the anchor to change, so a full arena can never loop.
@@ -78,6 +85,9 @@ enum {
 
 typedef enum { WALK_NONE = 0, WALK_SELECTED, WALK_REFINED } WalkKind;
 
+// Main-thread time a pass spends taking finished mesh jobs into the arena and
+// preparing sections for new ones, together; each step always allows one, so
+// every pass makes progress.
 #define MESH_BUDGET_SECONDS 0.002
 #define CULL_STATS_INTERVAL 0.5
 // Blocks are centred on integers, so a box of blocks starts half a block low.
@@ -119,7 +129,43 @@ typedef struct {
   bool Retained;
   // The mesh holds see-through faces, which the blended pass draws.
   bool Blended;
+  // A mesh was built, possibly empty; an entry made for a section whose
+  // first job is still running holds none.
+  bool Built;
+  // The mesh job running for the section, or -1.
+  int16_t Job;
 } CacheEntry;
+
+// A section mesh is made in three steps on two kinds of thread, like a chunk
+// mesh (see renderer.c):
+//   main   claim a slot, prepare the section's input from the store, queue it
+//   worker mesh the input in the worker's mesher scratch, copy the vertices out
+//   main   build the face runs, upload them, update the cache entry
+// Only the main thread ever reads the store: a worker reads its slot's input
+// and nothing else. The stage hands a slot between the threads.
+typedef struct {
+  atomic_int Stage;
+  int32_t Level;
+  int32_t X;
+  int32_t Y;
+  int32_t Z;
+  // The section's revision the input was prepared from.
+  uint32_t Revision;
+  float DistSq;
+  bool Border;
+  bool Prefetch;
+  VoxelLodPlace Place;
+  VoxelLodInput Input;
+  // Written by the worker: the opaque and translucent vertices, one after the
+  // other, and where the opaque target's transition walls are.
+  ChunkVertex *Vertices;
+  int Count;
+  int OpaqueCount;
+  int WallStart;
+  int WallQuads[RENDER_LOD_WALL_SIDES];
+  // No memory for the vertices: the section is queued again.
+  bool Failed;
+} LodMeshJob;
 
 // A selected section whose mesh is missing or out of date, queued so the
 // nearest are meshed first.
@@ -171,9 +217,9 @@ typedef struct {
   uint8_t *ColumnDirty;
   int *DirtyColumns;
   CacheEntry *Cache;
-  VoxelMesher *Mesher;
-  VoxelLodScratch *Scratch;
-  ChunkVertex *Upload;
+  LodMeshJob *Jobs;
+  // Main thread: a section decoded while its input is prepared.
+  LodVoxel *Decoded;
   RenderLodDraw *Draws;
   KeyedDraw *OpaqueKeyed;
   KeyedDraw *BorderKeyed;
@@ -197,6 +243,13 @@ typedef struct {
   int Capacity;
   int Count;
   int Tombstones;
+  // Mesh jobs queued or finished and not yet taken back, and the slot the
+  // next search for a free one starts at.
+  int JobsInFlight;
+  int NextJob;
+  // A finished job found the arena full: the finished ones wait for room
+  // like the starved sections, without holding back the idle state.
+  bool JobsBlocked;
   // The arena generation when sections last starved: they are retried only
   // once it moves (space freed or the arena grown), not every frame.
   uint32_t StarvedGeneration;
@@ -253,8 +306,10 @@ typedef struct {
   float NearestStarved;
   // Vertices of the first section the arena could not hold.
   int StarvedVertices;
-  // Meshing attempts, the per-frame budget, and successful uploads.
-  int Attempts;
+  // End of the pass's meshing time (MESH_BUDGET_SECONDS).
+  double MeshDeadline;
+  // Jobs queued this pass, and prefetched children taken in.
+  int Submitted;
   int PrefetchMeshed;
   int RefreshWaiting;
   bool ArenaFull;
@@ -267,7 +322,13 @@ static LodRendererState *GetLodRendererState(void) {
 
 bool LodRendererEnabled(void) { return GetLodRendererState()->Enabled; }
 
+// Only once no worker can still run a job (after CloseChunkWorker).
 static void FreeRendererState(LodRendererState *State) {
+  if (State->Jobs != NULL) {
+    for (int Slot = 0; Slot < MESH_JOB_SLOTS; Slot++) {
+      free(State->Jobs[Slot].Vertices);
+    }
+  }
   free(State->Coverage);
   free(State->Pending);
   free(State->ColumnFlags);
@@ -275,9 +336,8 @@ static void FreeRendererState(LodRendererState *State) {
   free(State->ColumnDirty);
   free(State->DirtyColumns);
   free(State->Cache);
-  free(State->Mesher);
-  free(State->Scratch);
-  free(State->Upload);
+  free(State->Jobs);
+  free(State->Decoded);
   free(State->Draws);
   free(State->OpaqueKeyed);
   free(State->BorderKeyed);
@@ -304,9 +364,8 @@ void LodRendererInit(void) {
   State->ColumnDirty = (uint8_t *)calloc(Columns, sizeof(uint8_t));
   State->DirtyColumns = (int *)malloc(Columns * sizeof(int));
   State->Cache = (CacheEntry *)calloc(CACHE_INITIAL, sizeof(CacheEntry));
-  State->Mesher = (VoxelMesher *)malloc(sizeof(VoxelMesher));
-  State->Scratch = (VoxelLodScratch *)malloc(sizeof(VoxelLodScratch));
-  State->Upload = (ChunkVertex *)malloc(sizeof(ChunkVertex) * CHUNK_MAX_VERTICES);
+  State->Jobs = (LodMeshJob *)calloc(MESH_JOB_SLOTS, sizeof(LodMeshJob));
+  State->Decoded = (LodVoxel *)malloc(sizeof(LodVoxel) * LOD_SECTION_VOLUME);
   State->Draws = (RenderLodDraw *)malloc(sizeof(RenderLodDraw) * MAX_DRAWS);
   State->OpaqueKeyed = (KeyedDraw *)malloc(sizeof(KeyedDraw) * MAX_DRAWS);
   State->BorderKeyed = (KeyedDraw *)malloc(sizeof(KeyedDraw) * MAX_DRAWS);
@@ -322,13 +381,16 @@ void LodRendererInit(void) {
       State->Walked == NULL || State->WalkKeys == NULL || State->WalkKinds == NULL ||
       State->ColumnDirty == NULL ||
       State->DirtyColumns == NULL || State->Cache == NULL ||
-      State->Mesher == NULL || State->Scratch == NULL || State->Upload == NULL ||
+      State->Jobs == NULL || State->Decoded == NULL ||
       State->Draws == NULL || State->OpaqueKeyed == NULL || State->BorderKeyed == NULL ||
       State->BlendDraws == NULL || State->BlendOrder == NULL ||
       State->PendingMeshes == NULL) {
     FreeRendererState(State);
     LogWarn("LOD: could not allocate the LOD renderer; LOD stays undrawn");
     return;
+  }
+  for (int Slot = 0; Slot < MESH_JOB_SLOTS; Slot++) {
+    atomic_init(&State->Jobs[Slot].Stage, JOB_FREE);
   }
   State->Capacity = CACHE_INITIAL;
   State->Enabled = true;
@@ -682,7 +744,7 @@ static CacheEntry *CacheInsert(LodRendererState *State, int Level, int X, int Y,
     State->Tombstones--;
   }
   State->Cache[Idx] = (CacheEntry){.X = X, .Y = Y, .Z = Z, .Level = Level,
-                                   .Mesh = RENDER_LOD_MESH_INVALID};
+                                   .Mesh = RENDER_LOD_MESH_INVALID, .Job = -1};
   State->Count++;
   return &State->Cache[Idx];
 }
@@ -761,119 +823,220 @@ static int BuildFaceRuns(const ChunkVertex *Vertices, int Count, RenderLodRun *R
   return RunCount;
 }
 
-// Meshes the section (with its same-level neighbours as margin) and uploads
-// it. Returns the vertex count; OutMesh stays invalid for a non-empty mesh
-// the arena had no room for.
-static int MeshSection(LodRendererState *State, const LodStore *Store,
-                       const LodSection *Section, int Level, int X, int Y, int Z,
-                       bool Skirts, RenderLodMesh *OutMesh, bool *OutBlended) {
-  const LodSection *Around[VOXEL_LOD_AROUND];
-  for (int Dx = -1; Dx <= 1; Dx++) {
-    for (int Dy = -1; Dy <= 1; Dy++) {
-      for (int Dz = -1; Dz <= 1; Dz++) {
-        Around[VoxelLodAround(Dx, Dy, Dz)] =
-            LodStoreFind(Store, Level, X + Dx, Y + Dy, Z + Dz);
-      }
-    }
+// --- mesh jobs ---------------------------------------------------------------------
+
+// Worker: meshes the slot's prepared input and copies the vertices out. One
+// mesh: the opaque faces, the transition walls that close the opaque target
+// (one run per side, drawn only for the sides a draw names), any cutout
+// faces, then the translucent ones, which the LOD draws blended after every
+// opaque face.
+void LodRendererRunMeshJob(int JobId, int MesherSlot) {
+  LodRendererState *State = GetLodRendererState();
+  if (State->Jobs == NULL || JobId < 0 || JobId >= MESH_JOB_SLOTS) {
+    return;
   }
-  PROFILE_BEGIN(MeshStart);
-  VoxelLodPlace Place = {.Level = Level, .X = X, .Y = Y, .Z = Z, .Skirts = Skirts};
-  VoxelMeshLodSection(State->Mesher, State->Scratch, Section, &Place, Around);
-  // One mesh: the opaque faces, the transition walls that close the opaque
-  // target (one run per side, drawn only for the sides a draw names), any
-  // cutout faces, then the translucent ones, which the LOD draws blended after
-  // every opaque face.
+  PROFILE_BEGIN(JobStart);
+  LodMeshJob *Job = &State->Jobs[JobId];
+  VoxelMesher *Mesher = RendererWorkerMesher(MesherSlot);
+  VoxelMeshLodInput(Mesher, &Job->Input, &Job->Place);
+  int Takes[MESH_TARGET_COUNT];
   int Count = 0;
   int OpaqueCount = 0;
   for (int Target = 0; Target < MESH_TARGET_COUNT; Target++) {
-    const MeshScratch *Set = &State->Mesher->Sets[Target];
-    int Take = Set->VCount;
+    int Take = Mesher->Sets[Target].VCount;
     if (Count + Take > CHUNK_MAX_VERTICES) {
       Take = CHUNK_MAX_VERTICES - Count;
     }
-    memcpy(&State->Upload[Count], Set->Vertices, (size_t)Take * sizeof(ChunkVertex));
+    Takes[Target] = Take;
     Count += Take;
     if (Target < MESH_TARGET_TRANSLUCENT) {
       OpaqueCount = Count;
     }
   }
-  *OutMesh = RENDER_LOD_MESH_INVALID;
-  *OutBlended = Count > OpaqueCount;
+  Job->Vertices = NULL;
+  Job->Failed = false;
   if (Count > 0) {
-    const VoxelMesher *Mesher = State->Mesher;
-    RenderLodRun Runs[RENDER_LOD_MAX_RUNS];
-    int WallRuns = 0;
-    int WallEnd = Mesher->LodWallStart;
-    for (int Side = 0; Side < RENDER_LOD_WALL_SIDES; Side++) {
-      WallRuns += (Mesher->LodWallQuads[Side] > 0) ? 1 : 0;
-      WallEnd += Mesher->LodWallQuads[Side] * CHUNK_VERTICES_PER_QUAD;
-    }
-    int Reserve = WallRuns + CUTOUT_RUN_RESERVE +
-                  ((Count > OpaqueCount) ? TRANSLUCENT_RUN_RESERVE : 0);
-    int RunCount = BuildFaceRuns(State->Upload, Mesher->LodWallStart, Runs,
-                                 RENDER_LOD_MAX_RUNS - Reserve);
-    for (int Side = 0; Side < RENDER_LOD_WALL_SIDES; Side++) {
-      if (Mesher->LodWallQuads[Side] > 0) {
-        Runs[RunCount++] = (RenderLodRun){.Group = RENDER_LOD_WALL_GROUP + Side,
-                                          .Quads = Mesher->LodWallQuads[Side]};
-      }
-    }
-    if (OpaqueCount > WallEnd) {
-      Runs[RunCount++] =
-          (RenderLodRun){.Group = RENDER_LOD_AXIS_GROUPS,
-                         .Quads = (OpaqueCount - WallEnd) / CHUNK_VERTICES_PER_QUAD};
-    }
-    int OpaqueRuns = RunCount;
-    RunCount += BuildFaceRuns(&State->Upload[OpaqueCount], Count - OpaqueCount,
-                              &Runs[OpaqueRuns], RENDER_LOD_MAX_RUNS - OpaqueRuns);
-    *OutMesh = RenderLodUploadMesh(State->Upload, Runs, RunCount, OpaqueRuns);
+    Job->Vertices = (ChunkVertex *)malloc(sizeof(ChunkVertex) * (size_t)Count);
+    Job->Failed = Job->Vertices == NULL;
   }
-  PROFILE_END(MeshStart, PROFILE_LOD_MESH);
-  return Count;
+  int Offset = 0;
+  for (int Target = 0; Target < MESH_TARGET_COUNT && Job->Vertices != NULL; Target++) {
+    memcpy(&Job->Vertices[Offset], Mesher->Sets[Target].Vertices,
+           sizeof(ChunkVertex) * (size_t)Takes[Target]);
+    Offset += Takes[Target];
+  }
+  Job->Count = Count;
+  Job->OpaqueCount = OpaqueCount;
+  Job->WallStart = Mesher->LodWallStart;
+  for (int Side = 0; Side < RENDER_LOD_WALL_SIDES; Side++) {
+    Job->WallQuads[Side] = Mesher->LodWallQuads[Side];
+  }
+  PROFILE_END(JobStart, PROFILE_LOD_MESH_JOB);
+  atomic_store_explicit(&Job->Stage, JOB_READY, memory_order_release);
+}
+
+// The job's face runs, uploaded into the arena. Invalid when the arena had no
+// room; never called for an empty mesh.
+static RenderLodMesh UploadJobMesh(const LodMeshJob *Job) {
+  RenderLodRun Runs[RENDER_LOD_MAX_RUNS];
+  int WallRuns = 0;
+  int WallEnd = Job->WallStart;
+  for (int Side = 0; Side < RENDER_LOD_WALL_SIDES; Side++) {
+    WallRuns += (Job->WallQuads[Side] > 0) ? 1 : 0;
+    WallEnd += Job->WallQuads[Side] * CHUNK_VERTICES_PER_QUAD;
+  }
+  int Reserve = WallRuns + CUTOUT_RUN_RESERVE +
+                ((Job->Count > Job->OpaqueCount) ? TRANSLUCENT_RUN_RESERVE : 0);
+  int RunCount = BuildFaceRuns(Job->Vertices, Job->WallStart, Runs,
+                               RENDER_LOD_MAX_RUNS - Reserve);
+  for (int Side = 0; Side < RENDER_LOD_WALL_SIDES; Side++) {
+    if (Job->WallQuads[Side] > 0) {
+      Runs[RunCount++] = (RenderLodRun){.Group = RENDER_LOD_WALL_GROUP + Side,
+                                        .Quads = Job->WallQuads[Side]};
+    }
+  }
+  if (Job->OpaqueCount > WallEnd) {
+    Runs[RunCount++] =
+        (RenderLodRun){.Group = RENDER_LOD_AXIS_GROUPS,
+                       .Quads = (Job->OpaqueCount - WallEnd) / CHUNK_VERTICES_PER_QUAD};
+  }
+  int OpaqueRuns = RunCount;
+  RunCount += BuildFaceRuns(&Job->Vertices[Job->OpaqueCount], Job->Count - Job->OpaqueCount,
+                            &Runs[OpaqueRuns], RENDER_LOD_MAX_RUNS - OpaqueRuns);
+  return RenderLodUploadMesh(Job->Vertices, Runs, RunCount, OpaqueRuns);
 }
 
 static bool MeshCurrent(const CacheEntry *Entry, const LodSection *Section,
                         bool Skirts) {
-  return Entry != NULL && Entry->Revision == Section->Revision && !Entry->Stale &&
-         Entry->Skirted == Skirts &&
+  return Entry != NULL && Entry->Built && Entry->Revision == Section->Revision &&
+         !Entry->Stale && Entry->Skirted == Skirts &&
          (Entry->Mesh != RENDER_LOD_MESH_INVALID || Entry->VertexCount == 0);
 }
 
-// Meshes a queued section into its cache entry. False when the arena had no
-// room; the entry (and any older mesh it holds) is then left as it was.
-static bool MeshPending(LodRendererState *State, SelectContext *Ctx,
-                        const PendingMesh *Pending, CacheEntry **InOutEntry) {
-  RenderLodMesh Mesh = RENDER_LOD_MESH_INVALID;
-  bool Blended = false;
-  int Count = MeshSection(State, Ctx->Store, Pending->Section, Pending->Level,
-                          Pending->X, Pending->Y, Pending->Z, Pending->Border, &Mesh,
-                          &Blended);
-  Ctx->Attempts++;
-  if (Count > 0 && Mesh == RENDER_LOD_MESH_INVALID) {
-    Ctx->StarvedVertices = Count;
+// Claims a free slot, prepares the section's input from the store (its
+// same-level neighbours fill the margin) and queues it for a worker. False
+// when no slot is free or the queue is full.
+static bool SubmitMeshJob(LodRendererState *State, SelectContext *Ctx,
+                          const PendingMesh *Pending, CacheEntry **InOutEntry) {
+  int Slot = -1;
+  for (int Probe = 0; Probe < MESH_JOB_SLOTS && Slot < 0; Probe++) {
+    int Candidate = (State->NextJob + Probe) % MESH_JOB_SLOTS;
+    if (atomic_load_explicit(&State->Jobs[Candidate].Stage, memory_order_relaxed) ==
+        JOB_FREE) {
+      Slot = Candidate;
+    }
+  }
+  if (Slot < 0) {
     return false;
   }
-  Ctx->Meshed++;
   CacheEntry *Entry = *InOutEntry;
   if (Entry == NULL) {
     Entry = CacheInsert(State, Pending->Level, Pending->X, Pending->Y, Pending->Z);
     if (Entry == NULL) {
-      RenderLodFreeMesh(Mesh);
-      return true;
+      return false;
     }
-  } else {
-    RenderLodFreeMesh(Entry->Mesh);
+    Entry->LastFrame = State->Frame;
+    Entry->DistSq = Pending->DistSq;
+    *InOutEntry = Entry;
   }
-  Entry->Mesh = Mesh;
-  Entry->VertexCount = Count;
-  Entry->Revision = Pending->Section->Revision;
+  const LodSection *Around[VOXEL_LOD_AROUND];
+  for (int Dx = -1; Dx <= 1; Dx++) {
+    for (int Dy = -1; Dy <= 1; Dy++) {
+      for (int Dz = -1; Dz <= 1; Dz++) {
+        Around[VoxelLodAround(Dx, Dy, Dz)] = LodStoreFind(
+            Ctx->Store, Pending->Level, Pending->X + Dx, Pending->Y + Dy, Pending->Z + Dz);
+      }
+    }
+  }
+  LodMeshJob *Job = &State->Jobs[Slot];
+  Job->Place = (VoxelLodPlace){.Level = Pending->Level, .X = Pending->X,
+                               .Y = Pending->Y, .Z = Pending->Z,
+                               .Skirts = Pending->Border};
+  VoxelPrepareLodSection(&Job->Input, State->Decoded, Pending->Section, &Job->Place,
+                         Around);
+  Job->Level = Pending->Level;
+  Job->X = Pending->X;
+  Job->Y = Pending->Y;
+  Job->Z = Pending->Z;
+  Job->Revision = Pending->Section->Revision;
+  Job->DistSq = Pending->DistSq;
+  Job->Border = Pending->Border;
+  Job->Prefetch = Pending->Prefetch;
+  Job->Vertices = NULL;
+  atomic_store_explicit(&Job->Stage, JOB_QUEUED, memory_order_relaxed);
+  if (!EnqueueChunkLodMeshJob(Slot)) {
+    atomic_store_explicit(&Job->Stage, JOB_FREE, memory_order_relaxed);
+    return false;
+  }
+  // The input holds the neighbours as they are now: a change after this marks
+  // the entry stale again.
+  Entry->Job = (int16_t)Slot;
   Entry->Stale = false;
-  Entry->Skirted = Pending->Border;
-  Entry->Blended = Blended;
-  Entry->LastFrame = State->Frame;
-  Entry->DistSq = Pending->DistSq;
-  *InOutEntry = Entry;
+  State->JobsInFlight++;
+  State->NextJob = (Slot + 1) % MESH_JOB_SLOTS;
+  Ctx->Submitted++;
   return true;
+}
+
+// Takes finished jobs into their cache entries and the arena, within the
+// pass's meshing time. A job whose entry left the cache (or took another job
+// since) or whose section left the store is dropped. One whose content changed
+// after it was prepared is still taken: the section draws it while its next
+// job catches up, as it would any older mesh. A full arena leaves the job
+// waiting, finished, for room.
+static void CollectMeshJobs(LodRendererState *State, SelectContext *Ctx) {
+  PROFILE_BEGIN(CollectStart);
+  int Taken = 0;
+  State->JobsBlocked = false;
+  for (int Slot = 0; Slot < MESH_JOB_SLOTS; Slot++) {
+    LodMeshJob *Job = &State->Jobs[Slot];
+    if (atomic_load_explicit(&Job->Stage, memory_order_acquire) != JOB_READY) {
+      continue;
+    }
+    if (Taken > 0 && OsGetTimeSeconds() > Ctx->MeshDeadline) {
+      break;
+    }
+    CacheEntry *Entry = CacheFind(State, Job->Level, Job->X, Job->Y, Job->Z);
+    bool Owned = Entry != NULL && Entry->Job == Slot;
+    bool Resident = LodStoreFind(Ctx->Store, Job->Level, Job->X, Job->Y, Job->Z) != NULL;
+    if (Owned && Resident && !Job->Failed) {
+      RenderLodMesh Mesh = RENDER_LOD_MESH_INVALID;
+      if (Job->Count > 0) {
+        Mesh = UploadJobMesh(Job);
+        if (Mesh == RENDER_LOD_MESH_INVALID) {
+          Ctx->ArenaFull = true;
+          Ctx->StarvedVertices = Job->Count;
+          if (Ctx->NearestStarved < 0.0F || Job->DistSq < Ctx->NearestStarved) {
+            Ctx->NearestStarved = Job->DistSq;
+          }
+          State->JobsBlocked = true;
+          break;
+        }
+      }
+      RenderLodFreeMesh(Entry->Mesh);
+      Entry->Mesh = Mesh;
+      Entry->VertexCount = Job->Count;
+      Entry->Revision = Job->Revision;
+      Entry->Skirted = Job->Border;
+      Entry->Blended = Job->Count > Job->OpaqueCount;
+      Entry->Built = true;
+      Entry->LastFrame = State->Frame;
+      Entry->DistSq = Job->DistSq;
+      Ctx->Meshed++;
+      if (Job->Prefetch) {
+        Ctx->PrefetchMeshed++;
+      }
+    }
+    if (Owned) {
+      Entry->Job = -1;
+    }
+    free(Job->Vertices);
+    Job->Vertices = NULL;
+    atomic_store_explicit(&Job->Stage, JOB_FREE, memory_order_relaxed);
+    State->JobsInFlight--;
+    Taken++;
+  }
+  PROFILE_END(CollectStart, PROFILE_LOD_MESH);
 }
 
 // --- walk set ----------------------------------------------------------------------
@@ -1211,8 +1374,8 @@ static bool ChildrenMeshed(LodRendererState *State, SelectContext *Ctx,
     int ChildY = (Y * 2) + ((Octant >> 1) & 1);
     int ChildZ = (Z * 2) + ((Octant >> 2) & 1);
     const LodSection *Child = LodStoreFind(Ctx->Store, Level - 1, ChildX, ChildY, ChildZ);
-    if (Child == NULL || Child->PresentCells == 0U ||
-        CacheFind(State, Level - 1, ChildX, ChildY, ChildZ) != NULL) {
+    const CacheEntry *Entry = CacheFind(State, Level - 1, ChildX, ChildY, ChildZ);
+    if (Child == NULL || Child->PresentCells == 0U || (Entry != NULL && Entry->Built)) {
       continue;
     }
     SectionRole Role = RoleOf(State, Ctx, Level - 1, ChildX, ChildY, ChildZ);
@@ -1360,52 +1523,53 @@ static int ComparePending(const void *Left, const void *Right) {
   return 0;
 }
 
-// Meshes the queued sections nearest first within the frame's budget, timed
-// from here (the walk before it can be long) and always allowing one attempt,
-// so every pass makes progress. One that cannot be meshed now keeps drawing
-// its older mesh, if it has one.
-static void MeshQueued(LodRendererState *State, SelectContext *Ctx) {
+// Queues mesh jobs for the waiting sections, nearest first, within what the
+// pass's meshing time has left after taking finished jobs in (the time not
+// counting the walk, which can be long) and always allowing one, so every pass
+// makes progress. A section waiting for a job, queued or not, draws whatever
+// older mesh it has meanwhile.
+static void SubmitQueued(LodRendererState *State, SelectContext *Ctx, double CollectSeconds) {
   qsort(State->PendingMeshes, (size_t)Ctx->PendingCount, sizeof(PendingMesh),
         ComparePending);
-  double Deadline = OsGetTimeSeconds() + MESH_BUDGET_SECONDS;
+  PROFILE_BEGIN(PrepareStart);
+  double Deadline = OsGetTimeSeconds() + MESH_BUDGET_SECONDS - CollectSeconds;
+  bool SlotsLeft = true;
   for (int Idx = 0; Idx < Ctx->PendingCount; Idx++) {
     const PendingMesh *Pending = &State->PendingMeshes[Idx];
     CacheEntry *Entry =
         CacheFind(State, Pending->Level, Pending->X, Pending->Y, Pending->Z);
+    bool Queued = Entry != NULL && Entry->Job >= 0;
+    bool CanSubmit = SlotsLeft && !Ctx->ArenaFull && !Queued &&
+                     (Ctx->Submitted == 0 || OsGetTimeSeconds() <= Deadline);
     if (Pending->Refresh) {
-      // Last in the queue: only time no drawn section needed. A full arena
-      // ends the refreshing instead of evicting for it.
-      bool OutOfTime = Ctx->Attempts >= MESH_BUDGET_SECTIONS ||
-                       (Ctx->Attempts > 0 && OsGetTimeSeconds() > Deadline);
-      if (OutOfTime && !Ctx->ArenaFull) {
+      // Last in the queue: only slots and time no drawn section needed. A
+      // full arena ends the refreshing instead of evicting for it.
+      if (!Queued && !Ctx->ArenaFull &&
+          (!CanSubmit || !SubmitMeshJob(State, Ctx, Pending, &Entry))) {
         Ctx->RefreshWaiting = Ctx->PendingCount - Idx;
-      }
-      if (OutOfTime || Ctx->ArenaFull || !MeshPending(State, Ctx, Pending, &Entry)) {
         break;
       }
       continue;
     }
     if (Ctx->ArenaFull) {
-      Ctx->Starved++;
-    } else if (Ctx->Attempts >= MESH_BUDGET_SECTIONS ||
-               (Ctx->Attempts > 0 && OsGetTimeSeconds() > Deadline)) {
-      Ctx->Waiting++;
-    } else if (!MeshPending(State, Ctx, Pending, &Entry)) {
       // A full arena is not waiting: the section only gets a mesh once room
-      // is freed, so it must not hold back the settled state. Nothing after
-      // it is tried either, so no farther section takes the room it needs.
-      Ctx->ArenaFull = true;
+      // is freed, so it must not hold back the settled state. Nothing is
+      // queued either, so no farther section takes the room it needs.
       Ctx->Starved++;
-    } else if (Pending->Prefetch) {
-      Ctx->PrefetchMeshed++;
-    }
-    if (Ctx->ArenaFull && Ctx->NearestStarved < 0.0F) {
-      Ctx->NearestStarved = Pending->DistSq;
+      if (Ctx->NearestStarved < 0.0F || Pending->DistSq < Ctx->NearestStarved) {
+        Ctx->NearestStarved = Pending->DistSq;
+      }
+    } else {
+      Ctx->Waiting++;
+      if (CanSubmit && !SubmitMeshJob(State, Ctx, Pending, &Entry)) {
+        SlotsLeft = false;
+      }
     }
     if (!Pending->Prefetch) {
       AddDraw(State, Ctx, Entry, Pending);
     }
   }
+  PROFILE_END(PrepareStart, PROFILE_LOD_MESH);
 }
 
 static int CompareFarthest(const void *Left, const void *Right) {
@@ -1484,10 +1648,13 @@ void LodRendererDraw(RenderCamera Camera) {
   }
   // Starved sections are retried only once the arena has gained room and
   // while eviction rounds remain, so a full arena costs nothing per frame.
+  // Jobs in flight keep the passes coming, which take them back as they
+  // finish; finished ones a full arena turned away wait for room the same way.
+  bool ArenaMoved = RenderLodArenaGeneration() != State->StarvedGeneration;
+  bool JobsOwed = State->JobsInFlight > 0 && (!State->JobsBlocked || ArenaMoved);
   bool Owed = State->Stats.WaitingSections > 0 || State->PrefetchOwed ||
-              State->RefreshOwed ||
-              (State->Stats.StarvedSections > 0 && !State->StarvedParked &&
-               RenderLodArenaGeneration() != State->StarvedGeneration);
+              State->RefreshOwed || JobsOwed ||
+              (State->Stats.StarvedSections > 0 && !State->StarvedParked && ArenaMoved);
   if (Anchored || Owed) {
     State->Frame++;
     State->ListRevision++;
@@ -1505,6 +1672,12 @@ void LodRendererDraw(RenderCamera Camera) {
         .CameraChunkX = ChunkX,
         .CameraChunkZ = ChunkZ,
         .NearestStarved = -1.0F};
+    // Before the walk, so the sections finished since the last pass are
+    // drawn, and refined into, by this one.
+    double CollectStart = OsGetTimeSeconds();
+    Ctx.MeshDeadline = CollectStart + MESH_BUDGET_SECONDS;
+    CollectMeshJobs(State, &Ctx);
+    double CollectSeconds = OsGetTimeSeconds() - CollectStart;
     WalkReset(State);
     for (int Idx = 0; Idx < Store->Capacity; Idx++) {
       const LodStoreSlot *Slot = &Store->Slots[Idx];
@@ -1513,7 +1686,7 @@ void LodRendererDraw(RenderCamera Camera) {
       }
     }
     ResolveWalk(State, &Ctx);
-    MeshQueued(State, &Ctx);
+    SubmitQueued(State, &Ctx, CollectSeconds);
     AssembleDraws(State, &Ctx);
     State->HasSelection = true;
     State->PrefetchOwed = Ctx.PrefetchMeshed > 0;
@@ -1561,8 +1734,9 @@ void LodRendererDraw(RenderCamera Camera) {
 
 bool LodRendererIdle(void) {
   const LodRendererState *State = GetLodRendererState();
-  return !State->Enabled ||
-         (State->Stats.WaitingSections == 0 && !State->PrefetchOwed);
+  return !State->Enabled || !State->DrawOn ||
+         (State->Stats.WaitingSections == 0 && !State->PrefetchOwed &&
+          (State->JobsInFlight == 0 || State->JobsBlocked));
 }
 
 void LodRendererReadCullStats(bool Force) {

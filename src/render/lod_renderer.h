@@ -45,8 +45,13 @@ void LodRendererForgetChunk(int ChunkX, int ChunkY, int ChunkZ);
 // Between the 1:1 cutout pass and the translucent pass.
 void LodRendererDraw(RenderCamera Camera);
 
-// No selected section waits for a mesh (always true when off).
+// No selected section waits for a mesh, and no mesh job is still running
+// (always true when off or not drawing).
 bool LodRendererIdle(void);
+
+// Worker side of a section mesh job: meshes the input the main thread
+// prepared, with the worker's mesher scratch (see SetChunkWorkerLodMeshRunner).
+void LodRendererRunMeshJob(int JobId, int MesherSlot);
 
 typedef struct {
   bool Enabled;

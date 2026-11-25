@@ -27,6 +27,11 @@ void CloseRenderer(void);
 int RendererInitMesherSlots(int Count);
 void RendererFreeMesherSlots(void);
 
+// The mesher scratch of the worker running in MesherSlot, for the LOD
+// renderer's section mesh jobs: a worker runs one job at a time, chunk or
+// section, so both share it.
+struct VoxelMesher *RendererWorkerMesher(int MesherSlot);
+
 // Gives every mesh job a LOD patch the worker fills from its snapshot and the
 // upload hands to the LOD store. Main thread, after LodIngestInit succeeded and
 // before the workers start; false when the patches cannot be allocated.

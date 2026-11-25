@@ -16,6 +16,8 @@
 #define QUEUE_SIZE (MAX_ACTIVE_CHUNKS + 1)
 // The LOD scheduler keeps a few dozen jobs in flight at most.
 #define LOD_QUEUE_SIZE 257
+// Above the LOD renderer's mesh job slots.
+#define LOD_MESH_QUEUE_SIZE 257
 
 // Meshing and generation share one pool rather than getting one each. The queue
 // lock, condition variable and shutdown path already do what mesh work needs,
@@ -66,6 +68,10 @@ typedef struct ChunkWorkerState {
   int LodHead;
   int LodTail;
 
+  int LodMeshQueue[LOD_MESH_QUEUE_SIZE];
+  int LodMeshHead;
+  int LodMeshTail;
+
   CompletionRing Completions;
 
   pthread_t WorkerThreads[CHUNK_WORKER_MAX_THREADS];
@@ -76,6 +82,7 @@ typedef struct ChunkWorkerState {
   atomic_bool WorkerRunning;
   MeshJobRunner MeshRunner;
   LodJobRunner LodRunner;
+  MeshJobRunner LodMeshRunner;
 } ChunkWorkerState;
 
 static ChunkWorkerState *GetWorkerState(void) {
@@ -85,7 +92,8 @@ static ChunkWorkerState *GetWorkerState(void) {
     .ThreadCount = 0,
     .WorkerRunning = false,
     .MeshRunner = (MeshJobRunner)0,
-    .LodRunner = (LodJobRunner)0
+    .LodRunner = (LodJobRunner)0,
+    .LodMeshRunner = (MeshJobRunner)0
   };
   return &State;
 }
@@ -102,7 +110,8 @@ static bool HasChunkWork(const ChunkWorkerState *State) {
 
 // Caller holds QueueMutex.
 static bool HasWork(const ChunkWorkerState *State) {
-  return HasChunkWork(State) || State->LodHead != State->LodTail;
+  return HasChunkWork(State) || State->LodHead != State->LodTail ||
+         State->LodMeshHead != State->LodMeshTail;
 }
 
 // The worker that owns a column. Columns are grouped into OWNER_BLOCK x
@@ -237,6 +246,7 @@ static void *WorkerLoop(void *Arg) {
 
     Chunk *GenerationTarget = (Chunk *)0;
     int MeshJobId = -1;
+    int LodMeshJobId = -1;
     int LodJobId = -1;
 
     // Mesh work first. It is bounded by the renderer's job slots, which the main
@@ -245,9 +255,14 @@ static void *WorkerLoop(void *Arg) {
     // generation first instead parked the vicinity's mesh jobs behind every
     // other cube of the load: after a teleport at the maximum render distance
     // nothing near the player appeared until the whole disc had generated.
+    // LOD section meshes follow the chunks' for the same reason, bounded the
+    // same way by the LOD renderer's slots.
     if (State->MeshHead != State->MeshTail) {
       MeshJobId = State->MeshQueue[State->MeshHead];
       State->MeshHead = (State->MeshHead + 1) % QUEUE_SIZE;
+    } else if (State->LodMeshHead != State->LodMeshTail) {
+      LodMeshJobId = State->LodMeshQueue[State->LodMeshHead];
+      State->LodMeshHead = (State->LodMeshHead + 1) % LOD_MESH_QUEUE_SIZE;
     } else {
       GenerationTarget = TakeGenerationJob(State, WorkerIndex);
       if (GenerationTarget == (Chunk *)0 && State->LodHead != State->LodTail) {
@@ -257,6 +272,7 @@ static void *WorkerLoop(void *Arg) {
     }
 
     MeshJobRunner Runner = State->MeshRunner;
+    MeshJobRunner LodMeshRunner = State->LodMeshRunner;
     LodJobRunner LodRunner = State->LodRunner;
     pthread_mutex_unlock(&State->QueueMutex);
 
@@ -265,6 +281,8 @@ static void *WorkerLoop(void *Arg) {
       Completed = GenerationTarget;
     } else if (MeshJobId >= 0 && Runner != (MeshJobRunner)0) {
       Runner(MeshJobId, WorkerIndex);
+    } else if (LodMeshJobId >= 0 && LodMeshRunner != (MeshJobRunner)0) {
+      LodMeshRunner(LodMeshJobId, WorkerIndex);
     } else if (LodJobId >= 0 && LodRunner != (LodJobRunner)0) {
       LodRunner(LodJobId);
     }
@@ -278,6 +296,10 @@ void SetChunkWorkerMeshRunner(MeshJobRunner Runner) {
 
 void SetChunkWorkerLodRunner(LodJobRunner Runner) {
   GetWorkerState()->LodRunner = Runner;
+}
+
+void SetChunkWorkerLodMeshRunner(MeshJobRunner Runner) {
+  GetWorkerState()->LodMeshRunner = Runner;
 }
 
 int ChunkWorkerDefaultThreadCount(void) {
@@ -315,6 +337,8 @@ void InitChunkWorker(int ThreadCount, int RenderDistance) {
   }
   State->LodHead = 0;
   State->LodTail = 0;
+  State->LodMeshHead = 0;
+  State->LodMeshTail = 0;
   State->Completions.Head = 0;
   State->Completions.Tail = 0;
   State->Completions.Overflowed = false;
@@ -432,6 +456,20 @@ bool EnqueueChunkLodJob(int JobId) {
   if (Queued) {
     State->LodQueue[State->LodTail] = JobId;
     State->LodTail = NextTail;
+    pthread_cond_signal(&State->WorkAvail);
+  }
+  pthread_mutex_unlock(&State->QueueMutex);
+  return Queued;
+}
+
+bool EnqueueChunkLodMeshJob(int JobId) {
+  ChunkWorkerState *State = GetWorkerState();
+  pthread_mutex_lock(&State->QueueMutex);
+  int NextTail = (State->LodMeshTail + 1) % LOD_MESH_QUEUE_SIZE;
+  bool Queued = (NextTail != State->LodMeshHead);
+  if (Queued) {
+    State->LodMeshQueue[State->LodMeshTail] = JobId;
+    State->LodMeshTail = NextTail;
     pthread_cond_signal(&State->WorkAvail);
   }
   pthread_mutex_unlock(&State->QueueMutex);

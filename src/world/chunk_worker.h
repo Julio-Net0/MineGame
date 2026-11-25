@@ -34,6 +34,9 @@ void CloseChunkWorker(void);
 // Wire the mesher in before any mesh job is queued.
 void SetChunkWorkerMeshRunner(MeshJobRunner Runner);
 void SetChunkWorkerLodRunner(LodJobRunner Runner);
+// Runs one LOD section mesh job (see lod_renderer.c), with the mesher scratch
+// of MesherSlot like a chunk mesh job.
+void SetChunkWorkerLodMeshRunner(MeshJobRunner Runner);
 
 // Enqueues Count chunks for generation, in order, under one lock and one
 // wake-up: a lock and a wake per chunk made idle workers contend with the main
@@ -54,5 +57,11 @@ bool EnqueueChunkMeshJob(int JobId);
 // Lowest priority. Jobs still queued at shutdown are dropped, not run.
 // Returns false when the queue is full.
 bool EnqueueChunkLodJob(int JobId);
+
+// A LOD section mesh job: right after chunk mesh jobs, before generation, since
+// the LOD stands in for every chunk not drawn yet. The renderer bounds them by
+// its job slots. Jobs still queued at shutdown are dropped, not run. Returns
+// false when the queue is full.
+bool EnqueueChunkLodMeshJob(int JobId);
 
 #endif

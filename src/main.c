@@ -273,6 +273,7 @@ static bool InitGame(World **WorldVal, Player *PlayerVal, GameCamera *PlayerCame
   }
   LodSettingsInit();
   SetChunkWorkerMeshRunner(RendererBuildMeshJob);
+  SetChunkWorkerLodMeshRunner(LodRendererRunMeshJob);
   InitChunkWorker(WorkerCount, *RenderDistance);
 
   SpawnPoint Spawn = FindSpawnColumn(GetWorldSeed());

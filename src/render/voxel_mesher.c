@@ -1274,23 +1274,23 @@ static void BuildLodWallPasses(VoxelMesher *State, ChunkSnapshot *Grid) {
     }
 }
 
-void VoxelMeshLodSection(VoxelMesher *Mesher, VoxelLodScratch *Scratch,
-                         const LodSection *Section, const VoxelLodPlace *Place,
-                         const LodSection *const Around[VOXEL_LOD_AROUND]) {
+void VoxelPrepareLodSection(VoxelLodInput *Input, LodVoxel Decoded[LOD_SECTION_VOLUME],
+                            const LodSection *Section, const VoxelLodPlace *Place,
+                            const LodSection *const Around[VOXEL_LOD_AROUND]) {
     // ChunkFace order: -X, +X, -Y, +Y, -Z, +Z.
     static const int FACE_OFFSETS[LOD_FACES][3] = {
         {-1, 0, 0}, {1, 0, 0}, {0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}};
-    ChunkSnapshot *Grid = &Scratch->Grid;
+    ChunkSnapshot *Grid = &Input->Grid;
     // Air margins, no rock faces, a local origin: the grid stands alone.
     memset(Grid, 0, sizeof(*Grid));
-    LodSectionDecode(Section, Scratch->Voxels);
+    LodSectionDecode(Section, Decoded);
     for (int X = 0; X < LOD_SECTION_SIZE; X++) {
         for (int Y = 0; Y < LOD_SECTION_SIZE; Y++) {
             for (int Z = 0; Z < LOD_SECTION_SIZE; Z++) {
-                LodVoxel Voxel = Scratch->Voxels[LodVoxelIndex(X, Y, Z)];
+                LodVoxel Voxel = Decoded[LodVoxelIndex(X, Y, Z)];
                 Grid->Blocks[X + 1][Y + 1][Z + 1] = LodVoxelBlock(Voxel);
-                Scratch->Biomes.Cells[X + VOXEL_LOD_BIOME_MARGIN][Y]
-                                     [Z + VOXEL_LOD_BIOME_MARGIN] =
+                Input->Biomes.Cells[X + VOXEL_LOD_BIOME_MARGIN][Y]
+                                   [Z + VOXEL_LOD_BIOME_MARGIN] =
                     (unsigned char)LodVoxelBiome(Voxel);
             }
         }
@@ -1314,14 +1314,18 @@ void VoxelMeshLodSection(VoxelMesher *Mesher, VoxelLodScratch *Scratch,
         const LodSection *Neighbour =
             (Around != NULL) ? Around[VoxelLodAround(Offset[0], Offset[1], Offset[2])]
                              : NULL;
-        FillBiomeMargin(&Scratch->Biomes, Neighbour, Side);
+        FillBiomeMargin(&Input->Biomes, Neighbour, Side);
     }
-    FillBiomeCorners(&Scratch->Biomes);
+    FillBiomeCorners(&Input->Biomes);
     int SectionBlocks = LOD_SECTION_SIZE << Place->Level;
-    Scratch->Biomes.Blend = Place->Level == 1;
-    Scratch->Biomes.OriginX = Place->X * SectionBlocks;
-    Scratch->Biomes.OriginZ = Place->Z * SectionBlocks;
-    ResetMesher(Mesher, &Scratch->Biomes);
+    Input->Biomes.Blend = Place->Level == 1;
+    Input->Biomes.OriginX = Place->X * SectionBlocks;
+    Input->Biomes.OriginZ = Place->Z * SectionBlocks;
+}
+
+void VoxelMeshLodInput(VoxelMesher *Mesher, VoxelLodInput *Input,
+                       const VoxelLodPlace *Place) {
+    ResetMesher(Mesher, &Input->Biomes);
     // Up to level 3 a voxel is narrower than a chunk, so the 1:1 columns cut
     // the section every CHUNK_SIZE >> Level voxels. Coarser sections reach the
     // 1:1 edge only where no finer data exists, and would pay skirts on every
@@ -1341,6 +1345,13 @@ void VoxelMeshLodSection(VoxelMesher *Mesher, VoxelLodScratch *Scratch,
     if (Place->Skirts && Place->Level >= 1 && (CHUNK_SIZE >> Place->Level) > 0) {
         Mesher->LodPlanePeriod = CHUNK_SIZE >> Place->Level;
     }
-    BuildCubeFaces(Mesher, Grid);
-    BuildLodWallPasses(Mesher, Grid);
+    BuildCubeFaces(Mesher, &Input->Grid);
+    BuildLodWallPasses(Mesher, &Input->Grid);
+}
+
+void VoxelMeshLodSection(VoxelMesher *Mesher, VoxelLodScratch *Scratch,
+                         const LodSection *Section, const VoxelLodPlace *Place,
+                         const LodSection *const Around[VOXEL_LOD_AROUND]) {
+    VoxelPrepareLodSection(&Scratch->Input, Scratch->Voxels, Section, Place, Around);
+    VoxelMeshLodInput(Mesher, &Scratch->Input, Place);
 }
