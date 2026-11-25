@@ -214,11 +214,17 @@ typedef int RenderLodMesh;
 // whole runs cannot change which of two equal-depth fragments wins. Groups 0..5
 // are the six axis directions in the packed normal's order (top, bottom, -X,
 // +X, +Z, -Z); group 6 holds every other quad (cross billboards) and is never
-// culled by direction. A mesh has at most RENDER_LOD_MAX_RUNS runs; the
-// mesher's per-direction passes need far fewer.
+// culled by direction. Groups 7..10 are the section's transition walls, one
+// side each in the order -X, +X, +Z, -Z (axis groups 2..5): drawn only for the
+// sides RenderLodDraw.WallSides names. A mesh has at most RENDER_LOD_MAX_RUNS
+// runs; the mesher's per-direction passes need far fewer.
 enum {
   RENDER_LOD_FACE_GROUPS = 7,
   RENDER_LOD_AXIS_GROUPS = 6,
+  RENDER_LOD_WALL_GROUP = 7,
+  RENDER_LOD_WALL_SIDES = 4,
+  // Wall side k faces axis group RENDER_LOD_WALL_AXIS_BASE + k.
+  RENDER_LOD_WALL_AXIS_BASE = 2,
   RENDER_LOD_MAX_RUNS = 24
 };
 
@@ -246,7 +252,9 @@ void RenderLodFreeMesh(RenderLodMesh Mesh);
 uint32_t RenderLodArenaGeneration(void);
 
 // One section to draw: its mesh, its origin in blocks and its blocks per
-// voxel (2^level).
+// voxel (2^level). WallSides holds bit k for each wall side k (see the face
+// groups above) whose neighbour region is drawn at another level, so the
+// step between the two levels is closed by that side's wall.
 typedef struct {
   RenderLodMesh Mesh;
   int OriginX;
@@ -254,6 +262,7 @@ typedef struct {
   int OriginZ;
   int Scale;
   int VertexCount;
+  unsigned WallSides;
 } RenderLodDraw;
 
 // Which chunks are drawn 1:1, one bit per chunk: a toroidal grid of columns

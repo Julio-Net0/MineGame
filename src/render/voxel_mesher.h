@@ -71,6 +71,11 @@ typedef struct {
   // LOD sections the border pass draws: voxels between two chunk column
   // planes, where greedy quads stop (see VoxelMeshLodSection); 0 merges freely.
   int LodPlanePeriod;
+  // LOD sections only: the opaque target ends with the transition walls,
+  // from vertex LodWallStart on, LodWallQuads[k] quads for wall side k (see
+  // RENDER_LOD_WALL_GROUP and VoxelMeshLodSection).
+  int LodWallStart;
+  int LodWallQuads[RENDER_LOD_WALL_SIDES];
   // A target filled up and faces were dropped.
   bool Truncated;
 } VoxelMesher;
@@ -146,9 +151,13 @@ typedef struct {
 // opaque target. Level-1 tints blend across biome cells like a chunk's, so
 // the LOD next to the 1:1 chunks carries the colour of the blocks it stands
 // for; coarser levels take each voxel's own biome.
-// TransitionFaces (bit per face, ChunkFace order) marks neighbours drawn at
-// another level: their faces are meshed as if the neighbour held this
-// section's own see-through blocks and air elsewhere (see FillTransitionMargin).
+// After every other opaque face come each side's transition walls (wall order
+// -X, +X, +Z, -Z, see RENDER_LOD_WALL_GROUP): the side faces of its border
+// voxels that a solid same-level neighbour hides, meshed as if that neighbour
+// held this section's own see-through blocks and air elsewhere (see
+// FillTransitionMargin). The draw keeps a side's walls only while the region
+// beside it is drawn at another level, so a level change never needs a new
+// mesh.
 // Two LOD-only vertex flags use the packed vertex's spare top bits (lod.vert
 // reads them): VOXEL_LOD_FLAG_SKIRT on skirt faces, drawn only where the
 // section is cut against the 1:1 chunks, and VOXEL_LOD_FLAG_SEA on water and
@@ -159,7 +168,6 @@ enum { VOXEL_LOD_SKIRT_MAX_LEVEL = 3 };
 #define VOXEL_LOD_FLAG_SEA (UINT32_C(1) << 31U)
 void VoxelMeshLodSection(VoxelMesher *Mesher, VoxelLodScratch *Scratch,
                          const LodSection *Section, const VoxelLodPlace *Place,
-                         const LodSection *const Around[VOXEL_LOD_AROUND],
-                         unsigned TransitionFaces);
+                         const LodSection *const Around[VOXEL_LOD_AROUND]);
 
 #endif

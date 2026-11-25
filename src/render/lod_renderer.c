@@ -58,8 +58,10 @@ enum {
   SLOT_TOMBSTONE = -1,
   LOAD_NUMERATOR = 3,
   LOAD_DENOMINATOR = 4,
-  // Runs kept free for a section's translucent faces: one per direction.
+  // Runs kept free for a section's translucent faces (one per direction) and
+  // for cutout faces, which LOD sections never hold but would get one run.
   TRANSLUCENT_RUN_RESERVE = 6,
+  CUTOUT_RUN_RESERVE = 1,
   // The packed vertex's face normal (see ChunkVertex).
   VERTEX_NORMAL_SHIFT = 27,
   VERTEX_NORMAL_MASK = 7,
@@ -109,8 +111,6 @@ typedef struct {
   float DistSq;
   // A neighbour changed since the mesh was built: its border faces may be off.
   bool Stale;
-  // Faces the mesh treated as level transitions (see VoxelMeshLodSection).
-  uint8_t Transitions;
   // The mesh carries skirts: only border draws use them, so only their
   // sections pay for them.
   bool Skirted;
@@ -133,7 +133,9 @@ typedef struct {
   // Position in the selection walk, which orders the draw list.
   uint32_t Key;
   bool Border;
-  uint8_t Transitions;
+  // Wall sides whose neighbour region is drawn at another level (see
+  // TransitionWalls).
+  uint8_t WallSides;
   // Queued only to be meshed: a child its parent stands in for (see
   // ChildrenMeshed).
   bool Prefetch;
@@ -764,8 +766,7 @@ static int BuildFaceRuns(const ChunkVertex *Vertices, int Count, RenderLodRun *R
 // the arena had no room for.
 static int MeshSection(LodRendererState *State, const LodStore *Store,
                        const LodSection *Section, int Level, int X, int Y, int Z,
-                       unsigned Transitions, bool Skirts, RenderLodMesh *OutMesh,
-                       bool *OutBlended) {
+                       bool Skirts, RenderLodMesh *OutMesh, bool *OutBlended) {
   const LodSection *Around[VOXEL_LOD_AROUND];
   for (int Dx = -1; Dx <= 1; Dx++) {
     for (int Dy = -1; Dy <= 1; Dy++) {
@@ -777,10 +778,11 @@ static int MeshSection(LodRendererState *State, const LodStore *Store,
   }
   PROFILE_BEGIN(MeshStart);
   VoxelLodPlace Place = {.Level = Level, .X = X, .Y = Y, .Z = Z, .Skirts = Skirts};
-  VoxelMeshLodSection(State->Mesher, State->Scratch, Section, &Place, Around,
-                      Transitions);
-  // One mesh: the opaque (and cutout) faces, then the translucent ones,
-  // which the LOD draws blended after every opaque face.
+  VoxelMeshLodSection(State->Mesher, State->Scratch, Section, &Place, Around);
+  // One mesh: the opaque faces, the transition walls that close the opaque
+  // target (one run per side, drawn only for the sides a draw names), any
+  // cutout faces, then the translucent ones, which the LOD draws blended after
+  // every opaque face.
   int Count = 0;
   int OpaqueCount = 0;
   for (int Target = 0; Target < MESH_TARGET_COUNT; Target++) {
@@ -798,13 +800,32 @@ static int MeshSection(LodRendererState *State, const LodStore *Store,
   *OutMesh = RENDER_LOD_MESH_INVALID;
   *OutBlended = Count > OpaqueCount;
   if (Count > 0) {
+    const VoxelMesher *Mesher = State->Mesher;
     RenderLodRun Runs[RENDER_LOD_MAX_RUNS];
-    int Reserve = (Count > OpaqueCount) ? TRANSLUCENT_RUN_RESERVE : 0;
-    int OpaqueRuns =
-        BuildFaceRuns(State->Upload, OpaqueCount, Runs, RENDER_LOD_MAX_RUNS - Reserve);
-    int RunCount = OpaqueRuns + BuildFaceRuns(&State->Upload[OpaqueCount],
-                                              Count - OpaqueCount, &Runs[OpaqueRuns],
-                                              RENDER_LOD_MAX_RUNS - OpaqueRuns);
+    int WallRuns = 0;
+    int WallEnd = Mesher->LodWallStart;
+    for (int Side = 0; Side < RENDER_LOD_WALL_SIDES; Side++) {
+      WallRuns += (Mesher->LodWallQuads[Side] > 0) ? 1 : 0;
+      WallEnd += Mesher->LodWallQuads[Side] * CHUNK_VERTICES_PER_QUAD;
+    }
+    int Reserve = WallRuns + CUTOUT_RUN_RESERVE +
+                  ((Count > OpaqueCount) ? TRANSLUCENT_RUN_RESERVE : 0);
+    int RunCount = BuildFaceRuns(State->Upload, Mesher->LodWallStart, Runs,
+                                 RENDER_LOD_MAX_RUNS - Reserve);
+    for (int Side = 0; Side < RENDER_LOD_WALL_SIDES; Side++) {
+      if (Mesher->LodWallQuads[Side] > 0) {
+        Runs[RunCount++] = (RenderLodRun){.Group = RENDER_LOD_WALL_GROUP + Side,
+                                          .Quads = Mesher->LodWallQuads[Side]};
+      }
+    }
+    if (OpaqueCount > WallEnd) {
+      Runs[RunCount++] =
+          (RenderLodRun){.Group = RENDER_LOD_AXIS_GROUPS,
+                         .Quads = (OpaqueCount - WallEnd) / CHUNK_VERTICES_PER_QUAD};
+    }
+    int OpaqueRuns = RunCount;
+    RunCount += BuildFaceRuns(&State->Upload[OpaqueCount], Count - OpaqueCount,
+                              &Runs[OpaqueRuns], RENDER_LOD_MAX_RUNS - OpaqueRuns);
     *OutMesh = RenderLodUploadMesh(State->Upload, Runs, RunCount, OpaqueRuns);
   }
   PROFILE_END(MeshStart, PROFILE_LOD_MESH);
@@ -812,9 +833,9 @@ static int MeshSection(LodRendererState *State, const LodStore *Store,
 }
 
 static bool MeshCurrent(const CacheEntry *Entry, const LodSection *Section,
-                        unsigned Transitions, bool Skirts) {
+                        bool Skirts) {
   return Entry != NULL && Entry->Revision == Section->Revision && !Entry->Stale &&
-         Entry->Transitions == Transitions && Entry->Skirted == Skirts &&
+         Entry->Skirted == Skirts &&
          (Entry->Mesh != RENDER_LOD_MESH_INVALID || Entry->VertexCount == 0);
 }
 
@@ -825,8 +846,8 @@ static bool MeshPending(LodRendererState *State, SelectContext *Ctx,
   RenderLodMesh Mesh = RENDER_LOD_MESH_INVALID;
   bool Blended = false;
   int Count = MeshSection(State, Ctx->Store, Pending->Section, Pending->Level,
-                          Pending->X, Pending->Y, Pending->Z, Pending->Transitions,
-                          Pending->Border, &Mesh, &Blended);
+                          Pending->X, Pending->Y, Pending->Z, Pending->Border, &Mesh,
+                          &Blended);
   Ctx->Attempts++;
   if (Count > 0 && Mesh == RENDER_LOD_MESH_INVALID) {
     Ctx->StarvedVertices = Count;
@@ -847,7 +868,6 @@ static bool MeshPending(LodRendererState *State, SelectContext *Ctx,
   Entry->VertexCount = Count;
   Entry->Revision = Pending->Section->Revision;
   Entry->Stale = false;
-  Entry->Transitions = Pending->Transitions;
   Entry->Skirted = Pending->Border;
   Entry->Blended = Blended;
   Entry->LastFrame = State->Frame;
@@ -1024,21 +1044,26 @@ static float SectionDistSq(const SelectContext *Ctx, int Level, int X, int Y, in
 }
 
 static void AddDraw(LodRendererState *State, SelectContext *Ctx,
-                    const CacheEntry *Entry, int Level, int X, int Y, int Z,
-                    bool Border, uint32_t Key) {
+                    const CacheEntry *Entry, const PendingMesh *Walk) {
   if (Entry == NULL || Entry->Mesh == RENDER_LOD_MESH_INVALID ||
       Ctx->OpaqueCount + Ctx->BorderCount >= MAX_DRAWS) {
     return;
   }
+  int Level = Walk->Level;
+  int X = Walk->X;
+  int Y = Walk->Y;
+  int Z = Walk->Z;
+  bool Border = Walk->Border;
   int Width = LOD_SECTION_SIZE << Level;
-  KeyedDraw Keyed = {.Key = Key,
+  KeyedDraw Keyed = {.Key = Walk->Key,
                      .Blended = Entry->Blended,
                      .Draw = {.Mesh = Entry->Mesh,
                               .OriginX = X * Width,
                               .OriginY = Y * Width,
                               .OriginZ = Z * Width,
                               .Scale = 1 << Level,
-                              .VertexCount = Entry->VertexCount}};
+                              .VertexCount = Entry->VertexCount,
+                              .WallSides = Walk->WallSides}};
   if (Entry->Blended) {
     Keyed.BlendDistSq = SectionDistSq(Ctx, Level, X, Y, Z);
   }
@@ -1260,19 +1285,19 @@ static void SelectSection(LodRendererState *State, SelectContext *Ctx, int Level
                            .Key = Key, .Border = Role.Border, .StandIn = StandIn});
 }
 
-// Side faces of a selected section whose neighbour on its level is not drawn
-// itself while its region is: refined into finer sections, or inside a
-// coarser selected one. A neighbour no walk reached (under 1:1 chunks, or
-// holding nothing to draw) is no transition. Only sides: the surface steps
-// between levels show from above as cracks in a side, while a top or bottom
-// face at a transition would lay a section-wide sheet of buried rock under
-// the sea.
-static unsigned TransitionFaces(const LodRendererState *State, const PendingMesh *Walk) {
-  static const int SIDES[4][3] = {{-1, 0, 0}, {1, 0, 0}, {0, 0, -1}, {0, 0, 1}};
-  static const int SIDE_FACES[4] = {0, 1, 4, 5};
+// The wall sides (RenderLodDraw.WallSides) of a selected section whose
+// neighbour on its level is not drawn itself while its region is: refined
+// into finer sections, or inside a coarser selected one. A neighbour no walk
+// reached (under 1:1 chunks, or holding nothing to draw) is no transition.
+// Only sides: the surface steps between levels show from above as cracks in a
+// side, while a top or bottom face at a transition would lay a section-wide
+// sheet of buried rock under the sea.
+static unsigned TransitionWalls(const LodRendererState *State, const PendingMesh *Walk) {
+  // Wall order: -X, +X, +Z, -Z.
+  static const int SIDES[RENDER_LOD_WALL_SIDES][3] = {
+      {-1, 0, 0}, {1, 0, 0}, {0, 0, 1}, {0, 0, -1}};
   unsigned Faces = 0;
-  for (int Side = 0; Side < 4; Side++) {
-    int Face = SIDE_FACES[Side];
+  for (int Side = 0; Side < RENDER_LOD_WALL_SIDES; Side++) {
     int X = Walk->X + SIDES[Side][0];
     int Y = Walk->Y + SIDES[Side][1];
     int Z = Walk->Z + SIDES[Side][2];
@@ -1286,7 +1311,7 @@ static unsigned TransitionFaces(const LodRendererState *State, const PendingMesh
       Transition = Kind == WALK_SELECTED;
     }
     if (Transition) {
-      Faces |= 1U << (unsigned)Face;
+      Faces |= 1U << (unsigned)Side;
     }
   }
   return Faces;
@@ -1294,12 +1319,12 @@ static unsigned TransitionFaces(const LodRendererState *State, const PendingMesh
 
 // After the walk: draws the selected sections whose mesh is current, and the
 // stand-ins with whatever mesh they hold, and queues the others (prefetched
-// children, which have no mesh yet, among them), now that each one's level
-// transitions are known.
+// children, which have no mesh yet, among them). Each draw names its level
+// transitions, now that they are known; they choose its walls, not its mesh.
 static void ResolveWalk(LodRendererState *State, SelectContext *Ctx) {
   for (int Idx = 0; Idx < Ctx->WalkedCount; Idx++) {
     PendingMesh Walk = State->Walked[Idx];
-    Walk.Transitions = (uint8_t)TransitionFaces(State, &Walk);
+    Walk.WallSides = (uint8_t)TransitionWalls(State, &Walk);
     CacheEntry *Entry = CacheFind(State, Walk.Level, Walk.X, Walk.Y, Walk.Z);
     if (Entry != NULL && !Walk.Refresh) {
       Entry->LastFrame = State->Frame;
@@ -1307,10 +1332,8 @@ static void ResolveWalk(LodRendererState *State, SelectContext *Ctx) {
       Entry->Retained = false;
     }
     if (Walk.StandIn ||
-        (!Walk.Refresh &&
-         MeshCurrent(Entry, Walk.Section, Walk.Transitions, Walk.Border))) {
-      AddDraw(State, Ctx, Entry, Walk.Level, Walk.X, Walk.Y, Walk.Z, Walk.Border,
-              Walk.Key);
+        (!Walk.Refresh && MeshCurrent(Entry, Walk.Section, Walk.Border))) {
+      AddDraw(State, Ctx, Entry, &Walk);
     } else if (Ctx->PendingCount < MAX_DRAWS) {
       State->PendingMeshes[Ctx->PendingCount++] = Walk;
     }
@@ -1380,8 +1403,7 @@ static void MeshQueued(LodRendererState *State, SelectContext *Ctx) {
       Ctx->NearestStarved = Pending->DistSq;
     }
     if (!Pending->Prefetch) {
-      AddDraw(State, Ctx, Entry, Pending->Level, Pending->X, Pending->Y, Pending->Z,
-              Pending->Border, Pending->Key);
+      AddDraw(State, Ctx, Entry, Pending);
     }
   }
 }

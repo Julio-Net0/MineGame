@@ -12,6 +12,10 @@
 // have been clipped or back-face culled anyway. Kept runs that follow each
 // other in the arena share one command, and the order of the quads is never
 // changed, so equal-depth fragments resolve exactly as without culling.
+// Groups 7..10 are the transition walls of sides -X, +X, +Z, -Z (facing like
+// groups 2..5): a wall run is part of the mesh only for the sides the record's
+// wall mask names, whatever the cull settings, and is then culled like its
+// direction.
 //
 // Occlusion (uPhase 1 and 2) is two-phase over the LOD depth, which already
 // holds the 1:1 chunks' depth before any LOD is drawn:
@@ -51,10 +55,14 @@ struct DrawCommand {
     uint baseInstance;
 };
 
-// Must match RENDER_LOD_MAX_RUNS and gl_lod.c's cull record.
+// Must match RENDER_LOD_MAX_RUNS, the RENDER_LOD_WALL_* groups and gl_lod.c's
+// cull record.
 const uint MAX_RUNS = 24u;
-const uint RECORD_HEADER = 6u;
+const uint RECORD_HEADER = 7u;
 const uint RECORD_WORDS = RECORD_HEADER + MAX_RUNS;
+const uint WALL_GROUP = 7u;
+const uint WALL_SIDES = 4u;
+const uint WALL_AXIS_BASE = 2u;
 
 // Must match gl_lod.c's COUNTER_* indices.
 const uint COUNTER_DRAWS = 0u;
@@ -77,7 +85,8 @@ layout(std430, binding = 0) readonly buffer SectionMeta {
 // RECORD_WORDS per section: first vertex in the arena, run count, first
 // command slot (opaque sections' slots first), mesh index, opaque run count
 // (the runs after it are see-through faces), first slot of its see-through
-// runs in the blended region, then one word per run: group << 16 | quads.
+// runs in the blended region, the wall sides it keeps (bit per side), then one
+// word per run: group << 16 | quads.
 layout(std430, binding = 1) readonly buffer SectionCull {
     uint CullWords[];
 };
@@ -253,6 +262,7 @@ void main() {
     uint firstRun = blendedPass ? opaqueRuns : 0u;
     uint endRun = blendedPass ? runTotal : opaqueRuns;
     uint blendedSlot = CullWords[record + 5u];
+    uint wallSides = CullWords[record + 6u];
 
     vec3 boxMin = vec3(meta.xyz - uCameraBlock) - vec3(0.5) - uCameraFrac;
     vec3 boxMax = boxMin + vec3(SECTION_VOXELS * float(meta.w));
@@ -292,12 +302,19 @@ void main() {
             start += count;
             continue;
         }
-        bool facing = !uCullEnabled || group >= AXIS_GROUPS ||
-                      FacingCamera(group, boxMin, boxMax);
-        if (inFrustum && !facing) {
+        bool wanted = true;
+        uint direction = group;
+        if (group >= WALL_GROUP) {
+            uint side = group - WALL_GROUP;
+            wanted = side < WALL_SIDES && ((wallSides >> side) & 1u) != 0u;
+            direction = WALL_AXIS_BASE + side;
+        }
+        bool facing = !uCullEnabled || direction >= AXIS_GROUPS ||
+                      FacingCamera(direction, boxMin, boxMax);
+        if (inFrustum && wanted && !facing) {
             facingCulled++;
         }
-        if (draw && facing) {
+        if (draw && wanted && facing) {
             if (rangeOpen) {
                 ranges[rangeCount - 1u].y += count;
             } else {

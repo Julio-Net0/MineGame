@@ -56,7 +56,9 @@ enum {
   RECORD_MESH = 3,
   RECORD_OPAQUE_RUNS = 4,
   RECORD_BLENDED_SLOT = 5,
-  CULL_RECORD_HEADER = 6,
+  // The draw's RenderLodDraw.WallSides: which wall runs it keeps.
+  RECORD_WALL_SIDES = 6,
+  CULL_RECORD_HEADER = 7,
   CULL_RECORD_UINTS = CULL_RECORD_HEADER + LOD_RUNS,
   CULL_RUN_GROUP_SHIFT = 16,
   CULL_WORKGROUP = 64,
@@ -1039,6 +1041,7 @@ static int64_t BuildSectionRecords(GlLodState *State, const RenderLodList *List,
     Cull[RECORD_MESH] = (uint32_t)Draw->Mesh;
     Cull[RECORD_OPAQUE_RUNS] = (uint32_t)Record->OpaqueRunCount;
     Cull[RECORD_BLENDED_SLOT] = UNASSIGNED_SLOT;
+    Cull[RECORD_WALL_SIDES] = (uint32_t)Draw->WallSides;
     memcpy(&Cull[CULL_RECORD_HEADER], Record->Runs,
            sizeof(uint32_t) * (size_t)Record->RunCount);
     Slots += Record->RunCount;

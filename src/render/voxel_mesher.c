@@ -1042,6 +1042,10 @@ static void ResetMesher(VoxelMesher *Mesher, const VoxelLodBiomes *LodBiomes) {
     Mesher->LodBiomes = LodBiomes;
     Mesher->LodSkirtPeriod = 0;
     Mesher->LodPlanePeriod = 0;
+    Mesher->LodWallStart = 0;
+    for (int Side = 0; Side < RENDER_LOD_WALL_SIDES; Side++) {
+        Mesher->LodWallQuads[Side] = 0;
+    }
     Mesher->Truncated = false;
 }
 
@@ -1177,10 +1181,102 @@ static void FillBiomeCorners(VoxelLodBiomes *Biomes) {
     }
 }
 
+// The faces of one side's border slice that a level transition adds: border
+// voxels that emit cube faces and are not see-through, toward a same-level
+// neighbour voxel no face passes into. As chunk-local bits along V (Y).
+static uint32_t WallRowBits(const CullColumns *Cols, const FaceDir *Fd, int Slice,
+                            int U) {
+    int Self = Slice + 1;
+    int Next = Self + Fd->NormalDir;
+    int Across = U + 1;
+    uint32_t Emits;
+    uint32_t Transparent;
+    uint32_t Passes;
+    if (Fd->NormalAxis == 0) {
+        Emits = Cols->EmitsY[Self][Across];
+        Transparent = Cols->TransparentY[Self][Across];
+        Passes = Cols->PassesY[Next][Across];
+    } else {
+        Emits = Cols->EmitsY[Across][Self];
+        Transparent = Cols->TransparentY[Across][Self];
+        Passes = Cols->PassesY[Across][Next];
+    }
+    uint32_t Walls = Emits & ~Transparent & ~Passes & CULL_INTERIOR_BITS;
+    return (Walls >> 1U) & CULL_LOCAL_BITS;
+}
+
+static const FaceDir *FaceDirOf(BlockFace Face) {
+    for (size_t Idx = 0; Idx < sizeof(FACE_DIRS) / sizeof(FACE_DIRS[0]); Idx++) {
+        if (FACE_DIRS[Idx].Face == Face) {
+            return &FACE_DIRS[Idx];
+        }
+    }
+    return &FACE_DIRS[0];
+}
+
+// The margin face layer FillTransitionMargin rewrites, cell (A, B).
+static BlockID *MarginLayerCell(ChunkSnapshot *Grid, int Axis, bool Positive, int A,
+                                int B) {
+    int Target[3];
+    Target[Axis] = Positive ? LOD_GRID_LAST : 0;
+    Target[(Axis + 1) % 3] = A;
+    Target[(Axis + 2) % 3] = B;
+    return &Grid->Blocks[Target[0]][Target[1]][Target[2]];
+}
+
+// Each side's transition walls, after every other opaque face (see
+// VoxelMeshLodSection). Their ambient occlusion reads the margin as a
+// transition sees it, open in front of them, so for each side's faces the
+// margin layer is rewritten and then put back.
+static void BuildLodWallPasses(VoxelMesher *State, ChunkSnapshot *Grid) {
+    static const BlockFace WALL_FACES[RENDER_LOD_WALL_SIDES] = {FACE_LEFT, FACE_RIGHT,
+                                                                FACE_FRONT, FACE_BACK};
+    FaceMaskData Mask[CHUNK_SIZE][CHUNK_SIZE];
+    uint16_t Rows[CHUNK_SIZE];
+    BlockID Saved[LOD_SECTION_SIZE][LOD_SECTION_SIZE];
+    State->LodWallStart = State->Sets[MESH_TARGET_OPAQUE].VCount;
+    for (int Side = 0; Side < RENDER_LOD_WALL_SIDES; Side++) {
+        const FaceDir *Fd = FaceDirOf(WALL_FACES[Side]);
+        int Slice = (Fd->NormalDir > 0) ? CHUNK_SIZE - 1 : 0;
+        bool Positive = Fd->NormalDir > 0;
+        int Before = State->Sets[MESH_TARGET_OPAQUE].VCount;
+        int FaceCount = 0;
+        for (int U = 0; U < CHUNK_SIZE; U++) {
+            uint32_t Bits = WallRowBits(&State->Cull, Fd, Slice, U);
+            Rows[U] = (uint16_t)Bits;
+            FaceCount += __builtin_popcount(Bits);
+        }
+        if (FaceCount == 0) {
+            continue;
+        }
+        for (int A = 0; A < LOD_SECTION_SIZE; A++) {
+            for (int B = 0; B < LOD_SECTION_SIZE; B++) {
+                Saved[A][B] = *MarginLayerCell(Grid, Fd->NormalAxis, Positive, A + 1, B + 1);
+            }
+        }
+        FillTransitionMargin(Grid, Fd->NormalAxis, Positive);
+        for (int U = 0; U < CHUNK_SIZE; U++) {
+            uint32_t Bits = Rows[U];
+            while (Bits != 0U) {
+                int V = __builtin_ctz(Bits);
+                Bits &= Bits - 1U;
+                FillFaceCell(Grid, State->LodBiomes, Fd, Slice, U, V, false, &Mask[U][V]);
+            }
+        }
+        ScanGreedyMask(Mask, Rows, Fd, Slice, State, 0U);
+        for (int A = 0; A < LOD_SECTION_SIZE; A++) {
+            for (int B = 0; B < LOD_SECTION_SIZE; B++) {
+                *MarginLayerCell(Grid, Fd->NormalAxis, Positive, A + 1, B + 1) = Saved[A][B];
+            }
+        }
+        State->LodWallQuads[Side] =
+            (State->Sets[MESH_TARGET_OPAQUE].VCount - Before) / VERTICES_PER_FACE;
+    }
+}
+
 void VoxelMeshLodSection(VoxelMesher *Mesher, VoxelLodScratch *Scratch,
                          const LodSection *Section, const VoxelLodPlace *Place,
-                         const LodSection *const Around[VOXEL_LOD_AROUND],
-                         unsigned TransitionFaces) {
+                         const LodSection *const Around[VOXEL_LOD_AROUND]) {
     // ChunkFace order: -X, +X, -Y, +Y, -Z, +Z.
     static const int FACE_OFFSETS[LOD_FACES][3] = {
         {-1, 0, 0}, {1, 0, 0}, {0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}};
@@ -1209,11 +1305,6 @@ void VoxelMeshLodSection(VoxelMesher *Mesher, VoxelLodScratch *Scratch,
                     }
                 }
             }
-        }
-    }
-    for (int Face = 0; Face < LOD_FACES; Face++) {
-        if ((TransitionFaces & (1U << (unsigned)Face)) != 0U) {
-            FillTransitionMargin(Grid, Face / 2, (Face % 2) == 1);
         }
     }
     // Margin faces in ChunkFace order: -X, +X, then (skipping Y) -Z, +Z.
@@ -1251,4 +1342,5 @@ void VoxelMeshLodSection(VoxelMesher *Mesher, VoxelLodScratch *Scratch,
         Mesher->LodPlanePeriod = CHUNK_SIZE >> Place->Level;
     }
     BuildCubeFaces(Mesher, Grid);
+    BuildLodWallPasses(Mesher, Grid);
 }
