@@ -42,6 +42,10 @@ enum {
   // GL errors seen in the first LOD frames are recorded; later ones are not
   // polled, since asking every frame can stall the pipeline.
   ERROR_CHECK_FRAMES = 8,
+  // Free run table: initial room, and how often (presented frames) its pages
+  // are checked against the used ones.
+  FREE_RUNS_INITIAL = 256,
+  FREE_RUN_CHECK_FRAMES = 256,
   PENDING_INITIAL = 64,
   MAT4_FLOATS = 16,
   BYTES_TO_MB_SHIFT = 20,
@@ -184,9 +188,23 @@ typedef struct {
   GLint Reversed;
 } HizProgram;
 
+// A run of free arena pages.
+typedef struct {
+  int First;
+  int Count;
+} FreeRun;
+
 typedef struct {
   int64_t ListVertices;
-  uint8_t *PageUsed;
+  // Free page runs, in no order, each as large as its free neighbours allow
+  // (released pages merge with them). RunStartingAt and RunEndingAt map a
+  // run's first and last page to its index, -1 on every other page, so the
+  // merge costs nothing per page.
+  FreeRun *FreeRuns;
+  int FreeRunCount;
+  int FreeRunCapacity;
+  int *RunStartingAt;
+  int *RunEndingAt;
   LodMeshRecord *Meshes;
   int *FreeMeshes;
   int64_t LiveVertices;
@@ -224,8 +242,10 @@ typedef struct {
 
   int ArenaPages;
   int ArenaMaxPages;
+  // Pages held by meshes or waiting out their release delay.
   int UsedPages;
-  int Cursor;
+  // The free runs disagreed with the used pages once (see CheckFreeRuns).
+  bool FreeRunsReported;
   // Bumped when pages come free or the arena grows (RenderLodArenaGeneration).
   uint32_t ArenaGeneration;
   int FreeMeshCount;
@@ -531,6 +551,140 @@ static GLuint GrowBuffer(GLuint Old, size_t CopyBytes, size_t NewBytes) {
   return Grown;
 }
 
+// --- free runs -----------------------------------------------------------------
+//
+// Pages are handed out best fit: the smallest free run that holds the mesh,
+// the lowest of equal ones. Taking from wherever a cursor stood instead cut
+// the free space into thousands of runs a few pages long, so the arena kept
+// growing with a quarter of it free; replaying recorded flights, best fit
+// stops the growth near the pages actually used.
+
+static void LinkRun(GlLodState *State, int Index) {
+  const FreeRun *Run = &State->FreeRuns[Index];
+  State->RunStartingAt[Run->First] = Index;
+  State->RunEndingAt[Run->First + Run->Count - 1] = Index;
+}
+
+static void UnlinkRun(GlLodState *State, int Index) {
+  const FreeRun *Run = &State->FreeRuns[Index];
+  State->RunStartingAt[Run->First] = -1;
+  State->RunEndingAt[Run->First + Run->Count - 1] = -1;
+}
+
+// The last run takes the removed one's index.
+static void RemoveRun(GlLodState *State, int Index) {
+  UnlinkRun(State, Index);
+  int Last = --State->FreeRunCount;
+  if (Index != Last) {
+    State->FreeRuns[Index] = State->FreeRuns[Last];
+    LinkRun(State, Index);
+  }
+}
+
+// Returns Count pages from First to the free runs, merged with the free runs
+// either side. False when the table cannot grow for a new run: the pages are
+// then lost to the arena, which only costs room.
+static bool ReleasePages(GlLodState *State, int First, int Count) {
+  if (State->FreeRunCount == State->FreeRunCapacity) {
+    int Capacity = State->FreeRunCapacity * 2;
+    FreeRun *Grown = (FreeRun *)realloc(State->FreeRuns, sizeof(FreeRun) * (size_t)Capacity);
+    if (Grown == NULL) {
+      return false;
+    }
+    State->FreeRuns = Grown;
+    State->FreeRunCapacity = Capacity;
+  }
+  int Start = First;
+  int Length = Count;
+  int Left = (Start > 0) ? State->RunEndingAt[Start - 1] : -1;
+  if (Left >= 0) {
+    Start = State->FreeRuns[Left].First;
+    Length += State->FreeRuns[Left].Count;
+    RemoveRun(State, Left);
+  }
+  int End = First + Count;
+  int Right = (End < State->ArenaPages) ? State->RunStartingAt[End] : -1;
+  if (Right >= 0) {
+    Length += State->FreeRuns[Right].Count;
+    RemoveRun(State, Right);
+  }
+  int Index = State->FreeRunCount++;
+  State->FreeRuns[Index] = (FreeRun){.First = Start, .Count = Length};
+  LinkRun(State, Index);
+  return true;
+}
+
+// The first page of Pages taken from the best fitting free run, or -1.
+static int TakePages(GlLodState *State, int Pages) {
+  int Best = -1;
+  for (int Index = 0; Index < State->FreeRunCount; Index++) {
+    const FreeRun *Run = &State->FreeRuns[Index];
+    if (Run->Count < Pages) {
+      continue;
+    }
+    if (Best < 0 || Run->Count < State->FreeRuns[Best].Count ||
+        (Run->Count == State->FreeRuns[Best].Count &&
+         Run->First < State->FreeRuns[Best].First)) {
+      Best = Index;
+    }
+  }
+  if (Best < 0) {
+    return -1;
+  }
+  FreeRun *Run = &State->FreeRuns[Best];
+  int First = Run->First;
+  if (Run->Count == Pages) {
+    RemoveRun(State, Best);
+  } else {
+    UnlinkRun(State, Best);
+    Run->First += Pages;
+    Run->Count -= Pages;
+    LinkRun(State, Best);
+  }
+  State->UsedPages += Pages;
+  return First;
+}
+
+// Every page is either in a free run, whose tags point back at it, or used;
+// logs once if not.
+static void CheckFreeRuns(GlLodState *State) {
+  int64_t FreePages = 0;
+  bool Linked = true;
+  for (int Index = 0; Index < State->FreeRunCount; Index++) {
+    const FreeRun *Run = &State->FreeRuns[Index];
+    FreePages += Run->Count;
+    Linked = Linked && State->RunStartingAt[Run->First] == Index &&
+             State->RunEndingAt[Run->First + Run->Count - 1] == Index;
+  }
+  if ((!Linked || FreePages + State->UsedPages != State->ArenaPages) &&
+      !State->FreeRunsReported) {
+    State->FreeRunsReported = true;
+    LogWarn("RENDER: LOD arena runs inconsistent: %lld free + %d used pages of %d%s",
+            (long long)FreePages, State->UsedPages, State->ArenaPages,
+            Linked ? "" : ", tags off");
+  }
+}
+
+// Grows the page tags from FromPages to ToPages, the new ones -1. False when
+// memory runs out; a tag array already grown only holds unused room then.
+static bool GrowRunTags(GlLodState *State, int FromPages, int ToPages) {
+  int *Starting = (int *)realloc(State->RunStartingAt, sizeof(int) * (size_t)ToPages);
+  if (Starting == NULL) {
+    return false;
+  }
+  State->RunStartingAt = Starting;
+  int *Ending = (int *)realloc(State->RunEndingAt, sizeof(int) * (size_t)ToPages);
+  if (Ending == NULL) {
+    return false;
+  }
+  State->RunEndingAt = Ending;
+  for (int Page = FromPages; Page < ToPages; Page++) {
+    State->RunStartingAt[Page] = -1;
+    State->RunEndingAt[Page] = -1;
+  }
+  return true;
+}
+
 // Grows the arena by a quarter, at least ARENA_STEP_MB and NeededPages, up
 // to its ceiling. False when it is already there or memory runs out.
 static bool GrowArena(GlLodState *State, int NeededPages) {
@@ -550,12 +704,9 @@ static bool GrowArena(GlLodState *State, int NeededPages) {
   if (Target > State->ArenaMaxPages) {
     Target = State->ArenaMaxPages;
   }
-  uint8_t *Used = (uint8_t *)realloc(State->PageUsed, (size_t)Target);
-  if (Used == NULL) {
+  if (!GrowRunTags(State, Pages, Target)) {
     return false;
   }
-  memset(Used + Pages, 0, (size_t)(Target - Pages));
-  State->PageUsed = Used;
   State->Vbo = GrowBuffer(State->Vbo, PageBytes(Pages), PageBytes(Target));
   glBindVertexArray(State->Vao);
   glBindBuffer(GL_ARRAY_BUFFER, State->Vbo);
@@ -563,8 +714,9 @@ static bool GrowArena(GlLodState *State, int NeededPages) {
                          (GLsizei)sizeof(ChunkVertex), BufferOffset(0));
   glBindVertexArray(0);
   glBindBuffer(GL_ARRAY_BUFFER, 0);
-  State->Cursor = Pages;
   State->ArenaPages = Target;
+  // The new pages join the free run that ends where the arena did, if any.
+  (void)ReleasePages(State, Pages, Target - Pages);
   State->ArenaGeneration++;
   State->Stats.ArenaCapacityBytes = (int64_t)PageBytes(Target);
   LogInfo("RENDER: LOD arena grown to %lld MB (ceiling %lld MB)",
@@ -669,10 +821,14 @@ bool GlLodInit(GLuint SharedIndexBuffer, const GlLodOptions *Options) {
     State->ArenaPages = State->ArenaMaxPages;
   }
   State->MeshCapacity = MESH_INITIAL_CAPACITY;
-  State->PageUsed = (uint8_t *)calloc((size_t)State->ArenaPages, sizeof(uint8_t));
+  State->FreeRuns = (FreeRun *)malloc(sizeof(FreeRun) * FREE_RUNS_INITIAL);
+  State->FreeRunCapacity = FREE_RUNS_INITIAL;
   State->Meshes = (LodMeshRecord *)calloc((size_t)State->MeshCapacity, sizeof(LodMeshRecord));
   State->FreeMeshes = (int *)malloc(sizeof(int) * (size_t)State->MeshCapacity);
-  if (State->PageUsed == NULL || State->Meshes == NULL ||
+  // The whole arena starts as one free run.
+  bool RunsReady = State->FreeRuns != NULL && GrowRunTags(State, 0, State->ArenaPages) &&
+                   ReleasePages(State, 0, State->ArenaPages);
+  if (!RunsReady || State->Meshes == NULL ||
       State->FreeMeshes == NULL || !EnsureListCapacity(State, LIST_INITIAL_CAPACITY) ||
       !CreateArena(State) || !CreateCoverage(State)) {
     GlLodShutdown();
@@ -769,7 +925,9 @@ void GlLodShutdown(void) {
       glDeleteProgram(Programs[Idx]);
     }
   }
-  free(State->PageUsed);
+  free(State->FreeRuns);
+  free(State->RunStartingAt);
+  free(State->RunEndingAt);
   free(State->Meshes);
   free(State->FreeMeshes);
   free(State->Pending);
@@ -779,26 +937,6 @@ void GlLodShutdown(void) {
 }
 
 // --- arena -------------------------------------------------------------------
-
-static int FindFreeRun(GlLodState *State, int Pages) {
-  for (int Pass = 0; Pass < 2; Pass++) {
-    int Start = (Pass == 0) ? State->Cursor : 0;
-    int End = (Pass == 0) ? State->ArenaPages : State->Cursor;
-    int Run = 0;
-    for (int Page = Start; Page < End; Page++) {
-      Run = (State->PageUsed[Page] == 0U) ? Run + 1 : 0;
-      if (Run == Pages) {
-        return Page - Pages + 1;
-      }
-    }
-  }
-  return -1;
-}
-
-static void MarkPages(GlLodState *State, int First, int Count, uint8_t Value) {
-  memset(State->PageUsed + First, Value, (size_t)Count);
-  State->UsedPages += (Value != 0U) ? Count : -Count;
-}
 
 RenderLodMesh GlLodUploadMesh(const ChunkVertex *Vertices,
                               const RenderLodRun *Runs, int RunCount,
@@ -816,15 +954,13 @@ RenderLodMesh GlLodUploadMesh(const ChunkVertex *Vertices,
     return RENDER_LOD_MESH_INVALID;
   }
   int Pages = (VertexCount + LOD_PAGE_VERTICES - 1) >> LOD_PAGE_SHIFT;
-  int First = FindFreeRun(State, Pages);
+  int First = TakePages(State, Pages);
   while (First < 0 && GrowArena(State, Pages)) {
-    First = FindFreeRun(State, Pages);
+    First = TakePages(State, Pages);
   }
   if (First < 0) {
     return RENDER_LOD_MESH_INVALID;
   }
-  MarkPages(State, First, Pages, 1U);
-  State->Cursor = (First + Pages) % State->ArenaPages;
   glBindBuffer(GL_ARRAY_BUFFER, State->Vbo);
   glBufferSubData(GL_ARRAY_BUFFER,
                   (GLintptr)((size_t)First * LOD_PAGE_VERTICES * sizeof(ChunkVertex)),
@@ -892,13 +1028,19 @@ void GlLodEndFrame(void) {
   for (int Idx = 0; Idx < State->PendingCount; Idx++) {
     LodPendingRun Run = State->Pending[Idx];
     if (State->Frame - Run.Frame >= LOD_RELEASE_DELAY_FRAMES) {
-      MarkPages(State, Run.FirstPage, Run.PageCount, 0U);
+      // Pages the table had no room for stay out of use (counted as used).
+      if (ReleasePages(State, Run.FirstPage, Run.PageCount)) {
+        State->UsedPages -= Run.PageCount;
+      }
       State->ArenaGeneration++;
     } else {
       State->Pending[Kept++] = Run;
     }
   }
   State->PendingCount = Kept;
+  if (State->Frame % FREE_RUN_CHECK_FRAMES == 0U) {
+    CheckFreeRuns(State);
+  }
 }
 
 uint32_t GlLodArenaGeneration(void) { return GetLodState()->ArenaGeneration; }
