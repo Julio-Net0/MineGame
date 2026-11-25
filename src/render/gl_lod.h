@@ -77,8 +77,7 @@ void GlLodSetCoverage(int ColumnX, int ColumnZ,
 // pyramid and whatever it shows was missing), the blended pass of see-through
 // faces, and the composite. Leaves the
 // default framebuffer bound with the frame's usual state.
-void GlLodDraw(const GlLodFrame *Frame, const RenderLodDraw *Draws,
-               int OpaqueCount, int BorderCount, uint32_t ListRevision);
+void GlLodDraw(const GlLodFrame *Frame, const RenderLodList *List);
 
 // Reads the last cull's counters into the stats; stalls (see backend.h).
 void GlLodReadCullStats(void);

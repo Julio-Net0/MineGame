@@ -68,6 +68,9 @@ typedef struct {
   // section is cut against the 1:1 chunks and closes the cut with skirt faces
   // (see BuildLodSkirtPass); 0 emits none.
   int LodSkirtPeriod;
+  // LOD sections the border pass draws: voxels between two chunk column
+  // planes, where greedy quads stop (see VoxelMeshLodSection); 0 merges freely.
+  int LodPlanePeriod;
   // A target filled up and faces were dropped.
   bool Truncated;
 } VoxelMesher;
@@ -126,8 +129,8 @@ typedef struct {
   int X;
   int Y;
   int Z;
-  // Mesh skirt faces (levels 1..VOXEL_LOD_SKIRT_MAX_LEVEL only): sections the
-  // border pass draws ask for them.
+  // Mesh skirt faces (levels 1..VOXEL_LOD_SKIRT_MAX_LEVEL only) and end quads
+  // on chunk column planes: sections the border pass draws ask for them.
   bool Skirts;
 } VoxelLodPlace;
 

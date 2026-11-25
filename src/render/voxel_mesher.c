@@ -716,6 +716,14 @@ static bool CellMerges(const FaceMaskData *Origin,
     return MasksCompatible(Origin, &Mask[U][V]);
 }
 
+// Mask of the cell indices along Axis where a rectangle may not grow past:
+// a chunk column plane lies before every index it clears. Chunks, and LOD
+// sections drawn outside the border pass, merge across the whole grid.
+static int PlaneMask(const VoxelMesher *State, int Axis) {
+    return (State->LodPlanePeriod > 0 && Axis != 1) ? State->LodPlanePeriod - 1
+                                                    : CHUNK_SIZE - 1;
+}
+
 // Origins are taken in the order a full U-then-V walk would visit them: the
 // lowest unmerged bit of a row is the next cell that walk would reach, since a
 // rectangle only ever consumes cells at or past its own origin's V.
@@ -723,6 +731,8 @@ static void ScanGreedyMask(FaceMaskData Mask[CHUNK_SIZE][CHUNK_SIZE],
                            uint16_t Avail[CHUNK_SIZE],
                            const FaceDir *Fd, int Slice, VoxelMesher *State,
                            uint32_t Flags) {
+    int PlaneU = PlaneMask(State, Fd->UAxis);
+    int PlaneV = PlaneMask(State, Fd->VAxis);
     for (int U0 = 0; U0 < CHUNK_SIZE; U0++) {
         while (Avail[U0] != 0U) {
             int V0 = __builtin_ctz(Avail[U0]);
@@ -730,13 +740,14 @@ static void ScanGreedyMask(FaceMaskData Mask[CHUNK_SIZE][CHUNK_SIZE],
 
             // Expand width (u direction)
             int W = 1;
-            while (U0 + W < CHUNK_SIZE && CellMerges(Origin, Mask, Avail, U0 + W, V0)) {
+            while (U0 + W < CHUNK_SIZE && ((U0 + W) & PlaneU) != 0 &&
+                   CellMerges(Origin, Mask, Avail, U0 + W, V0)) {
                 W++;
             }
 
             // Expand height (v direction)
             int H = 1;
-            bool CanExpand = true;
+            bool CanExpand = ((V0 + H) & PlaneV) != 0;
             while (V0 + H < CHUNK_SIZE && CanExpand) {
                 for (int Ku = 0; Ku < W; Ku++) {
                     if (!CellMerges(Origin, Mask, Avail, U0 + Ku, V0 + H)) {
@@ -746,6 +757,7 @@ static void ScanGreedyMask(FaceMaskData Mask[CHUNK_SIZE][CHUNK_SIZE],
                 }
                 if (CanExpand) {
                     H++;
+                    CanExpand = ((V0 + H) & PlaneV) != 0;
                 }
             }
 
@@ -1029,6 +1041,7 @@ static void ResetMesher(VoxelMesher *Mesher, const VoxelLodBiomes *LodBiomes) {
     }
     Mesher->LodBiomes = LodBiomes;
     Mesher->LodSkirtPeriod = 0;
+    Mesher->LodPlanePeriod = 0;
     Mesher->Truncated = false;
 }
 
@@ -1224,6 +1237,18 @@ void VoxelMeshLodSection(VoxelMesher *Mesher, VoxelLodScratch *Scratch,
     // voxel boundary.
     if (Place->Skirts && Place->Level >= 1 && Place->Level <= VOXEL_LOD_SKIRT_MAX_LEVEL) {
         Mesher->LodSkirtPeriod = CHUNK_SIZE >> Place->Level;
+    }
+    // The border pass keeps a fragment by the column its probe lands in, the
+    // probe set a little inside the quad from each vertex (see lod.vert). That
+    // inset is interpolated across the quad, so on a quad running across a
+    // column plane it shrinks to nothing or points the wrong way there: a
+    // one-pixel row beside the plane was judged by the 1:1 column and dropped,
+    // showing the sky past a seabed step or a line across the sea and its ice.
+    // Quads of these sections stop at every plane, which is then always one of
+    // their edges. Past level 4 a voxel is wider than a chunk, so planes run
+    // through voxels and no quad edge can follow them.
+    if (Place->Skirts && Place->Level >= 1 && (CHUNK_SIZE >> Place->Level) > 0) {
+        Mesher->LodPlanePeriod = CHUNK_SIZE >> Place->Level;
     }
     BuildCubeFaces(Mesher, Grid);
 }

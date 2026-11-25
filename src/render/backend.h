@@ -270,11 +270,22 @@ void RenderLodSetCoverage(int ColumnX, int ColumnZ,
 
 // Draws[0, OpaqueCount) lie wholly outside the 1:1 chunks; the BorderCount
 // after them overlap some, and their fragments inside 1:1 chunks are dropped.
-// ListRevision changes whenever the list's content does: an unchanged list is
-// not sent to the GPU again, only culled again for the frame's camera.
+// BlendOrder lists the draws with see-through faces far to near (indices into
+// Draws), the order the blended pass draws them in; a draw it leaves out goes
+// after them in list order. Revision changes whenever the list's content does:
+// an unchanged list is not sent to the GPU again, only culled again for the
+// frame's camera.
+typedef struct {
+  const RenderLodDraw *Draws;
+  int OpaqueCount;
+  int BorderCount;
+  const int *BlendOrder;
+  int BlendCount;
+  uint32_t Revision;
+} RenderLodList;
+
 // Call between the 1:1 cutout pass and the translucent pass.
-void RenderDrawLod(const RenderLodDraw *Draws, int OpaqueCount, int BorderCount,
-                   uint32_t ListRevision);
+void RenderDrawLod(const RenderLodList *List);
 
 typedef struct {
   int Meshes;

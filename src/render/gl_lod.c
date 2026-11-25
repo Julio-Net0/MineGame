@@ -997,13 +997,30 @@ static void CompositeOntoFrame(const GlLodState *State, const GlLodFrame *Frame)
   glEnable(GL_CULL_FACE);
 }
 
+// A record's blended slot before AssignBlendedSlots gives it one.
+static const uint32_t UNASSIGNED_SLOT = UINT32_MAX;
+
+// Gives a section the next slots of the blended pass, once.
+static void AssignBlendedSlots(GlLodState *State, int Idx, int Count, int *InOutSlots) {
+  if (Idx < 0 || Idx >= Count) {
+    return;
+  }
+  uint32_t *Cull = &State->CullRecords[(size_t)Idx * CULL_RECORD_UINTS];
+  if (Cull[RECORD_BLENDED_SLOT] != UNASSIGNED_SLOT) {
+    return;
+  }
+  Cull[RECORD_BLENDED_SLOT] = (uint32_t)*InOutSlots;
+  *InOutSlots += (int)(Cull[RECORD_RUN_COUNT] - Cull[RECORD_OPAQUE_RUNS]);
+}
+
 // Fills the section records the vertex shader and the cull read; returns the
-// vertices of every section, before culling.
-static int64_t BuildSectionRecords(GlLodState *State, const RenderLodDraw *Draws,
+// vertices of every section, before culling. The blended pass draws its
+// sections in List->BlendOrder (far to near), since blending depends on order.
+static int64_t BuildSectionRecords(GlLodState *State, const RenderLodList *List,
                                    int Count) {
+  const RenderLodDraw *Draws = List->Draws;
   int64_t Vertices = 0;
   int Slots = 0;
-  int BlendedSlots = 0;
   for (int Idx = 0; Idx < Count; Idx++) {
     if (Idx == State->ListOpaque) {
       State->ListOpaqueRuns = Slots;
@@ -1021,8 +1038,7 @@ static int64_t BuildSectionRecords(GlLodState *State, const RenderLodDraw *Draws
     Cull[RECORD_FIRST_SLOT] = (uint32_t)Slots;
     Cull[RECORD_MESH] = (uint32_t)Draw->Mesh;
     Cull[RECORD_OPAQUE_RUNS] = (uint32_t)Record->OpaqueRunCount;
-    Cull[RECORD_BLENDED_SLOT] = (uint32_t)BlendedSlots;
-    BlendedSlots += Record->RunCount - Record->OpaqueRunCount;
+    Cull[RECORD_BLENDED_SLOT] = UNASSIGNED_SLOT;
     memcpy(&Cull[CULL_RECORD_HEADER], Record->Runs,
            sizeof(uint32_t) * (size_t)Record->RunCount);
     Slots += Record->RunCount;
@@ -1032,21 +1048,26 @@ static int64_t BuildSectionRecords(GlLodState *State, const RenderLodDraw *Draws
     State->ListOpaqueRuns = Slots;
   }
   State->ListRuns = Slots;
+  int BlendedSlots = 0;
+  for (int Rank = 0; Rank < List->BlendCount; Rank++) {
+    AssignBlendedSlots(State, List->BlendOrder[Rank], Count, &BlendedSlots);
+  }
+  for (int Idx = 0; Idx < Count; Idx++) {
+    AssignBlendedSlots(State, Idx, Count, &BlendedSlots);
+  }
   State->ListBlendedRuns = BlendedSlots;
   return Vertices;
 }
 
-static void UploadSectionList(GlLodState *State, const RenderLodDraw *Draws,
-                              int OpaqueCount, int BorderCount,
-                              uint32_t ListRevision) {
-  int Total = OpaqueCount + BorderCount;
+static void UploadSectionList(GlLodState *State, const RenderLodList *List) {
+  int Total = List->OpaqueCount + List->BorderCount;
   if (!EnsureListCapacity(State, Total)) {
     State->HasList = false;
     return;
   }
-  State->ListOpaque = OpaqueCount;
-  State->ListBorder = BorderCount;
-  State->ListVertices = BuildSectionRecords(State, Draws, Total);
+  State->ListOpaque = List->OpaqueCount;
+  State->ListBorder = List->BorderCount;
+  State->ListVertices = BuildSectionRecords(State, List, Total);
   glBindBuffer(GL_SHADER_STORAGE_BUFFER, State->MetaSsbo);
   glBufferData(GL_SHADER_STORAGE_BUFFER,
                (GLsizeiptr)(sizeof(int32_t) * LOD_META_COMPONENTS * (size_t)Total),
@@ -1064,7 +1085,7 @@ static void UploadSectionList(GlLodState *State, const RenderLodDraw *Draws,
                NULL, GL_DYNAMIC_DRAW);
   glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
   State->HasList = true;
-  State->ListRevision = ListRevision;
+  State->ListRevision = List->Revision;
 }
 
 static void SetProgramFog(GLuint Program, bool Enabled, float End) {
@@ -1274,7 +1295,7 @@ static void DrawPhase(const GlLodState *State, const GlLodFrame *Frame,
 // against it, never written. Colour blends like the 1:1 translucent pass;
 // alpha accumulates coverage, so the composite lays water over an empty pixel
 // exactly as it would over the sky. Blending depends on draw order, so this
-// pass always draws its fixed list (sections in list order, culled commands
+// pass always draws its fixed list (sections far to near, culled commands
 // zeroed), never a compacted one whose order would vary between frames.
 static void DrawTranslucent(const GlLodState *State, const GlLodFrame *Frame,
                             const LodView *View) {
@@ -1308,12 +1329,13 @@ static void DrawTranslucent(const GlLodState *State, const GlLodFrame *Frame,
   glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BINDING_META, 0);
 }
 
-void GlLodDraw(const GlLodFrame *Frame, const RenderLodDraw *Draws,
-               int OpaqueCount, int BorderCount, uint32_t ListRevision) {
+void GlLodDraw(const GlLodFrame *Frame, const RenderLodList *List) {
   GlLodState *State = GetLodState();
   State->Stats.OpaqueDraws = 0;
   State->Stats.BorderDraws = 0;
   State->Stats.CandidateVertices = 0;
+  int OpaqueCount = List->OpaqueCount;
+  int BorderCount = List->BorderCount;
   int Total = OpaqueCount + BorderCount;
   if (!State->Active) {
     return;
@@ -1365,9 +1387,9 @@ void GlLodDraw(const GlLodFrame *Frame, const RenderLodDraw *Draws,
   // The LOD is always drawn filled. Under the wireframe debug view its edges
   // would land exactly on chunk-column borders, where the border shader's
   // coverage lookup cannot tell which column a line belongs to.
-  if (!State->HasList || State->ListRevision != ListRevision ||
+  if (!State->HasList || State->ListRevision != List->Revision ||
       State->ListOpaque != OpaqueCount || State->ListBorder != BorderCount) {
-    UploadSectionList(State, Draws, OpaqueCount, BorderCount, ListRevision);
+    UploadSectionList(State, List);
     if (!State->HasList) {
       return;
     }

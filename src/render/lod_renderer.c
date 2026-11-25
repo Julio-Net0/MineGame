@@ -113,6 +113,8 @@ typedef struct {
   // Kept only to stand in for its children (see SelectSection), not drawn:
   // the first to go when the arena is full.
   bool Retained;
+  // The mesh holds see-through faces, which the blended pass draws.
+  bool Blended;
 } CacheEntry;
 
 // A selected section whose mesh is missing or out of date, queued so the
@@ -138,11 +140,20 @@ typedef struct {
   bool Refresh;
 } PendingMesh;
 
-// A draw with its position in the selection walk.
+// A draw with its position in the selection walk and, for a mesh with
+// see-through faces, its squared distance from the camera's chunk centre.
 typedef struct {
   uint32_t Key;
+  float BlendDistSq;
+  bool Blended;
   RenderLodDraw Draw;
 } KeyedDraw;
+
+// A draw of the blended pass and its squared distance from the camera.
+typedef struct {
+  float DistSq;
+  int Index;
+} BlendDraw;
 
 typedef struct {
   // One bit per chunk drawn 1:1 with terrain, and per chunk the world created
@@ -160,6 +171,10 @@ typedef struct {
   RenderLodDraw *Draws;
   KeyedDraw *OpaqueKeyed;
   KeyedDraw *BorderKeyed;
+  BlendDraw *BlendDraws;
+  // Draws with see-through faces, far to near (see AssembleDraws).
+  int *BlendOrder;
+  int BlendCount;
   PendingMesh *PendingMeshes;
   // The selection walk's sections, in walk order, and the set of every
   // section it selected or refined.
@@ -256,6 +271,8 @@ static void FreeRendererState(LodRendererState *State) {
   free(State->Draws);
   free(State->OpaqueKeyed);
   free(State->BorderKeyed);
+  free(State->BlendDraws);
+  free(State->BlendOrder);
   free(State->PendingMeshes);
   free(State->Walked);
   free(State->WalkKeys);
@@ -283,6 +300,8 @@ void LodRendererInit(void) {
   State->Draws = (RenderLodDraw *)malloc(sizeof(RenderLodDraw) * MAX_DRAWS);
   State->OpaqueKeyed = (KeyedDraw *)malloc(sizeof(KeyedDraw) * MAX_DRAWS);
   State->BorderKeyed = (KeyedDraw *)malloc(sizeof(KeyedDraw) * MAX_DRAWS);
+  State->BlendDraws = (BlendDraw *)malloc(sizeof(BlendDraw) * MAX_DRAWS);
+  State->BlendOrder = (int *)malloc(sizeof(int) * MAX_DRAWS);
   State->PendingMeshes = (PendingMesh *)malloc(sizeof(PendingMesh) * MAX_DRAWS);
   State->Walked = (PendingMesh *)malloc(sizeof(PendingMesh) * MAX_DRAWS);
   State->WalkKeys = (uint64_t *)calloc(WALK_SET_INITIAL, sizeof(uint64_t));
@@ -295,6 +314,7 @@ void LodRendererInit(void) {
       State->DirtyColumns == NULL || State->Cache == NULL ||
       State->Mesher == NULL || State->Scratch == NULL || State->Upload == NULL ||
       State->Draws == NULL || State->OpaqueKeyed == NULL || State->BorderKeyed == NULL ||
+      State->BlendDraws == NULL || State->BlendOrder == NULL ||
       State->PendingMeshes == NULL) {
     FreeRendererState(State);
     LogWarn("LOD: could not allocate the LOD renderer; LOD stays undrawn");
@@ -736,7 +756,8 @@ static int BuildFaceRuns(const ChunkVertex *Vertices, int Count, RenderLodRun *R
 // the arena had no room for.
 static int MeshSection(LodRendererState *State, const LodStore *Store,
                        const LodSection *Section, int Level, int X, int Y, int Z,
-                       unsigned Transitions, bool Skirts, RenderLodMesh *OutMesh) {
+                       unsigned Transitions, bool Skirts, RenderLodMesh *OutMesh,
+                       bool *OutBlended) {
   const LodSection *Around[VOXEL_LOD_AROUND];
   for (int Dx = -1; Dx <= 1; Dx++) {
     for (int Dy = -1; Dy <= 1; Dy++) {
@@ -767,6 +788,7 @@ static int MeshSection(LodRendererState *State, const LodStore *Store,
     }
   }
   *OutMesh = RENDER_LOD_MESH_INVALID;
+  *OutBlended = Count > OpaqueCount;
   if (Count > 0) {
     RenderLodRun Runs[RENDER_LOD_MAX_RUNS];
     int Reserve = (Count > OpaqueCount) ? TRANSLUCENT_RUN_RESERVE : 0;
@@ -793,9 +815,10 @@ static bool MeshCurrent(const CacheEntry *Entry, const LodSection *Section,
 static bool MeshPending(LodRendererState *State, SelectContext *Ctx,
                         const PendingMesh *Pending, CacheEntry **InOutEntry) {
   RenderLodMesh Mesh = RENDER_LOD_MESH_INVALID;
+  bool Blended = false;
   int Count = MeshSection(State, Ctx->Store, Pending->Section, Pending->Level,
                           Pending->X, Pending->Y, Pending->Z, Pending->Transitions,
-                          Pending->Border, &Mesh);
+                          Pending->Border, &Mesh, &Blended);
   Ctx->Attempts++;
   if (Count > 0 && Mesh == RENDER_LOD_MESH_INVALID) {
     Ctx->StarvedVertices = Count;
@@ -818,6 +841,7 @@ static bool MeshPending(LodRendererState *State, SelectContext *Ctx,
   Entry->Stale = false;
   Entry->Transitions = Pending->Transitions;
   Entry->Skirted = Pending->Border;
+  Entry->Blended = Blended;
   Entry->LastFrame = State->Frame;
   Entry->DistSq = Pending->DistSq;
   *InOutEntry = Entry;
@@ -965,16 +989,21 @@ static void AddDraw(LodRendererState *State, SelectContext *Ctx,
     return;
   }
   int Width = LOD_SECTION_SIZE << Level;
-  RenderLodDraw Draw = {.Mesh = Entry->Mesh,
-                        .OriginX = X * Width,
-                        .OriginY = Y * Width,
-                        .OriginZ = Z * Width,
-                        .Scale = 1 << Level,
-                        .VertexCount = Entry->VertexCount};
+  KeyedDraw Keyed = {.Key = Key,
+                     .Blended = Entry->Blended,
+                     .Draw = {.Mesh = Entry->Mesh,
+                              .OriginX = X * Width,
+                              .OriginY = Y * Width,
+                              .OriginZ = Z * Width,
+                              .Scale = 1 << Level,
+                              .VertexCount = Entry->VertexCount}};
+  if (Entry->Blended) {
+    Keyed.BlendDistSq = SectionDistSq(Ctx, Level, X, Y, Z);
+  }
   if (Border) {
-    State->BorderKeyed[Ctx->BorderCount++] = (KeyedDraw){.Key = Key, .Draw = Draw};
+    State->BorderKeyed[Ctx->BorderCount++] = Keyed;
   } else {
-    State->OpaqueKeyed[Ctx->OpaqueCount++] = (KeyedDraw){.Key = Key, .Draw = Draw};
+    State->OpaqueKeyed[Ctx->OpaqueCount++] = Keyed;
   }
 }
 
@@ -984,20 +1013,51 @@ static int CompareKeyed(const void *Left, const void *Right) {
   return (A > B) - (A < B);
 }
 
+// Farthest first; equal distances keep list order, so the order is the same
+// on every run.
+static int CompareFarToNear(const void *Left, const void *Right) {
+  const BlendDraw *A = (const BlendDraw *)Left;
+  const BlendDraw *B = (const BlendDraw *)Right;
+  if (A->DistSq != B->DistSq) {
+    return (A->DistSq < B->DistSq) ? 1 : -1;
+  }
+  return (A->Index > B->Index) - (A->Index < B->Index);
+}
+
+static void AddBlendDraw(LodRendererState *State, const KeyedDraw *Keyed, int Index) {
+  if (Keyed->Blended) {
+    State->BlendDraws[State->BlendCount++] =
+        (BlendDraw){.DistSq = Keyed->BlendDistSq, .Index = Index};
+  }
+}
+
 // The draw list in selection-walk order: sections meshed this pass were
 // added after the walk, in distance order, and go back to their walk place,
-// so the list (and blending and depth-tie order with it) never depends on
-// which pass meshed what. Opaque draws first, then border draws.
+// so the list (and depth-tie order with it) never depends on which pass
+// meshed what. Opaque draws first, then border draws.
+//
+// The blended pass draws see-through faces without writing depth, so a face
+// drawn later lays over one drawn earlier wherever both pass the depth test.
+// It takes its sections far to near, as the 1:1 translucent pass takes its
+// chunks: in walk order, a sea section drawn after the sea-ice section above it
+// laid its water surface over the ice.
 static void AssembleDraws(LodRendererState *State, const SelectContext *Ctx) {
   if (Ctx->PendingCount > 0) {
     qsort(State->OpaqueKeyed, (size_t)Ctx->OpaqueCount, sizeof(KeyedDraw), CompareKeyed);
     qsort(State->BorderKeyed, (size_t)Ctx->BorderCount, sizeof(KeyedDraw), CompareKeyed);
   }
+  State->BlendCount = 0;
   for (int Idx = 0; Idx < Ctx->OpaqueCount; Idx++) {
     State->Draws[Idx] = State->OpaqueKeyed[Idx].Draw;
+    AddBlendDraw(State, &State->OpaqueKeyed[Idx], Idx);
   }
   for (int Idx = 0; Idx < Ctx->BorderCount; Idx++) {
     State->Draws[Ctx->OpaqueCount + Idx] = State->BorderKeyed[Idx].Draw;
+    AddBlendDraw(State, &State->BorderKeyed[Idx], Ctx->OpaqueCount + Idx);
+  }
+  qsort(State->BlendDraws, (size_t)State->BlendCount, sizeof(BlendDraw), CompareFarToNear);
+  for (int Rank = 0; Rank < State->BlendCount; Rank++) {
+    State->BlendOrder[Rank] = State->BlendDraws[Rank].Index;
   }
 }
 
@@ -1419,8 +1479,13 @@ void LodRendererDraw(RenderCamera Camera) {
       State->StarvedGeneration = RenderLodArenaGeneration();
     }
   }
-  RenderDrawLod(State->Draws, State->OpaqueCount, State->BorderCount,
-                State->ListRevision);
+  RenderLodList List = {.Draws = State->Draws,
+                        .OpaqueCount = State->OpaqueCount,
+                        .BorderCount = State->BorderCount,
+                        .BlendOrder = State->BlendOrder,
+                        .BlendCount = State->BlendCount,
+                        .Revision = State->ListRevision};
+  RenderDrawLod(&List);
 
   RenderGetLodStats(&State->Stats.Gpu);
   State->Stats.Enabled = true;

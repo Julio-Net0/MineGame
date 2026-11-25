@@ -1781,8 +1781,7 @@ void RenderLodSetCoverage(int ColumnX, int ColumnZ,
   GlLodSetCoverage(ColumnX, ColumnZ, Words);
 }
 
-void RenderDrawLod(const RenderLodDraw *Draws, int OpaqueCount, int BorderCount,
-                   uint32_t ListRevision) {
+void RenderDrawLod(const RenderLodList *List) {
   BackendState *State = GetBackendState();
   if (!GlLodActive()) {
     return;
@@ -1800,7 +1799,7 @@ void RenderDrawLod(const RenderLodDraw *Draws, int OpaqueCount, int BorderCount,
                       .BlockArrayTex = State->BlockArrayTex,
                       .LodSampler = State->LodSampler,
                       .Wireframe = State->Wireframe};
-  GlLodDraw(&Frame, Draws, OpaqueCount, BorderCount, ListRevision);
+  GlLodDraw(&Frame, List);
 }
 
 void RenderGetLodStats(RenderLodStats *Out) { GlLodGetStats(Out); }
